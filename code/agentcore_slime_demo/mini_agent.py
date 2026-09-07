@@ -19,8 +19,8 @@ policy under training and records each turn into a per-session `TrajectoryManage
 contains ZERO training code: it only has to (a) route every model call through the adapter and
 (b) tag the session so the adapter can key the trajectory. The session id travels in the
 `Authorization: Bearer <session_id>` header, which is where the adapter reads it
-(`sid_from_bearer`). `mini_agent_generate.finish_session` then drains that trajectory into
-loss-masked training samples.
+(`sid_from_bearer`). The generate hook's `finish_session` (agentcore_runtime_generate) then drains
+that trajectory into loss-masked training samples.
 
 Deliberately NOT here (that is the point — "simple"): no CLI, no Node, no MCP, no subagents, no
 context compaction, no permissions system. Three tools (write_file / bash / read_file) and a

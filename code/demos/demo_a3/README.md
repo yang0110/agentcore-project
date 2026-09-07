@@ -16,13 +16,15 @@ an **AgentCore Runtime microVM** as the sandbox. The agent has three tools — `
 `read_file` — a short system prompt, and a flat message list. No CLI, no Node, no MCP, no
 subagents, no compaction: that minimalism is the point.
 
-> **Target: decoupled + disaggregated (two AgentCore Runtimes).** Today A3 runs the mini harness
-> **in the trainer/rollout process** — a bring-up shortcut, *not* the intended deployment. The
-> target for A2/A3/B2/B3 alike is the harness on its **own AgentCore Runtime** (a
-> `BedrockAgentCoreApp` wrapping `MiniClaudeHarness`) whose tool calls invoke a **separate sandbox
-> AgentCore Runtime** (Code Interpreter for A3, a real GPU Runtime instance for B3). Harness and
-> sandbox are two distinct component types (Agent Lightning §1); AgentCore hosts both, as two
-> Runtimes. See [docs/harness-sandbox-decoupling.md](../../../docs/harness-sandbox-decoupling.md) §7.
+> **Deployment: decoupled + disaggregated (two AgentCore Runtimes).** A3 now runs the mini harness
+> the **target** way — the harness has ONE home, its **own AgentCore Runtime #1** (a
+> `BedrockAgentCoreApp` wrapping `MiniClaudeHarness`, `harness_kind=mini`) whose tool calls invoke a
+> **separate sandbox AgentCore Runtime #2** (a CPU Code-Interpreter-class microVM for A3). The
+> harness Runtime dials the `AnthropicAdapter` proxy on this box back over the **private VPC**
+> (security-group gated, **no public port**). Harness and sandbox are two distinct component types
+> (Agent Lightning §1); AgentCore hosts both, as two Runtimes. Wired via
+> `agentcore_runtime_generate.generate`; the earlier in-process shortcut has been removed. See
+> [docs/harness-sandbox-decoupling.md](../../../docs/harness-sandbox-decoupling.md) §7.
 
 **How it trains for free (Agent Lightning decoupling).** The agent is just an HTTP client of
 slime's **`AnthropicAdapter`**. It speaks the Anthropic Messages API (`POST /v1/messages` with
@@ -33,17 +35,19 @@ loss-masked GRPO samples. So `mini_agent.py` contains **zero** training code.
 
 ## Demo A3 vs Demo A2 (why this exists)
 
-[Demo A2](../demo_a2/) runs the **real Claude Code CLI** inside the sandbox — faithful, but it
-needs a custom multi-user container with Node 22 + Claude Code installed. **Demo A3 runs the agent
-in the trainer process instead**, so:
+[Demo A2](../demo_a2/) runs the **real Claude Code CLI** — faithful, but it needs a custom
+multi-user container with Node 22 + Claude Code installed. **Demo A3 runs our ~1-file
+`MiniClaudeHarness` instead** (same two-Runtime deployment), so:
 
-- **no Node, no CLI, no custom container** — the sandbox is the **vanilla AgentCore Code
-  Interpreter** (`SANDBOX=agentcore`), and `SANDBOX=local` even runs the loop offline against a
-  local adapter (see the smoke below). There is **no Dockerfile** in this directory.
-- **no dial-back host** — the agent reaches the adapter over `127.0.0.1`, so `ADAPTER_PUBLIC_HOST`
-  is optional.
+- **no Node, no CLI in the harness image** — the harness Runtime #1 image is a slim CPU Python
+  container (aiohttp + boto3 + bedrock_agentcore, no slime), and the sandbox Runtime #2 is a
+  CPU Code-Interpreter-class microVM. Much lighter than A2's full-CLI container.
+- **the harness dials back** — Runtime #1 reaches the `AnthropicAdapter` proxy at
+  `ADAPTER_PUBLIC_HOST:ADAPTER_PORT` (this box's **private IP**, a pinned port opened only from the
+  runtime security group). `SANDBOX=agentcore-runtime` and the two Runtime ARNs are **required**.
 
-Think of it as: A2 = maximum fidelity, A3 = the simplest thing that is still a real agentic loop.
+Think of it as: A2 = maximum fidelity (real CLI), A3 = the simplest harness that is still a real
+agentic loop — both deployed the same target way (harness Runtime + sandbox Runtime).
 
 This directory is **independently runnable**: it owns its `data/` (500-prompt MBPP train pool +
 held-out eval) and `ckpt/` output dir. The `agentcore_slime_demo` library is imported from the
@@ -69,20 +73,28 @@ python3 build_dataset.py --dataset mbpp --split validation --limit 8   --out dat
 
 ## Run
 
+First deploy the two Runtimes (harness #1 + sandbox #2) and open the adapter port from the runtime
+security group (see [docs/harness-sandbox-decoupling.md](../../../docs/harness-sandbox-decoupling.md)
+§7), then export the ARNs + private IP:
+
 ```bash
-docker exec agentcore_p4 bash -lc 'cd /work && SANDBOX=agentcore \
-  AWS_REGION=us-west-2 bash code/demos/demo_a3/run.sh'
+docker exec agentcore_p4 bash -lc 'cd /work \
+  && SANDBOX=agentcore-runtime AWS_REGION=us-west-2 \
+     AGENTCORE_HARNESS_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/harness-... \
+     AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/sandbox-... \
+     ADAPTER_PUBLIC_HOST=PRIVATE-IP-f99864bc ADAPTER_PORT=18021 \
+     bash code/demos/demo_a3/run.sh'
 ```
 
 Knobs: `RB` (prompts/step), `NS` (GRPO group size), `NR` (num-rollout; real steps = NR−1), `TEMP`,
 `CONC`, `EVAL_INTERVAL` (eval every N steps, `0` disables), `EVAL_NS`, `MINI_AGENT_MAX_TURNS`
-(max model↔tool turns per episode). GPU split is 4 train + 4 infer + 0 env (CPU envs).
-Save-only-at-end holds while `dataset_size ≥ NR × RB` (500 ≥ 100 × 4). The checkpoint-save deadlock
-is fixed via `megatron_init.py` (both `--async-save` and `--custom-megatron-init-path` are baked
-into `run.sh`).
+(max model↔tool turns per episode). GPU split on this box is 4 train + 4 infer + 0 env (CPU
+sandbox Runtime). Save-only-at-end holds while `dataset_size ≥ NR × RB` (500 ≥ 100 × 4). The
+checkpoint-save deadlock is fixed via `megatron_init.py` (both `--async-save` and
+`--custom-megatron-init-path` are baked into `run.sh`).
 
-`SANDBOX=agentcore` needs `AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION` in the container env for the
-Code Interpreter microVM.
+Both Runtimes need `AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION`; `ADAPTER_PUBLIC_HOST` must be this
+box's **private IP** and `ADAPTER_PORT` must be open to the runtime security group (no public port).
 
 ## Metrics
 

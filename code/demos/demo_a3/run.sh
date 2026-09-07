@@ -3,21 +3,29 @@
 # Runner: this dir owns its data/ + ckpt/; agentcore_slime_demo is the SHARED lib from /work/code (PYTHONPATH).
 # Runs INSIDE the persistent container (agentcore_p4). In-container path: /work/code/demos/demo_a3.
 #
-# Demo A3 == Demo A + a "mimic Claude Code" harness we wrote ourselves:
-#   Same task (MBPP), same sandbox family (CPU microVM / Code Interpreter), same slime training
-#   path and same Qwen3-4B policy. The difference vs Demo A is the ROLLOUT HARNESS: instead of our
-#   lightweight run_episode loop (agentcore_slime_demo.generate.generate), the agent loop is
+# Demo A3 == Demo A + a "mimic Claude Code" harness we wrote ourselves, deployed the TARGET way:
+#   Same task (MBPP), same slime training path and same Qwen3-4B policy. The difference vs Demo A
+#   is the ROLLOUT HARNESS: instead of our lightweight run_episode loop
+#   (agentcore_slime_demo.generate.generate), the agent loop is
 #   agentcore_slime_demo.mini_agent.MiniClaudeHarness — a ~1-file pure-Python coding agent that
 #   reproduces Claude Code's call-model -> pick-tool -> run-in-sandbox -> feed-result loop
 #   (write_file / bash / read_file), matching AWS's AgentCore "agent harness" description. Its
 #   model calls go through slime's AnthropicAdapter (-> SGLang policy), so every completion is
 #   served by the policy under training and its tokens are captured for GRPO.
 #
-# Difference vs Demo A2 (the REAL Claude Code CLI): the mini agent runs in THIS trainer process,
-# NOT inside the sandbox, so there is NO Node/CLI to install and NO custom multi-user container.
-# The sandbox is the vanilla AgentCore Code Interpreter (SANDBOX=agentcore). Hence no Dockerfile here.
+# DEPLOYMENT (the two-Runtime target, decoupling ③ in its clean form — see
+# docs/harness-sandbox-decoupling.md §7): the mini harness has ONE home now — its OWN AgentCore
+# Runtime. This demo drives agentcore_slime_demo.agentcore_runtime_generate.generate, which:
+#   * invokes the HARNESS Runtime #1 (harness_runtime_agent.py, harness_kind=mini) — MiniClaudeHarness
+#     runs THERE, not in this trainer process;
+#   * whose tool calls invoke a SEPARATE sandbox Runtime #2 (sandbox_server_agent.py — a CPU Code-
+#     Interpreter-class microVM for A3);
+#   * the harness Runtime dials the AnthropicAdapter proxy back on this box over the PRIVATE VPC
+#     (SG-gated, no public port — see docs/slides networking slide).
+# So SANDBOX=agentcore-runtime and you MUST set the two Runtime ARNs + ADAPTER_PUBLIC_HOST below.
+# (The old in-process shortcut, mini_agent_generate.generate, has been removed.)
 #
-# GPU split (same as Demo A): 4 train + 4 inference + 0 env (CPU envs => no GpuPool).
+# GPU split (same as Demo A): 4 train + 4 inference + 0 env (CPU sandbox Runtime => no GpuPool).
 # Tunables: RB (rollout-batch-size), NS (n-samples-per-prompt), NR (num-rollout),
 #           TEMP (sampling temp), CONC (sglang-server-concurrency), MINI_AGENT_MAX_TURNS.
 #
@@ -25,7 +33,7 @@
 # runs range(1, NR) = (NR-1) real training steps. NR=2 => 1 step.
 set -euo pipefail
 
-SANDBOX="${SANDBOX:-agentcore}"  # vanilla AWS Code Interpreter (local mode removed)
+SANDBOX="${SANDBOX:-agentcore-runtime}"  # sandbox as its OWN AgentCore Runtime #2 (two-Runtime target)
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
 NR="${NR:-100}"        # num-rollout; real training steps = NR-1 => 99 steps.
@@ -56,11 +64,20 @@ EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/mbpp_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-mbpp}"
 SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_mbpp_mini_async}"
 
-# ---- Mini-harness env ----
-# The mini agent runs IN-PROCESS and reaches the adapter over localhost, so ADAPTER_PUBLIC_HOST
-# is optional (defaults to 127.0.0.1 in mini_agent_generate). No Node/Claude-Code tarballs and no
-# custom container — that is the whole simplification vs A2.
-ADAPTER_PUBLIC_HOST="${ADAPTER_PUBLIC_HOST:-}"       # optional; only if binding the adapter on a routable NIC
+# ---- Two-Runtime target env (REQUIRED) ----
+# The mini harness runs on its OWN AgentCore Runtime #1 and dials the AnthropicAdapter proxy back
+# over the private VPC, so these are NOT optional any more:
+#   * AGENTCORE_HARNESS_RUNTIME_ARN — Runtime #1 (harness_runtime_agent.py, harness_kind=mini)
+#   * AGENTCORE_SANDBOX_RUNTIME_ARN — Runtime #2 (sandbox_server_agent.py, CPU microVM for A3)
+#   * ADAPTER_PUBLIC_HOST — this box's PRIVATE IP (e.g. PRIVATE-IP-f99864bc) that Runtime #1 dials back to
+#   * ADAPTER_PORT — pinned so a single narrow security-group ingress rule stays stable (no public port)
+# Deploy the two Runtimes with the deploy script (docs: harness-sandbox-decoupling.md §7), then:
+#   export AGENTCORE_HARNESS_RUNTIME_ARN=... AGENTCORE_SANDBOX_RUNTIME_ARN=... ADAPTER_PUBLIC_HOST=...
+AGENTCORE_HARNESS_RUNTIME_ARN="${AGENTCORE_HARNESS_RUNTIME_ARN:?set to the harness Runtime #1 ARN}"
+AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the sandbox Runtime #2 ARN}"
+ADAPTER_PUBLIC_HOST="${ADAPTER_PUBLIC_HOST:?set to this box PRIVATE IP that harness Runtime 1 dials back to}"
+ADAPTER_PORT="${ADAPTER_PORT:-18021}"                # pinned; open ONLY this port from the runtime SG
+HARNESS_KIND="${HARNESS_KIND:-mini}"                 # which harness Runtime #1 runs (mini | claude)
 MINI_AGENT_MAX_TURNS="${MINI_AGENT_MAX_TURNS:-12}"   # max model<->tool turns per episode
 
 # clean any prior ray/sglang from a previous run
@@ -117,8 +134,9 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 1024
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
-   # THE Demo-A3 difference: our mini Claude-Code-like harness, not run_episode or the real CLI.
-   --custom-generate-function-path agentcore_slime_demo.mini_agent_generate.generate
+   # THE Demo-A3 difference: our mini Claude-Code-like harness on its OWN AgentCore Runtime #1,
+   # tools bound to a separate sandbox Runtime #2 (the two-Runtime target, not run_episode/CLI).
+   --custom-generate-function-path agentcore_slime_demo.agentcore_runtime_generate.generate
 )
 
 PERF_ARGS=(
@@ -181,7 +199,11 @@ RUNTIME_ENV_JSON="{
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"AGENTCORE_GPU_GATE\": \"off\",
+    \"AGENTCORE_HARNESS_RUNTIME_ARN\": \"${AGENTCORE_HARNESS_RUNTIME_ARN}\",
+    \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\",
     \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST}\",
+    \"ADAPTER_PORT\": \"${ADAPTER_PORT}\",
+    \"HARNESS_KIND\": \"${HARNESS_KIND}\",
     \"MINI_AGENT_MAX_TURNS\": \"${MINI_AGENT_MAX_TURNS}\"
   }
 }"

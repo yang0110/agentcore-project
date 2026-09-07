@@ -1,15 +1,16 @@
-"""`agentcore_runtime_generate.generate` — slime hook for the TWO-Runtime target.
+"""`agentcore_runtime_generate.generate` — slime hook for the TWO-Runtime target (A3/B3 path).
 
-STATUS: untested scaffolding (docs/harness-sandbox-decoupling.md §7). This is the disaggregated
-custom-generate path: the harness runs on AgentCore Runtime #1 (harness_runtime_agent.py) and the
-sandbox on AgentCore Runtime #2 (sandbox_server_agent.py). The slime trainer only ever sees the
-LLM request/response pairs, captured by the proxy (AnthropicAdapter) — exactly Agent Lightning.
+This is the disaggregated custom-generate path and the ONLY home for the mini harness: it runs on
+AgentCore Runtime #1 (harness_runtime_agent.py) and the sandbox on AgentCore Runtime #2
+(sandbox_server_agent.py). The slime trainer only ever sees the LLM request/response pairs,
+captured by the proxy (AnthropicAdapter) — exactly Agent Lightning. Demos A3 and B3 wire this hook
+(the earlier in-process shortcut, mini_agent_generate.generate, has been removed — the mini harness
+has ONE home now, its own Runtime).
 
-It differs from the existing hooks only in WHERE the harness runs:
-  * generate.generate               — our run_episode, in-process, local `sb`.
-  * mini_agent_generate.generate    — MiniClaudeHarness, in-process, local `sb`  (A3/B3 shortcut).
+It differs from the other hooks only in WHERE the harness runs:
+  * generate.generate               — our run_episode, in-process, local `sb`  (Demos A/B).
   * claude_code_generate.generate   — Claude Code, in-sandbox                    (A2/B2 shortcut).
-  * THIS                            — harness on Runtime #1, sandbox on Runtime #2 (the target).
+  * THIS                            — harness on Runtime #1, sandbox on Runtime #2 (A3/B3, target).
 
 Flow per prompt:
   1. stand up the proxy (AnthropicAdapter) + open a session, as the other hooks do;
@@ -20,7 +21,8 @@ Flow per prompt:
 
 Wire with:
   --custom-generate-function-path agentcore_slime_demo.agentcore_runtime_generate.generate
-and set AGENTCORE_HARNESS_RUNTIME_ARN + AGENTCORE_SANDBOX_RUNTIME_ARN. Nothing here has run.
+and set AGENTCORE_HARNESS_RUNTIME_ARN + AGENTCORE_SANDBOX_RUNTIME_ARN + ADAPTER_PUBLIC_HOST (this
+box's private IP, which Runtime #1 dials back to over the SG-gated private VPC — no public port).
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ async def _invoke_runtime(arn: str, session_id: str, payload: dict, region: str,
 
 
 async def generate(args, base_sample, sampling_params, evaluation: bool = False):
-    # Same proxy wiring as the shipped hooks (claude_code_generate / mini_agent_generate); imports
+    # Same proxy wiring as the other shipped hooks (generate / claude_code_generate); imports
     # kept local so this module loads without slime present (offline tooling/tests).
     from slime.agent.adapters import AnthropicAdapter
     from slime.agent.aiohttp_threaded import run_app_in_thread

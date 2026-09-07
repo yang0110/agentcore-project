@@ -3,24 +3,27 @@
 # Runner (this dir owns data/ + ckpt/; agentcore_slime_demo is the SHARED lib from /work/code). Runs INSIDE the
 # persistent slime container (agentcore_p4), async/decoupled (train_async.py, NO --colocate).
 #
-# Demo B3 == Demo B + a "mimic Claude Code" harness we wrote ourselves. Same task/sandbox story as
-# Demo B (KernelBench CUDA ops, checker runs torch on GPU inside the sandbox, GpuPool dense-packs
-# env checkers onto physical GPUs 6,7), but the multi-turn loop is
+# Demo B3 == Demo B + a "mimic Claude Code" harness we wrote ourselves, deployed the TARGET way.
+# Task: KernelBench CUDA ops; the checker runs torch on a GPU. Multi-turn loop is
 # agentcore_slime_demo.mini_agent.MiniClaudeHarness — a ~1-file pure-Python coding agent
 # (write_file / bash / read_file) reproducing Claude Code's model->tool->sandbox->result loop.
 # The Qwen3-4B policy is still trained by slime; the agent's Anthropic Messages calls go through
-# slime's AnthropicAdapter (-> SGLang). See agentcore_slime_demo/mini_agent_generate.py.
+# slime's AnthropicAdapter (-> SGLang).
 #
-# Difference vs Demo B2 (the REAL Claude Code CLI): the mini agent runs in THIS trainer process,
-# NOT inside the sandbox, so the sandbox needs NO Node/CLI install and NO custom multi-user
-# container (no Dockerfile here) — only CUDA+torch for the KernelBench checker, which the standard
-# GPU Runtime image already has. The agent reaches the adapter over localhost, so no dial-back host.
+# DEPLOYMENT (the two-Runtime target — docs/harness-sandbox-decoupling.md §7): the mini harness has
+# ONE home now — its OWN AgentCore Runtime #1 (harness_runtime_agent.py, harness_kind=mini). This
+# demo drives agentcore_slime_demo.agentcore_runtime_generate.generate, whose tool calls AND reward
+# checker invoke a SEPARATE GPU-backed sandbox Runtime #2 (sandbox_server_agent.py on a g6 capacity
+# provider), where the KernelBench torch/CUDA checker runs. So the env-checker GPU is REMOTE (on
+# Runtime #2), NOT local: there is NO local GpuPool here any more, and this box runs just
+# train + inference. The harness Runtime dials the AnthropicAdapter proxy back over the private VPC
+# (SG-gated, no public port). The old in-process shortcut (mini_agent_generate) has been removed.
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
 # runs range(1, NR) = (NR-1) real training steps. NR=20 => 19 steps.
 set -euo pipefail
 
-SANDBOX="${SANDBOX:-agentcore}"   # vanilla AWS GPU Runtime sandbox (local mode removed)
+SANDBOX="${SANDBOX:-agentcore-runtime}"   # sandbox as its OWN GPU-backed AgentCore Runtime #2 (two-Runtime target)
 # ---- Task set: the REAL KernelBench (ScalingIntelligence/KernelBench) ----------------------------
 # Train = level_1 (100 single-op CUDA problems); held-out eval = 20 level_2 fusion problems (disjoint).
 # Build with build_dataset.py --dataset kernelbench --level level_1 --limit 100 (train) and
@@ -46,23 +49,23 @@ EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-kernelbench}"
 SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_mini_async}"
 
-# GPU split: 4 train + 2 inference + 2 env. slime reserves 6 (actor 4 + rollout 2); GpuPool owns 6,7.
+# GPU split on THIS box: 4 train + 4 inference + 0 env. The KernelBench checker's GPU is REMOTE
+# (it runs on the sandbox Runtime #2 instance), so no local GpuPool and no reserved env GPUs here.
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
-ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"
-# Route the KernelBench checker exec (imports torch, runs on cuda) through a process-wide GpuPool
-# that leases ONLY physical GPUs 6,7 to the bursty env checkers.
-GPU_ENV=(
-   "\"AGENTCORE_GPU_GATE\": \"all\""
-   "\"GPU_POOL_DEVICES\": \"${GPU_POOL_DEVICES:-6,7}\""
-   "\"GPU_POOL_CONCURRENCY\": \"${GPU_POOL_CONCURRENCY:-16}\""
-   "\"GPU_POOL_PER_ENV_MIB\": \"${GPU_POOL_PER_ENV_MIB:-2048}\""
-)
+ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 
-# ---- Mini-harness env ----
-# The mini agent runs IN-PROCESS and reaches the adapter over localhost, so ADAPTER_PUBLIC_HOST is
-# optional (defaults to 127.0.0.1 in mini_agent_generate). No Node/Claude-Code tarballs and no
-# custom container — that is the simplification vs B2. See agentcore_slime_demo/mini_agent.py.
-ADAPTER_PUBLIC_HOST="${ADAPTER_PUBLIC_HOST:-}"       # optional; only if binding the adapter on a routable NIC
+# ---- Two-Runtime target env (REQUIRED) ----
+# The mini harness runs on its OWN AgentCore Runtime #1 and dials the AnthropicAdapter proxy back
+# over the private VPC; the sandbox is a GPU-backed Runtime #2 where the KernelBench checker runs:
+#   * AGENTCORE_HARNESS_RUNTIME_ARN — Runtime #1 (harness_runtime_agent.py, harness_kind=mini)
+#   * AGENTCORE_SANDBOX_RUNTIME_ARN — Runtime #2 (sandbox_server_agent.py, GPU g6 microVM for B3)
+#   * ADAPTER_PUBLIC_HOST — this box's PRIVATE IP (e.g. PRIVATE-IP-f99864bc) that Runtime #1 dials back to
+#   * ADAPTER_PORT — pinned so a single narrow security-group ingress rule stays stable (no public port)
+AGENTCORE_HARNESS_RUNTIME_ARN="${AGENTCORE_HARNESS_RUNTIME_ARN:?set to the harness Runtime #1 ARN}"
+AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU sandbox Runtime #2 ARN}"
+ADAPTER_PUBLIC_HOST="${ADAPTER_PUBLIC_HOST:?set to this box PRIVATE IP that harness Runtime 1 dials back to}"
+ADAPTER_PORT="${ADAPTER_PORT:-18021}"                # pinned; open ONLY this port from the runtime SG
+HARNESS_KIND="${HARNESS_KIND:-mini}"                 # which harness Runtime #1 runs (mini | claude)
 MINI_AGENT_MAX_TURNS="${MINI_AGENT_MAX_TURNS:-12}"   # max model<->tool turns per episode
 
 # clean any prior ray/sglang from a previous run
@@ -112,9 +115,9 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 1024
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
-   # THE KEY DIFFERENCE from Demo B: our mini Claude-Code-like harness instead of run_episode (and
-   # instead of B2's real CLI). Same slime training-data path; the agent loop is our in-process one.
-   --custom-generate-function-path agentcore_slime_demo.mini_agent_generate.generate
+   # THE KEY DIFFERENCE from Demo B: our mini Claude-Code-like harness on its OWN AgentCore Runtime
+   # #1, tools + checker bound to a separate GPU sandbox Runtime #2 (the two-Runtime target).
+   --custom-generate-function-path agentcore_slime_demo.agentcore_runtime_generate.generate
 )
 
 PERF_ARGS=(
@@ -166,12 +169,10 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-# Give ray ALL 8 physical GPUs. slime reserves (ACTOR_GPUS + ROLLOUT_GPUS) = 6; the remaining 2
-# stay unreserved and the GpuPool leases them (6,7) to the env checkers directly.
+# Give ray ALL 8 physical GPUs. slime reserves (ACTOR_GPUS + ROLLOUT_GPUS) = 8; the KernelBench
+# checker's GPU is on the remote sandbox Runtime #2, so no local GPUs are held back for env work.
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
-
-GPU_ENV_JSON=$(IFS=,; echo "${GPU_ENV[*]}")
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -180,9 +181,12 @@ RUNTIME_ENV_JSON="{
     \"SANDBOX\": \"${SANDBOX}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
+    \"AGENTCORE_HARNESS_RUNTIME_ARN\": \"${AGENTCORE_HARNESS_RUNTIME_ARN}\",
+    \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\",
     \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST}\",
-    \"MINI_AGENT_MAX_TURNS\": \"${MINI_AGENT_MAX_TURNS}\",
-    ${GPU_ENV_JSON}
+    \"ADAPTER_PORT\": \"${ADAPTER_PORT}\",
+    \"HARNESS_KIND\": \"${HARNESS_KIND}\",
+    \"MINI_AGENT_MAX_TURNS\": \"${MINI_AGENT_MAX_TURNS}\"
   }
 }"
 

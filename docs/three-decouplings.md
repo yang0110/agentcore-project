@@ -63,8 +63,9 @@ AL's three decouplings map 1:1 to ①/②/③ below.
 - **Where in code:** the proxy is slime's `AnthropicAdapter` (`slime.agent.adapters`;
   `open_session` / `finish_session` / `drop_session`), stood up via `run_app_in_thread`
   (`slime.agent.aiohttp_threaded`) in every generate hook —
-  `agentcore_slime_demo/claude_code_generate.py`, `mini_agent_generate.py`,
-  `agentcore_runtime_generate.py`. How the harness reaches it differs by harness kind: the **CLI
+  `agentcore_slime_demo/claude_code_generate.py` and `agentcore_runtime_generate.py` (the latter
+  is the mini harness's only home now — its own Runtime). How the harness reaches it differs by
+  harness kind: the **CLI
   harness** (`ClaudeCodeHarness`, A2/B2) sets `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` =
   session id; the **mini harness** (`MiniClaudeHarness`, A3/B3, and the Runtime harness) is given
   the adapter URL directly and carries the session id in an `Authorization: Bearer <sid>` header.
