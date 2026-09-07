@@ -1,0 +1,10 @@
+# Docker build context for the two-Runtime images is code/ (so agentcore_slime_demo/ is COPY-able),
+# but code/ also holds p4_slime_train/, demos/data, ckpt/, caches (100s of GB). Exclude everything
+# and re-include ONLY the package the images need — keeps the context at ~400 KB.
+*
+!agentcore_slime_demo
+!deploy
+# strip caches/logs even from the re-included dir
+**/__pycache__
+**/*.pyc
+**/*.log

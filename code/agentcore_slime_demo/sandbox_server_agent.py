@@ -11,6 +11,7 @@ It speaks the tiny op protocol `AgentCoreRuntimeSandbox` sends:
     {"op":"exec","command":...,"user":..,"env":{},"timeout":N,"workdir":..} -> {exit_code,stdout,stderr}
     {"op":"write_file","path":..,"text":..}           -> {"ok":true}
     {"op":"read_file","path":..}                      -> {"text":..}
+    {"mode":"prepare"}   (GPU/B3 image only)          -> installs the torch stack onto the volume
 
 Deploy (mirrors agentcore-usecases 08/09):
     - build an image from a Dockerfile that installs python + (for B) CUDA torch, copies this file,
@@ -30,6 +31,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import sys
 
 try:
     from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -39,9 +41,57 @@ except Exception:  # pragma: no cover - only importable inside the deployed cont
 
 DEFAULT_WORKDIR = os.environ.get("SANDBOX_WORKDIR", "/workspace")
 
+# GPU (B3) only: the CUDA torch stack is >2 GB, over the Runtime image cap, so it is installed onto
+# a persistent EBS volume (filesystemConfigurations) at mode=prepare — exactly like AgentCore
+# use case 08 — and reused across sessions. SANDBOX_PYLIB is set (via ENV) ONLY in the GPU sandbox
+# image; on the CPU (A3) image it is unset and none of this runs (the MBPP checker is pure Python).
+PYLIB = os.environ.get("SANDBOX_PYLIB")                     # e.g. /mnt/models/pylib (GPU image only)
+TORCH_SPEC = os.environ.get("SANDBOX_TORCH_SPEC", "torch==2.5.1")
+TORCH_INDEX = os.environ.get("SANDBOX_TORCH_INDEX", "https://download.pytorch.org/whl/cu124")
+
 
 def _ensure_workdir(workdir: str) -> None:
     os.makedirs(workdir or DEFAULT_WORKDIR, exist_ok=True)
+
+
+def _gpu_env(base: dict | None = None) -> dict:
+    """Env that makes the volume-installed torch import and find the injected driver.
+
+    LD_LIBRARY_PATH=/usr/lib64 is also baked into the Dockerfile ENV (so it is in effect at
+    PROCESS START — the loader caches its search path, so setting it late is too late), but we
+    re-assert it here for subprocesses and prepend PYLIB to PYTHONPATH so the checker's torch
+    resolves off the volume. No-op when PYLIB is unset (CPU/A3 image)."""
+    env = dict(base if base is not None else os.environ)
+    if PYLIB:
+        env["PYTHONPATH"] = PYLIB + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        lib = "/usr/lib64"
+        env["LD_LIBRARY_PATH"] = lib + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+    return env
+
+
+def _gpu_prepare(req: dict) -> dict:
+    """Install the CUDA torch stack onto the volume once (GPU sandbox / B3 only).
+
+    Mirrors use case 08: a SINGLE pinned pip pass against the cu124 index (PyPI as fallback for
+    the non-torch deps). Pinning + one pass is what avoids pip re-resolving a mismatched newer
+    torch. Idempotent: skips if torch is already on the volume."""
+    if not PYLIB:
+        return {"error": "prepare called but SANDBOX_PYLIB unset (not a GPU sandbox image)"}
+    os.makedirs(PYLIB, exist_ok=True)
+    if not os.path.exists(os.path.join(PYLIB, "torch")):
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--target", PYLIB,
+             TORCH_SPEC, "numpy",
+             "--index-url", TORCH_INDEX, "--extra-index-url", "https://pypi.org/simple"],
+            check=True, env=_gpu_env(),
+        )
+    # Verify torch imports + sees the GPU, so a broken prepare fails loud here, not mid-rollout.
+    check = subprocess.run(
+        [sys.executable, "-c", "import torch; print(torch.__version__, torch.cuda.is_available())"],
+        capture_output=True, text=True, env=_gpu_env(),
+    )
+    return {"status": "prepared", "pylib": PYLIB, "torch_probe": check.stdout.strip(),
+            "torch_probe_err": check.stderr.strip(), "ok": check.returncode == 0}
 
 
 def _do_exec(req: dict) -> dict:
@@ -50,7 +100,9 @@ def _do_exec(req: dict) -> dict:
     cmd = req.get("command", "")
     user = req.get("user", "root")
     timeout = int(req.get("timeout", 120))
-    env = {**os.environ, **(req.get("env") or {})}
+    # On the GPU (B3) image this prepends the volume PYLIB to PYTHONPATH and /usr/lib64 to
+    # LD_LIBRARY_PATH so the checker's torch resolves + finds the injected driver; no-op on CPU.
+    env = _gpu_env({**os.environ, **(req.get("env") or {})})
 
     exports = "".join(f"export {k}={shlex.quote(str(v))}; " for k, v in (req.get("env") or {}).items())
     inner = f"cd {shlex.quote(workdir)}; {exports}bash -lc {shlex.quote(cmd)}"
@@ -82,6 +134,9 @@ def _do_read(req: dict) -> dict:
 
 def handle(request: dict) -> dict:
     """Pure dispatch — unit-testable without AgentCore (no BedrockAgentCoreApp needed)."""
+    # GPU (B3) one-time volume build: {"mode":"prepare"} installs the torch stack onto the volume.
+    if (request or {}).get("mode") == "prepare":
+        return _gpu_prepare(request)
     op = (request or {}).get("op", "ping")
     if op == "ping":
         _ensure_workdir(request.get("workdir") or DEFAULT_WORKDIR)

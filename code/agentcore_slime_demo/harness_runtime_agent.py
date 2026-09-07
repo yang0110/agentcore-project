@@ -55,10 +55,23 @@ async def _run_mini(request: dict) -> dict:
     # class; import lazily so this module still loads for unit-testing `handle` without deps.
     from .mini_agent import MiniClaudeHarness
 
+    max_tokens = int(request.get("max_tokens") or os.environ.get("MINI_AGENT_MAX_TOKENS", "1024"))
+    max_turns = int(os.environ.get("MINI_AGENT_MAX_TURNS", "12"))
     async with sandbox as sb:
-        harness = MiniClaudeHarness()
-        result = await harness.run(sb, session_id=session_id, adapter_url=adapter_url, prompt=prompt)
-    return {"ok": True, "result": result}
+        harness = MiniClaudeHarness(max_turns=max_turns)
+        result = await harness.run(
+            sb, session_id=session_id, adapter_url=adapter_url, prompt=prompt, max_tokens=max_tokens,
+        )
+    # The return value is JSON-serialized by BedrockAgentCoreApp, so hand back plain fields only
+    # (MiniAgentResult is a dataclass and would raise "not JSON serializable"). The trajectory
+    # itself is captured proxy-side; the caller (agentcore_runtime_generate) only needs a summary.
+    return {
+        "ok": True,
+        "turns": result.turns,
+        "stop_reason": result.stop_reason,
+        "tool_calls": result.tool_calls,
+        "last_exit_code": result.last_exit_code,
+    }
 
 
 async def handle_async(request: dict) -> dict:

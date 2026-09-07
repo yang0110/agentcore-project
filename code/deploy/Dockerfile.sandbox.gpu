@@ -1,0 +1,26 @@
+# Sandbox AgentCore Runtime #2 — GPU (B3: KernelBench). Runs on a g6 CAPACITY PROVIDER instance.
+# Build context MUST be code/:
+#   docker build -f code/deploy/Dockerfile.sandbox.gpu -t <ecr>/acs-sandbox-gpu:latest code/
+#
+# 2 GB image cap: the CUDA torch stack is >2 GB, so it is NOT baked in. It is installed onto the
+# capacity-provider EBS volume at /mnt/models/pylib via a one-time `{"mode":"prepare"}` invoke
+# (sandbox_server_agent._gpu_prepare) and reused across sessions — exactly the AgentCore use-case-08
+# pattern. So this image stays slim: just bedrock-agentcore + the sandbox server.
+FROM public.ecr.aws/docker/library/python:3.12-slim
+
+WORKDIR /app
+RUN pip install --no-cache-dir bedrock-agentcore
+
+COPY agentcore_slime_demo/sandbox_server_agent.py /app/sandbox_server_agent.py
+
+# LD_LIBRARY_PATH MUST be set at PROCESS START (the dynamic loader caches its search path, so
+# exporting it late — from inside Python — is too late). AgentCore injects the NVIDIA driver
+# (libcuda.so.1) into /usr/lib64 at runtime; this is the exact fix use case 08 needed.
+ENV LD_LIBRARY_PATH=/usr/lib64
+# Where the volume-installed torch lives; presence of SANDBOX_PYLIB is what arms the GPU/prepare
+# path in sandbox_server_agent.py (unset on the CPU image, so that path stays dormant there).
+ENV SANDBOX_PYLIB=/mnt/models/pylib
+ENV SANDBOX_WORKDIR=/workspace
+
+EXPOSE 8080
+CMD ["python", "-m", "sandbox_server_agent"]
