@@ -1,0 +1,59 @@
+# ============================================================================
+# SECRETS — never commit. The demo run.sh logs echo their full launch command,
+# which includes AWS_BEARER_TOKEN_BEDROCK. Treat all run logs as sensitive.
+# ============================================================================
+*.log
+*_awsrun*.log
+.env
+*.pem
+*_credentials*
+aws_bearer_token*
+
+# ============================================================================
+# Large / generated artifacts (checkpoints, model caches, ray/pytest state)
+# ============================================================================
+**/ckpt/
+p4_slime_train/
+.hf_cache/
+**/.hf_cache/
+# Downloadable Node/Claude-Code bundles for A2/B2 (fetched by setup, not source)
+code/demos/_agent_assets/
+*.tgz
+*.tar.xz
+*.tar.gz
+.pytest_cache/
+**/.pytest_cache/
+.run/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# ============================================================================
+# External reference clones (not our source — AWS samples + upstream trainers)
+# ============================================================================
+/agentcore-samples/
+/repos/
+# agentcore-usecases is a vendored AWS sample clone (bundled deps under build/, logs/state.env).
+# Not our source. gpu_deploy.py lives here and remains on disk for deploy tooling; not versioned.
+/agentcore-usecases/
+
+# ============================================================================
+# LaTeX build intermediates (keep .tex; PDF is regenerable)
+# ============================================================================
+*.aux
+*.nav
+*.out
+*.snm
+*.toc
+*.vrb
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+docs/slides/*.pdf
+
+# ============================================================================
+# OS / editor cruft
+# ============================================================================
+.DS_Store
+*.swp

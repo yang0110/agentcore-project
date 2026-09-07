@@ -1,0 +1,8 @@
+# Offline path (smoke + tests): NOTHING required beyond the Python 3.10+ stdlib.
+#
+# Real path, install as needed:
+bedrock-agentcore    # AgentCoreSandbox: CodeInterpreter client (sandbox.py)
+boto3                # AWS SDK used by bedrock-agentcore
+transformers         # SGLangPolicy: chat template + tokenizer (policy.py)
+aiohttp              # SGLangPolicy: async HTTP to the SGLang router
+# slime itself is installed separately (see repos/slime); imported lazily by generate.py.
