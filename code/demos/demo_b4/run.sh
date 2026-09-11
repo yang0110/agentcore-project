@@ -27,7 +27,7 @@
 # shared runtimeSessionId + per-episode sub_session).
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
-# runs range(1, NR) = (NR-1) real training steps. NR=20 => 10 train (SMOKE; no more needed).
+# runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train (SMOKE; no more needed).
 set -euo pipefail
 
 SANDBOX="${SANDBOX:-agentcore-runtime}"   # sandbox = its OWN remote g6 AgentCore Runtime #2 (GPU shared via ray)

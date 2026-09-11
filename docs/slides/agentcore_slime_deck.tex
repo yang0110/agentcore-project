@@ -1816,6 +1816,40 @@ create_capacity_provider(computeConfiguration=
   vs.\ ``share one GPU'' choice, now realized.}
 \end{frame}
 
+\begin{frame}{Demo \texttt{b4} --- verified on real hardware}
+  \footnotesize The open question was: \emph{does AgentCore actually let several sandboxes co-reside on
+  one g6 GPU?} A pre-flight (\texttt{smoke\_b4\_g6.py}) invokes the g6 under \textbf{one shared}
+  \texttt{runtimeSessionId} with per-episode \texttt{sub\_session}s and reports what each leased actor sees:
+  \vspace{-0.2em}
+  \begin{center}\scriptsize
+  \begin{tabular}{@{}lllll@{}}
+    \toprule
+    \textbf{episode (sub\_session)} & \textbf{device} & \texttt{CUDA\_VISIBLE} & \textbf{mem cap} & \textbf{result} \\
+    \midrule
+    \texttt{ep-0} (cold, +farm build) & NVIDIA L4 & \texttt{0} & \texttt{0.25} & ok \\
+    \texttt{ep-1} \} & NVIDIA L4 & \texttt{0} & \texttt{0.25} & ok \\
+    \texttt{ep-2} \} concurrent & NVIDIA L4 & \texttt{0} & \texttt{0.25} & ok \\
+    \texttt{ep-3} \} & NVIDIA L4 & \texttt{0} & \texttt{0.25} & ok \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \vspace{-0.1em}
+  \begin{itemize}\setlength\itemsep{0.1em}
+    \item \textbf{All four leased actors report the \emph{same} physical device} (\texttt{cuda:0}) with
+      the \texttt{0.25} software mem cap applied --- i.e.\ \texttt{RayGpuFarm} really packed
+      $\lfloor 1/0.25\rfloor=4$ sandboxes onto the one L4, exactly as designed.
+    \item \textbf{Three concurrent invokes under one shared session did \emph{not} serialize/deadlock} ---
+      they leased distinct actors and finished together, confirming the sharing model holds end-to-end.
+    \item First \texttt{open()} eats the cold g6 launch ($\sim$160\,s: instance $+$ startup \texttt{pip
+      install torch} $+$ \texttt{ray.init} $+$ warm CUDA); reused thereafter, so \texttt{INVOKE\_MAX\_RETRIES}
+      is raised to absorb it.
+  \end{itemize}
+  {\scriptsize A smoke training run (10 steps $+$ eval) then drove it live: the mini-harness tool loop fires
+  (Qwen3 \texttt{<tool\_call>} $\to$ \texttt{qwen25} parser $\to$ \texttt{<tool\_response>}), the KernelBench
+  checker runs on the shared g6, and a reward comes back per episode --- the whole \texttt{b4} path, on real
+  hardware.}
+\end{frame}
+
 % ============================================================
 \section{Networking, isolation \& lifecycle}
 % ============================================================
