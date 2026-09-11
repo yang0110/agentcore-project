@@ -106,7 +106,12 @@ def _do_exec(req: dict) -> dict:
 
     exports = "".join(f"export {k}={shlex.quote(str(v))}; " for k, v in (req.get("env") or {}).items())
     inner = f"cd {shlex.quote(workdir)}; {exports}bash -lc {shlex.quote(cmd)}"
-    full = inner if user in ("", "root") else f"su {shlex.quote(user)} -c {shlex.quote(inner)}"
+    # NOTE: `user` is intentionally IGNORED. AgentCore runs this container as uid 0 with an EMPTY
+    # Linux capability set (CapEff/CapBnd=0), so CAP_SETUID/SETGID are unavailable and `su <user>`
+    # fails with "cannot set groups: Operation not permitted". The sandbox is therefore root-only;
+    # every command (including the Claude Code CLI, which tolerates root via IS_SANDBOX=1) runs as
+    # root. The image makes /workspace + /home/agent world-writable so root writes succeed anyway.
+    full = inner
     try:
         proc = subprocess.run(
             full, shell=True, capture_output=True, text=True, timeout=timeout, env=env,
@@ -121,6 +126,8 @@ def _do_write(req: dict) -> dict:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
         f.write(req.get("text", ""))
+    # No chown: the container has no CAP_CHOWN (AgentCore zero-cap root) and the sandbox is root-only,
+    # so ownership handoff is both impossible and unnecessary. `user` is accepted but ignored.
     return {"ok": True}
 
 
@@ -132,12 +139,60 @@ def _do_read(req: dict) -> dict:
         return {"text": "", "error": "not found"}
 
 
+# ---- Demo B4: GPU-shared farm path -----------------------------------------------------------
+# When a request carries a "sub_session", it is a B4 op: several episodes share THIS one g6
+# instance (all invoked under one runtimeSessionId), and each sub_session is multiplexed onto a
+# fractional slice of the single GPU by a Ray farm running in-process here (sandbox_ray_farm).
+# Requests WITHOUT a sub_session take the legacy single-session path below (B2/B3), so one image
+# serves all of series B — B4 just also carries a sub_session and needs `ray` installed. The farm
+# is built lazily on the first B4 op (its ray.init / warm CUDA cost is paid once).
+_FARM = None
+_FARM_LOCK = None
+
+
+def _farm():
+    global _FARM, _FARM_LOCK
+    import threading
+
+    if _FARM_LOCK is None:
+        _FARM_LOCK = threading.Lock()
+    if _FARM is None:
+        with _FARM_LOCK:
+            if _FARM is None:
+                from .sandbox_ray_farm import RayGpuFarm
+
+                _FARM = RayGpuFarm.from_env().start()
+    return _FARM
+
+
+def _handle_farm(op: str, request: dict) -> dict:
+    sub = request["sub_session"]
+    farm = _farm()
+    if op == "open":
+        return farm.open(sub)
+    if op == "close":
+        return farm.close(sub)
+    if op == "ping":
+        return {"ok": True, "farm": farm.describe()}
+    if op == "exec":
+        return farm.exec(sub, request.get("command", ""), request.get("env") or {},
+                         int(request.get("timeout", 120)))
+    if op == "write_file":
+        return farm.write_file(sub, request["path"], request.get("text", ""))
+    if op == "read_file":
+        return farm.read_file(sub, request["path"])
+    return {"error": f"unknown farm op: {op!r}"}
+
+
 def handle(request: dict) -> dict:
     """Pure dispatch — unit-testable without AgentCore (no BedrockAgentCoreApp needed)."""
     # GPU (B3) one-time volume build: {"mode":"prepare"} installs the torch stack onto the volume.
     if (request or {}).get("mode") == "prepare":
         return _gpu_prepare(request)
     op = (request or {}).get("op", "ping")
+    # B4: a sub_session means the GPU-shared Ray farm path (many episodes on this one g6 GPU).
+    if (request or {}).get("sub_session"):
+        return _handle_farm(op, request)
     if op == "ping":
         _ensure_workdir(request.get("workdir") or DEFAULT_WORKDIR)
         return {"ok": True}
