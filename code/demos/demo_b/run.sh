@@ -7,22 +7,25 @@
 # What Demo B is: KernelBench-style CUDA-kernel tasks. The policy writes solution.py, a GPU
 # checker runs it (python3 run_checks.py imports torch, compiles/executes on cuda, and compares
 # against a torch reference), reads the failure, fixes it — our lightweight run_episode harness
-# (agentcore_slime_demo.harness) drives the multi-turn loop; the sandbox exec is gated onto a
-# process-wide GpuPool that dense-packs many bursty env checkers onto a couple of physical GPUs.
+# (agentcore_slime_demo.harness) drives the multi-turn loop IN-PROCESS on this box, but the sandbox
+# (write_file / exec / read_file) is a SEPARATE GPU-backed AgentCore Runtime #2 (sandbox_server_agent
+# on a g6): the KernelBench torch/CUDA checker runs THERE, reached over invoke_agent_runtime. This is
+# the decoupled-sandbox path — harness in-process, sandbox remote (no MCP/two-Runtime harness like B3).
 #
-# GPU split on this 8xL40S box: 4 train (Megatron) + 2 inference (SGLang) + 2 env (physical 6,7).
-# slime is given all 8 GPUs for ray but reserves only ACTOR_GPUS+ROLLOUT_GPUS=6; the GpuPool
-# leases the remaining physical GPUs 6,7 to the env checkers directly.
+# GPU split on this 8xL40S box: 4 train (Megatron) + 4 inference (SGLang) + 0 env. The env checker's
+# GPU is REMOTE (sandbox Runtime #2), so there is NO local GpuPool and no local GPUs held back.
 #
 # Async/decoupled: agentic rollouts have long, variable latency (multi-turn kernel repair on a
 # GPU). slime's async driver (train_async.py) runs trainer GPUs and SGLang inference GPUs DISJOINT
 # and generates rollout N+1 while training on rollout N. Async hard-requires no --colocate.
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
-# runs range(1, NR) = (NR-1) real training steps. NR=20 => 19 steps.
+# runs range(1, NR) = (NR-1) real training steps. NR=20 => 10 train (SMOKE; no more needed).
 set -euo pipefail
 
-SANDBOX="${SANDBOX:-agentcore}"   # AWS GPU Runtime sandbox (local mode removed)
+SANDBOX="${SANDBOX:-agentcore-runtime}"   # the sandbox is its OWN GPU-backed AgentCore Runtime #2
+                                          # (sandbox_server_agent.py on a g6). The KernelBench torch/CUDA
+                                          # checker runs THERE (remote), so there is NO local GpuPool.
 # ---- Task set: the REAL KernelBench (ScalingIntelligence/KernelBench) ----------------------------
 # Train = level_1 (100 single-op CUDA problems); held-out eval = 20 level_2 fusion problems (disjoint,
 # no leakage). Build with build_dataset.py --dataset kernelbench --level level_1 --limit 100 (train)
@@ -32,10 +35,10 @@ SANDBOX="${SANDBOX:-agentcore}"   # AWS GPU Runtime sandbox (local mode removed)
 # is 100/4 = 25 steps and NR=20 (19 real steps) never crosses it => the ONLY checkpoint is the final.
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
-NR="${NR:-20}"         # num-rollout; real training steps = NR-1 => 19 steps. Keep NR*RB <= 100.
+NR="${NR:-11}"         # num-rollout; real training steps = NR-1 => 10 train (SMOKE; no more needed). Keep NR*RB <= 100.
 TEMP="${TEMP:-1.0}"    # rollout sampling temperature (higher => more intra-group diversity)
 GBS=$(( RB * NS ))     # global batch = all samples, 1 optimizer step per rollout
-EVAL_INTERVAL="${EVAL_INTERVAL:-5}"  # run held-out eval every N training steps (0 => off)
+EVAL_INTERVAL="${EVAL_INTERVAL:-10}"  # run held-out eval every N training steps (0 => off)
 EVAL_NS="${EVAL_NS:-2}"              # samples per eval prompt (eval solve-rate resolution)
 # Checkpoint policy: no mid-training snapshots. slime force-saves at the final rollout, so a huge
 # save-interval means the periodic save never fires; the ONLY checkpoint is the final one.
@@ -47,21 +50,21 @@ DEMO_DIR=/work/code/demos/demo_b
 CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"
 HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
 
-# ---- Demo B GPU split + task source (all local to this dir) --------------------------------
+# ---- GPU split: 4 train + 4 inference + 0 env. The KernelBench checker's GPU is REMOTE (on the
+# sandbox Runtime #2 g6 instance), so no local GpuPool and no reserved local env GPUs here.
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
-ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"
+ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 DATA="${DATA:-$DEMO_DIR/data/kernelbench_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-kernelbench}"
 SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_async}"
-# Route the KernelBench checker exec (python3 run_checks.py imports torch internally, so gate ALL
-# execs) through a process-wide GpuPool that leases ONLY physical GPUs 6,7 to the envs.
-GPU_ENV=(
-   "\"AGENTCORE_GPU_GATE\": \"all\""
-   "\"GPU_POOL_DEVICES\": \"${GPU_POOL_DEVICES:-6,7}\""
-   "\"GPU_POOL_CONCURRENCY\": \"${GPU_POOL_CONCURRENCY:-16}\""
-   "\"GPU_POOL_PER_ENV_MIB\": \"${GPU_POOL_PER_ENV_MIB:-2048}\""
-)
+
+# ---- Remote GPU sandbox Runtime #2 (REQUIRED) ----
+# run_episode's checker exec (python3 run_checks.py imports torch on CUDA) runs on the REMOTE g6
+# sandbox Runtime, reached over invoke_agent_runtime. No adapter/harness Runtime: demo_b's
+# generate.generate drives SGLang directly and only the SANDBOX is remote. Deploy the GPU sandbox
+# (deploy_two_runtime.py) + run its one-time mode=prepare, then export its ARN:
+AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU sandbox Runtime #2 ARN}"
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -93,7 +96,8 @@ CKPT_ARGS=(
 )
 
 # Held-out EVAL every EVAL_INTERVAL steps (routed through our SAME custom generate with
-# evaluation=True). NOTE: KernelBench has no true held-out split — eval reuses the same 3 ops.
+# evaluation=True). The held-out eval set is 20 KernelBench level_2 fusions, disjoint from the
+# level_1 train set (no leakage).
 EVAL_ARGS=()
 if [ "$EVAL_INTERVAL" != "0" ] && [ -f "$EVAL_DATA" ]; then
    EVAL_ARGS=(
@@ -166,13 +170,10 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-# Give ray ALL 8 physical GPUs. slime's placement reserves (ACTOR_GPUS + ROLLOUT_GPUS)=6; the
-# remaining 2 stay unreserved and the GpuPool leases physical 6,7 to the env checkers.
+# Give ray ALL 8 physical GPUs. slime's placement reserves (ACTOR_GPUS + ROLLOUT_GPUS)=8; the
+# KernelBench checker's GPU is on the REMOTE sandbox Runtime #2, so no local GPUs are held back.
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
-
-# join per-demo GPU env lines
-GPU_ENV_JSON=$(IFS=,; echo "${GPU_ENV[*]}")
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -180,8 +181,10 @@ RUNTIME_ENV_JSON="{
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
+    \"AGENTCORE_REGION\": \"${AGENTCORE_REGION:-${AWS_REGION:-us-west-2}}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
-    ${GPU_ENV_JSON}
+    \"AGENTCORE_GPU_GATE\": \"off\",
+    \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\"
   }
 }"
 

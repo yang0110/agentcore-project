@@ -1,8 +1,16 @@
 #!/bin/bash
-# Demo A — MBPP, CPU sandbox, OUR multi-turn run_episode harness. REAL slime training, ASYNC
+# Demo A — MBPP, REMOTE-sandbox, OUR multi-turn run_episode harness. REAL slime training, ASYNC
 # (decoupled) mode. This dir owns its data/ + ckpt/, but imports the SHARED agentcore_slime_demo
 # library from /work/code via PYTHONPATH (no vendored copy). Runs INSIDE the persistent
 # container agentcore_p4 (slimerl/slime).
+#
+# Harness/sandbox split (SAME decoupled shape as demo_b): the run_episode harness runs IN-PROCESS
+# on this box inside generate.generate, and the sandbox (write_file / exec / read_file) is a
+# SINGLE remote AgentCore Runtime (sandbox_server_agent.py), reached over invoke_agent_runtime.
+# There is only ONE runtime here — the sandbox; there is NO separate harness/adapter Runtime.
+# Unlike demo_b (KernelBench needs CUDA => GPU g6 sandbox), demo_a's MBPP checker is plain
+# Python/IO => it points at a CPU-backed sandbox Runtime (e.g. the a2 CPU sandbox acs_sandbox_a2
+# on the acs_cpu_cp capacity provider).
 #
 # Async/decoupled: agentic rollouts have long, variable latency (multi-turn code repair in a
 # sandbox). slime's async driver (train_async.py) runs trainer GPUs and SGLang inference GPUs on
@@ -12,20 +20,28 @@
 # GPU split (8xL40S): 4 train + 4 inference + 0 env. MBPP checker is plain Python/IO => CPU envs,
 # so all 8 GPUs serve the policy (train + infer).
 #
-# Sandbox backend (SANDBOX): agentcore -> real AWS Code Interpreter microVM (local mode removed;
-# every demo runs against AWS). Tunables: RB (rollout-batch-size), NS (n-samples-per-prompt), NR
-# (num-rollout), TEMP (sampling temp), CONC (sglang-server-concurrency), EVAL_INTERVAL/EVAL_NS.
+# Sandbox backend (SANDBOX): agentcore-runtime -> the SINGLE remote AgentCore Runtime sandbox
+# (default; requires AGENTCORE_SANDBOX_RUNTIME_ARN); agentcore -> AWS Code Interpreter microVM;
+# local -> in-container LocalSandbox (offline, no AWS — CI/unit tests only). Tunables: RB
+# (rollout-batch-size), NS (n-samples-per-prompt), NR (num-rollout), TEMP (sampling temp),
+# CONC (sglang-server-concurrency), EVAL_INTERVAL/EVAL_NS.
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
-# runs range(1, NR) = (NR-1) real training steps. NR=100 => 99 steps.
+# runs range(1, NR) = (NR-1) real training steps. NR=100 => 10 train + 1 eval (SMOKE; no more needed).
 # NOTE GRPO signal: group-relative advantage is 0 when every sample in a prompt's group gets the
 # same reward. Reward variance within groups (harder tasks / higher temp) yields nonzero gradient.
 set -euo pipefail
 
-SANDBOX="${SANDBOX:-agentcore}"   # AWS Code Interpreter microVM (local mode removed)
+SANDBOX="${SANDBOX:-agentcore-runtime}"   # agentcore-runtime -> SINGLE remote AgentCore Runtime sandbox (default);
+                                          # agentcore -> AWS Code Interpreter microVM; local -> in-container LocalSandbox (offline)
+# The remote sandbox Runtime ARN (sandbox_server_agent.py). REQUIRED for SANDBOX=agentcore-runtime.
+# demo_a's MBPP checker is pure Python => a CPU-backed sandbox Runtime (e.g. acs_sandbox_a2 on acs_cpu_cp).
+if [ "$SANDBOX" = "agentcore-runtime" ]; then
+   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the CPU sandbox Runtime ARN (sandbox_server_agent.py; e.g. acs_sandbox_a2 from deploy_cli_sandbox.py)}"
+fi
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
-NR="${NR:-100}"        # num-rollout; real training steps = NR-1 (see NOTE) => 99 steps.
+NR="${NR:-11}"        # num-rollout; real training steps = NR-1 (see NOTE) => 10 train + 1 eval (SMOKE; no more needed).
                        # Keep the train set >= NR*RB prompts so one epoch spans the whole run and
                        # the ONLY checkpoint is the final one (slime force-saves at epoch
                        # boundaries too). The MBPP pool is built at 500 prompts (>= 100*4).
@@ -170,6 +186,7 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"/root/Megatron-LM:${DEMO_DIR}:/work/code:/root/slime\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
+    \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     ${GPU_ENV_JSON}

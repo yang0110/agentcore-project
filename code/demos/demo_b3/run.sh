@@ -20,7 +20,7 @@
 # (SG-gated, no public port). The old in-process shortcut (mini_agent_generate) has been removed.
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
-# runs range(1, NR) = (NR-1) real training steps. NR=20 => 19 steps.
+# runs range(1, NR) = (NR-1) real training steps. NR=20 => 10 train (SMOKE; no more needed).
 set -euo pipefail
 
 SANDBOX="${SANDBOX:-agentcore-runtime}"   # sandbox as its OWN GPU-backed AgentCore Runtime #2 (two-Runtime target)
@@ -32,10 +32,10 @@ SANDBOX="${SANDBOX:-agentcore-runtime}"   # sandbox as its OWN GPU-backed AgentC
 # (step % (dataset_size/RB) == 0), so with RB=4 the epoch is 25 steps and NR=20 (19 real) never crosses it.
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
-NR="${NR:-20}"         # num-rollout; real training steps = NR-1 => 19 steps. Keep NR*RB <= 100.
+NR="${NR:-11}"         # num-rollout; real training steps = NR-1 => 10 train (SMOKE; no more needed). Keep NR*RB <= 100.
 TEMP="${TEMP:-1.0}"    # rollout sampling temperature
 GBS=$(( RB * NS ))     # global batch = all samples, 1 optimizer step per rollout
-EVAL_INTERVAL="${EVAL_INTERVAL:-5}"   # run held-out eval every N training steps (0 => off)
+EVAL_INTERVAL="${EVAL_INTERVAL:-10}"   # run held-out eval every N training steps (0 => off)
 EVAL_NS="${EVAL_NS:-2}"               # samples per eval prompt
 SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"  # save-only-at-end (final rollout force-saves anyway)
 
@@ -66,7 +66,8 @@ AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU s
 ADAPTER_PUBLIC_HOST="${ADAPTER_PUBLIC_HOST:?set to this box PRIVATE IP that harness Runtime 1 dials back to}"
 ADAPTER_PORT="${ADAPTER_PORT:-18021}"                # pinned; open ONLY this port from the runtime SG
 HARNESS_KIND="${HARNESS_KIND:-mini}"                 # which harness Runtime #1 runs (mini | claude)
-MINI_AGENT_MAX_TURNS="${MINI_AGENT_MAX_TURNS:-12}"   # max model<->tool turns per episode
+MINI_AGENT_MAX_TURNS="${MINI_AGENT_MAX_TURNS:-3}"    # max model<->tool turns per episode (fallback)
+EPISODE_MAX_TURNS="${EPISODE_MAX_TURNS:-3}"          # THE turn cap: generate() puts it in the harness payload (wins over the env fallback)
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -156,8 +157,16 @@ SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
    # Cap rollout concurrency (Semaphore(sglang_server_concurrency * num_engines)). Each episode
-   # spins an in-process agent loop + a sandbox, so keep this small.
+   # drives the mini harness on Runtime #1 + a sandbox on Runtime #2, so keep this small.
    --sglang-server-concurrency "${CONC:-4}"
+   # REQUIRED for the mini-harness tool loop: Qwen3 emits Hermes-style <tool_call>{json}</tool_call>,
+   # which the AnthropicAdapter can only turn into tool_use blocks via SGLang's qwen25 parser. Left
+   # unset, tool calls are never parsed, the harness stops after 1 turn, no solution is written, and
+   # reward is 0 for every rollout (the all-zeros/zero_std failure demo_a3 hit on 2026-09-08).
+   --sglang-tool-call-parser qwen25
+   # Strip Qwen3 <think> blocks out of the trainable text into reasoning_content (keeps the tool
+   # loop robust and the trajectory clean). The mini harness also soft-disables thinking (/no_think).
+   --sglang-reasoning-parser qwen3
 )
 
 MISC_ARGS=(
@@ -180,13 +189,15 @@ RUNTIME_ENV_JSON="{
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
+    \"AGENTCORE_REGION\": \"${AGENTCORE_REGION:-${AWS_REGION:-us-west-2}}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"AGENTCORE_HARNESS_RUNTIME_ARN\": \"${AGENTCORE_HARNESS_RUNTIME_ARN}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\",
     \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST}\",
     \"ADAPTER_PORT\": \"${ADAPTER_PORT}\",
     \"HARNESS_KIND\": \"${HARNESS_KIND}\",
-    \"MINI_AGENT_MAX_TURNS\": \"${MINI_AGENT_MAX_TURNS}\"
+    \"MINI_AGENT_MAX_TURNS\": \"${MINI_AGENT_MAX_TURNS}\",
+    \"EPISODE_MAX_TURNS\": \"${EPISODE_MAX_TURNS}\"
   }
 }"
 

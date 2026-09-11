@@ -27,7 +27,7 @@
 # shared runtimeSessionId + per-episode sub_session).
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
-# runs range(1, NR) = (NR-1) real training steps. NR=20 => 19 steps.
+# runs range(1, NR) = (NR-1) real training steps. NR=20 => 10 train (SMOKE; no more needed).
 set -euo pipefail
 
 SANDBOX="${SANDBOX:-agentcore-runtime}"   # sandbox = its OWN remote g6 AgentCore Runtime #2 (GPU shared via ray)
@@ -37,10 +37,10 @@ SANDBOX="${SANDBOX:-agentcore-runtime}"   # sandbox = its OWN remote g6 AgentCor
 # --level level_2 --limit 20 (eval). Save-only-at-end holds while dataset_size (100) >= NR * RB.
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
-NR="${NR:-20}"         # num-rollout; real training steps = NR-1 => 19 steps. Keep NR*RB <= 100.
+NR="${NR:-11}"         # num-rollout; real training steps = NR-1 => 10 train (SMOKE; no more needed). Keep NR*RB <= 100.
 TEMP="${TEMP:-1.0}"    # rollout sampling temperature
 GBS=$(( RB * NS ))     # global batch = all samples, 1 optimizer step per rollout
-EVAL_INTERVAL="${EVAL_INTERVAL:-5}"   # run held-out eval every N training steps (0 => off)
+EVAL_INTERVAL="${EVAL_INTERVAL:-10}"   # run held-out eval every N training steps (0 => off)
 EVAL_NS="${EVAL_NS:-2}"               # samples per eval prompt
 SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"  # save-only-at-end (final rollout force-saves anyway)
 

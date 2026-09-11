@@ -36,7 +36,7 @@ set -euo pipefail
 SANDBOX="${SANDBOX:-agentcore-runtime}"  # sandbox as its OWN AgentCore Runtime #2 (two-Runtime target)
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
-NR="${NR:-100}"        # num-rollout; real training steps = NR-1 => 99 steps.
+NR="${NR:-11}"        # num-rollout; real training steps = NR-1 => 10 train + 1 eval (SMOKE; no more needed).
                        # Keep the train set >= NR*RB prompts so one epoch spans the whole run and
                        # the ONLY checkpoint is the final one (slime force-saves at epoch
                        # boundaries too). The MBPP train pool here is built at 500 prompts
@@ -56,7 +56,7 @@ DEMO_DIR=/work/code/demos/demo_a3
 CKPT_BASE="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"  # shared base ckpt (referenced, not copied)
 HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
 
-# Demo A2: 4 train + 4 inference + 0 env. CPU envs => no GpuPool.
+# Demo A3: 4 train + 4 inference + 0 env. CPU envs => no GpuPool.
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 DATA="${DATA:-$DEMO_DIR/data/mbpp_train.jsonl}"
@@ -78,7 +78,8 @@ AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the sandb
 ADAPTER_PUBLIC_HOST="${ADAPTER_PUBLIC_HOST:?set to this box PRIVATE IP that harness Runtime 1 dials back to}"
 ADAPTER_PORT="${ADAPTER_PORT:-18021}"                # pinned; open ONLY this port from the runtime SG
 HARNESS_KIND="${HARNESS_KIND:-mini}"                 # which harness Runtime #1 runs (mini | claude)
-MINI_AGENT_MAX_TURNS="${MINI_AGENT_MAX_TURNS:-12}"   # max model<->tool turns per episode
+MINI_AGENT_MAX_TURNS="${MINI_AGENT_MAX_TURNS:-3}"    # max model<->tool turns per episode (fallback)
+EPISODE_MAX_TURNS="${EPISODE_MAX_TURNS:-3}"          # THE turn cap: generate() puts it in the harness payload (wins over the env fallback)
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -174,8 +175,16 @@ SGLANG_ARGS=(
    --rollout-num-gpus "$ROLLOUT_GPUS"
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
-   # Cap rollout concurrency. Each episode boots a sandbox + an in-process agent loop, so keep small.
+   # Cap rollout concurrency. Each episode drives the mini harness on Runtime #1 + a sandbox on Runtime #2, so keep small.
    --sglang-server-concurrency "${CONC:-4}"
+   # REQUIRED for the mini-harness tool loop: Qwen3 emits Hermes-style <tool_call>{json}</tool_call>,
+   # which the AnthropicAdapter can only turn into tool_use blocks via SGLang's qwen25 parser. Left
+   # unset, tool calls are never parsed, the harness stops after 1 turn, no solution.py is written,
+   # and reward is 0 for every rollout (the all-zeros/zero_std failure this demo hit on 2026-09-08).
+   --sglang-tool-call-parser qwen25
+   # Strip Qwen3 <think> blocks out of the trainable text into reasoning_content (keeps the tool
+   # loop robust and the trajectory clean). The mini harness also soft-disables thinking (/no_think).
+   --sglang-reasoning-parser qwen3
 )
 
 MISC_ARGS=(
@@ -197,6 +206,7 @@ RUNTIME_ENV_JSON="{
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
+    \"AGENTCORE_REGION\": \"${AGENTCORE_REGION:-${AWS_REGION:-us-west-2}}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"AGENTCORE_GPU_GATE\": \"off\",
     \"AGENTCORE_HARNESS_RUNTIME_ARN\": \"${AGENTCORE_HARNESS_RUNTIME_ARN}\",
@@ -204,7 +214,8 @@ RUNTIME_ENV_JSON="{
     \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST}\",
     \"ADAPTER_PORT\": \"${ADAPTER_PORT}\",
     \"HARNESS_KIND\": \"${HARNESS_KIND}\",
-    \"MINI_AGENT_MAX_TURNS\": \"${MINI_AGENT_MAX_TURNS}\"
+    \"MINI_AGENT_MAX_TURNS\": \"${MINI_AGENT_MAX_TURNS}\",
+    \"EPISODE_MAX_TURNS\": \"${EPISODE_MAX_TURNS}\"
   }
 }"
 
