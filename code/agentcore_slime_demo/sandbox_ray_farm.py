@@ -280,7 +280,15 @@ class RayGpuFarm:
         if not ray.is_initialized():
             # Start / attach to the g6's LOCAL single-node Ray cluster (this process is the only
             # user of it — the trainer box's cluster is a different machine reached via invoke).
-            ray.init(namespace=self.namespace, ignore_reinit_error=True)
+            # Pass num_gpus EXPLICITLY when farm_gpus is known (B4_FARM_GPUS): the g6 sandbox image
+            # is python:slim with NO nvidia-smi, so Ray's GPU autodetection returns 0 and the
+            # num_gpus<1 actors would sit PENDING forever (open() would block). Forcing the count
+            # makes Ray schedule them onto the injected L4. On a box WITH nvidia-smi (the offline
+            # smoke, or when farm_gpus is None) autodetection is left to work as before.
+            init_kwargs = {"namespace": self.namespace, "ignore_reinit_error": True}
+            if self.farm_gpus is not None:
+                init_kwargs["num_gpus"] = self.farm_gpus
+            ray.init(**init_kwargs)
         # Default farm_gpus to however many GPUs this g6 actually has (usually 1 L4).
         if self.farm_gpus is None:
             try:
