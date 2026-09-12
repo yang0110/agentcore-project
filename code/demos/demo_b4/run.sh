@@ -55,7 +55,7 @@ EVAL_NAME="${EVAL_NAME:-kernelbench}"
 SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_rayfarm_async}"
 
 # ---- GPU split: ALL 8 to slime (4 train + 4 infer). The env-checker GPU is REMOTE (the shared g6),
-# so no local GpuPool and no reserved env GPUs here — identical to B2/B3.
+# so no reserved env GPUs here — identical to B2/B3.
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 

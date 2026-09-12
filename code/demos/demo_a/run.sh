@@ -14,20 +14,44 @@
 #
 # Async/decoupled: agentic rollouts have long, variable latency (multi-turn code repair in a
 # sandbox). slime's async driver (train_async.py) runs trainer GPUs and SGLang inference GPUs on
-# DISJOINT devices and generates rollout N+1 WHILE training on rollout N. Hard-requires no
-# --colocate (train_async.py asserts it).
+# DISJOINT devices. Hard-requires no --colocate (train_async.py asserts it).
+#
+# ASYNC MODE (MODE=A|B, DEFAULT B) for the ablation — see the MODE block below and
+# docs/sandbox-concurrency-ablation.md "Two async modes". The DEFAULT is FULLY-ASYNC (Mode B): on
+# top of train_async.py's 1-step overlap it selects slime's --rollout-function-path
+# generate_rollout_fully_async, a background worker holding a DEEP, warm buffer of in-flight +
+# completed rollouts across step boundaries, so staleness genuinely GROWS with concurrency (CONC).
+# That deep buffer is what lets the sandbox-concurrency ablation observe the real
+# staleness/discard/clip trade-off. MODE=A drops the override and runs train_async.py's stock
+# 1-step-async driver (staleness pinned to ~1 step regardless of CONC) for the A-vs-B comparison.
+# Both modes share the identical custom generate hook + Sample contract
+# (tokens/logprobs/loss-mask/reward); only the rollout DRIVER (and matching eval path) changes.
 #
 # GPU split (8xL40S): 4 train + 4 inference + 0 env. MBPP checker is plain Python/IO => CPU envs,
 # so all 8 GPUs serve the policy (train + infer).
 #
 # Sandbox backend (SANDBOX): agentcore-runtime -> the SINGLE remote AgentCore Runtime sandbox
 # (default; requires AGENTCORE_SANDBOX_RUNTIME_ARN); agentcore -> AWS Code Interpreter microVM;
-# local -> in-container LocalSandbox (offline, no AWS — CI/unit tests only). Tunables: RB
-# (rollout-batch-size), NS (n-samples-per-prompt), NR (num-rollout), TEMP (sampling temp),
-# CONC (sglang-server-concurrency), EVAL_INTERVAL/EVAL_NS.
+# local -> in-container LocalSandbox (offline, no AWS — CI/unit tests only). Tunables: MODE (A|B
+# async mode), RB (rollout-batch-size), NS (n-samples-per-prompt), NR (num-rollout), TEMP
+# (sampling temp), CONC (sglang-server-concurrency), EVAL_INTERVAL/EVAL_NS.
+#
+# CONCURRENCY KNOBS (decoupled, for the sandbox-concurrency ablation — see
+# docs/sandbox-concurrency-ablation.md):
+#   * CONC       -> SANDBOX/EPISODE concurrency. #episodes (= #concurrent remote sandboxes) in
+#                   flight is S = CONC * num_engines = CONC * 2. This is the knob to SWEEP. In the
+#                   fully-async (Mode B) path it also sets BUFFER DEPTH: the worker keeps up to
+#                   S in-flight AND up to S completed groups queued ahead of the trainer (which
+#                   drains RB/step), so raising CONC raises staleness. One knob moves both, which is
+#                   exactly the trade-off the ablation measures.
+#   * INFER_CONC -> INFERENCE concurrency I. A process-global semaphore around ONLY the SGLang
+#                   decode POST, so at most I episodes decode at once no matter how large S is.
+#                   Default 0 = disabled (I follows S, the original coupled behavior). Set it to a
+#                   FIXED value (e.g. 8) to hold inference load constant while sweeping CONC, which
+#                   isolates the effect of sandbox count from inference load.
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
-# runs range(1, NR) = (NR-1) real training steps. NR=100 => 10 train + 1 eval (SMOKE; no more needed).
+# runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train + 1 eval (SMOKE; no more needed).
 # NOTE GRPO signal: group-relative advantage is 0 when every sample in a prompt's group gets the
 # same reward. Reward variance within groups (harder tasks / higher temp) yields nonzero gradient.
 set -euo pipefail
@@ -47,7 +71,30 @@ NR="${NR:-11}"        # num-rollout; real training steps = NR-1 (see NOTE) => 10
                        # boundaries too). The MBPP pool is built at 500 prompts (>= 100*4).
 TEMP="${TEMP:-1.0}"    # rollout sampling temperature (higher => more intra-group diversity)
 GBS=$(( RB * NS ))     # global batch = all samples, 1 optimizer step per rollout
-EVAL_INTERVAL="${EVAL_INTERVAL:-10}"  # run held-out eval every N training steps (0 => off)
+# ASYNC MODE (the ablation's two async modes — see docs/sandbox-concurrency-ablation.md):
+#   B (DEFAULT) = FULLY-ASYNC. slime's generate_rollout_fully_async runs a background worker with a
+#                 DEEP, warm buffer of in-flight + completed rollouts across step boundaries, so
+#                 staleness genuinely GROWS with concurrency (CONC). This is the vehicle the
+#                 sandbox-concurrency ablation needs to observe the real staleness/discard/clip
+#                 trade-off. Eval routes through our mode_b_eval wrapper (see EVAL_ARGS).
+#   A           = 1-STEP-ASYNC (stock). train_async.py's default rollout path: exactly ONE rollout
+#                 step overlaps the trainer, so staleness is pinned to ~1 step regardless of CONC.
+#                 Kept reachable from this same runner for the A-vs-B comparison. Eval uses the
+#                 stock sync rollout (no fully-async worker to quiesce).
+# Both modes run under train_async.py (no --colocate) and share the identical custom-generate hook
+# + Sample contract; only the rollout DRIVER (and the matching eval path) changes.
+MODE="${MODE:-B}"
+case "$MODE" in B|b) MODE=B;; A|a) MODE=A;; *) echo "MODE must be A or B (got '$MODE')" >&2; exit 1;; esac
+# Held-out eval every N steps (0 => off). Held-out solve-rate is a KEY metric, so eval stays ON
+# under fully-async (Mode B). It does NOT work through the stock rollout path, though: slime's
+# GenerateState is a process singleton whose asyncio.Semaphore binds to the FIRST event loop that
+# acquires it — the background fully-async worker's loop — while eval runs generation on the MAIN
+# loop, which would crash with "Semaphore is bound to a different event loop". We route eval
+# through agentcore_slime_demo.mode_b_eval.generate_rollout (see EVAL_ARGS), which quiesces the
+# worker and rebuilds the singleton on the eval loop so stock eval runs cleanly. NOTE: each eval
+# discards the worker's warm buffer (it re-warms over the next few rollouts), so keep EVAL_INTERVAL
+# well above the re-warm time (default 10 is fine for the smoke; use a larger value for long runs).
+EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
 EVAL_NS="${EVAL_NS:-2}"               # samples per eval prompt
 # Checkpoint policy (disk-saving): we do NOT snapshot mid-training. slime ALWAYS force-saves at
 # the final rollout AND at every epoch boundary (step % (dataset_size/RB) == 0) regardless of
@@ -67,7 +114,6 @@ DATA="${DATA:-$DEMO_DIR/data/mbpp_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/mbpp_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-mbpp}"
 SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_mbpp_async}"
-GPU_ENV=("\"AGENTCORE_GPU_GATE\": \"off\"")   # CPU envs, no GpuPool
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -96,10 +142,21 @@ CKPT_ARGS=(
    --custom-megatron-init-path agentcore_slime_demo.megatron_init.enable_persistent_async_ckpt
 )
 
-# Held-out EVAL every EVAL_INTERVAL steps. slime routes eval through our SAME custom generate
-# (falls back to --custom-generate-function-path) with evaluation=True, so an eval "solve rate"
-# is one full agentic episode per eval prompt. Eval metrics are logged as `eval/<name>` tagged
-# with `eval/step`; metrics.py writes them to a SEPARATE eval CSV.
+# Held-out EVAL. The eval rollout FUNCTION depends on the async MODE:
+#   Mode B (fully-async): the stock rollout path can't run eval (the fully-async worker's event loop
+#     owns slime's GenerateState singleton semaphore, so in-process eval would crash with "Semaphore
+#     is bound to a different event loop"). We route eval through
+#     agentcore_slime_demo.mode_b_eval.generate_rollout, which quiesces the fully-async worker (waits
+#     for its loop thread to fully die), drops the GenerateState singleton so the semaphore rebuilds
+#     on THIS loop, runs slime's stock eval unchanged, then drops the singleton again so the next
+#     training rollout's worker rebuilds it cleanly on the worker loop. (generate_rollout_fully_async
+#     itself raises on evaluation=True, which is exactly why eval needs its own function-path.)
+#   Mode A (1-step-async): no background worker exists, so eval uses slime's stock sync rollout.
+if [ "$MODE" = "B" ]; then
+   EVAL_FN=agentcore_slime_demo.mode_b_eval.generate_rollout
+else
+   EVAL_FN=slime.rollout.sglang_rollout.generate_rollout
+fi
 EVAL_ARGS=()
 if [ "$EVAL_INTERVAL" != "0" ] && [ -f "$EVAL_DATA" ]; then
    EVAL_ARGS=(
@@ -107,6 +164,7 @@ if [ "$EVAL_INTERVAL" != "0" ] && [ -f "$EVAL_DATA" ]; then
       --eval-prompt-data "$EVAL_NAME" "$EVAL_DATA"
       --n-samples-per-eval-prompt "$EVAL_NS"
       --eval-temperature "$TEMP"
+      --eval-function-path "$EVAL_FN"
    )
 fi
 
@@ -122,8 +180,24 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 1024
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
+   # NOTE: the rollout DRIVER (--rollout-function-path) is set by MODE_ARGS below, not here, so it
+   # tracks the A/B async MODE. The custom generate hook is the same for both modes: the worker
+   # (Mode B) and the stock driver (Mode A) both call slime's generate_and_rm_group, which
+   # dispatches to our --custom-generate-function-path, so our token-ids / logprobs / loss-mask /
+   # reward Sample contract is preserved UNCHANGED (reward set on the Sample => no --custom-rm-path).
    --custom-generate-function-path agentcore_slime_demo.generate.generate
 )
+
+# Async MODE driver flags (see the MODE note near the top). Mode B swaps in slime's fully-async
+# rollout: a background worker that keeps a fixed pool of in-flight trajectories (concurrency =
+# sglang_server_concurrency * num_engines = CONC*2) AND up to that many COMPLETED groups queued
+# ahead of the trainer across rollout boundaries. The trainer drains only RB groups/step, so the
+# queue grows deep and samples age => staleness scales with CONC. Mode A omits the override, leaving
+# train_async.py's stock 1-step-async driver (staleness pinned to ~1 step regardless of CONC).
+MODE_ARGS=()
+if [ "$MODE" = "B" ]; then
+   MODE_ARGS=(--rollout-function-path slime.rollout.fully_async_rollout.generate_rollout_fully_async)
+fi
 
 PERF_ARGS=(
    --tensor-model-parallel-size 2
@@ -160,9 +234,13 @@ SGLANG_ARGS=(
    --rollout-num-gpus "$ROLLOUT_GPUS"
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
-   # Cap rollout concurrency. slime gates custom-generate with
-   # Semaphore(sglang_server_concurrency * num_engines). Our custom generate opens an HTTP
-   # session AND a sandbox subprocess per episode, so keep this small.
+   # SANDBOX/EPISODE concurrency S. slime gates custom-generate with
+   # Semaphore(sglang_server_concurrency * num_engines), so with num_engines = ROLLOUT_GPUS /
+   # per-engine = 4/2 = 2, the number of episodes (= concurrent remote sandboxes) in flight is
+   # S = CONC * 2. This is the knob to SWEEP for the sandbox-concurrency ablation
+   # (docs/sandbox-concurrency-ablation.md). Each episode opens an HTTP session AND a remote
+   # sandbox session, so raising it also raises client-side load (asyncio thread pool, boto3
+   # clients) — see the ablation doc's "can the in-process harness handle large C" section.
    --sglang-server-concurrency "${CONC:-4}"
 )
 
@@ -179,8 +257,6 @@ export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
-GPU_ENV_JSON=$(IFS=,; echo "${GPU_ENV[*]}")
-
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM:${DEMO_DIR}:/work/code:/root/slime\",
@@ -189,7 +265,7 @@ RUNTIME_ENV_JSON="{
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
-    ${GPU_ENV_JSON}
+    \"INFER_CONC\": \"${INFER_CONC:-0}\"
   }
 }"
 
@@ -205,6 +281,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    "${CKPT_ARGS[@]}" \
    "${EVAL_ARGS[@]}" \
    "${ROLLOUT_ARGS[@]}" \
+   "${MODE_ARGS[@]}" \
    "${OPTIMIZER_ARGS[@]}" \
    "${GRPO_ARGS[@]}" \
    "${PERF_ARGS[@]}" \

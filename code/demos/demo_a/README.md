@@ -1,4 +1,4 @@
-# Demo A — MBPP · CPU sandbox · our `run_episode` harness
+# Demo A — MBPP · managed serverless AgentCore Runtime sandbox · our `run_episode` harness
 
 **Independently runnable.** This directory owns everything specific to Demo A (its `data/`,
 `ckpt/`, `run.sh`) and needs no sibling demo. It imports the `agentcore_slime_demo` library from
@@ -25,10 +25,14 @@ tests in a sandbox → reading the failure → fixing → repeat** (multi-turn `
 8 GPUs serve the policy.
 
 - **Task:** MBPP (`agentcore_slime_demo/mbpp.py`).
-- **Sandbox:** `SANDBOX=local` → in-container `LocalSandbox`; `SANDBOX=agentcore` → real AWS Code
-  Interpreter microVM (needs `AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION` in the container env).
-- **Harness:** OUR lightweight `run_episode` via `--custom-generate-function-path
-  agentcore_slime_demo.generate.generate` (NOT the Claude Code CLI — that is Demo A2).
+- **Sandbox (default):** `SANDBOX=agentcore-runtime` → a **managed serverless AgentCore Runtime**
+  sandbox (`sandbox_server_agent.py`; requires `AGENTCORE_SANDBOX_RUNTIME_ARN`). Overrides for
+  offline/local use only: `SANDBOX=local` → in-container `LocalSandbox`; `SANDBOX=agentcore` → AWS
+  Code Interpreter microVM. The checker is plain Python/IO so the sandbox Runtime is **CPU-only**.
+- **Harness:** OUR lightweight `run_episode` running **in-process on this box** (via
+  `--custom-generate-function-path agentcore_slime_demo.generate.generate`) — it dials the sandbox
+  Runtime over `invoke_agent_runtime`. NOT the Claude Code CLI, and NOT a separate harness Runtime —
+  that two-Runtime path is Demo A2.
 - **GPU split (8×L40S):** **4 train + 4 inference + 0 env**.
 - **Trainer:** real slime, **async/decoupled** (`train_async.py`, no `--colocate`).
 
@@ -58,15 +62,16 @@ Swap to real AWS microVMs with `SANDBOX=agentcore`.
 
 | var | default | meaning |
 |---|---|---|
+| `MODE` | B | async mode. **B (default) = fully-async**: slime's `generate_rollout_fully_async` background worker with a deep, warm buffer, so staleness grows with `CONC` — the vehicle the sandbox-concurrency ablation needs. **A = 1-step-async** (stock `train_async.py` driver): staleness pinned to ~1 step regardless of `CONC`, kept for the A-vs-B comparison. See `docs/sandbox-concurrency-ablation.md` "Two async modes". |
 | `RB` | 4 | prompts per rollout step |
 | `NS` | 8 | GRPO group size (samples per prompt); `GBS = RB×NS` |
-| `NR` | 100 | num-rollout; **real training steps = NR−1** (fresh ckpt is iter 0) |
+| `NR` | 11 | num-rollout; **real training steps = NR−1** (fresh ckpt is iter 0) ⇒ 10 train + 1 eval (smoke) |
 | `TEMP` | 1.0 | rollout sampling temperature |
-| `CONC` | 4 | sglang-server-concurrency (caps concurrent episodes) |
-| `EVAL_INTERVAL` | 10 | held-out eval every N steps (`0` disables) |
+| `CONC` | 4 | sglang-server-concurrency (caps concurrent episodes; S = `CONC`×2). In Mode B it also sets buffer depth, so raising it raises staleness — the knob the ablation sweeps. |
+| `EVAL_INTERVAL` | 10 | held-out eval every N steps (held-out solve-rate is a key metric). Under the fully-async driver eval is routed through `agentcore_slime_demo.mode_b_eval.generate_rollout`, which quiesces the fully-async worker and rebuilds slime's `GenerateState` semaphore on the eval loop (the stock path would crash with "Semaphore is bound to a different event loop"). Each eval discards the worker's warm buffer, which re-warms over the next few rollouts — use a larger interval for long runs to keep that perturbation small. |
 | `EVAL_NS` | 2 | samples per eval prompt |
 | `SAVE_INTERVAL` | 1000000 | save-only-at-end (see below) |
-| `SANDBOX` | local | `local` or `agentcore` |
+| `SANDBOX` | agentcore-runtime | `agentcore-runtime` (remote Runtime), `agentcore` (Code Interpreter), or `local` (offline) |
 | `CKPT_BASE` | shared torch_dist | base Megatron checkpoint to resume from |
 
 ## Checkpoints (save-only-at-end)
@@ -74,7 +79,7 @@ Swap to real AWS microVMs with `SANDBOX=agentcore`.
 To save disk we do **not** snapshot mid-training. slime force-saves at the final rollout **and at
 every epoch boundary** (`step % (dataset_size/RB) == 0`) regardless of `--save-interval`. So the
 invariant for exactly one checkpoint is **`dataset_size ≥ NR × RB`**: the train set is 500 prompts
-⇒ 125 steps/epoch ≥ 99 real steps, so the **only** checkpoint written lands in `ckpt/`
+⇒ 125 steps/epoch ≥ the 10 real steps (NR=11), so the **only** checkpoint written lands in `ckpt/`
 (`Qwen3-4B_mbpp_async`).
 
 The end-of-training save routes through Megatron's **spawn-based PersistentAsyncCaller** to avoid

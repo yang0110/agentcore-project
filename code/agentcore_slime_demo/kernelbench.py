@@ -9,8 +9,8 @@ it runs today on this box's L40S and inside an AgentCore GPU Runtime instance.
 Each task reuses the proven assert-mode runner (task.py): the reference output and random
 CUDA inputs are built in `test_setup`, and the checks assert the agent's `custom_op`
 matches the reference within tolerance AND ran on a 'cuda' device. Because it is just a
-CodingTask, it flows through the SAME multi-turn harness and the SAME GpuPool gating
-(harness.run_episode(gpu_pool=...)) that lets many CUDA rollouts share few GPUs.
+CodingTask, it flows through the SAME multi-turn harness as the CPU tasks; the checker's
+CUDA exec runs on the remote GPU sandbox Runtime.
 
 Reward is binary (correct + on GPU), matching the exit-code reward primitive used
 everywhere else. Speedup vs the reference is MEASURED and printed by the checker as a
@@ -88,7 +88,7 @@ _TASKS: list[CodingTask] = [
             reference="(A @ B).relu()",
             ref_call="_ = (A @ B).relu()",
         ),
-        max_turns=4,
+        max_turns=3,
         mock_attempts=_mock(
             "import torch\n\ndef custom_op(A, B):\n    # buggy: forces CPU\n    return (A.cpu() @ B.cpu()).relu()\n",
             "import torch\n\ndef custom_op(A, B):\n    return (A.cuda() @ B.cuda()).relu()\n",
@@ -108,7 +108,7 @@ _TASKS: list[CodingTask] = [
             reference="torch.softmax(X, dim=1)",
             ref_call="_ = torch.softmax(X, dim=1)",
         ),
-        max_turns=4,
+        max_turns=3,
         mock_attempts=_mock(
             "import torch\n\ndef custom_op(X):\n    # buggy: CPU\n    Xc = X.cpu()\n    return torch.softmax(Xc, dim=1)\n",
             "import torch\n\ndef custom_op(X):\n    Xg = X.cuda()\n    m = Xg.max(dim=1, keepdim=True).values\n    e = (Xg - m).exp()\n    return e / e.sum(dim=1, keepdim=True)\n",
@@ -128,7 +128,7 @@ _TASKS: list[CodingTask] = [
             reference="torch.nn.functional.gelu(X + b)",
             ref_call="_ = torch.nn.functional.gelu(X + b)",
         ),
-        max_turns=4,
+        max_turns=3,
         mock_attempts=_mock(
             "import torch\n\ndef custom_op(X, b):\n    # buggy: CPU\n    return torch.nn.functional.gelu(X.cpu() + b.cpu())\n",
             "import torch\n\ndef custom_op(X, b):\n    return torch.nn.functional.gelu(X.cuda() + b.cuda())\n",
@@ -244,7 +244,7 @@ def _kb_prompt(problem_id, name, code: str) -> str:
 
 
 def load_kernelbench_hf(level: str = "level_1", limit: int | None = None,
-                        offset: int = 0, max_turns: int = 5) -> list[CodingTask]:
+                        offset: int = 0, max_turns: int = 3) -> list[CodingTask]:
     """Load real KernelBench problems from HuggingFace as GPU CodingTasks.
 
     ``level`` is one of ``level_1`` (100 single ops), ``level_2`` (100 fusions),

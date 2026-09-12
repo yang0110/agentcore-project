@@ -3,9 +3,8 @@
 
 slime logs metrics to stdout (and to wandb/tensorboard if configured), but for the demos we
 want a self-contained, dependency-light record: a CSV you can open anywhere + a PNG of the
-curves that matter. This script reads the raw ray-job log that `run_async.sh` /
-`run_agentcore_mbpp_qwen3_4b.sh` tee to a file and extracts the three metric families slime
-prints, each tagged with the rollout/step id:
+curves that matter. This script reads the raw ray-job log that a demo's `run.sh` tees to a
+file and extracts the three metric families slime prints, each tagged with the rollout/step id:
 
     model.py:918            - step N:    {'train/pg_loss': ..., 'train/grad_norm': ..., ...}
     train_metric_utils.py   - rollout N: {'rollout/raw_reward': ..., 'rollout/advantages': ...}
@@ -13,11 +12,11 @@ prints, each tagged with the rollout/step id:
     rollout_metrics.py:247  - eval N:    {'eval/<name>': <solve rate>, ..., 'eval/step': S}
 
 The train families are merged by id (rollout N is trained as step N) and written to a per-step
-CSV. The `eval` family is a DIFFERENT cadence (we run held-out eval every 10 steps, no gradient)
-so it is written to a SEPARATE eval CSV keyed by `eval/step`. Both CSVs, and a PNG of the key
-curves, come from the one raw log. Pure stdlib for parsing; matplotlib only for --plot.
+CSV. The `eval` family is a DIFFERENT cadence (held-out eval runs every EVAL_INTERVAL steps, no
+gradient) so it is written to a SEPARATE eval CSV keyed by `eval/step`. Both CSVs, and a PNG of the
+key curves, come from the one raw log. Pure stdlib for parsing; matplotlib only for --plot.
 
-    python3 metrics.py train_async_demoB.log --csv metrics.csv --eval-csv eval.csv --plot fig.png
+    python3 metrics.py train.log --csv metrics.csv --eval-csv eval.csv --plot fig.png
 """
 from __future__ import annotations
 

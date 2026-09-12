@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -53,6 +54,20 @@ SYSTEM_PROMPT = (
     "pass (the command exits with code 0). Keep replies terse and prefer taking a tool action "
     "over explaining. When the checks pass, stop."
 )
+
+# Qwen3 turns on chain-of-thought by default, and the AnthropicAdapter renders the chat template
+# with no way to pass enable_thinking=False (unlike Demo A's direct SGLangPolicy, which disables it
+# for codegen). A long <think> trace can eat the whole max_tokens budget before the tool call is
+# emitted → the turn truncates with no tool_use. Qwen3 honors the `/no_think` soft switch in the
+# prompt, so we append it by default (Demos A3/B3 are all Qwen3-4B). Override with
+# MINI_AGENT_NO_THINK=0 for a model that has no such switch.
+_NO_THINK_HINT = "\n\n/no_think"
+
+
+def _system_prompt() -> str:
+    if os.environ.get("MINI_AGENT_NO_THINK", "1").lower() not in ("0", "", "false", "no"):
+        return SYSTEM_PROMPT + _NO_THINK_HINT
+    return SYSTEM_PROMPT
 
 # Anthropic-style tool schemas advertised to the model each turn. The adapter converts these to
 # the tokenizer's chat-template tool schema, so tool-calling is driven by the served policy.
@@ -178,13 +193,14 @@ class MiniClaudeHarness:
         messages: list[dict] = [{"role": "user", "content": prompt}]
         result = MiniAgentResult()
         timeout = aiohttp.ClientTimeout(total=self.request_timeout_sec)
+        system_prompt = _system_prompt()
 
         async with aiohttp.ClientSession(timeout=timeout) as http:
             for turn in range(self.max_turns):
                 body = {
                     "model": model_label,
                     "max_tokens": max_tokens,
-                    "system": SYSTEM_PROMPT,
+                    "system": system_prompt,
                     "messages": messages,
                     "tools": TOOLS,
                 }

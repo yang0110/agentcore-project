@@ -6,10 +6,9 @@ This is the "run it for real" entry point behind the two demo cases (see docs/de
   --profile cpu   Demo A: MBPP coding tasks in an AgentCore Code Interpreter microVM (CPU).
                   The RL default — tool execution is cheap shell/IO; the policy GPUs stay on
                   slime's cluster. Backend from $SANDBOX (agentcore = real AWS, local = offline).
-  --profile gpu   Demo B: KernelBench-style CUDA tasks. The checker only passes on a real GPU,
-                  and every checker exec is routed through GpuPool admission control so many
-                  concurrent episodes share few GPUs (docs/gpu-density.md). Runs on this box's
-                  L40S today; on AWS it is an AgentCore Runtime instance + GPU capacity provider.
+  --profile gpu   Demo B: KernelBench-style CUDA tasks. The checker only passes on a real GPU;
+                  it runs on the remote GPU sandbox Runtime (an AgentCore Runtime instance +
+                  GPU capacity provider), reached via $SANDBOX=agentcore-runtime.
 
 The policy is REAL by default: LocalHFPolicy runs Qwen3-4B on the GPU via transformers and
 returns text + token_ids + logprobs — the exact Completion contract slime training consumes.
@@ -23,7 +22,7 @@ and print its shape — proving each rollout yields real, trainable RL data end-
 Usage:
     python3 code/scripts/e2e_rl.py --profile cpu --limit 3                 # MBPP, real policy, offline
     SANDBOX=agentcore python3 code/scripts/e2e_rl.py --profile cpu --limit 3   # ... on real AWS microVM
-    python3 code/scripts/e2e_rl.py --profile gpu --gpu-concurrency 8       # KernelBench on real L40S
+    SANDBOX=agentcore-runtime python3 code/scripts/e2e_rl.py --profile gpu  # KernelBench on remote GPU Runtime
     python3 code/scripts/e2e_rl.py --profile cpu --policy mock             # model-free dry run
 """
 
@@ -63,21 +62,14 @@ def build_policy(kind: str, model: str, device: str):
     return LocalHFPolicy(model, device=device, enable_thinking=False)
 
 
-def make_pool(profile: str, args):
-    if profile != "gpu":
-        return None
-    from agentcore_slime_demo.gpu_pool import GpuPool
-    return GpuPool(max_concurrent_gpu=args.gpu_concurrency, per_env_mem_mib=args.per_env_mem_mib)
-
-
-async def run_one(task: CodingTask, shared_policy, kind: str, sandbox_kind: str, pool) -> dict:
+async def run_one(task: CodingTask, shared_policy, kind: str, sandbox_kind: str) -> dict:
     from agentcore_slime_demo.policy import MockPolicy
 
     policy = shared_policy if shared_policy is not None else MockPolicy(task.mock_attempts)
     sampling = {"max_new_tokens": 1024, "temperature": 0.0 if kind == "real" else 1.0}
     t0 = time.perf_counter()
     async with make_sandbox(sandbox_kind) as sb:
-        traj = await run_episode(policy, sb, task, sampling_params=sampling, gpu_pool=pool)
+        traj = await run_episode(policy, sb, task, sampling_params=sampling)
         sid = sb.sandbox_id
     dt = time.perf_counter() - t0
 
@@ -106,8 +98,6 @@ async def main() -> int:
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--limit", type=int, default=3)
-    ap.add_argument("--gpu-concurrency", type=int, default=8)
-    ap.add_argument("--per-env-mem-mib", type=int, default=2048)
     args = ap.parse_args()
 
     sandbox_kind = os.environ.get("SANDBOX", "local").lower()
@@ -122,13 +112,10 @@ async def main() -> int:
     shared_policy = build_policy(args.policy, args.model, args.device)
     if shared_policy is not None:
         print(f"policy ready: {type(shared_policy).__name__} on {args.device}")
-    pool = make_pool(args.profile, args)
-    if pool is not None:
-        print(f"GPU pool: {pool.describe()}")
 
     results = []
     for task in tasks:
-        results.append(await run_one(task, shared_policy, args.policy, sandbox_kind, pool))
+        results.append(await run_one(task, shared_policy, args.policy, sandbox_kind))
 
     solved = sum(r["solved"] for r in results)
     tok = sum(r["tokens"] for r in results)
@@ -137,10 +124,6 @@ async def main() -> int:
     print(f"SUMMARY  solved {solved}/{len(results)}  |  avg reward "
           f"{sum(r['reward'] for r in results) / max(len(results), 1):.2f}"
           + (f"  |  training tokens {tok} (trainable {trainable})" if tok else ""))
-    if pool is not None:
-        print(f"GPU pool stats: admitted={pool.stats.admitted} "
-              f"peak_concurrent={pool.stats.peak_concurrent} "
-              f"per_device={dict(pool.stats.per_device_admits)}")
     print("=" * 78)
     return 0 if solved == len(results) else 1
 

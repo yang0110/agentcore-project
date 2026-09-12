@@ -1,4 +1,4 @@
-# Demo B — KernelBench (GPU sandbox) + our run_episode harness
+# Demo B — KernelBench (remote GPU sandbox Runtime) + our run_episode harness
 
 **Independently runnable.** This directory owns its `data/`, runner, `metrics.py`, and dataset
 builder, and needs no sibling demo. The `agentcore_slime_demo` library is imported from the
@@ -14,18 +14,21 @@ Each problem gives a reference `Model` (nn.Module) + `get_inputs()`/`get_init_in
 must write an equivalent **`ModelNew`** that runs on CUDA and matches the reference output. A **GPU**
 checker runs it (`python3 run_checks.py` rebuilds the reference on the GPU with matched seeds,
 asserts `allclose` + output on a `cuda` device, and reports a speedup), reads the failure, fixes it.
-Our lightweight `run_episode`
-(`agentcore_slime_demo/harness.py`) drives the multi-turn loop. Because the checker needs CUDA,
-the sandbox exec is gated onto a process-wide **`GpuPool`** (`gpu_pool.py`) that dense-packs many
-bursty env checkers onto a couple of physical GPUs.
+Our lightweight `run_episode` (`agentcore_slime_demo/harness.py`) drives the multi-turn loop
+**in-process on this box**, but the checker's CUDA does **not** run here. Because the checker needs
+a GPU, the **sandbox is its own remote GPU-backed AgentCore Runtime #2** (`sandbox_server_agent.py`
+on a **g6** capacity-provider instance): `write_file` / `exec` / `read_file` — including
+`python3 run_checks.py` — run **there**, reached over `invoke_agent_runtime`
+(`SANDBOX=agentcore-runtime` → `AgentCoreRuntimeSandbox`). This is the decoupled-sandbox path
+(harness in-process, sandbox remote); no local GPUs are reserved for the checker.
 
-**GPU split (8×L40S): 4 train + 2 inference + 2 env.** slime is handed all 8 GPUs for ray but
-reserves only 6 (`ACTOR_GPUS`=4 + `ROLLOUT_GPUS`=2); the `GpuPool` leases the remaining physical
-GPUs **6,7** to the env checkers directly.
+**GPU split (8×L40S): 4 train + 4 inference + 0 env.** All 8 GPUs go to slime
+(`ACTOR_GPUS`=4 + `ROLLOUT_GPUS`=4); the KernelBench checker's GPU is on the **remote** sandbox
+Runtime #2 (the g6), so no local GPUs are held back.
 
-Same harness/policy/training path as Demo A — differs only in the sandbox (CUDA inside) and task
-(KernelBench vs MBPP). This is the OUR-harness variant; **Demo B2** is the Claude Code (Docker)
-variant of the same task.
+Same harness/policy/training path as Demo A — differs only in the sandbox (remote GPU Runtime) and
+task (KernelBench vs MBPP). This is the OUR-harness variant; **Demo B3** swaps in the mini harness on
+its own harness Runtime, and **Demo B4** packs several sandboxes onto one g6 via a Ray GPU-sharing farm.
 
 ## Build the dataset
 
@@ -45,38 +48,37 @@ minimal offline check.)
 
 ## Run
 
+First deploy the remote GPU sandbox Runtime #2 (a g6) and prepare its torch volume once
+(`code/deploy/deploy_two_runtime.py all`, which runs the one-time `{"mode":"prepare"}` invoke that
+installs the CUDA `torch` stack onto the persistent `models` volume — without it the checker can't
+import torch and every reward is 0), then export its ARN:
+
 ```bash
-docker exec agentcore_p4 bash -lc 'cd /work && bash code/demos/demo_b/run.sh'
+docker exec agentcore_p4 bash -lc \
+  'cd /work && AWS_REGION=us-west-2 \
+     AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/acs_sandbox_gpu-... \
+     NR=11 EVAL_INTERVAL=10 \
+     bash code/demos/demo_b/run.sh'
 ```
 
-`SANDBOX=agentcore` swaps the env to a real AWS GPU Runtime instance (needs
-`AWS_BEARER_TOKEN_BEDROCK` + `AWS_REGION` in the container env; the managed GPU Runtime container
-is still the pending piece — today the GPU path runs on this box's L40S).
-
-### GpuPool knobs (Demo B only)
-
-| var | default | meaning |
-|---|---|---|
-| `GPU_POOL_DEVICES` | `6,7` | physical GPUs leased to the env checkers |
-| `GPU_POOL_CONCURRENCY` | `16` | env checkers allowed on the GPUs at once (semaphore) |
-| `GPU_POOL_PER_ENV_MIB` | `2048` | per-env memory cap; concurrency × this must fit the pool |
-
-~100 concurrent envs can share just 2 GPUs because GPU use is *bursty* and *memory*-bound — the
-pool admits a few checkers at a time and queues the rest.
+`SANDBOX` defaults to `agentcore-runtime` (the remote GPU sandbox Runtime #2). `NR=11
+EVAL_INTERVAL=10` is a 10-train + 1-eval smoke. The container needs `AWS_BEARER_TOKEN_BEDROCK` +
+`AWS_REGION`. No local GPUs are reserved for the checker — its GPU is the remote g6's, so the only
+sandbox knob is `AGENTCORE_SANDBOX_RUNTIME_ARN`.
 
 ### Size / save-only-at-end note
 
 The train pool is now **100 prompts** (level_1), so real `RB`/`NR` work. Keep `NR × RB ≤ 100` so
 one epoch spans the whole run and the **only** checkpoint is the final one: slime force-saves at
 every epoch boundary (`step % (dataset_size/RB) == 0`), so with `RB=4` the epoch is `100/4 = 25`
-steps and the default `NR=20` (19 real steps) never crosses it. The runner defaults to
-`RB=4 NS=8 NR=20`, `EVAL_INTERVAL=5 EVAL_NS=2` — all overridable; just keep `NR × RB ≤ 100`.
+steps and the default `NR=11` (10 real steps) never crosses it. The runner defaults to
+`RB=4 NS=8 NR=11`, `EVAL_INTERVAL=10 EVAL_NS=2` — all overridable; just keep `NR × RB ≤ 100`.
 
 ## Tunables
 
 `RB` (prompts/step), `NS` (GRPO group size), `NR` (num-rollout; real steps = NR−1; keep NR×RB ≤ 100),
-`TEMP`, `CONC` (sglang concurrency), `EVAL_INTERVAL`, `EVAL_NS`, `SAVE`, `CKPT_BASE`, plus the GpuPool
-knobs above.
+`TEMP`, `CONC` (sglang concurrency), `EVAL_INTERVAL`, `EVAL_NS`, `SAVE`, `CKPT_BASE`, and
+`AGENTCORE_SANDBOX_RUNTIME_ARN` (the remote GPU sandbox Runtime #2).
 
 ## Checkpoints
 

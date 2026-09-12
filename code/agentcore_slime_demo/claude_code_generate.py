@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -44,43 +45,84 @@ logger = logging.getLogger(__name__)
 
 _WORKDIR = os.environ.get("AGENTCORE_WORKDIR", "/workspace")
 
+# One SHARED adapter per (bind host, port) for the whole rollout — the same pattern the two-Runtime
+# hook (agentcore_runtime_generate) uses. generate() runs per-sample CONCURRENTLY, so binding a NEW
+# adapter on a fixed port each call collides ([Errno 98]); binding on an ephemeral port (0) breaks
+# the sandbox dial-back, which must hit a PINNED port (ADAPTER_PORT) so a single narrow security-
+# group ingress rule stays stable (the sandbox microVM reaches the proxy over the private VPC, no
+# public port). The AnthropicAdapter already multiplexes concurrent episodes by session_id (the
+# Bearer session id), so we construct + start it ONCE and every episode opens/finishes/drops its
+# own session on it.
+_SHARED_ADAPTER: dict[tuple, tuple] = {}
+_SHARED_LOCK = threading.Lock()
+
+
+def _shared_adapter(args, bind_host: str, port: int):
+    """Return (adapter, handle) for (bind_host, port), constructing + starting it once."""
+    from slime.agent.adapters import AnthropicAdapter
+    from slime.agent.aiohttp_threaded import run_app_in_thread
+    from slime.utils.processing_utils import load_tokenizer
+
+    key = (bind_host, port)
+    with _SHARED_LOCK:
+        hit = _SHARED_ADAPTER.get(key)
+        if hit is not None:
+            return hit
+        tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
+        adapter = AnthropicAdapter(
+            tokenizer=tokenizer,
+            sglang_url=f"http://{args.sglang_router_ip}:{args.sglang_router_port}",
+            tool_parser=getattr(args, "sglang_tool_call_parser", None) or None,
+            reasoning_parser=getattr(args, "sglang_reasoning_parser", None) or None,
+        )
+        handle = run_app_in_thread(
+            adapter.app, host=bind_host, port=port, thread_name="anthropic-adapter-cli",
+        )
+        _SHARED_ADAPTER[key] = (adapter, handle)
+        return adapter, handle
+
 _AGENT_PROMPT = (
     "Read PROBLEM.md in this directory. Write a file named solution.py that satisfies it. "
     "Then run `python3 run_checks.py` and iterate until it exits 0 (all checks pass)."
 )
 
 
-def _maybe_gpu_gate(sb):
-    """Optionally wrap the sandbox so GPU-touching exec calls route through a GpuPool.
-
-    Enabled by AGENTCORE_GPU_GATE (off | heuristic | all), default 'off'. On a dense GPU
-    Runtime instance holding many concurrent rollouts, set 'heuristic' so Claude Code's
-    Bash tool calls that touch CUDA get admission-controlled + a device/memory lease, or
-    'all' to gate every command. The pool is sized from GPU_POOL_* env (gpu_pool.from_env).
-    Off by default so the CPU microVM path (Code Interpreter) is unaffected. See
-    docs/gpu-density.md. Install/toolchain commands run BEFORE this wrap, so they are never
-    gated (they are one-time and not GPU work)."""
-    mode = os.environ.get("AGENTCORE_GPU_GATE", "off").lower()
-    if mode == "off":
-        return sb
-    from .gpu_pool import GpuGatedSandbox, GpuPool
-
-    pool = GpuPool.from_env()
-    logger.info("[claude_code_generate] GPU gating=%s | %s", mode, pool.describe())
-    # Also force-gate the reward checker (imports torch internally, invisible to heuristic).
-    return GpuGatedSandbox(sb, pool, gate_all=(mode == "all"), always_gate=("run_checks.py",))
-
-
 @asynccontextmanager
 async def _boot_sandbox(harness):
-    """Open an AgentCore sandbox and install the Claude Code toolchain into it."""
-    from .sandbox import AgentCoreSandbox
+    """Open the sandbox that will host the Claude Code CLI and (unless prebaked) install it.
 
-    sb = AgentCoreSandbox(region=os.environ.get("AGENTCORE_REGION"), workdir=_WORKDIR)
+    Two backends, selected by SANDBOX:
+      * "agentcore" / "aws" (default) — the managed Code Interpreter (AgentCoreSandbox). The
+        toolchain (Node 22 + claude CLI) is streamed in at runtime via harness.install_cli.
+      * "agentcore-runtime" / "runtime" — the sandbox as its OWN custom AgentCore Runtime
+        (AgentCoreRuntimeSandbox), driven over invoke_agent_runtime. This is the A2/B2 target:
+        the custom image (demo_a2/demo_b2 Dockerfile) BAKES node+claude in, so install_cli is
+        skipped — and MUST be, because that path streams the multi-MB node/claude tarballs as
+        text through write_file, which corrupts binaries over the runtime transport. The ARN
+        comes from AGENTCORE_SANDBOX_RUNTIME_ARN.
+    """
+    kind = os.environ.get("SANDBOX", "agentcore").lower()
+    if kind in ("agentcore-runtime", "runtime"):
+        from .agentcore_runtime_sandbox import AgentCoreRuntimeSandbox
+
+        sb = AgentCoreRuntimeSandbox(
+            runtime_arn=os.environ.get("AGENTCORE_SANDBOX_RUNTIME_ARN"),
+            region=os.environ.get("AGENTCORE_REGION"),
+            workdir=_WORKDIR,
+        )
+        prebaked = True   # node+claude baked into the custom image; never stream them in
+    else:
+        from .sandbox import AgentCoreSandbox
+
+        sb = AgentCoreSandbox(region=os.environ.get("AGENTCORE_REGION"), workdir=_WORKDIR)
+        # Allow forcing the prebaked path even on Code Interpreter (rare; e.g. a prewarmed image).
+        prebaked = os.environ.get("AGENTCORE_CLI_PREBAKED") == "1"
+
     await sb.__aenter__()
     try:
-        await harness.install_cli(sb)   # Node 22 + claude CLI from host tarballs (never gated)
-        yield _maybe_gpu_gate(sb)       # gate GPU exec calls on a dense GPU instance
+        if not prebaked:
+            await harness.install_cli(sb)   # Node 22 + claude CLI from host tarballs
+        yield sb
     finally:
         await sb.__aexit__(None, None, None)
 
@@ -100,10 +142,7 @@ async def generate(args, base_sample, sampling_params, evaluation: bool = False)
     """Per-sample rollout using the real Claude Code harness. Returns list[Sample]."""
     # Lazy imports so this module loads without slime present; the offline demo never
     # touches this path.
-    from slime.agent.adapters import AnthropicAdapter
-    from slime.agent.aiohttp_threaded import run_app_in_thread
     from slime.agent.harness import ClaudeCodeHarness
-    from slime.utils.processing_utils import load_tokenizer
 
     from .generate import _task_from_sample
 
@@ -114,18 +153,13 @@ async def generate(args, base_sample, sampling_params, evaluation: bool = False)
     if not adapter_public_host:
         raise RuntimeError("ADAPTER_PUBLIC_HOST not set (see demo-plan.md §3).")
 
-    tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
-    adapter = AnthropicAdapter(
-        tokenizer=tokenizer,
-        sglang_url=f"http://{args.sglang_router_ip}:{args.sglang_router_port}",
-        tool_parser=getattr(args, "sglang_tool_call_parser", None) or None,
-        reasoning_parser=getattr(args, "sglang_reasoning_parser", None) or None,
-    )
-    handle = run_app_in_thread(
-        adapter.app, host=os.environ.get("ADAPTER_BIND_HOST", "0.0.0.0"),
-        # 0 => ephemeral: generate() runs per-sample concurrently, so a fixed port collides
-        # ([Errno 98]). adapter_url below uses the real handle.port.
-        port=int(os.environ.get("ADAPTER_PORT", "0")), thread_name="anthropic-adapter",
+    # ONE shared adapter on a PINNED port for the whole rollout (see _shared_adapter). The sandbox
+    # microVM dials this port back over the SG-gated private VPC, so it must be stable across every
+    # concurrent episode — an ephemeral port would break the single narrow ingress rule.
+    adapter, handle = _shared_adapter(
+        args,
+        os.environ.get("ADAPTER_BIND_HOST", "0.0.0.0"),
+        int(os.environ.get("ADAPTER_PORT", "18021")),
     )
     adapter_url = f"http://{adapter_public_host}:{handle.port}"
 

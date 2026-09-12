@@ -205,110 +205,6 @@ def test_error_classifier():
     assert not is_recoverable(FatalSandboxError("bad config"))
 
 
-def test_gpu_pool_memory_safety_math():
-    # The static check must catch overcommit: 8 concurrent x 8 GiB on 2x 16 GiB GPUs
-    # is 4/device x 8 GiB = 32 GiB/GPU > 16 GiB -> must NOT "fit".
-    from agentcore_slime_demo.gpu_pool import GpuPool
-    over = GpuPool(num_gpus=2, gpu_mem_mib=16384, max_concurrent_gpu=8, per_env_mem_mib=8192)
-    assert over.max_leases_per_device() == 4
-    assert not over.memory_safety()["fits"]
-    # Same GPUs, modest cap -> fits with headroom.
-    ok = GpuPool(num_gpus=2, gpu_mem_mib=16384, max_concurrent_gpu=8, per_env_mem_mib=1024)
-    assert ok.memory_safety()["fits"]
-    assert 0.0 < ok.mem_fraction <= 1.0
-
-
-def test_gpu_pool_never_exceeds_gate_and_spreads_devices():
-    # Many envs, small gate: peak concurrent GPU workers must never exceed the gate, and
-    # work must spread across all devices. Pure scheduling — no torch/CUDA needed.
-    from agentcore_slime_demo.gpu_pool import GpuPool
-
-    pool = GpuPool(num_gpus=4, gpu_mem_mib=46068, max_concurrent_gpu=6, per_env_mem_mib=1024)
-
-    async def worker():
-        async with pool.slot() as lease:
-            await asyncio.sleep(0.01)
-            assert lease.env["CUDA_VISIBLE_DEVICES"] == str(lease.device)
-            assert "ENV_GPU_MEM_FRACTION" in lease.env
-
-    async def drive():
-        await asyncio.gather(*(worker() for _ in range(50)))
-
-    asyncio.run(drive())
-    assert pool.stats.admitted == 50
-    assert pool.stats.peak_concurrent <= 6            # gate honoured
-    assert set(pool.stats.per_device_admits) == {0, 1, 2, 3}   # all devices used
-
-
-def test_gpu_pool_leases_only_reserved_physical_devices():
-    # Demo B split: trainer + SGLang own physical GPUs 0-5; envs may use ONLY 6,7. The pool
-    # must lease exactly those physical ids (never 0-5) and still honour the gate + spread.
-    from agentcore_slime_demo.gpu_pool import GpuPool
-
-    pool = GpuPool(devices=[6, 7], gpu_mem_mib=46068, max_concurrent_gpu=8, per_env_mem_mib=2048)
-    assert pool.num_gpus == 2
-
-    seen = set()
-
-    async def worker():
-        async with pool.slot() as lease:
-            await asyncio.sleep(0.01)
-            assert lease.device in (6, 7)
-            assert lease.env["CUDA_VISIBLE_DEVICES"] in ("6", "7")
-            seen.add(lease.device)
-
-    async def drive():
-        await asyncio.gather(*(worker() for _ in range(40)))
-
-    asyncio.run(drive())
-    assert pool.stats.admitted == 40
-    assert pool.stats.peak_concurrent <= 8
-    assert seen == {6, 7}                                  # both reserved GPUs used
-    assert set(pool.stats.per_device_admits) == {6, 7}     # stats keyed by physical id
-
-
-def test_gpu_gated_sandbox_gates_only_gpu_commands():
-    # The wrapper must (a) route GPU commands through the pool and inject the lease env,
-    # (b) let non-GPU commands pass straight through ungated. Uses LocalSandbox + a
-    # command that echoes CUDA_VISIBLE_DEVICES so we can see the lease landed.
-    from agentcore_slime_demo.gpu_pool import GpuGatedSandbox, GpuPool
-
-    pool = GpuPool(num_gpus=2, gpu_mem_mib=46068, max_concurrent_gpu=2, per_env_mem_mib=1024)
-
-    async def run():
-        async with LocalSandbox() as inner:
-            sb = GpuGatedSandbox(inner, pool)   # heuristic mode
-            # GPU-looking command -> gated -> lease pins the device the pool assigned (0 or 1),
-            # overriding any ambient CUDA_VISIBLE_DEVICES on the host.
-            code, out, _ = await sb.exec("echo cuda device=$CUDA_VISIBLE_DEVICES")
-            assert code == 0
-            assert out.strip().split("device=")[1].strip() in {"0", "1"}
-            # Plain command -> not gated (no pool admission).
-            await sb.exec("echo plain hello")
-        return pool.stats.admitted
-
-    admitted = asyncio.run(run())
-    assert admitted == 1   # exactly the one GPU command went through the pool
-
-
-def test_run_episode_with_gpu_pool_still_solves():
-    # Wiring check: passing a gpu_pool routes the checker exec through admission control
-    # while the multi-turn episode still solves. Works without CUDA (LocalSandbox); the
-    # CPU-repair task's checker is CPU, but gate_all forces it through the pool anyway.
-    from agentcore_slime_demo.gpu_pool import GpuPool
-
-    task = load_tasks(TASKS)[0]
-    pool = GpuPool(num_gpus=2, gpu_mem_mib=46068, max_concurrent_gpu=4, per_env_mem_mib=1024)
-
-    async def run():
-        async with LocalSandbox() as sb:
-            return await run_episode(MockPolicy(task.mock_attempts), sb, task, gpu_pool=pool)
-
-    traj = asyncio.run(run())
-    assert traj.solved and traj.reward == 1.0
-    assert pool.stats.admitted == traj.num_turns   # one gated checker exec per turn
-
-
 def _skip(msg):
     try:
         import pytest  # type: ignore
@@ -386,10 +282,6 @@ if __name__ == "__main__":
     test_profiles_describe_two_demo_cases()
     test_gpu_task_needs_real_cuda_inside_sandbox()
     test_error_classifier()
-    test_gpu_pool_memory_safety_math()
-    test_gpu_pool_never_exceeds_gate_and_spreads_devices()
-    test_gpu_gated_sandbox_gates_only_gpu_commands()
-    test_run_episode_with_gpu_pool_still_solves()
     test_mbpp_loads_and_solves_offline()
     test_kernelbench_tasks_need_real_cuda()
     test_assert_mode_runner_distinguishes_pass_fail()

@@ -23,34 +23,6 @@ from .policy import SGLangPolicy
 from .sandbox import make_sandbox
 from .task import CodingTask
 
-# One GpuPool per rollout-worker PROCESS, shared by every concurrent episode that worker
-# runs. This is the whole point: the pool's semaphore is what lets ~100 in-flight envs
-# share a small set of GPUs (Demo B: physical 6,7) without OOM. A per-episode pool would
-# defeat the shared admission gate, so we build it once and reuse it. Disabled (None) unless
-# AGENTCORE_GPU_GATE requests it — Demo A's CPU envs never touch a GPU.
-_GPU_POOL = None
-_GPU_POOL_INIT = False
-
-
-def _maybe_gpu_pool():
-    """Return the process-wide GpuPool if GPU gating is enabled, else None.
-
-    AGENTCORE_GPU_GATE ∈ {off (default), heuristic, all}. `all` gates every checker exec
-    (right for KernelBench, whose `python3 run_checks.py` imports torch internally so the
-    command text alone doesn't reveal GPU use); `heuristic` gates by command inspection.
-    Device set + concurrency come from GpuPool.from_env (GPU_POOL_DEVICES / _CONCURRENCY /
-    _PER_ENV_MIB)."""
-    global _GPU_POOL, _GPU_POOL_INIT
-    if _GPU_POOL_INIT:
-        return _GPU_POOL
-    _GPU_POOL_INIT = True
-    if os.environ.get("AGENTCORE_GPU_GATE", "off").lower() in ("off", "", "0", "false"):
-        _GPU_POOL = None
-    else:
-        from .gpu_pool import GpuPool
-        _GPU_POOL = GpuPool.from_env()
-    return _GPU_POOL
-
 
 def build_token_stream(
     traj: Trajectory, tokenizer
@@ -136,7 +108,17 @@ def build_token_stream(
 
 
 async def generate(args, sample, sampling_params, evaluation: bool = False):
-    """slime per-sample rollout. Returns list[Sample]."""
+    """slime per-sample rollout. Returns a single Sample.
+
+    We flatten the whole multi-turn episode into ONE trainable Sample (see
+    build_token_stream), so we return a bare Sample — not a 1-element list. This matters:
+    slime's dispatch (generate_and_rm) treats a LIST return as the "fan-out" case and hands
+    back list[list[Sample]] from generate_and_rm_group. The stock rollout path tolerates that
+    nesting everywhere via `isinstance(group[0], list)` guards, but the fully-async path
+    (slime.rollout.fully_async_rollout, used by demo_a's Mode B ablation) does NOT guard its
+    sort key and crashes on the nested shape. Returning a bare Sample keeps us on slime's
+    primary (non-fan-out) shape, which BOTH the stock and fully-async paths handle. Behavior
+    is identical for the stock demos (one flattened sample per episode either way)."""
     from slime.utils.types import Sample  # lazy
 
     task = _task_from_sample(sample)
@@ -150,9 +132,8 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     sandbox = make_sandbox(os.environ.get("SANDBOX", "agentcore"),
                            region=os.environ.get("AGENTCORE_REGION"))
 
-    gpu_pool = _maybe_gpu_pool()  # None for Demo A (CPU envs); shared pool for Demo B
     async with sandbox as sb:
-        traj = await run_episode(policy, sb, task, sampling_params, gpu_pool=gpu_pool)
+        traj = await run_episode(policy, sb, task, sampling_params)
 
     tokens, response_length, loss_mask, rollout_log_probs = build_token_stream(
         traj, policy.tokenizer
@@ -176,7 +157,9 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
         "num_turns": traj.num_turns,
         "sandbox_id": sb.sandbox_id,
     }
-    return [out]
+    # Bare Sample (NOT [out]) — see the docstring: keeps us on slime's non-fan-out shape so the
+    # fully-async rollout path's sort key doesn't choke on list[list[Sample]] nesting.
+    return out
 
 
 def _task_from_sample(sample) -> CodingTask:

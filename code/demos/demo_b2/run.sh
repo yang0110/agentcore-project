@@ -17,11 +17,11 @@
 # `deploy_two_runtime.py all`). This demo drives agentcore_slime_demo.agentcore_runtime_generate.
 # generate (SAME hook as B3), so the harness Runtime #1 dials the AnthropicAdapter proxy back over
 # the private VPC (SG-gated, no public port). The env-checker GPU is REMOTE (Runtime #2), NOT local:
-# no local GpuPool here, this box runs just train + inference. (The old in-sandbox-CLI shortcut that
+# no local env GPUs here, this box runs just train + inference. (The old in-sandbox-CLI shortcut that
 # used claude_code_generate.generate has been replaced by this two-Runtime path.)
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
-# runs range(1, NR) = (NR-1) real training steps. NR=20 => 10 train (SMOKE; no more needed).
+# runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train (SMOKE; no more needed).
 set -euo pipefail
 
 SANDBOX="${SANDBOX:-agentcore-runtime}"   # sandbox = its OWN custom g6 AgentCore Runtime (hosts the CLI)
@@ -30,7 +30,7 @@ SANDBOX="${SANDBOX:-agentcore-runtime}"   # sandbox = its OWN custom g6 AgentCor
 # Build with build_dataset.py --dataset kernelbench --level level_1 --limit 100 (train) and
 # --level level_2 --limit 20 (eval). This replaced the old 3-op smoke stub, so real RB/NR now work.
 # Save-only-at-end holds while dataset_size (100) >= NR * RB: slime force-saves at every epoch boundary
-# (step % (dataset_size/RB) == 0), so with RB=4 the epoch is 25 steps and NR=20 (19 real) never crosses it.
+# (step % (dataset_size/RB) == 0), so with RB=4 the epoch is 25 steps and NR=11 (10 real) never crosses it.
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
 NR="${NR:-11}"         # num-rollout; real training steps = NR-1 => 10 train (SMOKE; no more needed). Keep NR*RB <= 100.
@@ -51,7 +51,7 @@ EVAL_NAME="${EVAL_NAME:-kernelbench}"
 SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_cc_async}"
 
 # GPU split: 4 train + 4 inference + 0 env. The KernelBench checker's GPU is REMOTE (on the sandbox
-# g6 Runtime), so no local GpuPool and no reserved env GPUs here.
+# g6 Runtime), so no reserved env GPUs here.
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 

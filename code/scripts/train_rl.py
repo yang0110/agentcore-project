@@ -57,19 +57,14 @@ def load_tasks(profile: str, n: int) -> list[CodingTask]:
     return pool
 
 
-async def reward_for(task: CodingTask, code: str | None, pool_gate) -> float:
+async def reward_for(task: CodingTask, code: str | None) -> float:
     """Binary verifiable reward: 1.0 iff the checker passes on the generated code."""
     if not code:
         return 0.0
     async with LocalSandbox() as sb:
-        if pool_gate is not None:
-            from agentcore_slime_demo.gpu_pool import GpuGatedSandbox
-            sb2 = GpuGatedSandbox(sb, pool_gate, gate_all=True)
-        else:
-            sb2 = sb
-        await sb2.write_file("run_checks.py", task.runner_source())
-        await sb2.write_file("solution.py", code)
-        code_exit, _, _ = await sb2.exec("python3 run_checks.py", timeout=60)
+        await sb.write_file("run_checks.py", task.runner_source())
+        await sb.write_file("solution.py", code)
+        code_exit, _, _ = await sb.exec("python3 run_checks.py", timeout=60)
     return 1.0 if code_exit == 0 else 0.0
 
 
@@ -98,11 +93,6 @@ class GRPOTrainer:
         self.opt = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad], lr=lr
         )
-        # GPU pool for the GPU profile so many CUDA rollouts share the device safely.
-        self.pool = None
-        if profile == "gpu":
-            from agentcore_slime_demo.gpu_pool import GpuPool
-            self.pool = GpuPool(max_concurrent_gpu=8, per_env_mem_mib=2048)
 
     def _prompt_text(self, task: CodingTask) -> str:
         msgs = [{"role": "system", "content": task.system_prompt()},
@@ -170,7 +160,7 @@ class GRPOTrainer:
         async def score(task, s):
             async with sem:
                 code = CodingTask.extract_code(s["text"])
-                s["reward"] = await reward_for(task, code, self.pool)
+                s["reward"] = await reward_for(task, code)
 
         await asyncio.gather(*(score(t, s) for t, ss in groups for s in ss))
         return groups

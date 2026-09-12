@@ -162,8 +162,8 @@ def build_sandbox_mcp(sb, workdir: str) -> FastMCP:
 ```
 
 > The tool set intentionally mirrors the `Sandbox` protocol (`exec`/`write_file`/`read_file`,
-> `sandbox.py:49-54`). For B2, wrap `sb` in `GpuGatedSandbox` *before* handing it to
-> `build_sandbox_mcp` so the `bash` tool's CUDA work is still admission-controlled by GpuPool.
+> `sandbox.py:49-54`). For B2, the `bash` tool's CUDA work runs on the remote GPU sandbox
+> Runtime (`AgentCoreRuntimeSandbox`), so it needs no local GPU handling here.
 
 ### 3.2 Host-side launcher — replaces `harness.run(sb, …)`
 
@@ -207,7 +207,6 @@ async def generate(args, base_sample, sampling_params, evaluation=False):
     # ... build AnthropicAdapter + run_app_in_thread, open_session (identical to today) ...
 
     async with AgentCoreSandbox(region=..., workdir=_WORKDIR) as sb:   # NO install_cli
-        sb = _maybe_gpu_gate(sb)                       # B2: GpuPool wrap
         await _prepare_workspace(sb, task)             # PROBLEM.md, run_checks.py IN the sandbox
 
         mcp = build_sandbox_mcp(sb, _WORKDIR)
@@ -261,45 +260,34 @@ Wire it in `run.sh` with
 
 ---
 
-## 6. B2 / B3 sandbox = a real AgentCore GPU Runtime instance (not the local box)
+## 6. B / B2 / B3 sandbox = a real AgentCore GPU Runtime instance (not the local box)
 
-**Current reality (stand-in):** Demo B / B2 / B3 run the GPU sandbox on **this box's own L40S** —
-`GpuPool` pins the env checkers to *local* physical GPUs **6,7**, and slime uses the other 6 (4
-train + 2 infer). This proves the GpuPool dense-packing mechanism but the sandbox is **not**
-AgentCore — it's a local process on the trainer box.
+**Current reality:** Demo B / B2 / B3 run the GPU sandbox as its **own remote AgentCore GPU
+Runtime instance** (`AgentCoreRuntimeSandbox`, `SANDBOX=agentcore-runtime`) — a capacity-provider
+EC2 GPU (a `g6`) launched by AgentCore. The checker's CUDA work (`python3 run_checks.py`) runs on
+that **remote managed instance**, reached over `invoke_agent_runtime`, so **no** local GPUs are
+held back for env checkers. slime runs **4 train + 4 infer** on all 8 local GPUs (like A/A2).
 
-**Target for B2 and B3:** the GPU sandbox must be a **real AgentCore GPU Runtime instance** — a
-capacity-provider EC2 GPU launched by AgentCore (the same path use cases 08/09 ran end-to-end on a
-`g6.xlarge` / NVIDIA L4). The checker's CUDA work then runs on that **remote managed instance**,
-not on the trainer box. Wiring comes from `agentcore-usecases/common/gpu_deploy.py`
-(`capacity-provider` → `runtime-on-cp` → `invoke`), which `AgentCoreSandbox` does **not** target
-today (it only speaks the Code Interpreter client — `sandbox.py:149`). That backend is the piece to
-build.
+### What running the sandbox off-box gives us
 
-### What moving the sandbox off-box changes
-
-- **GPU accounting flips back to 4+4.** Once the sandbox lives on a *separate* AgentCore GPU
-  instance, the trainer box no longer reserves GPUs 6,7 for envs → slime can run **4 train + 4
-  infer** on all 8 local GPUs (like A/A2), and **GpuPool on the local box goes away** (GPU
-  admission control, if still needed, lives on the remote instance / is handled by AgentCore
-  session isolation). The "4 + 2 + 2" split is an artifact of co-hosting the sandbox on the
-  trainer box.
-- **B3 too.** B3's mini in-process harness already *intends* a GPU Runtime sandbox (per
-  `demos/README.md`); same requirement — its checker exec must target a launched AgentCore GPU
-  Runtime instance, not local CUDA.
-- **Combines with §1B decoupling.** With the harness on the host (§1B) *and* the sandbox on a
-  remote AgentCore GPU instance, the split is fully physical: trainer box = policy (8 GPU) + proxy
-  + harness; AgentCore GPU instance = sandbox only. This is the cleanest form of the four-component
-  architecture.
+- **GPU accounting is 4+4+0.** Because the sandbox lives on a *separate* AgentCore GPU instance,
+  the trainer box reserves nothing for envs → slime uses all 8 local GPUs.
+- **Fully physical split.** With the sandbox on a remote AgentCore GPU instance (and, for B2, the
+  harness decoupled per §1B / §7), the split is fully physical: trainer box = policy (8 GPU) +
+  proxy + harness; AgentCore GPU instance = sandbox only. This is the cleanest form of the
+  four-component architecture.
+- **Sharing lives on the remote Runtime.** If many episodes must share one g6, that is a concern
+  of the remote Runtime image (Demo B4 runs a Ray GPU-sharing farm *inside* the sandbox Runtime),
+  not of the trainer box.
 - **Cost/lifecycle:** a GPU Runtime instance bills while up (~$0.80–1/hr + EBS on `g6.xlarge`) and
-  must be torn down (`gpu_deploy.py cleanup`) — see the 08/09 `OBSERVATIONS.md` and the
+  must be torn down — see the 08/09 `OBSERVATIONS.md` and the
   capacity-provider/`securityGroups`/`LD_LIBRARY_PATH` gotchas found there. A rollout that
   launches one instance per episode would be far too slow/expensive; the realistic design is a
-  **pool of long-lived GPU Runtime sessions** the rollouts share (the remote analogue of GpuPool).
+  **pool of long-lived GPU Runtime sessions** the rollouts share.
 
-> **Honest status:** this is item (b) of demos-guide.md §8 "Not yet" — *Demo B on a real AgentCore
-> GPU Runtime instance*. Today's L40S/GpuPool run is the local stand-in; the managed GPU Runtime
-> backend for `AgentCoreSandbox` is unbuilt.
+> **Honest status:** this is item (b) of demos-guide.md §8 "Not yet" — a full logged *Demo B on a
+> real AgentCore GPU Runtime instance* training run. The `AgentCoreRuntimeSandbox` backend and the
+> GPU sandbox Runtime image are built and deploy; the end-to-end logged run is the pending piece.
 
 ---
 

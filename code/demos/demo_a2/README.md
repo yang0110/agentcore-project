@@ -1,74 +1,92 @@
-# Demo A2 — MBPP (CPU) with the real Claude Code harness
+# Demo A2 — MBPP (CPU sandbox) with the real Claude Code CLI, the two-Runtime target
 
-**Demo A2 = Demo A + Claude Code.** Same task (MBPP), **same sandbox type** (AgentCore Code
-Interpreter CPU microVM), same slime async/decoupled training, same **Qwen3-4B policy under
-training**. The one difference from [Demo A](../demo_a/) is the **harness** — the agent loop:
-instead of our lightweight `run_episode` loop, the agent is **Claude Code** (`claude -p`), wired
-via `agentcore_slime_demo.claude_code_generate.generate`.
+**Demo A2 = Demo A + the real Claude Code CLI, deployed the two-Runtime target way.** Same task
+(MBPP), same slime async/decoupled training, same **Qwen3-4B policy under training** as
+[Demo A](../demo_a/). The one difference is the **harness** (the agent loop): instead of our
+lightweight `run_episode`, the agent is the real **Claude Code** (`claude -p`) — and it runs on its
+**own AgentCore Runtime**, driving a **separate** CPU sandbox Runtime. A2 is exactly
+[Demo B2](../demo_b2/) but with the **MBPP** task and a **CPU** sandbox Runtime #2 instead of
+KernelBench on a GPU g6.
 
-> **Harness ≠ sandbox — two distinct component types.** In (harnessed) agentic RL the *harness*
-> and the *sandbox* are separate components (Agent Lightning v1.0, §1): the **harness** owns the
-> agent loop (tool selection, context construction, control flow) and calls the LLM; the
-> **sandbox** is the execution environment where the harness's tool actions (`Bash`/edit/run)
-> actually run and produce observations. **A2 changes only the harness** (our loop → Claude
-> Code); the **sandbox is unchanged** — still the AgentCore Code Interpreter, exactly as Demo A.
-> The training engine (slime) sees *neither* directly — only the LLM request/response pairs the
-> harness makes, captured through the adapter.
+> **Harness ≠ sandbox — two distinct AgentCore Runtimes.** The **harness** owns the agent loop
+> (tool selection, context, control flow) and calls the LLM; the **sandbox** is the execution
+> environment where its tool actions run. A2 runs them on **two separate AgentCore Runtimes**:
+> - **Harness Runtime #1** — the real `claude -p` (`Dockerfile.harness.claude`, `HARNESS_KIND=claude`).
+>   Its built-in Bash/Edit/Write/Read/Web tools are **disabled**; its only tools are the
+>   `mcp__sandbox__*` bridge (`sandbox_mcp.py` → FastMCP over localhost), which forwards every
+>   file/shell action to Runtime #2. CPU-only, `networkMode=VPC` so it can dial the adapter back.
+>   **This is the exact same harness Runtime B2 uses** (`deploy_two_runtime.py harness-claude`).
+> - **Sandbox Runtime #2** — the CPU-backed `sandbox_server_agent.py` managed microVM
+>   (`acs_sandbox_cpu`, from `deploy_two_runtime.py all`), where the harness's `write_file` /
+>   `exec` / `read_file` actions and the MBPP `run_checks.py` reward run. No GPU needed.
+>
+> This replaces the earlier bring-up shortcut (the CLI co-located *inside* the sandbox via
+> `claude_code_generate.py`, one Runtime). A2 now drives the **same hook as A3/B2/B3**
+> (`agentcore_slime_demo.agentcore_runtime_generate.generate`); `HARNESS_KIND=claude` is the only
+> switch that selects the real CLI over the mini agent. See
+> [docs/harness-sandbox-decoupling.md](../../../docs/harness-sandbox-decoupling.md) §3, §6, §7.
 
-> **Target: decoupled + disaggregated (two AgentCore Runtimes).** Today A2 **co-locates** the
-> Claude Code CLI *inside* the sandbox (see below) — a bring-up shortcut, not the intended
-> deployment. The target for A2/A3/B2/B3 alike is Claude Code on its **own AgentCore Runtime**,
-> built-in tools disabled and redirected via an MCP bridge to a **separate sandbox AgentCore
-> Runtime** (Code Interpreter for A2, a real GPU Runtime instance for B2). See
-> [docs/harness-sandbox-decoupling.md](../../../docs/harness-sandbox-decoupling.md) §3, §7.
+The **Qwen3-4B policy is still trained by slime**. Claude Code never talks to a hosted Anthropic
+model: slime's **AnthropicAdapter** proxy points `ANTHROPIC_BASE_URL` at slime's policy/SGLang, so
+the agent's turns *are* policy rollouts and the whole trajectory (captured proxy-side, keyed by the
+session-id bearer) becomes GRPO training data. This is Agent Lightning's "train with real harnesses,
+zero changes."
 
-Claude Code's "Anthropic" API traffic is pointed at slime's **`AnthropicAdapter`**
-(`ANTHROPIC_BASE_URL` → adapter → SGLang), so every completion Claude Code makes is actually
-served by the policy being trained, and its tokens are captured for GRPO. This is Agent
-Lightning's "train with real harnesses, zero changes" — the *only* edit to slime's shipped
-`coding_agent_rl` generate is swapping `E2BSandbox` → `AgentCoreSandbox`.
-
-## Four-component wiring (A2)
-
-Agent Lightning's disaggregated architecture has four components. A2 maps to them as:
+## Component wiring (A2 — two Runtimes)
 
 ```
   ┌─────────────────────────────────────────────────────────────────────────┐
   │  TRAINING ENGINE — slime  (agentcore_p4 container, 8×L40S)                │
-  │  Megatron actor (4 GPU)  +  SGLang inference (4 GPU)  +  GRPO + wt sync   │
+  │  Megatron actor (4 GPU: 0-3)  +  SGLang inference (4 GPU: 4-7)  + GRPO    │
   │  Sees ONLY the LLM request/response pairs (never the tool loop).          │
   └───────────────▲──────────────────────────────────────┬──────────────────┘
-                  │ (2) captured req/resp pairs           │ SGLang completions
-                  │     + reward  → GRPO samples          │
-  ┌───────────────┴──────────────────────────┐           │
-  │  LLM API PROXY — slime AnthropicAdapter    │◀──────────┘
-  │  http://$ADAPTER_PUBLIC_HOST:<port>        │
-  │  Anthropic API  →  SGLang;  records pairs  │
+                  │ captured req/resp pairs + reward       │ SGLang completions
+                  │   → GRPO samples                       │
+  ┌───────────────┴──────────────────────────┐            │
+  │  LLM API PROXY — slime AnthropicAdapter    │◀───────────┘
+  │  http://$ADAPTER_PUBLIC_HOST:18021         │  (pinned port, one SG rule)
+  │  Anthropic API → SGLang; records pairs     │
   └───────────────▲────────────────────────────┘
-                  │ (1) Anthropic API calls  (ANTHROPIC_BASE_URL = adapter_url)
+                  │ Anthropic API calls (ANTHROPIC_BASE_URL = adapter_url), dialed back over VPC
                   │
-  ┌───────────────┴───────────────────────────────────────────────────────────┐
-  │  SANDBOX — AgentCore Code Interpreter (CPU microVM)   [same type as Demo A] │
-  │  ┌─────────────────────────────────────────────────┐                       │
-  │  │  HARNESS — Claude Code  (`claude -p`)            │  (3) Bash/edit/run    │
-  │  │  owns the agent loop; co-located in the sandbox  │──────────────────────▶│
-  │  └─────────────────────────────────────────────────┘   PROBLEM.md,         │
-  │  (4) reward: `python3 run_checks.py` (exit code)        solution.py, …      │
-  └───────────────────────────────────────────────────────────────────────────┘
+  ┌───────────────┴───────────────────────────────┐        ┌──────────────────────────────────┐
+  │  HARNESS Runtime #1 — Claude Code (`claude -p`) │  MCP   │  SANDBOX Runtime #2 — CPU microVM │
+  │  built-ins DISABLED; only mcp__sandbox__* tools │───────▶│  sandbox_server_agent.py           │
+  │  CPU, networkMode=VPC                           │ bash/  │  write_file/exec/read_file         │
+  │                                                 │ write/ │  MBPP checker: python3 run_checks.py│
+  └─────────────────────────────────────────────────┘ read  └──────────────────────────────────┘
+       (both reached from the trainer via invoke_agent_runtime; the reward checker
+        `python3 run_checks.py` is invoked on Runtime #2 after the harness returns)
 ```
 
-Flow per rollout: (1) Claude Code (harness) makes Anthropic API calls → adapter → SGLang policy;
-(2) the adapter records each request/response pair, pairs them with the (4) reward from the
-sandbox's checker, and hands GRPO samples to slime; (3) the harness's tool calls execute in the
-sandbox. **The harness (Claude Code) and the sandbox (Code Interpreter) are two different
-components** — the box-in-box only reflects the current co-location (see below), not a merge of
-the two roles.
+Flow per prompt (`agentcore_runtime_generate.generate`): (1) seed Runtime #2's workspace with
+`PROBLEM.md` + `run_checks.py`; (2) invoke Runtime #1 with `adapter_url` + the sandbox ARN — the CLI
+loops, LLM via the proxy, tools via the MCP bridge into Runtime #2; (3) score by invoking
+`run_checks.py` on Runtime #2; (4) `finish_session` drains the proxy-captured trajectory to
+loss-masked GRPO samples.
 
 This directory is **independently runnable**: it owns its `data/` (500-prompt MBPP train pool +
 held-out eval) and `ckpt/` output dir. The `agentcore_slime_demo` library is imported from the
 **shared** copy at `code/agentcore_slime_demo/` (on `PYTHONPATH` as `/work/code`). It also
 references two **shared** things: the container `agentcore_p4` and the base Megatron checkpoint at
 `/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist` (override with `CKPT_BASE`).
+
+## Deploy (once)
+
+Both runtimes come from the shared `deploy_two_runtime.py`; A2 reuses **exactly what A3/B2 already
+deploy** — no A2-specific image:
+
+```bash
+# 1. The CPU sandbox Runtime #2 (+ GPU sandbox + mini harness). Prints AGENTCORE_SANDBOX_CPU_RUNTIME_ARN:
+ADAPTER_PUBLIC_HOST=PRIVATE-IP-f99864bc python3 code/deploy/deploy_two_runtime.py all
+# 2. The CLAUDE harness Runtime #1 (node + claude CLI + mcp/uvicorn, HARNESS_KIND=claude):
+ADAPTER_PUBLIC_HOST=PRIVATE-IP-f99864bc python3 code/deploy/deploy_two_runtime.py harness-claude
+```
+
+`all` prints the CPU sandbox ARN (`AGENTCORE_SANDBOX_CPU_RUNTIME_ARN`); `harness-claude` prints the
+claude harness ARN (`AGENTCORE_HARNESS_CLAUDE_RUNTIME_ARN`). The harness's steering system prompt is
+task-agnostic (it just points the model at the three `mcp__sandbox__*` tools), so the **same** claude
+harness Runtime serves both A2 (MBPP) and B2 (KernelBench).
 
 ## Build the datasets
 
@@ -77,66 +95,50 @@ python3 build_dataset.py --dataset mbpp --split "train+test" --limit 500 --out d
 python3 build_dataset.py --dataset mbpp --split validation --limit 8   --out data/mbpp_eval.jsonl
 ```
 
-## Build the sandbox container (harness co-located — implementation detail)
+## Required environment (real run only — this demo does NOT run offline)
 
-The current implementation **co-locates the harness inside the sandbox**: `claude_code_generate.py`
-calls `install_cli(sb)` and then launches `claude -p` *in the same sandbox session* where its tool
-calls run (slime's `ClaudeCodeHarness.launch_and_wait` → `run_agent(sb, …)`). This is an
-**implementation detail, not a change of sandbox type** — conceptually the harness and the
-code-interpreter sandbox stay separate components (see the wiring diagram above); they just happen
-to share one container here.
-
-Because a full multi-user CLI *process* can't run in the **managed** serverless Code Interpreter,
-this co-location requires a **custom AgentCore Runtime container** (multi-user: `useradd`/`setsid`/
-`npm`) to host the same Code-Interpreter-style sandbox. Node 22 + Claude Code are injected at build
-time from host tarballs:
-
-```bash
-docker build -f Dockerfile \
-  --build-arg NODE_TARBALL=node-v22.x-linux-x64.tar.xz \
-  --build-arg CC_TARBALL=claude-code-x.y.z.tgz \
-  -t agentcore-demo-a2 .
-```
-
-## Required environment (this path does NOT run offline)
-
-| Env var | What it is |
+| var | what |
 |---|---|
-| `ADAPTER_PUBLIC_HOST` | address the sandbox dials back to reach slime's adapter (**required**) |
-| `SLIME_AGENT_NODE_TARBALL` | Node 22 tarball for `install_cli` |
-| `SLIME_AGENT_CC_TARBALL` | Claude Code tarball for `install_cli` |
-| `ANTHROPIC_MODEL` | model name Claude Code requests (served by the policy) |
-| `AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION` | AgentCore microVM credentials |
+| `AGENTCORE_HARNESS_RUNTIME_ARN` | the CLAUDE harness Runtime #1 (`deploy_two_runtime.py harness-claude`) |
+| `AGENTCORE_SANDBOX_RUNTIME_ARN` | the CPU sandbox Runtime #2 (`deploy_two_runtime.py all` → `acs_sandbox_cpu`) |
+| `ADAPTER_PUBLIC_HOST` | this box's PRIVATE IP the harness Runtime #1 dials back to (e.g. `PRIVATE-IP-f99864bc`) |
+| `ADAPTER_PORT` | pinned adapter port (default `18021`); one narrow SG ingress rule |
+| `AWS_REGION` | AgentCore region (default `us-west-2`) |
 
 ## Run
 
 ```bash
 docker exec agentcore_p4 bash -lc \
-  'cd /work && ADAPTER_PUBLIC_HOST=... SLIME_AGENT_NODE_TARBALL=... SLIME_AGENT_CC_TARBALL=... \
-   ANTHROPIC_MODEL=... bash code/demos/demo_a2/run.sh'
+    'cd /work && AGENTCORE_HARNESS_RUNTIME_ARN=... AGENTCORE_SANDBOX_RUNTIME_ARN=... \
+       ADAPTER_PUBLIC_HOST=PRIVATE-IP-f99864bc NR=11 EVAL_INTERVAL=10 \
+       bash code/demos/demo_a2/run.sh'
 ```
 
-Knobs: `RB` (prompts/step), `NS` (GRPO group size), `NR` (num-rollout; real steps = NR−1),
-`TEMP`, `CONC`, `EVAL_INTERVAL` (eval every N steps, `0` disables), `EVAL_NS`. GPU split is
-4 train + 4 infer + 0 env (CPU envs). Save-only-at-end holds while `dataset_size ≥ NR × RB`
-(500 ≥ 100 × 4). The checkpoint-save deadlock is fixed via `megatron_init.py` (both `--async-save`
-and `--custom-megatron-init-path` are baked into `run.sh`).
+`HARNESS_KIND` defaults to `claude` here. `NR=11 EVAL_INTERVAL=10` is a 10-train + 1-eval smoke
+(real steps = NR−1 = 10). Defaults are `RB=4 NS=8 NR=11`. The SGLang tool-call parser (`qwen25`) is
+REQUIRED — the CLI drives its tools off Anthropic `tool_use` blocks, which the adapter only produces
+from Qwen3's Hermes `<tool_call>` output via that parser (left unset, reward is 0 for every rollout).
+
+### Size / save-only-at-end note
+
+The train pool is **500 prompts**. Keep `NR × RB ≤ dataset_size` so one epoch spans the run and the
+only checkpoint is the final one (slime force-saves at every epoch boundary, `step % (dataset_size/RB)
+== 0`; with `RB=4` the epoch is 125 steps). The checkpoint-save is **synchronous** here (do NOT enable
+`--async-save`): A2 saves once at the end, and both async backends fail under A2's required PP=2 config
+(fork deadlock / `pidfd_getfd` EPERM) — see the header comment in `run.sh` and demos-guide.md §7.
 
 ## Metrics
 
-Tee the ray-job output to a log, then parse to CSVs + a PNG (same as Demo A):
-
 ```bash
-python3 metrics.py train_a2.log --csv train_a2.csv --eval-csv train_a2.eval.csv --plot train_a2.png
+python3 metrics.py train.twortt.log --csv train.csv --eval-csv train.eval.csv --plot train.png
 ```
 
-## Pending pieces (honest status)
+Per-step train CSV (`rollout/raw_reward`, `train/grad_norm`, `train/kl_loss`, `perf/*`) + a per-eval
+CSV (`eval/step` + held-out solve rate) + a multi-panel PNG.
 
-Demo A2 is the **less battle-tested** path relative to Demo A. To run it end-to-end you still need:
+## Legacy
 
-- the **custom container image** built above (multi-user; the serverless Code Interpreter won't do);
-- the **Node 22 + Claude Code tarballs** staged on the host and pointed at by the env vars;
-- a **publicly reachable `ADAPTER_PUBLIC_HOST`** so the sandbox can call slime's adapter back.
-
-It does **not** run offline. If you just want a working MBPP RL loop today, use
-[Demo A](../demo_a/); Demo A2 is the "real harness" variant on top of it.
+This dir's `Dockerfile` (Node 22 + `claude` baked into a multi-user Code-Interpreter-style sandbox
+image) and `agentcore_slime_demo/claude_code_generate.py` are the **old co-located shortcut** (CLI
+inside the sandbox, one Runtime, `install_cli`). The two-Runtime path above supersedes it; the
+co-located image is kept only for reference.

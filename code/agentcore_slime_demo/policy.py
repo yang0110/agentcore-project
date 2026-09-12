@@ -25,6 +25,35 @@ from typing import Protocol
 # A chat message: {"role": "system"|"user"|"assistant", "content": str}
 Message = dict[str, str]
 
+# --- Optional INFERENCE-concurrency gate (decouples inference load from sandbox count) ----------
+# slime already gates the number of concurrent episodes (= concurrent sandboxes) with ONE semaphore,
+# Semaphore(sglang_server_concurrency * num_engines). That same knob therefore also bounds how many
+# decode requests hit SGLang at once, so episode/sandbox concurrency and inference concurrency are
+# COUPLED. For the sandbox-concurrency ablation (docs/sandbox-concurrency-ablation.md) we want to
+# vary the sandbox count S while holding inference concurrency I FIXED. INFER_CONC adds a SECOND,
+# finer-grained gate around ONLY the SGLang /generate POST: with S episodes in flight, at most I are
+# ever decoding; the rest are in sandbox ops or waiting here. It is a MODULE-GLOBAL semaphore so it
+# is shared across every episode coroutine in the single rollout event loop (generate() makes a
+# fresh SGLangPolicy per episode, so a per-instance gate would not bind them together).
+# Unset / 0 => disabled (original behavior; every other demo is unaffected).
+_INFER_SEM = None            # created lazily inside the running loop (see _infer_sem)
+_INFER_SEM_CAP = None        # remembers the cap the live semaphore was built with
+
+
+def _infer_sem():
+    """Return the process-global inference semaphore, or None when INFER_CONC is unset/0.
+
+    Built on first use (inside an async context, so there is a running loop). The `if is None`
+    build has no await, so concurrent coroutines cannot race to double-create it.
+    """
+    global _INFER_SEM, _INFER_SEM_CAP
+    if _INFER_SEM_CAP is None:
+        import asyncio
+        cap = int(os.environ.get("INFER_CONC", "0") or "0")
+        _INFER_SEM_CAP = cap
+        _INFER_SEM = asyncio.Semaphore(cap) if cap > 0 else None
+    return _INFER_SEM
+
 
 @dataclass
 class Completion:
@@ -160,9 +189,18 @@ class SGLangPolicy:
         # slime also gates overall concurrency via --sglang-server-concurrency.
         timeout = aiohttp.ClientTimeout(total=600, connect=60)
         connector = aiohttp.TCPConnector(limit=0, force_close=True)
-        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as sess:
-            async with sess.post(f"{self.router_url}/generate", json=payload) as resp:
-                data = await resp.json()
+        # Hold the inference gate (if enabled) across ONLY the decode round-trip, so at most
+        # INFER_CONC episodes are decoding at once regardless of how many sandboxes are in flight.
+        sem = _infer_sem()
+        if sem is None:
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as sess:
+                async with sess.post(f"{self.router_url}/generate", json=payload) as resp:
+                    data = await resp.json()
+        else:
+            async with sem:
+                async with aiohttp.ClientSession(timeout=timeout, connector=connector) as sess:
+                    async with sess.post(f"{self.router_url}/generate", json=payload) as resp:
+                        data = await resp.json()
 
         meta = data["meta_info"]
         # SGLang returns [[logprob, token_id, token_text], ...] under output_token_logprobs

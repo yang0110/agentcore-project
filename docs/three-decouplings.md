@@ -100,7 +100,7 @@ AL's three decouplings map 1:1 to ①/②/③ below.
 (`harness_runtime_agent.py`), sandbox on **AgentCore Runtime #2** (`sandbox_server_agent.py`),
 wired by `agentcore_runtime_generate.generate` with `SANDBOX=agentcore-runtime`
 (`AgentCoreRuntimeSandbox`). For B rows the sandbox Runtime is a **real AgentCore GPU Runtime
-instance** (capacity-provider EC2 GPU), not the local L40S/`GpuPool` stand-in.
+instance** (capacity-provider EC2 GPU), not a local-GPU stand-in.
 
 > The two-Runtime backend (`agentcore_runtime_sandbox.py`, `sandbox_server_agent.py`,
 > `harness_runtime_agent.py`, `agentcore_runtime_generate.py`) is **untested scaffolding** — it has

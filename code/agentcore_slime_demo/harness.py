@@ -18,14 +18,10 @@ is the "unified data interface" the AL report builds credit assignment on.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from .policy import Completion, Message, Policy
 from .sandbox import Sandbox
 from .task import CodingTask
-
-if TYPE_CHECKING:
-    from .gpu_pool import GpuPool
 
 
 @dataclass
@@ -59,21 +55,9 @@ async def run_episode(
     sandbox: Sandbox,
     task: CodingTask,
     sampling_params: dict | None = None,
-    gpu_pool: "GpuPool | None" = None,
 ) -> Trajectory:
-    """Run one multi-turn episode inside an already-open sandbox.
-
-    If `gpu_pool` is given, the checker exec (which for a GPU task runs torch on CUDA) is
-    routed through the pool for admission control + a device/memory lease — this is how a
-    dense GPU instance holds many concurrent episodes (see gpu_pool.py, docs/gpu-density.md).
-    Backend-agnostic: we just wrap the sandbox, so the loop below is unchanged.
-    """
+    """Run one multi-turn episode inside an already-open sandbox."""
     sampling_params = sampling_params or {"max_new_tokens": 1024, "temperature": 1.0}
-    if gpu_pool is not None:
-        from .gpu_pool import GpuGatedSandbox
-        # The checker command is `python3 run_checks.py`; the heuristic can't see the torch
-        # import inside it, so gate every exec for a GPU episode (one checker exec per turn).
-        sandbox = GpuGatedSandbox(sandbox, gpu_pool, gate_all=True)
     traj = Trajectory(task_id=task.task_id)
 
     # Write the checker once; it's stable across turns.

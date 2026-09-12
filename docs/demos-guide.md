@@ -21,7 +21,7 @@ in the sandbox → read the failure → fix → repeat), the **same** policy con
 | Dataset | **MBPP** (`mbpp.py`, full config via HF `datasets`) | **KernelBench** (`kernelbench.py`, real `ScalingIntelligence/KernelBench`: 270 CUDA problems; train level_1=100, eval 20 level_2) |
 | Checker verifies | assert-style unit tests pass | output matches a torch reference **and** ran on `cuda` |
 | Why this compute | RL default: tool exec is cheap shell/IO; policy GPUs stay on slime | task itself needs CUDA inside the sandbox |
-| Scaling story | many cheap microVMs | **GpuPool** dense-packs many envs on few GPUs (§6) |
+| Scaling story | many cheap microVMs | checker CUDA runs on a **remote GPU sandbox Runtime** (a disposable g6), off the trainer box (§6) |
 
 > **Key architectural point (Agent Lightning decoupling):** the policy's training GPUs
 > always live on slime's cluster. The *sandbox* only needs a GPU when the *task* does
@@ -43,19 +43,19 @@ SGLang), driven by `code/p4_slime_train/run_async.sh` (`DEMO=a|b`).
 
 ### GPU allocation on this 8×L40S box (async, decoupled)
 
-slime manages only **train + inference** GPUs; the **env** GPUs (Demo B) are deliberately left
-out of slime's placement and leased to the sandboxes by `GpuPool`.
+slime manages all **train + inference** GPUs on this box; the KernelBench checker's GPU is
+**not** on this box at all — it lives on the remote GPU sandbox Runtime (§6).
 
 | | Train (Megatron actor) | Inference (SGLang) | Envs (sandbox checkers) | Total |
 |---|---|---|---|---|
 | **Demo A (MBPP, CPU envs)** | 4 GPUs (TP=2 × DP=2) | 4 GPUs (2 engines × TP=2) | **0** — envs are CPU shell/IO | 8 |
-| **Demo B (KernelBench, GPU envs)** | 4 GPUs (TP=2 × DP=2) | 2 GPUs (1 engine × TP=2) | **2** — physical GPUs 6,7 via GpuPool | 8 |
+| **Demo B (KernelBench, GPU envs)** | 4 GPUs (TP=2 × DP=2) | 4 GPUs (2 engines × TP=2) | **0** — checker GPU is on the remote sandbox Runtime | 8 |
 
 - **Demo A (4 + 4 + 0):** the MBPP checker is plain Python/IO, so envs use no GPU; all 8 GPUs
   serve the policy (train + infer).
-- **Demo B (4 + 2 + 2):** the KernelBench checker runs torch on CUDA *inside the sandbox*, so
-  2 GPUs are reserved for envs. slime is told `--actor-num-gpus-per-node 4 --rollout-num-gpus 2`
-  (= 6 GPUs); it never touches GPUs 6,7, which `GpuPool` hands to the env checkers (§6).
+- **Demo B (4 + 4 + 0):** the KernelBench checker runs torch on CUDA, but *inside the remote
+  GPU sandbox Runtime #2* (a g6 capacity-provider instance), not on this box. So all 8 local
+  GPUs go to slime and none are held back for envs (§6).
 
 ### Checkpoints & eval cadence (disk-saving policy)
 
@@ -81,8 +81,7 @@ out of slime's placement and leased to the sandboxes by `GpuPool`.
 - `task.py` — `CodingTask`, multi-turn, exit-code reward. `check_mode="expr"|"assert"`.
 - `policy.py` — `MockPolicy` (model-free), **`LocalHFPolicy`** (real model, local
   transformers), `SGLangPolicy` (production router path).
-- `harness.py` — `run_episode()`: the multi-turn loop; optional `gpu_pool=` gating.
-- `gpu_pool.py` — `GpuPool` admission control + `GpuGatedSandbox` decorator (Demo B scaling).
+- `harness.py` — `run_episode()`: the multi-turn loop.
 - `generate.py` — `build_token_stream()`: trajectory → loss-masked `(tokens, mask)` for slime.
 - `mbpp.py` / `kernelbench.py` — the two datasets.
 - `profiles.py` — `CPU_SANDBOX` / `GPU_SANDBOX` (compute + provisioning metadata).
@@ -101,7 +100,7 @@ python3 scripts/e2e_rl.py --profile cpu --policy mock --limit 3      # MBPP, Loc
 python3 scripts/e2e_rl.py --profile gpu --policy mock                # KernelBench, LocalSandbox
 
 # --- REAL policy (Qwen3-4B), local sandbox ---
-HF_HOME=./.hf_cache python3 scripts/e2e_rl.py --profile gpu --policy real --gpu-concurrency 8
+HF_HOME=./.hf_cache python3 scripts/e2e_rl.py --profile gpu --policy real
 
 # --- REAL policy on REAL AWS AgentCore microVM (Demo A live) ---
 HF_HOME=./.hf_cache SANDBOX=agentcore AWS_REGION=us-west-2 \
@@ -119,9 +118,11 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests -q
 docker exec agentcore_p4 bash -lc \
   'cd /work && DEMO=a SANDBOX=local bash code/p4_slime_train/run_async.sh'
 
-# Demo B — KernelBench, 4 train + 2 infer + 2 env GPUs (GpuPool on physical 6,7)
+# Demo B — KernelBench, 4 train + 4 infer + 0 env GPUs (checker GPU on the remote sandbox Runtime)
 docker exec agentcore_p4 bash -lc \
-  'cd /work && DEMO=b SANDBOX=local GPU_POOL_CONCURRENCY=16 bash code/p4_slime_train/run_async.sh'
+  'cd /work && DEMO=b SANDBOX=agentcore-runtime \
+     AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/acs_sandbox_gpu-... \
+     bash code/p4_slime_train/run_async.sh'
 ```
 
 Build the datasets first with `02_build_dataset.py --dataset mbpp|kernelbench`.
@@ -142,8 +143,6 @@ One entry point behind both demos.
 | `--model` / `POLICY_MODEL_PATH` | HF model id/path | `Qwen/Qwen3-4B` |
 | `--device` | policy device | `cuda:0` |
 | `--limit` | number of tasks | `3` |
-| `--gpu-concurrency` | `GpuPool` admission gate (Demo B) | `8` |
-| `--per-env-mem-mib` | per-env soft memory cap (Demo B) | `2048` |
 | `SANDBOX=local\|agentcore` (env) | sandbox backend | `local` |
 | `AWS_REGION` (env) | AWS region for AgentCore | — |
 
@@ -192,49 +191,25 @@ stream — proving each rollout is genuinely trainable data, not just a pass/fai
 
 ---
 
-## 6. Scaling Demo B — ~100 envs on just **2** GPUs (GpuPool)
+## 6. Demo B's checker GPU — a remote GPU sandbox Runtime, not a local pool
 
-In Demo B only **2** of the 8 GPUs (physical **6,7**) are reserved for env checkers — the
-other 6 run the policy (4 train + 2 infer). Yet a rollout step fans out to *many* concurrent
-episodes (RB × NS can be ~64–100). How do ~100 envs share 2 GPUs?
+In Demo B **none** of the 8 local GPUs are held back for env checkers — all 8 go to slime
+(4 train + 4 infer). The KernelBench checker still needs CUDA (it imports torch and asserts
+the candidate `ModelNew` ran on a `cuda` device), but that CUDA runs on a **separate remote
+AgentCore GPU Runtime** — the sandbox as its own Runtime #2 (`sandbox_server_agent.py` on a
+**g6** capacity-provider EC2 GPU instance).
 
-**Because the constraint is GPU *memory*, not env *count*, and RL GPU use is *bursty*.** An
-env is a multi-turn code-repair loop; it only touches CUDA for the brief moment its checker
-runs (`python3 run_checks.py`). The rest of the episode is the policy generating and the
-sandbox doing IO. So instead of 100 resident CUDA contexts, we put a **queue in front of the
-2 GPUs**:
-
-- **`GpuPool`** (`gpu_pool.py`) is backend-agnostic admission control:
-  - a **semaphore gate** `max_concurrent_gpu` (env `GPU_POOL_CONCURRENCY`, default 16) — at
-    most that many checkers run CUDA *at once*; the other ~84 queue on the semaphore, holding
-    **no** GPU memory while they wait.
-  - **least-loaded assignment** across the reserved devices, so admitted work spreads evenly
-    over GPUs 6 and 7 (≈8 co-resident per GPU at gate 16).
-  - a **per-env soft memory cap** via lease env vars `CUDA_VISIBLE_DEVICES` (pins to physical
-    6 or 7) + `ENV_GPU_MEM_FRACTION` (`GPU_POOL_PER_ENV_MIB`, default 2048 → the task calls
-    `torch.cuda.set_per_process_memory_fraction`). Worst-case co-residency × per-env MiB must
-    fit one GPU — `GpuPool.memory_safety()` checks this statically (8 × 2048 MiB = 16 GB ≪
-    46 GB L40S → fits with room to spare).
-- **`GpuGatedSandbox`** transparently wraps the sandbox and routes GPU-touching exec through
-  the pool. For KernelBench the checker imports torch *internally*, so the command text can't
-  reveal GPU use → we gate **every** exec (`AGENTCORE_GPU_GATE=all`, one checker exec per turn).
-- **Wiring:** `generate.py` builds **one `GpuPool` per rollout-worker process** (a module
-  singleton) so all concurrent episodes in that worker share the *same* semaphore — a
-  per-episode pool would defeat the gate. It's created only when `AGENTCORE_GPU_GATE` is set
-  (Demo B); Demo A leaves it `None`. Devices come from `GPU_POOL_DEVICES=6,7`.
-
-So the split is really **6 GPUs owned by slime + 2 GPUs owned by GpuPool**, and the "100 envs
-on 2 GPUs" story is: 100 logical envs, at most 16 on the GPUs at any instant, each capped to a
-memory slice, the rest queued — CUDA memory, not env count, is what's rationed.
-
-- Verified live (the mechanism, at larger scale): 100 envs on 8× L40S — gate 8 → 38.7 s,
-  gate 32 → 26.9 s, spread evenly, peak ~12 MiB/env. See `scripts/gpu_density.py` and
-  `docs/gpu-density.md`. The Demo-B run pins the same pool to just devices 6,7.
-- L40S (Ada) has **no MIG** (that's Ampere/Hopper) → sharing is time-slicing / CUDA MPS with
-  **software** memory caps, no HW isolation. The semaphore gate is what keeps time-slicing
-  contention and memory pressure bounded.
-- AgentCore does **not** expose per-instance GPU sharing across sessions → this is a DIY
-  container concern, complementary to the managed GPU capacity-provider path.
+- The harness drives the multi-turn loop **in-process on this box**, but each `write_file` /
+  `exec` / `read_file` — including `python3 run_checks.py` — is dispatched to the remote GPU
+  Runtime over `invoke_agent_runtime`. Selected with `SANDBOX=agentcore-runtime`
+  (→ `AgentCoreRuntimeSandbox`) + `AGENTCORE_SANDBOX_RUNTIME_ARN` pointing at that Runtime.
+- This is the **③ harness ⟂ sandbox** decoupling made real: the trainer box owns only the
+  policy GPUs; the checker's CUDA is isolated on a disposable g6 that AgentCore provisions and
+  tears down. Deploy it with `code/deploy/deploy_two_runtime.py` (one-time `{"mode":"prepare"}`
+  invoke installs the CUDA torch stack onto the persistent `models` volume).
+- **Demo B4** shows how to pack *several* sandboxes onto that single g6 via a Ray GPU-sharing
+  farm running *inside* the sandbox Runtime — sharing is a concern of the remote Runtime image,
+  not of the trainer box.
 
 ---
 
@@ -262,7 +237,7 @@ memory slice, the rest queued — CUDA memory, not env count, is what's rationed
 
 **Real:** the multi-turn loop; the policy (Qwen3-4B generating code + returning
 token_ids/logprobs); AgentCore Code Interpreter microVMs (Demo A, live AWS); CUDA execution
-+ correctness checking on real L40S (Demo B); GpuPool dense-packing; loss-masked training
++ correctness checking on real L40S (Demo B); loss-masked training
 tokens. Both demos ran live 2026-09-05.
 
 **Real (P4 done):** the **slime weight-update step** runs end-to-end. Real GRPO training steps
@@ -282,11 +257,11 @@ and the end-of-training save now completes reliably via the spawn-based persiste
 worker (the fork-of-CUDA-process deadlock is **fixed** — §7, `megatron_init.py`).
 
 **Not yet:** (a) a logged end-to-end run of the **async Demo B** combination specifically —
-async trainer + SGLang + the GpuPool-gated KernelBench envs on the 4+2+2 split all at once
-(each piece is proven; the combined async run is the next milestone); (b) **Demo B on a real
-AgentCore GPU Runtime instance** — the GPU path runs on this box's L40S today (a custom Runtime
-container, demo-plan Option B, is the remaining piece; the *managed* Code Interpreter can't run
-the full multi-user Claude Code harness); (c) **SGLang throughput path for the standalone
+async trainer + SGLang + KernelBench envs whose checker runs on the remote GPU sandbox Runtime,
+all at once (each piece is proven; the combined async run is the next milestone); (b) **Demo B on a real
+AgentCore GPU Runtime instance** — the sandbox Runtime #2 image is built and the GPU Runtime
+deploys, but a full logged training run against it is still pending (the *managed* Code
+Interpreter can't run the full multi-user Claude Code harness); (c) **SGLang throughput path for the standalone
 `e2e_rl.py` driver** — blocked on the local ABI break, so that driver uses `LocalHFPolicy`
 (the in-container slime run uses real SGLang engines).
 
@@ -295,7 +270,6 @@ the full multi-user Claude Code harness); (c) **SGLang throughput path for the s
 ## 9. Related docs
 
 - `docs/demo-cases.md` — the CPU vs GPU case framing.
-- `docs/gpu-density.md` — the "100 envs on one GPU" deep dive.
 - `docs/fault-recovery.md` — session death / retry / self-heal.
 - `docs/observability.md` — the 5-stage metrics map (trainer → sandbox → inference → sync).
 - `docs/agentcore-slime-integration.md` — full cited integration reference.

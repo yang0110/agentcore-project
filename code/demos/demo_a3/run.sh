@@ -25,7 +25,7 @@
 # So SANDBOX=agentcore-runtime and you MUST set the two Runtime ARNs + ADAPTER_PUBLIC_HOST below.
 # (The old in-process shortcut, mini_agent_generate.generate, has been removed.)
 #
-# GPU split (same as Demo A): 4 train + 4 inference + 0 env (CPU sandbox Runtime => no GpuPool).
+# GPU split (same as Demo A): 4 train + 4 inference + 0 env (CPU sandbox Runtime => no env GPUs).
 # Tunables: RB (rollout-batch-size), NS (n-samples-per-prompt), NR (num-rollout),
 #           TEMP (sampling temp), CONC (sglang-server-concurrency), MINI_AGENT_MAX_TURNS.
 #
@@ -48,7 +48,7 @@ EVAL_NS="${EVAL_NS:-2}"               # samples per eval prompt
 # Checkpoint policy (disk-saving): no mid-training snapshots. slime ALWAYS force-saves at the final
 # rollout AND at every EPOCH boundary (step % (dataset_size/RB) == 0). To get EXACTLY ONE
 # checkpoint (at the end), the train set must span one epoch: dataset_size >= NR * RB. The MBPP
-# train pool is built at 500 prompts (=> 125 steps/epoch >= NR=100), so this holds.
+# train pool is built at 500 prompts (=> 125 steps/epoch >= NR-1 real steps at NR=11), so this holds.
 SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"
 
 SLIME=/root/slime
@@ -56,7 +56,7 @@ DEMO_DIR=/work/code/demos/demo_a3
 CKPT_BASE="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"  # shared base ckpt (referenced, not copied)
 HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
 
-# Demo A3: 4 train + 4 inference + 0 env. CPU envs => no GpuPool.
+# Demo A3: 4 train + 4 inference + 0 env. CPU envs => no env GPUs.
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 DATA="${DATA:-$DEMO_DIR/data/mbpp_train.jsonl}"
@@ -208,7 +208,6 @@ RUNTIME_ENV_JSON="{
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AGENTCORE_REGION\": \"${AGENTCORE_REGION:-${AWS_REGION:-us-west-2}}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
-    \"AGENTCORE_GPU_GATE\": \"off\",
     \"AGENTCORE_HARNESS_RUNTIME_ARN\": \"${AGENTCORE_HARNESS_RUNTIME_ARN}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\",
     \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST}\",

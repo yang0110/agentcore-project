@@ -30,8 +30,9 @@ Env knobs (all optional; sensible defaults):
     AGENTCORE_TRAINER_SG (override auto-detected trainer SG), NAME_PREFIX (acs).
 
 Usage:
-    python3 deploy_two_runtime.py all           # full deploy, prints the export block
-    python3 deploy_two_runtime.py cleanup       # delete runtimes + capacity provider
+    python3 deploy_two_runtime.py all             # full deploy (A3/B3), prints the export block
+    python3 deploy_two_runtime.py harness-claude  # add the CLAUDE harness #1 for the B2 two-Runtime path
+    python3 deploy_two_runtime.py cleanup         # delete runtimes + capacity provider
 """
 from __future__ import annotations
 
@@ -57,10 +58,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CODE_CTX = os.path.abspath(os.path.join(HERE, ".."))          # build context = code/
 OPERATOR_MANAGED_POLICY = "arn:aws:iam::aws:policy/BedrockAgentCoreRuntimeInstancesOperatorRolePolicy"
 
-IMAGES = {  # logical name -> (ecr repo, dockerfile)
-    "harness":     (f"{PREFIX}-harness",     "Dockerfile.harness"),
-    "sandbox_cpu": (f"{PREFIX}-sandbox-cpu", "Dockerfile.sandbox.cpu"),
-    "sandbox_gpu": (f"{PREFIX}-sandbox-gpu", "Dockerfile.sandbox.gpu"),
+BUILDX_BUILDER = "acsbuilder"
+
+# Architecture matters and is NOT uniform:
+#   * MANAGED serverless runtimes (harness, CPU sandbox) run on AgentCore's ARM fleet -> linux/arm64
+#     (CreateAgentRuntime rejects amd64 with "Supported platforms: [arm64]").
+#   * The GPU sandbox runs on a g6 capacity-provider instance, which is x86_64 -> linux/amd64.
+# This box is amd64, so the arm64 images are cross-built via QEMU under a buildx container builder.
+IMAGES = {  # logical name -> (ecr repo, dockerfile, platform)
+    "harness":     (f"{PREFIX}-harness",     "Dockerfile.harness",     "linux/arm64"),
+    "sandbox_cpu": (f"{PREFIX}-sandbox-cpu", "Dockerfile.sandbox.cpu", "linux/arm64"),
+    "sandbox_gpu": (f"{PREFIX}-sandbox-gpu", "Dockerfile.sandbox.gpu", "linux/amd64"),
 }
 
 
@@ -85,22 +93,37 @@ def ensure_ecr(repo: str) -> str:
     return ecr.describe_repositories(repositoryNames=[repo])["repositories"][0]["repositoryUri"]
 
 
+def _ensure_buildx() -> None:
+    """A buildx CONTAINER builder + QEMU so this amd64 box can cross-build the arm64 images.
+    Idempotent; safe to call on every deploy."""
+    # Register the arm64 emulator (no-op if already installed).
+    sh("docker run --privileged --rm tonistiigi/binfmt --install arm64")
+    r = subprocess.run(f"docker buildx inspect {BUILDX_BUILDER}", shell=True,
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        sh(f"docker buildx create --name {BUILDX_BUILDER} --driver docker-container --bootstrap")
+
+
 def build_push() -> dict:
-    """Build all three images for linux/amd64 and push. Returns {logical: image_uri}."""
+    """Build each image for its REQUIRED arch (arm64 managed / amd64 GPU-CP) and push.
+    Returns {logical: image_uri}."""
     acct = account()
     registry = f"{acct}.dkr.ecr.{REGION}.amazonaws.com"
     uris = {}
-    for logical, (repo, dockerfile) in IMAGES.items():
+    for logical, (repo, dockerfile, platform) in IMAGES.items():
         uris[logical] = ensure_ecr(repo) + ":latest"
     if os.environ.get("SKIP_BUILD") == "1":
         err("SKIP_BUILD=1 — reusing already-pushed :latest images")
         return uris
+    _ensure_buildx()
     sh(f"aws ecr get-login-password --region {REGION} | docker login --username AWS --password-stdin {registry}")
-    for logical, (repo, dockerfile) in IMAGES.items():
+    for logical, (repo, dockerfile, platform) in IMAGES.items():
         uri = uris[logical]
-        sh(f"docker build --platform linux/amd64 -f {HERE}/{dockerfile} -t {uri} {CODE_CTX}")
-        sh(f"docker push {uri}")
-        err(f"pushed {uri}")
+        # buildx --push emits a single-arch image straight to ECR. --provenance/--sbom=false keep it a
+        # plain image, not an attestation manifest list (AgentCore's containerUri wants a plain image).
+        sh(f"docker buildx build --builder {BUILDX_BUILDER} --platform {platform} "
+           f"--provenance=false --sbom=false -f {HERE}/{dockerfile} -t {uri} --push {CODE_CTX}")
+        err(f"pushed {uri} ({platform})")
     return uris
 
 
@@ -205,13 +228,97 @@ def open_adapter_port(private_ip: str, runtime_sg: str) -> None:
             ec2.authorize_security_group_ingress(GroupId=sg, IpPermissions=[{
                 "IpProtocol": "tcp", "FromPort": ADAPTER_PORT, "ToPort": ADAPTER_PORT,
                 "UserIdGroupPairs": [{"GroupId": runtime_sg,
-                                      "Description": "AgentCore harness Runtime -> AnthropicAdapter"}]}])
+                                      "Description": "AgentCore harness Runtime to AnthropicAdapter proxy"}]}])
             err(f"opened tcp/{ADAPTER_PORT} on {sg} from {runtime_sg}")
         except ClientError as e:
             if "InvalidPermission.Duplicate" in str(e):
                 err(f"ingress tcp/{ADAPTER_PORT} on {sg} from {runtime_sg} already present")
             else:
                 raise
+
+
+# The harness runs in networkMode=VPC, so its egress has NO internet route. To PULL its ECR image
+# and reach the AWS APIs it needs (ECR, CloudWatch Logs, bedrock-agentcore invoke, STS), we add
+# PRIVATE VPC endpoints instead of a NAT/public IP — keeping the "nothing public" mandate intact.
+# S3 (where ECR layers live) is a Gateway endpoint on the route tables; the rest are Interface
+# endpoints in the default SG (whose self-reference already allows the runtime ENI -> endpoint :443).
+INTERFACE_ENDPOINT_SERVICES = ["ecr.api", "ecr.dkr", "logs", "sts", "bedrock-agentcore"]
+
+
+def ensure_vpc_endpoints(vpc_id: str, subnets: list[str], sg: str) -> list[str]:
+    """Create the private endpoints the VPC-mode harness needs to start, and return the subnets
+    the harness may safely land in — i.e. those whose AZ is served by EVERY interface endpoint.
+    A VPC-mode runtime with no internet route CANNOT start unless it can reach ecr.api/ecr.dkr/s3
+    (image pull), logs, AND bedrock-agentcore (phone-home). If it lands in an AZ that some service
+    doesn't offer, create fails with a null reason + empty logs — so we intersect the AZs."""
+    ec2 = boto3.client("ec2", region_name=REGION)
+    existing = {e["ServiceName"]: e for e in ec2.describe_vpc_endpoints(
+        Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])["VpcEndpoints"]}
+    # An interface endpoint takes at most ONE subnet per AZ (else DuplicateSubnetsInSameZone).
+    # Default VPCs can have two subnets in one AZ, so dedupe to one-per-AZ before creating.
+    az_of = {s["SubnetId"]: s["AvailabilityZone"] for s in ec2.describe_subnets(
+        SubnetIds=subnets)["Subnets"]}
+    one_per_az: dict[str, str] = {}
+    for sn in subnets:
+        one_per_az.setdefault(az_of[sn], sn)
+
+    # Endpoints must reachable on :443 from the harness ENI AND from this box (which may be in a
+    # different SG). A VPC-CIDR ingress rule on the endpoint SG covers both without SG guesswork.
+    vpc_cidr = ec2.describe_vpcs(VpcIds=[vpc_id])["Vpcs"][0]["CidrBlock"]
+    try:
+        ec2.authorize_security_group_ingress(GroupId=sg, IpPermissions=[{
+            "IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
+            "IpRanges": [{"CidrIp": vpc_cidr,
+                          "Description": "VPC-internal HTTPS to interface VPC endpoints"}]}])
+        err(f"opened tcp/443 on endpoint SG {sg} from {vpc_cidr}")
+    except ClientError as e:
+        if "InvalidPermission.Duplicate" not in str(e):
+            raise
+
+    served_azs: dict[str, set[str]] = {}  # svc -> AZs it offers
+    for svc in INTERFACE_ENDPOINT_SERVICES:
+        svc_name = f"com.amazonaws.{REGION}.{svc}"
+        try:
+            det = ec2.describe_vpc_endpoint_services(ServiceNames=[svc_name])["ServiceDetails"]
+            served_azs[svc] = set(det[0]["AvailabilityZones"]) if det else set()
+        except ClientError:
+            served_azs[svc] = set()
+        # Only place the endpoint in AZs the service actually supports (else the whole create fails).
+        ep_subnets = [sn for az, sn in one_per_az.items()
+                      if not served_azs[svc] or az in served_azs[svc]]
+        if svc_name in existing:
+            err(f"reusing interface endpoint {svc}")
+            continue
+        if not ep_subnets:
+            err(f"interface endpoint {svc}: no subnet in a supported AZ — skipping")
+            continue
+        try:
+            ec2.create_vpc_endpoint(
+                VpcEndpointType="Interface", VpcId=vpc_id, ServiceName=svc_name,
+                SubnetIds=ep_subnets, SecurityGroupIds=[sg], PrivateDnsEnabled=True)
+            err(f"created interface endpoint {svc} in {[az_of[s] for s in ep_subnets]}")
+        except ClientError as e:
+            err(f"interface endpoint {svc}: {e}")
+    # S3 gateway endpoint (ECR image layers) — attach to all of the VPC's route tables.
+    s3_name = f"com.amazonaws.{REGION}.s3"
+    if s3_name in existing:
+        err("reusing S3 gateway endpoint")
+    else:
+        rts = [rt["RouteTableId"] for rt in ec2.describe_route_tables(
+            Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])["RouteTables"]]
+        ec2.create_vpc_endpoint(VpcEndpointType="Gateway", VpcId=vpc_id,
+                                ServiceName=s3_name, RouteTableIds=rts)
+        err("created S3 gateway endpoint")
+
+    # The harness may only land where EVERY interface service is reachable. Intersect the AZs;
+    # if a service reported no AZs (e.g. describe failed), don't let it shrink the set.
+    ok_azs = set(one_per_az)
+    for svc in INTERFACE_ENDPOINT_SERVICES:
+        if served_azs.get(svc):
+            ok_azs &= served_azs[svc]
+    harness_subnets = [sn for az, sn in one_per_az.items() if az in ok_azs]
+    err(f"harness will use subnets in AZs {sorted(ok_azs)}: {harness_subnets}")
+    return harness_subnets
 
 
 # ----------------------------------------------------------------------------- Runtimes
@@ -233,16 +340,28 @@ def _existing_runtime_arn(control, name: str):
         resp = control.list_agent_runtimes(**kw)
         for r in resp.get("agentRuntimes", []):
             if r["agentRuntimeName"] == name:
-                return r["agentRuntimeArn"], r["agentRuntimeId"]
+                return r["agentRuntimeArn"], r["agentRuntimeId"], r.get("status", "")
         tok = resp.get("nextToken")
         if not tok:
-            return None, None
+            return None, None, None
+
+
+def _reuse_or_clear(control, name):
+    """Return an existing runtime ARN to reuse, or None if it should be (re)created.
+    A CREATE_FAILED leftover is deleted so we can create it cleanly."""
+    arn, rid, status = _existing_runtime_arn(control, name)
+    if arn and "FAILED" in (status or ""):
+        err(f"deleting {status} runtime {name} before recreating")
+        control.delete_agent_runtime(agentRuntimeId=rid)
+        time.sleep(10)
+        return None
+    return arn
 
 
 def managed_runtime(name, image_uri, exec_arn, env, network) -> str:
     """MANAGED serverless runtime (harness / CPU sandbox). Idempotent: reuse if the name exists."""
     control = boto3.client("bedrock-agentcore-control", region_name=REGION)
-    arn, rid = _existing_runtime_arn(control, name)
+    arn = _reuse_or_clear(control, name)
     if arn:
         err(f"reusing runtime {name} (delete it to pick up a new image/env)")
         return arn
@@ -297,7 +416,7 @@ def gpu_capacity_provider(name, operator_arn) -> str:
 
 def gpu_runtime_on_cp(name, image_uri, exec_arn, cp_arn, env) -> str:
     control = boto3.client("bedrock-agentcore-control", region_name=REGION)
-    arn, rid = _existing_runtime_arn(control, name)
+    arn = _reuse_or_clear(control, name)
     if arn:
         err(f"reusing GPU runtime {name}")
         return arn
@@ -323,9 +442,58 @@ def prepare_gpu_volume(gpu_arn: str) -> None:
     cfg = Config(read_timeout=read_timeout, connect_timeout=60, retries={"max_attempts": 0})
     data = boto3.client("bedrock-agentcore", region_name=REGION, config=cfg)
     err("invoking GPU sandbox mode=prepare (cold-launches g6, installs torch to the volume)...")
-    resp = data.invoke_agent_runtime(agentRuntimeArn=gpu_arn, runtimeSessionId="prepare-gpu-volume",
+    # runtimeSessionId must be in [33, 128] chars (AgentCore ParamValidation); pad the label.
+    resp = data.invoke_agent_runtime(agentRuntimeArn=gpu_arn,
+                                     runtimeSessionId="prepare-gpu-volume-padded-000000000000",
                                      payload=b'{"mode":"prepare"}')
     print(resp["response"].read().decode())
+
+
+def _build_push_one(repo: str, dockerfile: str, platform: str) -> str:
+    """Build+push a SINGLE image (used by the harness-claude path so we don't rebuild the A3/B3
+    set). Returns the :latest image URI. Honors SKIP_BUILD=1 to reuse an already-pushed image."""
+    acct = account()
+    registry = f"{acct}.dkr.ecr.{REGION}.amazonaws.com"
+    uri = ensure_ecr(repo) + ":latest"
+    if os.environ.get("SKIP_BUILD") == "1":
+        err(f"SKIP_BUILD=1 — reusing already-pushed {uri}")
+        return uri
+    _ensure_buildx()
+    sh(f"aws ecr get-login-password --region {REGION} | docker login --username AWS --password-stdin {registry}")
+    sh(f"docker buildx build --builder {BUILDX_BUILDER} --platform {platform} "
+       f"--provenance=false --sbom=false -f {HERE}/{dockerfile} -t {uri} --push {CODE_CTX}")
+    err(f"pushed {uri} ({platform})")
+    return uri
+
+
+def cmd_harness_claude():
+    """Deploy the CLAUDE-flavored harness Runtime #1 for the two-Runtime CLI path (B2 target).
+
+    Same VPC wiring as the mini harness in cmd_all (it dials the adapter back), but a different
+    image (Dockerfile.harness.claude: node + claude CLI + mcp/uvicorn) and HARNESS_KIND=claude.
+    The GPU sandbox Runtime #2 is deployed by `all`; this only adds the harness. Reuses the exec
+    role / VPC endpoints / adapter-port ingress that `all` already created (idempotent)."""
+    private_ip = os.environ.get("ADAPTER_PUBLIC_HOST")
+    if not private_ip:
+        die("set ADAPTER_PUBLIC_HOST to this box PRIVATE IP (the harness dials it back)")
+
+    uri = _build_push_one(f"{PREFIX}-harness-claude", "Dockerfile.harness.claude", "linux/arm64")
+    xrole = exec_role(f"{PREFIX}-exec-role")
+    vpc_id, subnets, runtime_sg = default_vpc()
+    open_adapter_port(private_ip, runtime_sg)
+    harness_subnets = ensure_vpc_endpoints(vpc_id, subnets, runtime_sg)
+    if not harness_subnets:
+        die("no subnet is served by all required VPC endpoints; cannot place VPC-mode harness")
+    vpc_net = {"networkMode": "VPC",
+               "networkModeConfig": {"securityGroups": [runtime_sg], "subnets": harness_subnets}}
+    arn = managed_runtime(
+        f"{PREFIX}_harness_claude", uri, xrole,
+        {"AWS_REGION": REGION, "HARNESS_KIND": "claude"}, vpc_net)
+    out("AGENTCORE_HARNESS_CLAUDE_RUNTIME_ARN", arn)
+    print("\n# ---- export for B2 (two-Runtime CLI: claude harness #1 + GPU sandbox #2) ----")
+    print(f"export AGENTCORE_HARNESS_RUNTIME_ARN={arn}")
+    print(f"export ADAPTER_PUBLIC_HOST={private_ip} ADAPTER_PORT={ADAPTER_PORT}")
+    print("# and AGENTCORE_SANDBOX_RUNTIME_ARN=<the GPU sandbox ARN from `all`>")
 
 
 # ----------------------------------------------------------------------------- orchestration
@@ -342,8 +510,16 @@ def cmd_all():
     # No public port: open the pinned adapter port on the trainer box SG, source = runtime SG.
     open_adapter_port(private_ip, runtime_sg)
 
+    # The harness is networkMode=VPC (no internet route), so add private VPC endpoints for the APIs
+    # it needs — ECR (image pull), Logs, STS, bedrock-agentcore. Without these the harness container
+    # can't pull its image / phone home and lands CREATE_FAILED with an empty log group. Returns the
+    # subnets whose AZ is served by every endpoint — the harness must land only in those.
+    harness_subnets = ensure_vpc_endpoints(vpc_id, subnets, runtime_sg)
+    if not harness_subnets:
+        die("no subnet is served by all required VPC endpoints; cannot place VPC-mode harness")
+
     vpc_net = {"networkMode": "VPC",
-               "networkModeConfig": {"securityGroups": [runtime_sg], "subnets": subnets}}
+               "networkModeConfig": {"securityGroups": [runtime_sg], "subnets": harness_subnets}}
     public_net = {"networkMode": "PUBLIC"}
     # No runtime needs AWS_BEARER_TOKEN_BEDROCK: the harness reaches the LLM through the adapter
     # (auth = the session-id bearer), and both runtimes sign AWS calls with their execution role.
@@ -359,7 +535,7 @@ def cmd_all():
 
     # GPU sandbox (B3): capacity provider + volume.
     op_arn = operator_role(f"{PREFIX}-operator-role")
-    cp_arn = gpu_capacity_provider(f"{PREFIX}-gpu-cp", op_arn)
+    cp_arn = gpu_capacity_provider(f"{PREFIX}_gpu_cp", op_arn)
     sandbox_gpu_arn = gpu_runtime_on_cp(
         f"{PREFIX}_sandbox_gpu", uris["sandbox_gpu"], xrole, cp_arn,
         {**common, "SANDBOX_WORKDIR": "/workspace"})   # SANDBOX_PYLIB/LD_LIBRARY_PATH are in the image ENV
@@ -385,9 +561,9 @@ def cmd_all():
 
 def cmd_cleanup():
     control = boto3.client("bedrock-agentcore-control", region_name=REGION)
-    for logical in ("harness", "sandbox_cpu", "sandbox_gpu"):
+    for logical in ("harness", "harness_claude", "sandbox_cpu", "sandbox_gpu"):
         name = f"{PREFIX}_{logical}"
-        arn, rid = _existing_runtime_arn(control, name)
+        arn, rid, status = _existing_runtime_arn(control, name)
         if rid:
             try:
                 control.delete_agent_runtime(agentRuntimeId=rid)
@@ -397,7 +573,7 @@ def cmd_cleanup():
     time.sleep(10)
     try:
         for cp in control.list_capacity_providers().get("capacityProviders", []):
-            if cp.get("name") == f"{PREFIX}-gpu-cp":
+            if cp.get("name") == f"{PREFIX}_gpu_cp":
                 control.delete_capacity_provider(capacityProviderId=cp["capacityProviderId"])
                 err(f"deleted capacity provider {cp['capacityProviderId']}")
     except ClientError as e:
@@ -406,7 +582,8 @@ def cmd_cleanup():
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
-    {"all": cmd_all, "cleanup": cmd_cleanup}.get(cmd, lambda: die(f"unknown: {cmd}"))()
+    {"all": cmd_all, "cleanup": cmd_cleanup,
+     "harness-claude": cmd_harness_claude}.get(cmd, lambda: die(f"unknown: {cmd}"))()
 
 
 if __name__ == "__main__":

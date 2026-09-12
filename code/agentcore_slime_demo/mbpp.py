@@ -55,7 +55,7 @@ def _to_task(ex: dict) -> CodingTask:
         checks=tests,
         check_mode="assert",
         test_setup=setup,
-        max_turns=4,
+        max_turns=3,
         mock_attempts=[_FAILING_STUB, reference],
     )
 

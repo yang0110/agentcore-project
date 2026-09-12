@@ -2,10 +2,23 @@
 # Build context MUST be code/:
 #   docker build -f code/deploy/Dockerfile.sandbox.gpu -t <ecr>/acs-sandbox-gpu:latest code/
 #
-# 2 GB image cap: the CUDA torch stack is >2 GB, so it is NOT baked in. It is installed onto the
-# capacity-provider EBS volume at /mnt/models/pylib via a one-time `{"mode":"prepare"}` invoke
-# (sandbox_server_agent._gpu_prepare) and reused across sessions — exactly the AgentCore use-case-08
-# pattern. So this image stays slim: just bedrock-agentcore + the sandbox server.
+# TORCH IS INSTALLED AT CONTAINER STARTUP (changed 2026-09-09), NOT baked into the image and NOT on
+# a volume. The history:
+#  1. Original design installed the CUDA torch stack onto the capacity-provider EBS volume at
+#     /mnt/models/pylib via a one-time `{"mode":"prepare"}` invoke and relied on it persisting. But a
+#     capacity-provider EBS "models" volume is provisioned FRESH (empty, reformatted) on EVERY
+#     instance launch — NOT reattached across instance recycles (idleInstanceTimeout=600s). So
+#     `prepare` populated a volume that vanished on recycle, and every rollout since got a blank
+#     /mnt/models -> `import torch` failed -> the checker exited 1 -> reward 0 on ALL of B3's rollouts.
+#  2. Baking torch into the image was then tried, but the CUDA torch stack is ~2.7 GB+ and AgentCore
+#     enforces a maxImageSizeMb quota of 2048 MB (L-0A9E32B3) even for capacity-provider runtimes —
+#     CreateAgentRuntime failed ServiceQuotaExceededException. Can't trim CUDA torch under 2 GB.
+#  3. FIX (current): install torch in the CMD, before the server binds. This keeps the IMAGE small
+#     (well under 2048 MB) while guaranteeing torch is present in site-packages on EVERY fresh
+#     instance — no volume-persistence dependency. It reinstalls once per cold instance (~90s), which
+#     is amortized across the instance's warm lifetime; the g6 capacity-provider instance has the
+#     internet egress this needs (the `prepare` invoke used it to download the same wheels). This runs
+#     on a real g6 EC2 (30 GiB rootVolume), so the on-disk torch install has ample space.
 FROM public.ecr.aws/docker/library/python:3.12-slim
 
 WORKDIR /app
@@ -15,12 +28,15 @@ COPY agentcore_slime_demo/sandbox_server_agent.py /app/sandbox_server_agent.py
 
 # LD_LIBRARY_PATH MUST be set at PROCESS START (the dynamic loader caches its search path, so
 # exporting it late — from inside Python — is too late). AgentCore injects the NVIDIA driver
-# (libcuda.so.1) into /usr/lib64 at runtime; this is the exact fix use case 08 needed.
+# (libcuda.so.1) into /usr/lib64 at runtime; this is the exact fix use case 08 needed. It is inherited
+# by the checker subprocess via os.environ, so torch finds the injected driver.
 ENV LD_LIBRARY_PATH=/usr/lib64
-# Where the volume-installed torch lives; presence of SANDBOX_PYLIB is what arms the GPU/prepare
-# path in sandbox_server_agent.py (unset on the CPU image, so that path stays dormant there).
-ENV SANDBOX_PYLIB=/mnt/models/pylib
+# SANDBOX_PYLIB is intentionally UNSET: torch is installed into the default site-packages at startup
+# (below), so `python3` and the checker subprocess find it with no PYTHONPATH plumbing. The volume
+# /mnt/models is no longer relied on for torch.
 ENV SANDBOX_WORKDIR=/workspace
 
 EXPOSE 8080
-CMD ["python", "-m", "sandbox_server_agent"]
+# Install the CUDA torch stack, THEN exec the server. cu124 wheel bundles the CUDA runtime libs; it
+# still needs the driver's libcuda.so.1 (injected into /usr/lib64, see LD_LIBRARY_PATH above).
+CMD ["sh", "-c", "pip install --no-cache-dir torch==2.5.1 numpy --index-url https://download.pytorch.org/whl/cu124 --extra-index-url https://pypi.org/simple && exec python -m sandbox_server_agent"]

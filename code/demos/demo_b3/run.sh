@@ -15,12 +15,12 @@
 # demo drives agentcore_slime_demo.agentcore_runtime_generate.generate, whose tool calls AND reward
 # checker invoke a SEPARATE GPU-backed sandbox Runtime #2 (sandbox_server_agent.py on a g6 capacity
 # provider), where the KernelBench torch/CUDA checker runs. So the env-checker GPU is REMOTE (on
-# Runtime #2), NOT local: there is NO local GpuPool here any more, and this box runs just
+# Runtime #2), NOT local: there are no local env GPUs here, and this box runs just
 # train + inference. The harness Runtime dials the AnthropicAdapter proxy back over the private VPC
 # (SG-gated, no public port). The old in-process shortcut (mini_agent_generate) has been removed.
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
-# runs range(1, NR) = (NR-1) real training steps. NR=20 => 10 train (SMOKE; no more needed).
+# runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train (SMOKE; no more needed).
 set -euo pipefail
 
 SANDBOX="${SANDBOX:-agentcore-runtime}"   # sandbox as its OWN GPU-backed AgentCore Runtime #2 (two-Runtime target)
@@ -29,7 +29,7 @@ SANDBOX="${SANDBOX:-agentcore-runtime}"   # sandbox as its OWN GPU-backed AgentC
 # Build with build_dataset.py --dataset kernelbench --level level_1 --limit 100 (train) and
 # --level level_2 --limit 20 (eval). This replaced the old 3-op smoke stub, so real RB/NR now work.
 # Save-only-at-end holds while dataset_size (100) >= NR * RB: slime force-saves at every epoch boundary
-# (step % (dataset_size/RB) == 0), so with RB=4 the epoch is 25 steps and NR=20 (19 real) never crosses it.
+# (step % (dataset_size/RB) == 0), so with RB=4 the epoch is 25 steps and NR=11 (10 real) never crosses it.
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
 NR="${NR:-11}"         # num-rollout; real training steps = NR-1 => 10 train (SMOKE; no more needed). Keep NR*RB <= 100.
@@ -50,7 +50,7 @@ EVAL_NAME="${EVAL_NAME:-kernelbench}"
 SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_mini_async}"
 
 # GPU split on THIS box: 4 train + 4 inference + 0 env. The KernelBench checker's GPU is REMOTE
-# (it runs on the sandbox Runtime #2 instance), so no local GpuPool and no reserved env GPUs here.
+# (it runs on the sandbox Runtime #2 instance), so no reserved env GPUs here.
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 

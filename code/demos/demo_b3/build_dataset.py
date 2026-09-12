@@ -11,13 +11,13 @@ and it carries the full CodingTask under metadata.task, which
 
 Both demos use the SAME row schema and the SAME custom generate — they differ only in the
 task source (MBPP CPU code-repair vs KernelBench CUDA-op repair). Run inside the container
-(has `datasets` + HF cache):
-    # Demo A (CPU envs, MBPP)
-    docker exec agentcore_p4 python /work/code/p4_slime_train/02_build_dataset.py \
-        --dataset mbpp --split train --limit 32 --out /work/code/p4_slime_train/data/mbpp_train.jsonl
-    # Demo B (GPU envs, KernelBench)
-    docker exec agentcore_p4 python /work/code/p4_slime_train/02_build_dataset.py \
-        --dataset kernelbench --out /work/code/p4_slime_train/data/kernelbench_train.jsonl
+(has `datasets` + HF cache), writing into the calling demo's own data/ dir. E.g.:
+    # MBPP (Demo A / A2 / A3): 500-prompt train + 8-prompt held-out eval
+    python /work/code/demos/demo_a/build_dataset.py \
+        --dataset mbpp --split "train+test" --limit 500 --out /work/code/demos/demo_a/data/mbpp_train.jsonl
+    # KernelBench (Demo B / B2 / B3): level_1 train (100) + level_2 held-out eval (20)
+    python /work/code/demos/demo_b/build_dataset.py \
+        --dataset kernelbench --level level_1 --limit 100 --out /work/code/demos/demo_b/data/kernelbench_train.jsonl
 """
 from __future__ import annotations
 

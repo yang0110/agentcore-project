@@ -4,6 +4,15 @@
 *
 !agentcore_slime_demo
 !deploy
+# The a2/b2 sandbox images bake Node + Claude Code from offline tarballs. Re-include ONLY those two
+# files (gitignore-style: re-include each parent dir, re-exclude its contents, then whitelist the
+# files) so the context gains ~120 MB, not the whole demos/ tree (100s of GB).
+!demos
+demos/*
+!demos/_agent_assets
+demos/_agent_assets/*
+!demos/_agent_assets/node-v22.11.0-linux-x64.tar.xz
+!demos/_agent_assets/claude-code-bundled-2.1.263.tgz
 # strip caches/logs even from the re-included dir
 **/__pycache__
 **/*.pyc

@@ -13,26 +13,26 @@
 # the decoupled-sandbox path — harness in-process, sandbox remote (no MCP/two-Runtime harness like B3).
 #
 # GPU split on this 8xL40S box: 4 train (Megatron) + 4 inference (SGLang) + 0 env. The env checker's
-# GPU is REMOTE (sandbox Runtime #2), so there is NO local GpuPool and no local GPUs held back.
+# GPU is REMOTE (sandbox Runtime #2), so no local GPUs are held back for the checker.
 #
 # Async/decoupled: agentic rollouts have long, variable latency (multi-turn kernel repair on a
 # GPU). slime's async driver (train_async.py) runs trainer GPUs and SGLang inference GPUs DISJOINT
 # and generates rollout N+1 while training on rollout N. Async hard-requires no --colocate.
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
-# runs range(1, NR) = (NR-1) real training steps. NR=20 => 10 train (SMOKE; no more needed).
+# runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train (SMOKE; no more needed).
 set -euo pipefail
 
 SANDBOX="${SANDBOX:-agentcore-runtime}"   # the sandbox is its OWN GPU-backed AgentCore Runtime #2
                                           # (sandbox_server_agent.py on a g6). The KernelBench torch/CUDA
-                                          # checker runs THERE (remote), so there is NO local GpuPool.
+                                          # checker runs THERE (remote), so no local env GPUs are used.
 # ---- Task set: the REAL KernelBench (ScalingIntelligence/KernelBench) ----------------------------
 # Train = level_1 (100 single-op CUDA problems); held-out eval = 20 level_2 fusion problems (disjoint,
 # no leakage). Build with build_dataset.py --dataset kernelbench --level level_1 --limit 100 (train)
 # and --level level_2 --limit 20 (eval). This replaced the old hand-written 3-op smoke stub, so real
 # RB/NR now work. Keep the save-only-at-end invariant: dataset_size (100) >= NR * RB (see below);
 # slime force-saves at every epoch boundary (step % (dataset_size/RB) == 0), so with RB=4 the epoch
-# is 100/4 = 25 steps and NR=20 (19 real steps) never crosses it => the ONLY checkpoint is the final.
+# is 100/4 = 25 steps and NR=11 (10 real steps) never crosses it => the ONLY checkpoint is the final.
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
 NR="${NR:-11}"         # num-rollout; real training steps = NR-1 => 10 train (SMOKE; no more needed). Keep NR*RB <= 100.
@@ -51,7 +51,7 @@ CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"
 HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
 
 # ---- GPU split: 4 train + 4 inference + 0 env. The KernelBench checker's GPU is REMOTE (on the
-# sandbox Runtime #2 g6 instance), so no local GpuPool and no reserved local env GPUs here.
+# sandbox Runtime #2 g6 instance), so no reserved local env GPUs here.
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 DATA="${DATA:-$DEMO_DIR/data/kernelbench_train.jsonl}"
@@ -183,7 +183,6 @@ RUNTIME_ENV_JSON="{
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AGENTCORE_REGION\": \"${AGENTCORE_REGION:-${AWS_REGION:-us-west-2}}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
-    \"AGENTCORE_GPU_GATE\": \"off\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\"
   }
 }"

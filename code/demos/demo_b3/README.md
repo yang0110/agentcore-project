@@ -16,8 +16,8 @@ description](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/harne
 > the **target** way — one home, its **own AgentCore Runtime #1** (a `BedrockAgentCoreApp` wrapping
 > `MiniClaudeHarness`, `harness_kind=mini`) whose tool calls **and** the KernelBench reward checker
 > invoke a **separate sandbox AgentCore Runtime #2** that is a **real GPU Runtime instance**
-> (a g6 capacity-provider EC2 GPU) — so the checker's CUDA runs *there*, not on this box. There is
-> **no local `GpuPool`** any more. The harness Runtime dials the `AnthropicAdapter` proxy on this
+> (a g6 capacity-provider EC2 GPU) — so the checker's CUDA runs *there*, not on this box, and no
+> local GPUs are reserved for it. The harness Runtime dials the `AnthropicAdapter` proxy on this
 > box back over the **private VPC** (security-group gated, **no public port**). Wired via
 > `agentcore_runtime_generate.generate`; the in-process shortcut has been removed. See
 > [docs/harness-sandbox-decoupling.md](../../../docs/harness-sandbox-decoupling.md) §6–§7.
@@ -40,8 +40,8 @@ a slim CPU Python container (no Node/CLI, no slime), and only the **sandbox** Ru
 agentic loop with the GPU-in-sandbox task.
 
 The KernelBench checker runs **on the sandbox Runtime #2 GPU instance** (invoked by
-`agentcore_runtime_generate` for both tool calls and scoring). There is no local `GpuPool` here any
-more — GPU admission control, if needed, lives on the sandbox Runtime, not on this trainer box.
+`agentcore_runtime_generate` for both tool calls and scoring). No local GPUs are reserved for the
+checker here — GPU work lives on the sandbox Runtime, not on this trainer box.
 
 This directory is **independently runnable**: it owns its `data/` (level_1 100-problem train pool
 + 20 held-out level_2 fusions for eval) and `ckpt/`. The `agentcore_slime_demo` library is imported

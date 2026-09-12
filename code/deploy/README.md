@@ -19,6 +19,25 @@ back to the private adapter. Sandboxes are *pulled* over the IAM control plane, 
 inbound port and (for CPU) no VPC. The GPU sandbox is on an EC2 capacity-provider instance for the
 **GPU**, independently of networking.
 
+### Private VPC endpoints (why a VPC-mode harness needs them)
+
+A `networkMode=VPC` runtime has **no internet route**, so — with nothing public — it can only reach
+AWS through **private VPC endpoints**. `deploy_two_runtime.ensure_vpc_endpoints()` creates them
+(all-private, mandate-aligned) and this is *required* for the harness to even start:
+
+- **Interface endpoints** (`ecr.api`, `ecr.dkr` → image pull; `logs`; `sts`; `bedrock-agentcore` →
+  the runtime's phone-home) in the default SG with `PrivateDnsEnabled`.
+- **S3 gateway endpoint** on the VPC route tables (ECR image *layers* live in S3).
+- One **`tcp/443` ingress from the VPC CIDR** on the endpoint SG — so both the harness ENI *and*
+  this box (which sits in a different SG) can reach the endpoints. `PrivateDnsEnabled` overrides ECR
+  DNS **VPC-wide**, so without this rule the box's own ECR access breaks.
+
+Two gotchas the driver handles automatically: interface endpoints allow **one subnet per AZ** (a
+default VPC can have two subnets in one AZ → `DuplicateSubnetsInSameZone`), and **`bedrock-agentcore`
+is not offered in every AZ** (e.g. not `us-west-2d`). The harness is therefore pinned to the subnets
+whose AZ is served by **every** endpoint — land it elsewhere and create fails with a **null reason
+and an empty log group** (container never started).
+
 ### Data flow
 
 ```
