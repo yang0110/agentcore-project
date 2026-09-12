@@ -605,6 +605,71 @@
   executes tools + the checker. Sandbox class: \texttt{AgentCoreSandbox}. Box GPUs \textbf{4+4+0}.}
 \end{frame}
 
+\begin{frame}{Demo \texttt{a}, generalized --- one harness across the agentic-RL task zoo}
+  \footnotesize The \emph{same} in-process \texttt{run\_episode} harness generalizes across task
+  families --- only the \textbf{prompt}, the \textbf{seed workspace} $+$ the \textbf{checker}
+  change. All eleven families below are \textbf{built and running} on the one CPU harness
+  (\texttt{agentcore\_slime\_demo/task\_families.py}); each has a deterministic, stdlib-only
+  RLVR checker (no LLM judge).
+  \begin{center}
+  \renewcommand{\arraystretch}{0.72}\scriptsize
+  \begin{tabular}{@{}p{2.15cm}p{3.15cm}p{3.35cm}p{1.35cm}@{}}
+    \toprule
+    \textbf{Task family} & \textbf{Seed / benchmark shape} & \textbf{Reward checker (exit code)} & \textbf{Status} \\
+    \midrule
+    Coding (unit tests) & MBPP~\cite{mbpp}, HumanEval & hidden asserts pass & \textbf{built} \\
+    SWE (bug-fix) & buggy module $+$ failing suite~\cite{swebench,swegym} & test suite green & \textbf{built} \\
+    Tool-use & task $+$ provided \texttt{tools.py} & result $=$ gold $\wedge$ tools called & \textbf{built} \\
+    Data / SQL & schema $+$ seeded SQLite DB & result-set $=$ gold rows & \textbf{built} \\
+    Math & word problem & \texttt{|answer\,--\,gold|}\,$\le\varepsilon$ & \textbf{built} \\
+    Security / CTF & a verifier \texttt{check(flag)} & \texttt{check(flag)} True & \textbf{built} \\
+    Agentic RAG & question $+$ local \texttt{./docs} corpus & answer $=$ grounded fact & \textbf{built} \\
+    Regex synthesis & positive $+$ negative examples & full-match all pos, no neg & \textbf{built} \\
+    Planning / search & discrete puzzle (queens, subset-sum) & hidden \texttt{verify(plan)} True & \textbf{built} \\
+    Config repair & broken config $+$ constraints & every constraint satisfied & \textbf{built} \\
+    Data / ETL & \texttt{input.json} $+$ transform spec & \texttt{output} $=$ gold transform & \textbf{built} \\
+    \bottomrule
+  \end{tabular}
+  \\[0.1em]\figtag{demo \texttt{a} horizontally --- one CPU harness, many tasks; swap prompt $+$ seed $+$ checker}
+  \end{center}
+  \vspace{-0.2em}
+  {\scriptsize Select one with \texttt{FAMILY=sql bash run.sh}; datasets come from
+  \texttt{build\_family\_datasets.py}. 87 seed tasks across the ten families; all pass their checker
+  end-to-end offline (\texttt{SANDBOX=local}) \emph{and} on the remote AgentCore Runtime
+  (tests/test\_smoke.py $+$ smoke\_remote\_families.py)~\cite{deepseekr1,qwen3,kimik2}.}
+\end{frame}
+
+\begin{frame}[fragile]{Demo \texttt{a} zoo --- how one harness spans eleven checkers}
+  \footnotesize The harness never changes: it writes the family's \textbf{seed files} $+$ the
+  checker, asks the policy for a submission, writes it to the family's \textbf{artifact}, runs
+  the \textbf{checker command}, and turns the \textbf{exit code} into the reward. A family is
+  $\sim$30 lines: a prompt, a seed set, and (usually) a list of asserts.
+  \begin{center}
+  \renewcommand{\arraystretch}{0.78}\scriptsize
+  \begin{tabular}{@{}p{1.9cm}p{1.9cm}p{1.75cm}p{4.15cm}@{}}
+    \toprule
+    \textbf{Family} & \textbf{Artifact} & \textbf{Seed files} & \textbf{What the checker asserts} \\
+    \midrule
+    coding/SWE/math & \texttt{solution.py} & --- & import module, run bare-name asserts \\
+    tool-use & \texttt{solution.py} & \texttt{tools.py} & \texttt{result==gold} \& a tool was actually called \\
+    CTF & \texttt{solution.py} & --- & the challenge's \texttt{check(flag)} returns True \\
+    RAG & \texttt{solution.py} & \texttt{docs/*.txt} & printed answer $=$ the fact only in the corpus \\
+    SQL & \texttt{query.sql} & --- & run query on in-memory SQLite; rows $=$ gold \\
+    regex & \texttt{solution.py} & --- & \texttt{pattern} full-matches all pos, no neg \\
+    planning & \texttt{solution.py} & --- & hidden \texttt{verify(plan)} returns True \\
+    config & \texttt{solution.py} & --- & \texttt{config} dict satisfies every constraint \\
+    data / ETL & \texttt{solution.py} & \texttt{input.json} & \texttt{output} $=$ gold transform of the input \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \vspace{-0.3em}
+  {\scriptsize Most families reuse the MBPP assert-checker (\texttt{task.assert\_runner}) --- the agent's
+  \texttt{solution.py} sets a module variable the asserts read; only SQL needs a custom runner (it
+  executes the query). Same \texttt{generate.py} + Sample contract for all ---
+  \texttt{metadata.task.family} dispatches to the right \texttt{Task} class. The reward is
+  binary and comes straight from the sandbox exit code --- the RLVR primitive, unchanged from MBPP.}
+\end{frame}
+
 % ============================================================
 \section{Demo \texttt{a3} --- mini harness on its own Runtime, CPU}
 % ============================================================
@@ -671,6 +736,33 @@
   \vspace{-0.1em}
   {\scriptsize Sandbox class: \texttt{AgentCoreRuntimeSandbox}. The checker's GPU stays \emph{remote}
   (a disposable \texttt{g6}), so the box stays \textbf{4+4+0} --- no local env GPUs.}
+\end{frame}
+
+% ============================================================
+\section{Productionizing the sandbox --- three questions}
+% ============================================================
+
+\begin{frame}{Productionizing the sandbox --- three questions to answer}
+  \footnotesize Before AgentCore is the sandbox tier of a \emph{production} agentic-RL system, three
+  questions decide it. Headline answers here; detail (with sources) in the appendix.
+  \vspace{0.3em}
+  \begin{enumerate}\setlength\itemsep{0.55em}
+    \item[\textbf{1}] \textbf{What can it run \& verify?} --- Almost every frontier RL reward is
+      \emph{execute-and-verify}: code unit / competitive test cases, SWE test suites, tool-call (Python)
+      execution, symbolic math checks. That \emph{is} the microVM's job --- DeepSeek-R1, Qwen3, Kimi K2
+      \& Microsoft MAI all grade with real, executable checkers~\cite{deepseekr1,qwen3,kimik2}.
+    \item[\textbf{2}] \textbf{How fast to launch / terminate?} --- AWS publishes \emph{no} cold-start
+      number (the GPU tier pays a full EC2 launch) $\Rightarrow$ \textbf{measure it}, and \textbf{reuse
+      warm sessions} rather than relaunch per episode (a live \texttt{session\_id} keeps a microVM warm;
+      there is no provisioned-concurrency knob).
+    \item[\textbf{3}] \textbf{How to scale for goodput \& MFU?} --- \emph{Faster, not fatter}: many
+      \emph{small warm} sandboxes ($C = D \times L_e$), share one GPU across sandboxes (Ray fractions),
+      and maximize \textbf{goodput} (usable trajectories/s) --- not raw throughput --- to hold the
+      trainer GPUs near 100\%.
+  \end{enumerate}
+  \vspace{0.2em}
+  {\scriptsize\itshape The thesis: scale the environment layer by \textbf{launch speed $+$ concurrency
+  $+$ reuse}, keeping each sandbox minimal --- the trainer's demand rate $D$ anchors everything.}
 \end{frame}
 
 % ============================================================
@@ -1331,6 +1423,111 @@
 \end{frame}
 
 % ============================================================
+\section{Productionizing the sandbox --- detail}
+% ============================================================
+
+\begin{frame}{Q1 --- what AgentCore can run \& verify: the frontier RLVR pattern}
+  \footnotesize Recent post-training reports converge on a \textbf{two-track reward}: \textbf{Track A}
+  runs output in an isolated env and checks it (an AgentCore microVM); \textbf{Track B} is model-judged.
+  The trend moves \emph{toward} Track A to resist reward hacking.
+  \begin{columns}[T]
+    \begin{column}{0.6\textwidth}
+      \textbf{Track A --- execute-and-verify} (needs a sandbox)
+      \begin{itemize}\scriptsize\setlength\itemsep{0em}
+        \item \textbf{Code test cases} --- compile $+$ run vs.\ tests: DeepSeek-R1~\cite{deepseekr1},
+          Qwen3~\cite{qwen3}, Kimi k1.5/K2~\cite{kimik2}.
+        \item \textbf{SWE / agentic coding} --- containerized repo, edit-run-test on real suites:
+          Kimi K2~\cite{kimik2}, Microsoft MAI~\cite{mai}.
+        \item \textbf{Tool-integrated reasoning} --- Python executed, output masked from the loss (Qwen2.5-Math).
+        \item \textbf{Symbolic math check} --- boxed-answer parse/compare (DeepSeek-R1, Qwen3, Kimi).
+        \item \textbf{Instruction / format checkers} --- programmatic constraints (Llama-Nemotron RLOO~\cite{llamanemotron}).
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.4\textwidth}
+      \textbf{Track B --- model-judged} (no sandbox)
+      \begin{itemize}\scriptsize\setlength\itemsep{0.03em}
+        \item Trained scalar RM --- Nemotron-4-340B-Reward.
+        \item LLM-as-judge w/ reference --- Qwen3 general RL; \textbf{Llama-Nemotron judges even math}
+          answer-match with a 70B model (so math $\ne$ always executable).
+        \item Self-critic / preference --- Kimi K2 subjective reward.
+        \item For: open-ended writing, helpfulness, safety.
+      \end{itemize}
+      \begin{block}{Implication}
+        \scriptsize Every Track-A reward is a \texttt{write}$\to$\texttt{run}$\to$\texttt{check}
+        the AgentCore sandbox already does.
+      \end{block}
+    \end{column}
+  \end{columns}
+  \vspace{-0.6em}
+  {\scriptsize\itshape Sources cited inline; MAI is a blog (algorithm undisclosed).}
+\end{frame}
+
+\begin{frame}{Q2 --- how fast is a Runtime? launch, reuse \& teardown}
+  \footnotesize The launch-vs-reuse decision, from the AgentCore docs~\cite{ac-howitworks,ac-instances}.
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \textbf{What the docs commit to}
+      \begin{itemize}\scriptsize\setlength\itemsep{0.12em}
+        \item \textbf{No published cold-start latency.} Docs only say a new session ``includes instance
+          provisioning'' --- the GPU/Instances tier pays a \textbf{full EC2 launch} (minutes). \emph{Measure it.}
+        \item \textbf{Session life}: microVM $\le$\,8\,h, Instances $\le$\,14\,d. Idle timeout
+          \textbf{default 900\,s} (15\,min), resets on each invoke; max-lifetime default 8\,h.
+        \item \textbf{Code Interpreter default session $=$ 15\,min} (8\,h is the \emph{max}, not the default).
+        \item One session $=$ one EC2 instance (GPU tier); persistent EBS survives stop/resume.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \begin{block}{Decision: reuse warm sessions, don't relaunch}
+        \scriptsize Relaunching a Runtime per episode pays a cold start (EC2 launch on GPU) \emph{every}
+        episode $\Rightarrow$ idle trainer GPUs. Instead:
+        \begin{itemize}\setlength\itemsep{0.06em}
+          \item Keep a \textbf{pool of long-lived \texttt{session\_id}s}; each invoke resets the idle
+            timer $\Rightarrow$ stays warm within max-lifetime.
+          \item \textbf{Reset workspace state per episode} inside the warm session (context/FS persist).
+          \item No provisioned-concurrency knob --- warm session IDs are the \emph{only} keep-warm lever.
+          \item Guard the mid-teardown \texttt{409 RetryableConflictException}; size the pool to the
+            (console-only) concurrency quota.
+        \end{itemize}
+      \end{block}
+      {\scriptsize This is the \texttt{b4} pattern: shared \texttt{runtimeSessionId} $+$ per-episode sub-session.}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Q3 --- scaling for goodput \& MFU: faster, not fatter}
+  \footnotesize Trainer GPUs are the costly tier; they earn their keep only if fresh trajectories arrive
+  fast enough. Scale the \emph{environment} layer --- by \textbf{count $+$ speed}, not size.
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \textbf{Faster / wider (not fatter)}
+      \begin{itemize}\scriptsize\setlength\itemsep{0.12em}
+        \item \textbf{Concurrency} $C = D \times L_e$ (Little's Law): demand $D = B / T_{\text{step}}$,
+          episode latency $L_e$. Run $C$ \emph{small warm} sandboxes in parallel --- more microVMs, not bigger ones.
+        \item \textbf{Cut $L_e$}: warm reuse (no cold start), cap turns, clip tool output, smaller images.
+        \item \textbf{Share the GPU}: many sandboxes per L4 via Ray fractions / MPS (\texttt{b4}) --- one
+          GPU, $N$ episodes, not one GPU per episode.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \textbf{Goodput, not throughput}
+      \begin{itemize}\scriptsize\setlength\itemsep{0.12em}
+        \item \textbf{Goodput} $=$ usable trajectories/s $=$ launched $\times\,(1 -$
+          timeout/error/staleness-drop$)$. A fast sandbox that times out or drifts off-policy adds
+          \emph{zero} goodput.
+        \item Protect it: turn caps $+$ timeouts bound the tail; an \textbf{async staleness budget}
+          ($K$ steps ahead) keeps rollouts near-on-policy.
+        \item \textbf{MFU follows}: hold goodput $\ge D$ within the staleness budget $\Rightarrow$
+          trainer GPUs stay $\approx$100\% busy.
+      \end{itemize}
+      \begin{block}{Punchline}
+        \scriptsize Optimize \emph{launch speed $+$ concurrency $+$ reuse} of minimal sandboxes ---
+        that is what raises whole-system goodput and trainer MFU.
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ============================================================
 \section{Demos --- body-demo details}
 % ============================================================
 
@@ -1472,6 +1669,119 @@ async with sandbox as sb:              # microVM #2
   {\scriptsize\itshape Contrast: the real Claude Code CLI (\texttt{a2}/\texttt{b2}) is the same loop but
   the production binary; \texttt{run\_episode} (\texttt{a}/\texttt{b}) is the same loop but calls the
   policy directly and scrapes a \texttt{```python} block instead of tool-calling.}
+\end{frame}
+
+% ============================================================
+\section{Planned task demos (placeholders)}
+% ============================================================
+
+\begin{frame}{Placeholder --- \texttt{demo\_a}-SWE: repo-level software engineering}
+  \footnotesize\textbf{Status: placeholder (not yet built).} Same in-process harness as \texttt{demo\_a};
+  only the seed workspace $+$ checker change.
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \textbf{Sketch}
+      \begin{itemize}\scriptsize\setlength\itemsep{0.1em}
+        \item \textbf{Task}: a SWE-bench / SWE-Gym~\cite{swebench,swegym} instance --- fix a real repo.
+        \item \textbf{Seed}: clone the repo at its buggy commit into the CPU microVM.
+        \item \textbf{Harness}: edit files, run the test suite, read failures, iterate.
+        \item \textbf{Checker}: target tests pass (\texttt{FAIL\_TO\_PASS} green).
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \textbf{TODO to build}
+      \begin{itemize}\scriptsize\setlength\itemsep{0.1em}
+        \item \texttt{build\_dataset.py}: fetch instances, pin per-repo images.
+        \item \texttt{metrics.py}: apply patch, run \texttt{FAIL\_TO\_PASS}/\texttt{PASS\_TO\_PASS}.
+        \item Larger microVM disk, longer turn cap, image caching.
+      \end{itemize}
+      \begin{block}{Note}
+        \scriptsize Highest-value, most demanding sandbox (multi-turn, stateful, real test-runner) ---
+        the frontier of sandbox demand (Kimi K2, MAI).
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Placeholder --- \texttt{demo\_a}-tools: terminal \& tool-use}
+  \footnotesize\textbf{Status: placeholder (not yet built).} Same harness; the sandbox is the terminal $+$ FS.
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \textbf{Sketch}
+      \begin{itemize}\scriptsize\setlength\itemsep{0.1em}
+        \item \textbf{Task}: Terminal-Bench / $\tau$-bench-style --- multi-turn shell \& API/MCP actions.
+        \item \textbf{Seed}: a task spec $+$ initial FS / mock services in the microVM.
+        \item \textbf{Harness}: \texttt{bash} / tool calls until the goal state is reached.
+        \item \textbf{Checker}: completion oracle (end-state assertion).
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \textbf{TODO to build}
+      \begin{itemize}\scriptsize\setlength\itemsep{0.1em}
+        \item \texttt{build\_dataset.py}: task specs $+$ seed state.
+        \item \texttt{metrics.py}: per-task state-check oracle.
+        \item Optional MCP tool bridge / mock services.
+      \end{itemize}
+      \begin{block}{Note}
+        \scriptsize Exercises the harness's tool loop more than the checker; pairs well with the
+        mini-harness (\texttt{a3}) real tool-calling.
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Placeholder --- \texttt{demo\_a}-data: data / SQL / analytics}
+  \footnotesize\textbf{Status: placeholder (not yet built).} Same harness; add a dataset to the microVM.
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \textbf{Sketch}
+      \begin{itemize}\scriptsize\setlength\itemsep{0.1em}
+        \item \textbf{Task}: a natural-language question over a CSV / SQLite DB.
+        \item \textbf{Seed}: dataset file(s) $+$ the question.
+        \item \textbf{Harness}: write pandas / SQL, run it, read the result, refine.
+        \item \textbf{Checker}: result-set equals the gold answer.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \textbf{TODO to build}
+      \begin{itemize}\scriptsize\setlength\itemsep{0.1em}
+        \item \texttt{build\_dataset.py}: (question, dataset, gold) triples.
+        \item \texttt{metrics.py}: normalized result-set comparison.
+        \item Answer-canonicalization to avoid false negatives.
+      \end{itemize}
+      \begin{block}{Note}
+        \scriptsize Crisp programmatic reward, cheap CPU microVM --- a good early add after MBPP.
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Placeholder --- \texttt{demo\_a}-sec: security / CTF}
+  \footnotesize\textbf{Status: placeholder (not yet built).} Same harness; needs the \emph{strongest}
+  isolation (adversarial code).
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \textbf{Sketch}
+      \begin{itemize}\scriptsize\setlength\itemsep{0.1em}
+        \item \textbf{Task}: find / exploit / patch --- e.g.\ read \texttt{/flag}, or close a vuln.
+        \item \textbf{Seed}: a vulnerable binary / service in an isolated microVM.
+        \item \textbf{Harness}: shell, craft an exploit, iterate.
+        \item \textbf{Checker}: flag captured / vuln closed.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \textbf{TODO to build}
+      \begin{itemize}\scriptsize\setlength\itemsep{0.1em}
+        \item \texttt{build\_dataset.py}: challenge images $+$ flags.
+        \item \texttt{metrics.py}: flag-match / vuln-closed assertion.
+        \item Lock down egress; rely on per-session microVM isolation.
+      \end{itemize}
+      \begin{block}{Note}
+        \scriptsize The best showcase of \emph{why} a microVM (not Docker): untrusted adversarial code
+        needs a kernel-level boundary.
+      \end{block}
+    \end{column}
+  \end{columns}
 \end{frame}
 
 % ============================================================
@@ -2342,6 +2652,11 @@ create_capacity_provider(computeConfiguration=
     \bibitem{ac-codeinterp} AgentCore Code Interpreter.
       \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-tool.html}
     \bibitem{ac-pricing} AgentCore pricing. \url{https://aws.amazon.com/bedrock/agentcore/pricing/}
+    \bibitem{qwen3} Qwen3 Technical Report. \url{https://arxiv.org/abs/2505.09388}
+    \bibitem{llamanemotron} Llama-Nemotron --- Efficient Reasoning Models.
+      \url{https://arxiv.org/abs/2505.00949}
+    \bibitem{mai} Microsoft MAI --- MAI-1 / MAI ``Thinking'' (Microsoft AI; blog, 2026,
+      RL algorithm undisclosed). \url{https://microsoft.ai/news/}
   \end{thebibliography}
 \end{frame}
 
