@@ -266,6 +266,133 @@
 \end{frame}
 
 % ============================================================
+\section{Customizing the sandbox --- from CPU to GPU}
+% ============================================================
+
+\begin{frame}{``How does AWS know which runtime to launch per task?'' --- it doesn't}
+  \footnotesize A natural worry with the zoo: SQL, RAG, math, SWE, CTF\ldots\ surely each needs its own
+  runtime env? \textbf{No} --- AWS never sees the task type. There is \emph{one} generic sandbox runtime;
+  the task family is \textbf{data}, not environment (\texttt{task\_families.py}) --- the harness changes
+  only prompt, seed files, and checker.
+  \begin{center}
+  \renewcommand{\arraystretch}{0.58}\scriptsize
+  \begin{tabular}{@{}p{3.6cm}p{4.2cm}p{4.0cm}@{}}
+    \toprule
+    \textbf{Layer} & \textbf{Who decides} & \textbf{Varies per family?} \\
+    \midrule
+    Which runtime / image (CPU Python vs GPU CUDA) & \textbf{You}, at deploy --- harness invokes a chosen ARN & \textbf{No} --- one CPU image serves all families \\
+    Which EC2 instance / session & AWS, keyed \emph{only} by \texttt{runtimeSessionId} & Per \emph{episode} (isolation), not per family \\
+    Task content (prompt $+$ seed files $+$ checker) & \textbf{The harness}, in software, after the VM boots & \textbf{Yes} --- the \emph{only} thing that changes \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \vspace{-0.4em}
+  \begin{columns}[T]
+    \begin{column}{0.6\textwidth}
+      \textbf{Per-episode flow}
+      \begin{enumerate}\setlength\itemsep{0.03em}
+        \item[\textbf{1}] Generic microVM cold-boots --- AWS knows only \emph{``a Python sandbox for \texttt{sid=X}''}.
+        \item[\textbf{2}] The harness \texttt{write}s the family's seed files (SQLite DB, corpus\ldots) $+$ \texttt{run\_checks.py}.
+        \item[\textbf{3}] \texttt{exec} runs it; exit code $\to$ reward. AWS just ran the bytes pushed in.
+      \end{enumerate}
+    \end{column}
+    \begin{column}{0.4\textwidth}
+      \begin{block}{Why no per-family env is needed}
+        \scriptsize Every checker is \textbf{stdlib-only} (\texttt{sqlite3}, \texttt{re}, plain Python) ---
+        already in the base image. A family needing an extra package just \texttt{pip install}s it at
+        episode start via \texttt{exec} --- \emph{same} runtime, more software pushed in.
+      \end{block}
+    \end{column}
+  \end{columns}
+  {\scriptsize\itshape The one genuine env change is \textbf{CPU$\leftrightarrow$GPU} (\texttt{a} vs
+  \texttt{b}): KernelBench needs CUDA, so the harness points at the \texttt{g6} ARN --- \emph{your}
+  deploy-time choice. Each task needs its own \emph{session}, not its own \emph{runtime}.}
+\end{frame}
+
+\begin{frame}{When the default microVM isn't enough --- build a \emph{custom} Runtime}
+  \footnotesize The managed \textbf{Code Interpreter} covers most agentic-RL tasks. But it is a
+  \emph{locked-down, shared} sandbox --- when a task needs more, \textbf{bring your own container} $=$ a
+  custom AgentCore Runtime. Same \texttt{Sandbox} contract, so the RL loop never changes.
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \textbf{What the \emph{default} Code Interpreter can\emph{not} do}
+      \begin{itemize}\setlength\itemsep{0.03em}
+        \item \textbf{No GPU} --- CPU-only (KernelBench / CUDA / local inference out).
+        \item \textbf{Fixed image} --- no \texttt{apt}, toolchain (\texttt{nvcc}), DB server, or custom base image.
+        \item \textbf{Unprivileged} --- \texttt{genesis1ptools}, one writable CWD, no root.
+        \item \textbf{No inbound net / daemons}, capped timeout, ephemeral FS.
+      \end{itemize}
+      {\scriptsize\itshape Extra \emph{Python package} $\to$ \texttt{pip install} at episode start (still
+        default); anything \emph{above} the language layer $\to$ custom Runtime.}
+    \end{column}
+    \begin{column}{0.52\textwidth}
+      \textbf{How to build it} (\texttt{demo\_b/b2/b3/b4})
+      \begin{enumerate}\setlength\itemsep{0.03em}
+        \item[\textbf{1}] \textbf{Dockerfile} (deps, toolchain, CUDA, weights) $+$ a tiny HTTP server for
+          the 3-tool contract (\texttt{sandbox\_server\_agent.py}).
+        \item[\textbf{2}] \texttt{buildx} $\to$ push to \textbf{ECR} (\texttt{arm64} serverless; \texttt{x86}$+$GPU needs a capacity provider).
+        \item[\textbf{3}] \texttt{create\_agent\_runtime(\ldots)} $\to$ an \textbf{ARN}.
+        \item[\textbf{4}] \textbf{GPU / root / long sessions}: attach a \textbf{capacity provider} (\texttt{g6}) --- 1 session : 1 instance, full CUDA.
+        \item[\textbf{5}] \texttt{invoke\_agent\_runtime} --- identical \texttt{Sandbox} interface, so \emph{only the ARN changes}.
+      \end{enumerate}
+    \end{column}
+  \end{columns}
+  \vspace{0.1em}
+  {\scriptsize Two levers gained: \textbf{your image} (any deps/toolchain/root) and \textbf{compute mode}
+  (CPU serverless \emph{or} GPU capacity provider). Stepwise build is in the HOWTO appendix.}
+\end{frame}
+
+\begin{frame}[fragile]{Example --- building a custom \emph{GPU} sandbox Runtime (what \texttt{demo\_b} ships)}
+  \footnotesize A CUDA sandbox that compiles \& runs KernelBench kernels --- impossible on the
+  default CPU microVM. Three artifacts (\texttt{code/deploy}).
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \textbf{1. Image} --- CUDA base $+$ the 3-tool server
+{\scriptsize
+\begin{verbatim}
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04
+RUN pip install bedrock-agentcore boto3 \
+      torch --index-url .../cu124
+COPY agentcore_slime_demo /app/...
+ENV IS_SANDBOX=1
+EXPOSE 8080
+CMD ["python","-m",
+  "agentcore_slime_demo.sandbox_server_agent"]
+\end{verbatim}}
+      \textbf{2. Build \& push} (x86, GPU $\Rightarrow$ instance):
+{\scriptsize
+\begin{verbatim}
+docker buildx build --platform linux/amd64 \
+  -f deploy/Dockerfile.sandbox.gpu \
+  -t <ecr>/acs-sandbox-gpu:latest --push code/
+\end{verbatim}}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \textbf{3. Create the Runtime on a capacity provider}~\cite{ac-createruntime}
+{\scriptsize
+\begin{verbatim}
+create_agent_runtime(
+  agentRuntimeName="acs_sandbox_gpu",
+  roleArn=exec_role,
+  agentRuntimeArtifact={"containerConfiguration":
+     {"containerUri": image_uri}},
+  protocolConfiguration={"serverProtocol":"HTTP"},
+  capacityProviderConfiguration=       # <- GPU
+     {"capacityProviderArn": g6_cp_arn},
+  environmentVariables=env)
+\end{verbatim}}
+      {\scriptsize The \textbf{one} GPU-specific line is
+      \texttt{capacityProviderConfiguration} (your EC2 g6 pool); drop it $+$ switch the base image and
+      the \emph{same} call yields a CPU custom Runtime.}
+    \end{column}
+  \end{columns}
+  \vspace{0.1em}
+  {\scriptsize\itshape Harness side is unchanged: point \texttt{make\_sandbox} at the returned ARN;
+  the RL loop never learns it swapped a managed microVM for your CUDA box.
+  (\texttt{deploy\_two\_runtime.py:gpu\_runtime\_on\_cp}.)}
+\end{frame}
+
+% ============================================================
 \section{Use cases of the sandbox}
 % ============================================================
 
@@ -686,133 +813,6 @@
       Runtime instance} (custom CUDA container on a \texttt{g6}). Same tools, same exit-code reward.}
     \end{column}
   \end{columns}
-\end{frame}
-
-% ============================================================
-\section{Customizing the sandbox --- from CPU to GPU}
-% ============================================================
-
-\begin{frame}{``How does AWS know which runtime to launch per task?'' --- it doesn't}
-  \footnotesize A natural worry with the zoo: SQL, RAG, math, SWE, CTF\ldots\ surely each needs its own
-  runtime env? \textbf{No} --- AWS never sees the task type. There is \emph{one} generic sandbox runtime;
-  the task family is \textbf{data}, not environment (\texttt{task\_families.py}) --- the harness changes
-  only prompt, seed files, and checker.
-  \begin{center}
-  \renewcommand{\arraystretch}{0.58}\scriptsize
-  \begin{tabular}{@{}p{3.6cm}p{4.2cm}p{4.0cm}@{}}
-    \toprule
-    \textbf{Layer} & \textbf{Who decides} & \textbf{Varies per family?} \\
-    \midrule
-    Which runtime / image (CPU Python vs GPU CUDA) & \textbf{You}, at deploy --- harness invokes a chosen ARN & \textbf{No} --- one CPU image serves all families \\
-    Which EC2 instance / session & AWS, keyed \emph{only} by \texttt{runtimeSessionId} & Per \emph{episode} (isolation), not per family \\
-    Task content (prompt $+$ seed files $+$ checker) & \textbf{The harness}, in software, after the VM boots & \textbf{Yes} --- the \emph{only} thing that changes \\
-    \bottomrule
-  \end{tabular}
-  \end{center}
-  \vspace{-0.4em}
-  \begin{columns}[T]
-    \begin{column}{0.6\textwidth}
-      \textbf{Per-episode flow}
-      \begin{enumerate}\setlength\itemsep{0.03em}
-        \item[\textbf{1}] Generic microVM cold-boots --- AWS knows only \emph{``a Python sandbox for \texttt{sid=X}''}.
-        \item[\textbf{2}] The harness \texttt{write}s the family's seed files (SQLite DB, corpus\ldots) $+$ \texttt{run\_checks.py}.
-        \item[\textbf{3}] \texttt{exec} runs it; exit code $\to$ reward. AWS just ran the bytes pushed in.
-      \end{enumerate}
-    \end{column}
-    \begin{column}{0.4\textwidth}
-      \begin{block}{Why no per-family env is needed}
-        \scriptsize Every checker is \textbf{stdlib-only} (\texttt{sqlite3}, \texttt{re}, plain Python) ---
-        already in the base image. A family needing an extra package just \texttt{pip install}s it at
-        episode start via \texttt{exec} --- \emph{same} runtime, more software pushed in.
-      \end{block}
-    \end{column}
-  \end{columns}
-  {\scriptsize\itshape The one genuine env change is \textbf{CPU$\leftrightarrow$GPU} (\texttt{a} vs
-  \texttt{b}): KernelBench needs CUDA, so the harness points at the \texttt{g6} ARN --- \emph{your}
-  deploy-time choice. Each task needs its own \emph{session}, not its own \emph{runtime}.}
-\end{frame}
-
-\begin{frame}{When the default microVM isn't enough --- build a \emph{custom} Runtime}
-  \footnotesize The managed \textbf{Code Interpreter} covers most agentic-RL tasks. But it is a
-  \emph{locked-down, shared} sandbox --- when a task needs more, \textbf{bring your own container} $=$ a
-  custom AgentCore Runtime. Same \texttt{Sandbox} contract, so the RL loop never changes.
-  \begin{columns}[T]
-    \begin{column}{0.48\textwidth}
-      \textbf{What the \emph{default} Code Interpreter can\emph{not} do}
-      \begin{itemize}\setlength\itemsep{0.03em}
-        \item \textbf{No GPU} --- CPU-only (KernelBench / CUDA / local inference out).
-        \item \textbf{Fixed image} --- no \texttt{apt}, toolchain (\texttt{nvcc}), DB server, or custom base image.
-        \item \textbf{Unprivileged} --- \texttt{genesis1ptools}, one writable CWD, no root.
-        \item \textbf{No inbound net / daemons}, capped timeout, ephemeral FS.
-      \end{itemize}
-      {\scriptsize\itshape Extra \emph{Python package} $\to$ \texttt{pip install} at episode start (still
-        default); anything \emph{above} the language layer $\to$ custom Runtime.}
-    \end{column}
-    \begin{column}{0.52\textwidth}
-      \textbf{How to build it} (\texttt{demo\_b/b2/b3/b4})
-      \begin{enumerate}\setlength\itemsep{0.03em}
-        \item[\textbf{1}] \textbf{Dockerfile} (deps, toolchain, CUDA, weights) $+$ a tiny HTTP server for
-          the 3-tool contract (\texttt{sandbox\_server\_agent.py}).
-        \item[\textbf{2}] \texttt{buildx} $\to$ push to \textbf{ECR} (\texttt{arm64} serverless; \texttt{x86}$+$GPU needs a capacity provider).
-        \item[\textbf{3}] \texttt{create\_agent\_runtime(\ldots)} $\to$ an \textbf{ARN}.
-        \item[\textbf{4}] \textbf{GPU / root / long sessions}: attach a \textbf{capacity provider} (\texttt{g6}) --- 1 session : 1 instance, full CUDA.
-        \item[\textbf{5}] \texttt{invoke\_agent\_runtime} --- identical \texttt{Sandbox} interface, so \emph{only the ARN changes}.
-      \end{enumerate}
-    \end{column}
-  \end{columns}
-  \vspace{0.1em}
-  {\scriptsize Two levers gained: \textbf{your image} (any deps/toolchain/root) and \textbf{compute mode}
-  (CPU serverless \emph{or} GPU capacity provider). Stepwise build is in the HOWTO appendix.}
-\end{frame}
-
-\begin{frame}[fragile]{Example --- building a custom \emph{GPU} sandbox Runtime (what \texttt{demo\_b} ships)}
-  \footnotesize A CUDA sandbox that compiles \& runs KernelBench kernels --- impossible on the
-  default CPU microVM. Three artifacts (\texttt{code/deploy}).
-  \begin{columns}[T]
-    \begin{column}{0.5\textwidth}
-      \textbf{1. Image} --- CUDA base $+$ the 3-tool server
-{\scriptsize
-\begin{verbatim}
-FROM nvidia/cuda:12.4.0-devel-ubuntu22.04
-RUN pip install bedrock-agentcore boto3 \
-      torch --index-url .../cu124
-COPY agentcore_slime_demo /app/...
-ENV IS_SANDBOX=1
-EXPOSE 8080
-CMD ["python","-m",
-  "agentcore_slime_demo.sandbox_server_agent"]
-\end{verbatim}}
-      \textbf{2. Build \& push} (x86, GPU $\Rightarrow$ instance):
-{\scriptsize
-\begin{verbatim}
-docker buildx build --platform linux/amd64 \
-  -f deploy/Dockerfile.sandbox.gpu \
-  -t <ecr>/acs-sandbox-gpu:latest --push code/
-\end{verbatim}}
-    \end{column}
-    \begin{column}{0.5\textwidth}
-      \textbf{3. Create the Runtime on a capacity provider}~\cite{ac-createruntime}
-{\scriptsize
-\begin{verbatim}
-create_agent_runtime(
-  agentRuntimeName="acs_sandbox_gpu",
-  roleArn=exec_role,
-  agentRuntimeArtifact={"containerConfiguration":
-     {"containerUri": image_uri}},
-  protocolConfiguration={"serverProtocol":"HTTP"},
-  capacityProviderConfiguration=       # <- GPU
-     {"capacityProviderArn": g6_cp_arn},
-  environmentVariables=env)
-\end{verbatim}}
-      {\scriptsize The \textbf{one} GPU-specific line is
-      \texttt{capacityProviderConfiguration} (your EC2 g6 pool); drop it $+$ switch the base image and
-      the \emph{same} call yields a CPU custom Runtime.}
-    \end{column}
-  \end{columns}
-  \vspace{0.1em}
-  {\scriptsize\itshape Harness side is unchanged: point \texttt{make\_sandbox} at the returned ARN;
-  the RL loop never learns it swapped a managed microVM for your CUDA box.
-  (\texttt{deploy\_two\_runtime.py:gpu\_runtime\_on\_cp}.)}
 \end{frame}
 
 % ============================================================
