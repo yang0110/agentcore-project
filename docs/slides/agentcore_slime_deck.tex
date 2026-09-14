@@ -392,6 +392,36 @@ create_agent_runtime(
   (\texttt{deploy\_two\_runtime.py:gpu\_runtime\_on\_cp}.)}
 \end{frame}
 
+\begin{frame}{Which GPUs? --- EC2 instance families behind an AgentCore capacity provider}
+  \footnotesize A GPU Runtime is an \textbf{EC2 instance} served via a \textbf{capacity provider}, so the
+  GPU menu is just \emph{EC2's GPU families}. The \textbf{G-series} (inference/graphics) and
+  \textbf{P-series} (training-grade) --- pick by VRAM and whether you need \textbf{hard} (MIG) fractioning.
+  \begin{center}
+  \renewcommand{\arraystretch}{0.55}\scriptsize
+  \begin{tabular}{@{}p{1.35cm}p{1.5cm}p{1.5cm}p{1.35cm}p{1.05cm}p{3.9cm}@{}}
+    \toprule
+    \textbf{Family} & \textbf{GPU} & \textbf{VRAM/GPU} & \textbf{GPUs/node} & \textbf{MIG?} & \textbf{Where it fits} \\
+    \midrule
+    \texttt{g4dn} & T4 & 16\,GB & 1--8 & no & entry CUDA / light eval \\
+    \texttt{g5} & A10G & 24\,GB & 1--8 & no & mid inference \& kernel eval \\
+    \texttt{g6} & \textbf{L4} & 24\,GB & 1--8 & no & \textbf{the demos run here} (\texttt{g6.xlarge}\,$=$\,1 L4) \\
+    \texttt{g6e} & L40S & 48\,GB & 1--8 & no & larger kernels / bigger models \\
+    \midrule
+    \texttt{p4d/de} & A100 & 40/80\,GB & 8 & \textbf{yes} & training-grade; hard MIG split \\
+    \texttt{p5} & H100 & 80\,GB & 8 & \textbf{yes} & largest; MIG-isolated sharing \\
+    \texttt{p5e/en} & H200 & 141\,GB & 8 & yes & max VRAM per GPU \\
+    \bottomrule
+  \end{tabular}
+  \\\figtag{EC2 GPU families selectable for a GPU-sandbox Runtime; demos validated on \texttt{g6}}
+  \end{center}
+  \vspace{-0.1em}
+  {\scriptsize\itshape \textbf{MIG matters for sharing}: only A100\,/\,H100\,/\,H200 hardware-partition one
+  device into \emph{hard-isolated} slices. The L-series (T4\,/\,A10G\,/\,L4\,/\,L40S) has \textbf{no MIG},
+  so splitting one across episodes is \emph{cooperative} only --- Ray \texttt{num\_gpus}$<$1 $+$ a software
+  VRAM cap (\texttt{demo\_b4}). Also: \texttt{gr6} (mem-opt L4), \texttt{g5g} (Graviton T4G).
+  Concrete availability depends on capacity-provider config, region \& quota.}
+\end{frame}
+
 % ============================================================
 \section{Use cases of the sandbox}
 % ============================================================
