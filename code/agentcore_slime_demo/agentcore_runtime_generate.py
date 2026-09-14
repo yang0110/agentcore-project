@@ -9,7 +9,6 @@ has ONE home now, its own Runtime).
 
 It differs from the other hooks only in WHERE the harness runs:
   * generate.generate               — our run_episode, in-process, local `sb`  (Demos A/B).
-  * claude_code_generate.generate   — Claude Code, in-sandbox                    (A2/B2 shortcut).
   * THIS                            — harness on Runtime #1, sandbox on Runtime #2 (A3/B3, target).
 
 Flow per prompt:

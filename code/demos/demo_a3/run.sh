@@ -74,7 +74,15 @@ SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_mbpp_mini_async}"
 # Deploy the two Runtimes with the deploy script (docs: harness-sandbox-decoupling.md §7), then:
 #   export AGENTCORE_HARNESS_RUNTIME_ARN=... AGENTCORE_SANDBOX_RUNTIME_ARN=... ADAPTER_PUBLIC_HOST=...
 AGENTCORE_HARNESS_RUNTIME_ARN="${AGENTCORE_HARNESS_RUNTIME_ARN:?set to the harness Runtime #1 ARN}"
-AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the sandbox Runtime #2 ARN}"
+# Sandbox Runtime #2. PINNED to K=2: fan episodes round-robin across 2 CPU sandbox Runtimes (the
+# same ARNs the demo_a runtime-count ablation used). Runtime count is NOT tied to num_engines (=2);
+# it only spreads S=CONC*num_engines concurrent sandbox sessions across K endpoints. The plural
+# _ARNS takes precedence over the singular in agentcore_slime_demo/sandbox.py; override either to
+# change K. Singular ARN stays required only when no _ARNS is given.
+AGENTCORE_SANDBOX_RUNTIME_ARNS="${AGENTCORE_SANDBOX_RUNTIME_ARNS:-arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu-1gzBVp675S,arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu_1-adRZyEHM6g}"
+if [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
+   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the sandbox Runtime #2 ARN, or set ..._ARNS for the multi-Runtime fan-out}"
+fi
 ADAPTER_PUBLIC_HOST="${ADAPTER_PUBLIC_HOST:?set to this box PRIVATE IP that harness Runtime 1 dials back to}"
 ADAPTER_PORT="${ADAPTER_PORT:-18021}"                # pinned; open ONLY this port from the runtime SG
 HARNESS_KIND="${HARNESS_KIND:-mini}"                 # which harness Runtime #1 runs (mini | claude)
@@ -209,7 +217,8 @@ RUNTIME_ENV_JSON="{
     \"AGENTCORE_REGION\": \"${AGENTCORE_REGION:-${AWS_REGION:-us-west-2}}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"AGENTCORE_HARNESS_RUNTIME_ARN\": \"${AGENTCORE_HARNESS_RUNTIME_ARN}\",
-    \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\",
+    \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
+    \"AGENTCORE_SANDBOX_RUNTIME_ARNS\": \"${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}\",
     \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST}\",
     \"ADAPTER_PORT\": \"${ADAPTER_PORT}\",
     \"HARNESS_KIND\": \"${HARNESS_KIND}\",

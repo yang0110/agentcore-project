@@ -33,11 +33,11 @@ training and records each turn into a per-session `TrajectoryManager`. The sessi
 `Authorization: Bearer <session_id>` header. `finish_session` then drains that trajectory into
 loss-masked GRPO samples. So `mini_agent.py` contains **zero** training code.
 
-## Demo A3 vs Demo A2 (why this exists)
+## Why the mini harness (vs the real Claude Code CLI)
 
-[Demo A2](../demo_a2/) runs the **real Claude Code CLI** — faithful, but it needs a custom
-multi-user container with Node 22 + Claude Code installed. **Demo A3 runs our ~1-file
-`MiniClaudeHarness` instead** (same two-Runtime deployment), so:
+Running the **real Claude Code CLI** as the harness is faithful, but it needs a custom multi-user
+container with Node 22 + Claude Code installed (that heavier real-CLI variant has been retired).
+**Demo A3 runs our ~1-file `MiniClaudeHarness` instead** (same two-Runtime deployment), so:
 
 - **no Node, no CLI in the harness image** — the harness Runtime #1 image is a slim CPU Python
   container (aiohttp + boto3 + bedrock_agentcore, no slime), and the sandbox Runtime #2 is a

@@ -60,8 +60,17 @@ SANDBOX="${SANDBOX:-agentcore-runtime}"   # agentcore-runtime -> SINGLE remote A
                                           # agentcore -> AWS Code Interpreter microVM; local -> in-container LocalSandbox (offline)
 # The remote sandbox Runtime ARN (sandbox_server_agent.py). REQUIRED for SANDBOX=agentcore-runtime.
 # demo_a's MBPP checker is pure Python => a CPU-backed sandbox Runtime (e.g. acs_sandbox_a2 on acs_cpu_cp).
-if [ "$SANDBOX" = "agentcore-runtime" ]; then
-   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the CPU sandbox Runtime ARN (sandbox_server_agent.py; e.g. acs_sandbox_a2 from deploy_cli_sandbox.py)}"
+# AGENTCORE_SANDBOX_RUNTIME_ARNS (plural, comma-separated) fans episodes out round-robin across
+# SEVERAL sandbox Runtimes — the runtime-count throughput ablation knob. Either the plural list OR
+# the single ARN satisfies the requirement below.
+# PINNED to K=2: the runtime-count ablation (logs/ablation_summary.csv) found throughput flat
+# across K=1/2/4 (sandbox is not the bottleneck for demo_a's pure-Python CPU checker — the 2 SGLang
+# engines / trainer are), with K=2 the marginal goodput peak. Runtime count is NOT tied to
+# num_engines; it only spreads S=CONC*num_engines concurrent sessions across K endpoints. Override
+# by exporting AGENTCORE_SANDBOX_RUNTIME_ARNS (or ..._ARN) to sweep again.
+AGENTCORE_SANDBOX_RUNTIME_ARNS="${AGENTCORE_SANDBOX_RUNTIME_ARNS:-arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu-1gzBVp675S,arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu_1-adRZyEHM6g}"
+if [ "$SANDBOX" = "agentcore-runtime" ] && [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
+   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN (or ..._ARNS for the multi-Runtime sweep) to the CPU sandbox Runtime ARN (sandbox_server_agent.py; e.g. acs_sandbox_cpu from deploy_two_runtime.py)}"
 fi
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
@@ -110,10 +119,22 @@ HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a720891212
 # ---- Demo A config (baked in) --------------------------------------------------------------
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
-DATA="${DATA:-$DEMO_DIR/data/mbpp_train.jsonl}"
-EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/mbpp_eval.jsonl}"
-EVAL_NAME="${EVAL_NAME:-mbpp}"
-SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_mbpp_async}"
+
+# Task family selector. demo_a's in-process harness is task-agnostic: the SAME run_episode
+# loop trains any of these families, differing only in the seed dataset + hidden checker
+# (see agentcore_slime_demo/task_families.py). FAMILY defaults to coding/MBPP (unchanged).
+#   coding = MBPP        (build_dataset.py --dataset mbpp)
+#   swe tool_use sql math ctf rag  (build_family_datasets.py)
+FAMILY="${FAMILY:-coding}"
+if [ "$FAMILY" = "coding" ] || [ "$FAMILY" = "mbpp" ]; then
+  _DS=mbpp; _EVAL_NAME=mbpp
+else
+  _DS="$FAMILY"; _EVAL_NAME="$FAMILY"
+fi
+DATA="${DATA:-$DEMO_DIR/data/${_DS}_train.jsonl}"
+EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/${_DS}_eval.jsonl}"
+EVAL_NAME="${EVAL_NAME:-$_EVAL_NAME}"
+SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}_async}"
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -263,6 +284,7 @@ RUNTIME_ENV_JSON="{
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
+    \"AGENTCORE_SANDBOX_RUNTIME_ARNS\": \"${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"INFER_CONC\": \"${INFER_CONC:-0}\"

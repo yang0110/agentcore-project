@@ -1,6 +1,6 @@
-# Demos — the 2×3 matrix
+# Demos — the 2×2 matrix
 
-Six demo directories, each **independently runnable**. Each one owns its `data/` (train +
+The demo directories are each **independently runnable**. Each one owns its `data/` (train +
 held-out eval jsonl), its `ckpt/` output dir, and its `run.sh`, so you can run any single demo
 without touching the others or the shared `code/p4_slime_train/` tree. The `agentcore_slime_demo`
 library is **imported from the shared copy** at `code/agentcore_slime_demo/` (put on `PYTHONPATH`
@@ -12,21 +12,24 @@ container.
 The matrix has two axes:
 
 - **Task / sandbox** (columns): **A** = MBPP on a CPU microVM · **B** = KernelBench on a GPU sandbox.
-- **Agent harness** (rows): **our** lightweight `run_episode` loop · the **real Claude Code** CLI
-  running in a custom Docker/AgentCore container · a **mini Claude-Code-like** harness we wrote
-  (no CLI) that runs on its **own AgentCore Runtime**. In every row the policy is still Qwen3-4B
-  trained by slime; only the agent loop changes, talking to the policy through slime's Anthropic adapter.
+- **Agent harness** (rows): **our** lightweight `run_episode` loop · a **mini Claude-Code-like**
+  harness we wrote (no CLI) that runs on its **own AgentCore Runtime**. In every row the policy is
+  still Qwen3-4B trained by slime; only the agent loop changes, talking to the policy through slime's
+  Anthropic adapter.
 
 |            | **A — MBPP / CPU microVM**            | **B — KernelBench / GPU sandbox**              |
 |------------|----------------------------------------|-------------------------------------------------|
 | **our harness**          | [`demo_a/`](demo_a/)   — 4 train + 4 infer + 0 env | [`demo_b/`](demo_b/)  — 4 train + 4 infer + 0 env (checker GPU on remote g6 sandbox) |
-| **real Claude Code (Docker)** | [`demo_a2/`](demo_a2/) — Demo A + Claude Code CLI | [`demo_b2/`](demo_b2/) — Demo B + Claude Code CLI |
 | **mini Claude-Code (own Runtime)** | [`demo_a3/`](demo_a3/) — Demo A + mini harness | [`demo_b3/`](demo_b3/) — Demo B + mini harness |
 
-All six share the training path: slime async/decoupled (`train_async.py`), Qwen3-4B, GRPO, the
-checkpoint-deadlock fix (`--async-save` + `--custom-megatron-init-path …enable_persistent_async_ckpt`),
-and save-only-at-end. They differ only in the **task**, the **sandbox**, and (rows 2/3) the
-**agent harness** (a **custom container** for row 2; a **dedicated harness Runtime** for row 3).
+(A prior third row ran the **real Claude Code CLI** in a custom container; that path has been
+removed in favor of the mini harness.) Demo [`demo_b4/`](demo_b4/) extends the B / mini-harness path
+with a Ray GPU-sharing farm on the remote g6 sandbox Runtime.
+
+All four matrix demos share the training path: slime async/decoupled (`train_async.py`), Qwen3-4B,
+GRPO, the checkpoint-deadlock fix (`--async-save` + `--custom-megatron-init-path …enable_persistent_async_ckpt`),
+and save-only-at-end. They differ only in the **task**, the **sandbox**, and (the mini-harness rows)
+the **agent harness** (a **dedicated harness Runtime**).
 
 ## Which to run
 
@@ -36,9 +39,6 @@ and save-only-at-end. They differ only in the **task**, the **sandbox**, and (ro
   the trainer box stays 4 train + 4 infer + 0 env. Trains on
   the real KernelBench (level_1, 100 single-op CUDA problems; 20 held-out level_2 fusions for eval).
   Defaults `RB=4/NS=8/NR=20`; keep `NR × RB ≤ 100` (see its README).
-- **`demo_a2` / `demo_b2`** — swap our loop for the **real Claude Code CLI**. These need a custom
-  container image (Node 22 + Claude Code, built from `_agent_assets/`) and, on the GPU side, CUDA +
-  torch too. They do **not** run offline. See each dir's README.
 - **`demo_a3` / `demo_b3`** — a **mini harness that mimics Claude Code** (call model → pick tool →
   run in sandbox → repeat) in ~1 file of Python. **No Node, no CLI** (it is not the Claude Code CLI),
   but it is deployed the **target** way: the harness runs on its **own AgentCore Runtime #1** and the

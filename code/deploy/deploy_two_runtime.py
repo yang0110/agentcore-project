@@ -31,7 +31,6 @@ Env knobs (all optional; sensible defaults):
 
 Usage:
     python3 deploy_two_runtime.py all             # full deploy (A3/B3), prints the export block
-    python3 deploy_two_runtime.py harness-claude  # add the CLAUDE harness #1 for the B2 two-Runtime path
     python3 deploy_two_runtime.py cleanup         # delete runtimes + capacity provider
 """
 from __future__ import annotations
@@ -450,7 +449,7 @@ def prepare_gpu_volume(gpu_arn: str) -> None:
 
 
 def _build_push_one(repo: str, dockerfile: str, platform: str) -> str:
-    """Build+push a SINGLE image (used by the harness-claude path so we don't rebuild the A3/B3
+    """Build+push a SINGLE image (used by redeploy_harness.py so we don't rebuild the whole A3/B3
     set). Returns the :latest image URI. Honors SKIP_BUILD=1 to reuse an already-pushed image."""
     acct = account()
     registry = f"{acct}.dkr.ecr.{REGION}.amazonaws.com"
@@ -464,36 +463,6 @@ def _build_push_one(repo: str, dockerfile: str, platform: str) -> str:
        f"--provenance=false --sbom=false -f {HERE}/{dockerfile} -t {uri} --push {CODE_CTX}")
     err(f"pushed {uri} ({platform})")
     return uri
-
-
-def cmd_harness_claude():
-    """Deploy the CLAUDE-flavored harness Runtime #1 for the two-Runtime CLI path (B2 target).
-
-    Same VPC wiring as the mini harness in cmd_all (it dials the adapter back), but a different
-    image (Dockerfile.harness.claude: node + claude CLI + mcp/uvicorn) and HARNESS_KIND=claude.
-    The GPU sandbox Runtime #2 is deployed by `all`; this only adds the harness. Reuses the exec
-    role / VPC endpoints / adapter-port ingress that `all` already created (idempotent)."""
-    private_ip = os.environ.get("ADAPTER_PUBLIC_HOST")
-    if not private_ip:
-        die("set ADAPTER_PUBLIC_HOST to this box PRIVATE IP (the harness dials it back)")
-
-    uri = _build_push_one(f"{PREFIX}-harness-claude", "Dockerfile.harness.claude", "linux/arm64")
-    xrole = exec_role(f"{PREFIX}-exec-role")
-    vpc_id, subnets, runtime_sg = default_vpc()
-    open_adapter_port(private_ip, runtime_sg)
-    harness_subnets = ensure_vpc_endpoints(vpc_id, subnets, runtime_sg)
-    if not harness_subnets:
-        die("no subnet is served by all required VPC endpoints; cannot place VPC-mode harness")
-    vpc_net = {"networkMode": "VPC",
-               "networkModeConfig": {"securityGroups": [runtime_sg], "subnets": harness_subnets}}
-    arn = managed_runtime(
-        f"{PREFIX}_harness_claude", uri, xrole,
-        {"AWS_REGION": REGION, "HARNESS_KIND": "claude"}, vpc_net)
-    out("AGENTCORE_HARNESS_CLAUDE_RUNTIME_ARN", arn)
-    print("\n# ---- export for B2 (two-Runtime CLI: claude harness #1 + GPU sandbox #2) ----")
-    print(f"export AGENTCORE_HARNESS_RUNTIME_ARN={arn}")
-    print(f"export ADAPTER_PUBLIC_HOST={private_ip} ADAPTER_PORT={ADAPTER_PORT}")
-    print("# and AGENTCORE_SANDBOX_RUNTIME_ARN=<the GPU sandbox ARN from `all`>")
 
 
 # ----------------------------------------------------------------------------- orchestration
@@ -561,7 +530,7 @@ def cmd_all():
 
 def cmd_cleanup():
     control = boto3.client("bedrock-agentcore-control", region_name=REGION)
-    for logical in ("harness", "harness_claude", "sandbox_cpu", "sandbox_gpu"):
+    for logical in ("harness", "sandbox_cpu", "sandbox_gpu"):
         name = f"{PREFIX}_{logical}"
         arn, rid, status = _existing_runtime_arn(control, name)
         if rid:
@@ -582,8 +551,7 @@ def cmd_cleanup():
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
-    {"all": cmd_all, "cleanup": cmd_cleanup,
-     "harness-claude": cmd_harness_claude}.get(cmd, lambda: die(f"unknown: {cmd}"))()
+    {"all": cmd_all, "cleanup": cmd_cleanup}.get(cmd, lambda: die(f"unknown: {cmd}"))()
 
 
 if __name__ == "__main__":

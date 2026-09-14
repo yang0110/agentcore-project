@@ -19,6 +19,15 @@ Companion docs: [`agentcore-slime-integration.md`](./agentcore-slime-integration
 > path (LocalSandbox + a scripted policy) passes end-to-end; the AWS/slime path is the same code
 > with two backends swapped in.
 
+> **Update — real-CLI harness removed.** This plan was originally written around the **real Claude
+> Code CLI** as the harness (a real-CLI generate entry + a custom multi-user container). That
+> code and its CLI toolchain have since been **removed** from the repo; the live harness is now our
+> **mini Claude-Code-like harness** (`MiniClaudeHarness`, `mini_agent.py`), deployed on its own
+> AgentCore Runtime (see [`harness-sandbox-decoupling.md`](./harness-sandbox-decoupling.md) and demos
+> `demo_a3`/`demo_b3`). The principle below is unchanged — the slime policy is the agent's brain,
+> served through the adapter, with tool exec in an AgentCore sandbox — only the harness
+> implementation differs. Read §1/§1a/§5–§6 as the original CLI-based framing.
+
 ---
 
 ## 1. What "Claude Code as the harness between" actually means
@@ -84,10 +93,11 @@ but keeps the same decoupling: the harness only emits a trajectory; sample const
 | Trajectory builder | `slime/agent/trajectory.py:269` | loss-masked `list[Sample]` | reuse as-is |
 | SWE task/reward | `examples/coding_agent_rl/swe.py` | workspace prep, `git_diff`, `run_evaluation` | reuse; use 1 tiny task |
 | Sandbox adapter (**new**) | `code/agentcore_slime_demo/sandbox.py` (`AgentCoreSandbox`) | AgentCore → `Sandbox` Protocol | implemented; drop-in for `E2BSandbox` |
-| Real-harness generate (**new**) | `code/agentcore_slime_demo/claude_code_generate.py` | slime's `coding_agent_rl/generate.py` with sandbox swapped | implemented |
+| Mini-harness two-Runtime generate (**new**) | `code/agentcore_slime_demo/agentcore_runtime_generate.py` | drives `MiniClaudeHarness` on Runtime #1 + sandbox Runtime #2 | scaffolding |
 
-**New code = `AgentCoreSandbox` + a thin generate that swaps the sandbox** (`claude_code_generate.py`).
-Everything else — harness, adapter, trajectory builder — is slime's shipped stack, unchanged.
+**New code = `AgentCoreSandbox` + a thin generate** (`generate.py` for the simplified path,
+`agentcore_runtime_generate.py` for the two-Runtime mini-harness path). Everything else — adapter,
+trajectory builder — is slime's shipped stack, unchanged.
 
 ---
 
@@ -151,9 +161,9 @@ confirm the sandbox's Claude Code reaches it and the adapter forwards to SGLang 
 ✅ Exit: one Claude Code turn round-trips through the adapter → SGLang → back, tokens recorded.
 
 **Phase 3 — One full rollout (2–3 h).**
-Use the implemented `code/agentcore_slime_demo/claude_code_generate.py` (already swaps
-`E2BSandbox` → `AgentCoreSandbox` in `_boot_sandbox`). Run `generate()` on the single task in
-**eval mode** (`evaluation=True`) — no training yet.
+Use the implemented `code/agentcore_slime_demo/generate.py` (simplified path;
+`agentcore_runtime_generate.py` for the two-Runtime mini-harness variant). Run `generate()` on the
+single task in **eval mode** (`evaluation=True`) — no training yet.
 ✅ Exit: prints `reward=... applied=... agent_exit_code=... elapsed=...` for the task.
 
 **Phase 4 — One training step (1–2 h).**
@@ -183,7 +193,7 @@ python train.py \
   --hf-checkpoint /path/to/policy \
   --prompt-data one_task.jsonl \
   --rollout-batch-size 1 --n-samples-per-prompt 4 \
-  --custom-generate-function-path agentcore_slime_demo.claude_code_generate.generate \
+  --custom-generate-function-path agentcore_slime_demo.generate.generate \
   --rm-type none \
   ... your usual megatron / GRPO / optim args ...
 ```
@@ -248,19 +258,21 @@ loop and same decoupling:
 |------|-------|--------|---------|---------------|
 | **Offline demo** | `scripts/smoke.py` → `harness.run_episode` | `MockPolicy` (scripted buggy→fixed) | `LocalSandbox` | ✅ yes — no AWS/GPU/slime |
 | **slime training (simplified harness)** | `generate.generate` | `SGLangPolicy` | `AgentCoreSandbox` | needs slime + AWS |
-| **slime training (REAL Claude Code)** | `claude_code_generate.generate` | slime `AnthropicAdapter` → SGLang | `AgentCoreSandbox` | needs slime + AWS + CC tarballs |
+| **slime training (two-Runtime mini harness)** | `agentcore_runtime_generate.generate` | slime `AnthropicAdapter` → SGLang | `AgentCoreRuntimeSandbox` | needs slime + AWS (scaffolding) |
 
 - **Multi-turn task:** iterative code-repair — write `solution.py` → run checker *in the sandbox* →
   read failure → fix → repeat. Reward = checker exit code (`task.py`). Tasks in `data/tasks.jsonl`.
 - **`AgentCoreSandbox` is a verified drop-in for slime's `E2BSandbox`:** `tests/test_smoke.py`
   asserts `isinstance(AgentCoreSandbox(), slime.agent.sandbox.Sandbox)` and matching `exec`
-  signature. So `claude_code_generate.py` is slime's shipped `coding_agent_rl/generate.py` with
-  **only the sandbox class swapped**.
-- **Honest caveat — Code Interpreter vs custom Runtime:** the real `ClaudeCodeHarness` needs
-  `useradd`/`setsid`/npm/multi-user, which the restricted **Code Interpreter cannot provide**. The
-  real Claude Code path therefore targets a **custom AgentCore Runtime container** (§3 Option B);
-  `AgentCoreSandbox` speaks that container's exec/writeFiles/readFiles API. Code Interpreter remains
-  fine for the *simplified* `generate.py` path (direct policy → code → run → reward, no CLI).
+  signature, so any slime generate hook can swap the sandbox class unchanged.
+- **Live harness — the mini harness on its own Runtime:** the real Claude Code CLI path (which
+  needed `useradd`/`setsid`/npm/multi-user, impossible on the restricted **Code Interpreter**, so it
+  targeted a custom multi-user container) has been **removed**. The live harness is
+  `MiniClaudeHarness` (`mini_agent.py`), deployed on its own AgentCore Runtime
+  (`harness_runtime_agent.py`, `HARNESS_KIND=mini`) with the sandbox on a separate Runtime — no CLI,
+  no custom multi-user container. Code Interpreter remains fine for the *simplified* `generate.py`
+  path (direct policy → code → run → reward). See
+  [`harness-sandbox-decoupling.md`](./harness-sandbox-decoupling.md).
 - **Verify offline now:** `python3 code/scripts/smoke.py`,
   `python3 code/scripts/recovery_smoke.py`, and
   `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest code/tests -q` (all pass: 2/2 tasks solved,

@@ -32,7 +32,7 @@ code/
     policy.py     # Policy: MockPolicy (offline) + SGLangPolicy (slime router)
     harness.py    # run_episode: the multi-turn write->run->observe->fix loop
     generate.py   # slime entry (simplified harness): loss-masked token stream
-    claude_code_generate.py  # slime entry (REAL Claude Code harness) — sandbox-swapped coding_agent_rl
+    mini_agent.py # MiniClaudeHarness: our ~1-file Claude-Code-like agent loop (A3/B3 harness)
     recovery.py   # fault tolerance: RPC self-heal, resilient_episode, clean abort, FlakySandbox
     profiles.py   # SandboxProfile: the two demo cases (CPU_SANDBOX vs GPU_SANDBOX provisioning)
     data/tasks.jsonl        # CPU code-repair tasks
@@ -129,11 +129,13 @@ python train.py \
 - `AgentCoreSandbox` field shapes (`structuredContent.stdout/exitCode`, `writeFiles`/`readFiles`)
   follow the AWS samples repo, not a formal schema — pin your SDK version and keep the Phase-0
   smoke test. See `../docs/agentcore-slime-integration.md` §4 and `../docs/demo-plan.md`.
-- **Real Claude Code harness:** `claude_code_generate.py` is slime's shipped
-  `examples/coding_agent_rl/generate.py` with **only the sandbox swapped** (`E2BSandbox` →
-  `AgentCoreSandbox`), reusing slime's `ClaudeCodeHarness` + `AnthropicAdapter` unmodified (the
-  policy is served through the adapter; Claude Code runs unchanged). `tests/test_smoke.py` proves
-  `AgentCoreSandbox` is a genuine drop-in via `isinstance(..., slime.agent.sandbox.Sandbox)`. This
-  path needs slime + AWS + Claude Code tarballs and a **custom AgentCore Runtime container**
-  (Code Interpreter can't host a full CLI harness) — see `../docs/demo-plan.md` §1a, §3, §11.
-  This demo's `run_episode` is the offline-runnable, simplified stand-in for that harness.
+- **Mini Claude-Code harness (two-Runtime path):** `MiniClaudeHarness` (`mini_agent.py`) is our
+  ~1-file Claude-Code-like agent loop — call the model through slime's `AnthropicAdapter`, pick a
+  tool, run it in the sandbox, repeat. The demos deploy it the **target** way: the harness runs on
+  its **own AgentCore Runtime #1** (`harness_runtime_agent.py`, `HARNESS_KIND=mini`) and the sandbox
+  is a **separate Runtime #2** (`AgentCoreRuntimeSandbox`, `SANDBOX=agentcore-runtime`) — see demos
+  `demo_a3`/`demo_b3` and `../docs/harness-sandbox-decoupling.md`. `tests/test_smoke.py` proves
+  `AgentCoreSandbox` is a genuine drop-in via `isinstance(..., slime.agent.sandbox.Sandbox)`. (An
+  earlier variant ran the **real Claude Code CLI** as the harness; that path has been removed in
+  favor of this mini harness.) This demo's `run_episode` is the offline-runnable, simplified
+  stand-in for the agent loop.

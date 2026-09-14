@@ -35,7 +35,7 @@ shortcuts, see the table at the bottom), not architecture.
 | **Training Engine** | slime Megatron actor | ① (⟂ Inference Engine) |
 | **Inference Engine** | SGLang | ① |
 | **LLM API Proxy** | slime `AnthropicAdapter` | ② (*is* the seam between harness ↔ inference) |
-| **Agents with Harness** | Claude Code (A2/B2) / mini harness (A3/B3) | ② and ③ |
+| **Agents with Harness** | our mini harness `MiniClaudeHarness` (A3/B3) | ② and ③ |
 | *(execution environment)* | AgentCore sandbox (Code Interpreter / GPU Runtime) | ③ (⟂ harness) |
 | **Sample Adapter** | slime `TrajectoryManager` | — (turns → loss-masked samples) |
 
@@ -62,13 +62,10 @@ AL's three decouplings map 1:1 to ①/②/③ below.
   training through an LLM endpoint proxy."
 - **Where in code:** the proxy is slime's `AnthropicAdapter` (`slime.agent.adapters`;
   `open_session` / `finish_session` / `drop_session`), stood up via `run_app_in_thread`
-  (`slime.agent.aiohttp_threaded`) in every generate hook —
-  `agentcore_slime_demo/claude_code_generate.py` and `agentcore_runtime_generate.py` (the latter
-  is the mini harness's only home now — its own Runtime). How the harness reaches it differs by
-  harness kind: the **CLI
-  harness** (`ClaudeCodeHarness`, A2/B2) sets `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` =
-  session id; the **mini harness** (`MiniClaudeHarness`, A3/B3, and the Runtime harness) is given
-  the adapter URL directly and carries the session id in an `Authorization: Bearer <sid>` header.
+  (`slime.agent.aiohttp_threaded`) in the generate hook `agentcore_runtime_generate.py` (the mini
+  harness's home — its own Runtime). The **mini harness** (`MiniClaudeHarness`, A3/B3, and the
+  Runtime harness) is given the adapter URL directly and carries the session id in an
+  `Authorization: Bearer <sid>` header.
 - **Why:** any black-box agent (real Claude Code, a mini loop, anything speaking the Anthropic
   Messages API) connects with **zero agent changes**; the trainer never imports the agent's code.
 
@@ -77,12 +74,12 @@ AL's three decouplings map 1:1 to ①/②/③ below.
 - **What:** the **harness** owns the agent loop (tool selection, context, control flow); the
   **sandbox** is the execution environment where tool actions run. Two distinct component types —
   do not merge them.
-- **Where in code:** harnesses = slime's `ClaudeCodeHarness` (A2/B2) or our own
-  `MiniClaudeHarness` (`agentcore_slime_demo/mini_agent.py`, A3/B3), or the AgentCore-hosted
-  `harness_runtime_agent.py` (which wraps `MiniClaudeHarness`). Sandboxes implement the `Sandbox` protocol
-  (`code/agentcore_slime_demo/sandbox.py`): `LocalSandbox`, `AgentCoreSandbox` (Code Interpreter),
-  `AgentCoreRuntimeSandbox` (separate Runtime). The MCP bridge (`sandbox_mcp.py`) redirects a
-  black-box CLI's tools to a sandbox.
+- **Where in code:** the harness = our own `MiniClaudeHarness`
+  (`agentcore_slime_demo/mini_agent.py`, A3/B3), run either in-process for the reference loop or
+  hosted by `harness_runtime_agent.py` (which wraps `MiniClaudeHarness`, `HARNESS_KIND=mini`).
+  Sandboxes implement the `Sandbox` protocol (`code/agentcore_slime_demo/sandbox.py`):
+  `LocalSandbox`, `AgentCoreSandbox` (Code Interpreter), `AgentCoreRuntimeSandbox` (separate
+  Runtime).
 - **Why:** swap CPU ↔ GPU sandbox without touching the harness; isolate untrusted / CUDA tool exec
   off the trainer GPUs; scale harness (latency-bound) and sandbox (tool-exec-bound) separately.
 
@@ -92,16 +89,19 @@ AL's three decouplings map 1:1 to ①/②/③ below.
 
 | Row | Harness | Sandbox | Status |
 |---|---|---|---|
-| A / B (`demo_a`, `demo_b`) | our `run_episode`, in-process | `AgentCoreSandbox` (A) / GPU stand-in (B) | reference loop |
-| A2 / B2 (`demo_a2`, `demo_b2`) | real Claude Code, **in the sandbox** | Code Interpreter (A2) / GPU (B2) | co-location shortcut |
-| A3 / B3 (`demo_a3`, `demo_b3`) | mini harness, **in trainer process** | Code Interpreter (A3) / GPU (B3) | in-process shortcut |
+| A / B (`demo_a`, `demo_b`) | our `run_episode`, in-process | `AgentCoreSandbox` (A) / remote GPU Runtime (B) | reference loop |
+| A3 / B3 (`demo_a3`, `demo_b3`) | mini harness on **AgentCore Runtime #1** (`harness_runtime_agent.py`, `HARNESS_KIND=mini`) | Code Interpreter (A3) / GPU Runtime (B3) on **Runtime #2** | two-Runtime showcase |
 
-**Target for all four harness rows (A2/A3/B2/B3):** harness on **AgentCore Runtime #1**
-(`harness_runtime_agent.py`), sandbox on **AgentCore Runtime #2** (`sandbox_server_agent.py`),
-wired by `agentcore_runtime_generate.generate` with `SANDBOX=agentcore-runtime`
-(`AgentCoreRuntimeSandbox`). For B rows the sandbox Runtime is a **real AgentCore GPU Runtime
-instance** (capacity-provider EC2 GPU), not a local-GPU stand-in.
+(A prior A2 / B2 row ran the **real Claude Code CLI** co-located in the sandbox; that path has been
+removed in favor of the mini harness.)
+
+**The two-Runtime path (A3/B3):** harness on **AgentCore Runtime #1**
+(`harness_runtime_agent.py`, `HARNESS_KIND=mini`), sandbox on **AgentCore Runtime #2**
+(`sandbox_server_agent.py`), wired by `agentcore_runtime_generate.generate` with
+`SANDBOX=agentcore-runtime` (`AgentCoreRuntimeSandbox`). For B rows the sandbox Runtime is a **real
+AgentCore GPU Runtime instance** (capacity-provider EC2 GPU), not a local-GPU stand-in.
 
 > The two-Runtime backend (`agentcore_runtime_sandbox.py`, `sandbox_server_agent.py`,
-> `harness_runtime_agent.py`, `agentcore_runtime_generate.py`) is **untested scaffolding** — it has
-> not been run against AWS (GPU instances cost money). The existing shortcut paths still work.
+> `harness_runtime_agent.py`, `agentcore_runtime_generate.py`) is **untested scaffolding** on the
+> CPU rows — it has not been fully run against AWS (GPU instances cost money). The single-runtime
+> `demo_a` / `demo_b` reference paths still work.

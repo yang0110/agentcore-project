@@ -30,11 +30,12 @@ drains it into loss-masked GRPO samples. The mini harness runs on its own AgentC
 its tool calls hit a separate GPU sandbox Runtime #2 — see
 [`agentcore_runtime_generate.py`](../../agentcore_slime_demo/agentcore_runtime_generate.py).
 
-## Demo B3 vs Demo B2 (why this exists)
+## Why the mini harness (vs the real Claude Code CLI)
 
-[Demo B2](../demo_b2/) runs the **real Claude Code CLI** inside the sandbox, which needs a custom
-container with **CUDA + torch AND Node 22 + Claude Code**. **Demo B3 runs our ~1-file
-`MiniClaudeHarness` instead** (same two-Runtime deployment), so the **harness** Runtime #1 image is
+Running the **real Claude Code CLI** inside the sandbox is faithful, but it needs a custom container
+with **CUDA + torch AND Node 22 + Claude Code** (that heavier real-CLI variant has been retired).
+**Demo B3 runs our ~1-file `MiniClaudeHarness` instead** (same two-Runtime deployment), so the
+**harness** Runtime #1 image is
 a slim CPU Python container (no Node/CLI, no slime), and only the **sandbox** Runtime #2 image needs
 **CUDA + torch** for the KernelBench checker. B3 is the lightest harness that still couples a real
 agentic loop with the GPU-in-sandbox task.

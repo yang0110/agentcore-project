@@ -3,22 +3,25 @@
 # Runner (this dir owns data/ + ckpt/; agentcore_slime_demo is the SHARED lib from /work/code). Runs INSIDE the
 # persistent slime container (agentcore_p4), async/decoupled (train_async.py, NO --colocate).
 #
-# Demo B4 == Demo B3's task + mini harness, but a DIFFERENT sandbox GPU story:
-#   * ALL of series B uses a REMOTE g6 AgentCore Runtime #2 as the sandbox, and this box gives ALL 8
-#     of its GPUs to slime (4 train + 4 infer). B4 does NOT reserve any local GPU.
-#   * B3: AgentCore maps 1 session -> 1 g6 instance, so N concurrent rollouts want N g6 instances.
-#         On a capacity-starved g6 fleet that is exactly what stalled B3.
-#   * B4: pack SEVERAL concurrent KernelBench sandboxes onto ONE g6 instance and let RAY SPLIT THAT
-#         g6's single GPU between them. Because AgentCore maps 1 runtimeSessionId -> 1 instance, every
-#         B4 episode invokes the g6 under ONE shared runtimeSessionId (so they reuse the same g6) and
-#         carries a per-episode sub_session; a Ray farm running INSIDE the g6 (sandbox_ray_farm.
-#         RayGpuFarm, driven by sandbox_server_agent) leases one FRACTIONAL-GPU actor per sub_session.
-#         Ray's fraction is scheduling-only (no memory guard; L4/L40S have NO MIG), so each sandbox
-#         ALSO caps its GPU memory in software (an injected sitecustomize.py). See ray_farm_generate.py.
+# Demo B4 == Demo B (SAME task + SAME in-process run_episode harness), but a DIFFERENT sandbox GPU
+# story. B4 is now IDENTICAL to Demo B except for ONE line — the SANDBOX backend:
+#   * Demo B  (SANDBOX=agentcore-runtime):  one AgentCore session -> one g6 instance, so N concurrent
+#     rollouts want N g6 instances. On a capacity-starved g6 fleet that is exactly what stalls it.
+#   * Demo B4 (SANDBOX=agentcore-ray-farm): pack SEVERAL concurrent KernelBench sandboxes onto ONE g6
+#     instance and let RAY SPLIT THAT g6's single GPU between them. Because AgentCore maps
+#     1 runtimeSessionId -> 1 instance, every B4 episode invokes the g6 under ONE shared
+#     runtimeSessionId (B4_SHARED_RUNTIME_SESSION, so they reuse the same g6) and carries a
+#     per-episode sub_session; a Ray farm running INSIDE the g6 (sandbox_ray_farm.RayGpuFarm, driven
+#     by sandbox_server_agent) leases one FRACTIONAL-GPU actor per sub_session. Ray's fraction is
+#     scheduling-only (no memory guard; L4/L40S have NO MIG), so each sandbox ALSO caps its GPU memory
+#     in software (an injected sitecustomize.py). That server-side farm is the WHOLE difference.
 #
-# Self-contained HARNESS on ONE box: the mini harness runs IN-PROCESS (dials the adapter over
-# localhost), so B4 needs NO harness Runtime #1 and NO ADAPTER_PUBLIC_HOST / VPC dial-back. The only
-# remote piece is the shared-GPU sandbox Runtime #2 (its g6 image bakes `ray` + the B4_* farm config).
+# Same harness as Demo B: the run_episode loop (agentcore_slime_demo.harness) runs IN-PROCESS on this
+# box inside generate.generate, driving SGLang DIRECTLY (SGLangPolicy) — no AnthropicAdapter proxy,
+# no MiniClaudeHarness, no harness Runtime #1. This box gives ALL 8 of its GPUs to slime (4 train +
+# 4 infer); B4 reserves NO local GPU. The only remote piece is the shared-GPU sandbox Runtime #2 (its
+# g6 image bakes `ray` + the B4_* farm config). So B4 adds exactly ONE thing over Demo B: the Ray
+# GPU-sharing farm inside the g6 sandbox, selected purely by SANDBOX=agentcore-ray-farm.
 #
 # DEPLOY the shared-GPU sandbox: build the g6 sandbox image with `ray` installed and the farm config
 # baked as ENV (B4_GPU_FRACTION, B4_MAX_SANDBOXES, B4_PER_SANDBOX_MEM_FRACTION, B4_FARM_GPUS, plus
@@ -30,7 +33,8 @@
 # runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train (SMOKE; no more needed).
 set -euo pipefail
 
-SANDBOX="${SANDBOX:-agentcore-runtime}"   # sandbox = its OWN remote g6 AgentCore Runtime #2 (GPU shared via ray)
+SANDBOX="${SANDBOX:-agentcore-ray-farm}"  # THE one difference from Demo B: sub_session slots on ONE
+                                          # shared g6 whose GPU a Ray farm splits (vs B's dedicated g6)
 # ---- Task set: the REAL KernelBench (ScalingIntelligence/KernelBench) ----------------------------
 # Train = level_1 (100 single-op CUDA problems); held-out eval = 20 level_2 fusion problems (disjoint).
 # Build with build_dataset.py --dataset kernelbench --level level_1 --limit 100 (train) and
@@ -60,17 +64,14 @@ ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 
 # ---- Remote GPU-shared sandbox env (REQUIRED for a real run) ----
-# The mini harness is IN-PROCESS; the ONLY remote piece is the shared-GPU sandbox Runtime #2 (g6).
+# The run_episode harness is IN-PROCESS (like Demo B); the ONLY remote piece is the shared-GPU
+# sandbox Runtime #2 (g6 with the ray farm baked in).
 AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the B4 GPU-shared sandbox Runtime #2 ARN (g6 with ray farm baked in)}"
-# Optional: pin the shared runtimeSessionId (else ray_farm_generate mints one per process). All B4
-# episodes invoke the g6 under this ONE id, so they reuse the same g6 instance whose GPU is shared.
-B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-}"
-# In-process harness dials the adapter over localhost; no public port / SG rule needed. Ephemeral
-# port (0) is fine since nothing external connects.
-ADAPTER_BIND_HOST="${ADAPTER_BIND_HOST:-127.0.0.1}"
-ADAPTER_PORT="${ADAPTER_PORT:-0}"
-EPISODE_MAX_TURNS="${EPISODE_MAX_TURNS:-3}"          # per-episode agentic-turn cap (generate() reads it)
-MINI_AGENT_MAX_TURNS="${MINI_AGENT_MAX_TURNS:-3}"    # env fallback for the harness
+# ONE shared runtimeSessionId for the WHOLE job: every episode (across every rollout worker) invokes
+# the g6 under this id, so they all land on the SAME g6 instance whose one GPU the farm splits. Minted
+# once here if unset (AgentCore requires length in [33,128]: "b4farm-" + 32 hex = 39). Pin it to reuse
+# a warm instance across runs.
+B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-b4farm-$(python3 -c 'import secrets;print(secrets.token_hex(16))')}"
 # Runtime-invoke transient-retry budget (agentcore_runtime_sandbox._retry_invoke). B4 invokes the g6
 # once per tool op (open + writes + exec + close), so a transient 502/blip on ANY of them would kill
 # the whole job at the default 8 attempts (~150s) — a2 died this way. 20 attempts ≈ 10 min patience.
@@ -91,8 +92,8 @@ CKPT_ARGS=(
    --save "$SAVE"
    --save-interval "$SAVE_INTERVAL"
    # PP=1 here (mini-harness trajectories are short, like B3), so the SPAWN-based persistent async
-   # ckpt worker is safe (see demo_a2/run.sh for why PP=2 breaks it via pidfd_getfd EPERM). Both
-   # flags go together.
+   # ckpt worker is safe. (PP=2 would break it: the async-save child fails with pidfd_getfd EPERM,
+   # which is why the PP=2 demos had to fall back to sync save.) Both flags go together.
    --async-save
    --custom-megatron-init-path agentcore_slime_demo.megatron_init.enable_persistent_async_ckpt
 )
@@ -119,9 +120,10 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 1024
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
-   # THE Demo-B4 difference: the mini harness runs in-process and its sandbox is a sub_session slot
-   # on the SHARED g6 (many sandboxes splitting that g6's ONE GPU via ray), not a dedicated g6.
-   --custom-generate-function-path agentcore_slime_demo.ray_farm_generate.generate
+   # SAME hook as Demo B — the in-process run_episode harness (SGLangPolicy direct). The GPU-sharing
+   # is entirely in the sandbox backend (SANDBOX=agentcore-ray-farm -> RayFarmRuntimeSandbox), which
+   # make_sandbox() selects per episode, so no B4-specific generate function is needed.
+   --custom-generate-function-path agentcore_slime_demo.generate.generate
 )
 
 PERF_ARGS=(
@@ -162,13 +164,9 @@ SGLANG_ARGS=(
    # Keep rollout concurrency <= the g6 farm's sandbox count (B4_MAX_SANDBOXES, baked on the g6) so
    # episodes don't block on the farm's checkout gate. Default 4; raise together with the farm.
    --sglang-server-concurrency "${CONC:-4}"
-   # REQUIRED for the mini-harness tool loop: Qwen3 emits Hermes-style <tool_call>{json}</tool_call>,
-   # which the AnthropicAdapter can only turn into tool_use blocks via SGLang's qwen25 parser. Left
-   # unset, tool calls are never parsed, the harness stops after 1 turn, and reward is 0 for every
-   # rollout (the all-zeros failure demo_a3 hit on 2026-09-08).
-   --sglang-tool-call-parser qwen25
-   # Strip Qwen3 <think> blocks into reasoning_content so the tool loop stays clean.
-   --sglang-reasoning-parser qwen3
+   # NOTE: no tool-call/reasoning parser here (unlike the old MiniClaudeHarness path). run_episode
+   # extracts a ```python code block from the assistant text (task.extract_submission) and suppresses
+   # <think> via SGLangPolicy's enable_thinking=False — exactly like Demo B, which sets neither flag.
 )
 
 MISC_ARGS=(
@@ -196,11 +194,7 @@ RUNTIME_ENV_JSON="{
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\",
     \"B4_SHARED_RUNTIME_SESSION\": \"${B4_SHARED_RUNTIME_SESSION}\",
-    \"ADAPTER_BIND_HOST\": \"${ADAPTER_BIND_HOST}\",
-    \"ADAPTER_PORT\": \"${ADAPTER_PORT}\",
-    \"INVOKE_MAX_RETRIES\": \"${INVOKE_MAX_RETRIES}\",
-    \"EPISODE_MAX_TURNS\": \"${EPISODE_MAX_TURNS}\",
-    \"MINI_AGENT_MAX_TURNS\": \"${MINI_AGENT_MAX_TURNS}\"
+    \"INVOKE_MAX_RETRIES\": \"${INVOKE_MAX_RETRIES}\"
   }
 }"
 

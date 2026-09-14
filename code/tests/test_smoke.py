@@ -109,12 +109,6 @@ def test_sandboxes_conform_to_slime_protocol():
             assert kw in params, f"{cls.__name__}.exec missing kw-only arg {kw!r}"
 
 
-def test_real_claude_code_path_imports():
-    # The real-harness module must import even without slime/AWS (all heavy imports are lazy).
-    import agentcore_slime_demo.claude_code_generate as ccg
-    assert hasattr(ccg, "generate")
-
-
 def test_recovery_from_transient_boot_failures():
     from agentcore_slime_demo.recovery import FlakySandbox, resilient_episode
     task = load_tasks(TASKS)[0]
@@ -270,12 +264,65 @@ def test_assert_mode_runner_distinguishes_pass_fail():
     assert asyncio.run(run("def add(a, b):\n    return a - b\n")) == 1
 
 
+def test_task_families_solve_multi_turn_offline():
+    """The demo_a task-family zoo (SWE, tool-use, SQL, math, CTF, RAG, regex, planning,
+    config, data) all run on the SAME in-process harness + CPU sandbox, with a deterministic
+    checker per family. Every seed must (a) fail its first (buggy) attempt and (b) pass after
+    the fix — proving both the reward and that the checker genuinely discriminates."""
+    from agentcore_slime_demo.task_families import FAMILY_CLASSES
+    from agentcore_slime_demo.task import task_from_dict
+
+    families_seen = set()
+    for cls in FAMILY_CLASSES:
+        seeds = cls.seeds()
+        assert len(seeds) >= 6, f"{cls.family}: too few seeds ({len(seeds)})"
+        families_seen.add(cls.family)
+        for t in seeds:
+            # Round-trip through the dataset serialization the trainer actually uses.
+            rebuilt = task_from_dict({**t.to_row_kwargs(), "mock_attempts": t.mock_attempts})
+            traj = asyncio.run(_episode(rebuilt))
+            assert traj.solved, f"{t.task_id} not solved"
+            assert traj.reward == 1.0
+            assert traj.num_turns >= 2, f"{t.task_id} not multi-turn"
+            assert traj.turns[0].exit_code != 0, f"{t.task_id} first (buggy) attempt passed"
+            assert traj.turns[-1].exit_code == 0
+    assert families_seen == {"swe", "tool_use", "sql", "math", "ctf", "rag",
+                             "regex", "planning", "config", "data"}
+
+
+def test_family_dispatch_and_backward_compat():
+    """`task_from_dict` routes on `family`; a legacy row without one stays CodingTask."""
+    from agentcore_slime_demo.task import task_from_dict, CodingTask
+    from agentcore_slime_demo.task_families import SqlTask
+
+    sql = task_from_dict({"family": "sql", "task_id": "x", "prompt": "q",
+                          "spec": {"schema": ["CREATE TABLE t (a INTEGER)"],
+                                   "inserts": ["INSERT INTO t VALUES (1)"], "expected": [[1]]}})
+    assert isinstance(sql, SqlTask)
+    assert sql.artifact_filename == "query.sql" and sql.fence_lang == "sql"
+    legacy = task_from_dict({"task_id": "m", "prompt": "p",
+                             "checks": ["assert f(1) == 1"], "check_mode": "assert"})
+    assert isinstance(legacy, CodingTask)
+
+
+def test_pyc_cache_does_not_shadow_same_length_rewrite():
+    """Regression: a same-byte-length fix rewritten within the same second must NOT be
+    shadowed by a stale __pycache__/*.pyc from the previous turn (dont_write_bytecode)."""
+    from agentcore_slime_demo.task import CodingTask
+    t = CodingTask(task_id="pyc", prompt="add", checks=["assert add(2, 3) == 5"],
+                   check_mode="assert",
+                   mock_attempts=["def add(a, b):\n    return a - b\n",     # buggy, len N
+                                  "def add(a, b):\n    return a + b\n"])    # fix, SAME len N
+    assert len(t.mock_attempts[0]) == len(t.mock_attempts[1])
+    traj = asyncio.run(_episode(t))
+    assert traj.solved and traj.turns[0].exit_code != 0 and traj.turns[-1].exit_code == 0
+
+
 if __name__ == "__main__":
     test_all_tasks_solved_and_multi_turn()
     test_extract_code_takes_last_block()
     test_build_token_stream_masks_only_actions()
     test_sandboxes_conform_to_slime_protocol()
-    test_real_claude_code_path_imports()
     test_recovery_from_transient_boot_failures()
     test_recovery_from_mid_episode_session_death()
     test_unrecoverable_aborts_cleanly_without_raising()
@@ -285,4 +332,7 @@ if __name__ == "__main__":
     test_mbpp_loads_and_solves_offline()
     test_kernelbench_tasks_need_real_cuda()
     test_assert_mode_runner_distinguishes_pass_fail()
+    test_task_families_solve_multi_turn_offline()
+    test_family_dispatch_and_backward_compat()
+    test_pyc_cache_does_not_shadow_same_length_rewrite()
     print("ok")
