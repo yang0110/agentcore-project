@@ -533,7 +533,7 @@
   {\footnotesize\textbf{Columns = the sandbox}: CPU = coding/SWE + the whole task zoo (\#1, \#2, \#4--8);
   GPU = systems \& GPU kernels (\#3), the same seam with a CUDA instance behind the checker.}
   \begin{itemize}\setlength\itemsep{0.03em}
-    \item \textbf{Body} --- \texttt{a} (CPU $+$ task-zoo expansions; also runs \emph{fully offline}, \texttt{SANDBOX=local}), \texttt{b} (GPU), \texttt{b4} (Ray-shared GPU).
+    \item \textbf{Body} --- \texttt{a} (CPU $+$ task-zoo expansions), \texttt{b} (GPU), \texttt{b4} (Ray-shared GPU).
     \item \textbf{Appendix (harness story)} --- \texttt{a2}/\texttt{b2} (real CLI), \texttt{a3}/\texttt{b3} (mini harness on its own Runtime).
   \end{itemize}
   {\footnotesize All share async/decoupled \texttt{train\_async.py}, GRPO, the checkpoint-deadlock
@@ -548,7 +548,7 @@
   \footnotesize\textbf{Use case:} coding/SWE (\#1), the baseline \emph{in-process} harness.
   \textbf{MBPP}: write \texttt{solution.py} $\to$ run tests $\to$ read failure $\to$ fix, over many turns.
   \textbf{Harness} = our \texttt{run\_episode} loop \emph{in the trainer}; \textbf{sandbox} = a CPU
-  Code-Interpreter microVM. Also runs \textbf{fully offline} (\texttt{SANDBOX=local}).
+  Code-Interpreter microVM.
   \begin{center}
   \scalebox{0.82}{\begin{tikzpicture}[node distance=0.55cm and 1.7cm, font=\scriptsize]
     \node[box, minimum width=2.9cm] (h) {\textbf{harness} \\ \texttt{run\_episode} (in trainer)};
