@@ -1098,6 +1098,71 @@ create_agent_runtime(
 \end{frame}
 
 % ============================================================
+\section{Next steps --- scaling \& mixed-task training}
+% ============================================================
+
+\begin{frame}{Next steps --- three scaling questions (and how this project answers them)}
+  \footnotesize The demos prove the seam at \texttt{CONC=1}. The next work is to make the sandbox tier
+  \emph{scale}. Three questions --- each already has a mechanism in this codebase to build on.
+  \vspace{0.2em}
+  \begin{enumerate}\setlength\itemsep{0.35em}
+    \item[\textbf{1}] \textbf{When \& how to scale sandbox count \emph{with} inference engines?}
+      \\{\scriptsize Rollout throughput $=\min(\text{engine generation},\ \text{sandbox execution})$. Scale
+      \textbf{sandboxes} when engines \emph{starve} on tool/checker waits; scale \textbf{engines} when
+      sandboxes idle on completions. \textbf{CPU} sandboxes: serverless, on-demand to quota. \textbf{GPU}:
+      1 session\,:\,1 instance $\Rightarrow$ pre-scale the capacity provider to $N$ instances \emph{or}
+      share one box (\texttt{b4} Ray). \emph{Balance rule}: match generation slots \texttt{CONC}$\times E$
+      to $N$ sandbox slots; size $N$ to $C = D\times L_e$.}
+    \item[\textbf{2}] \textbf{Impact of scaling the sandbox on \emph{goodput} \& \emph{MFU}?}
+      \\{\scriptsize More sandboxes $\to$ higher rollout throughput $\to$ trainers stay fed $\to$ \textbf{MFU
+      $\uparrow$}, until generation or training saturates. But async \textbf{staleness} $\propto$ in-flight
+      buffer depth $\propto$ \texttt{CONC} $\to$ off-policy \textbf{goodput loss} past a knee. A sweet spot
+      exists --- \texttt{demo\_a}'s fully-async Mode~B ablation is built to measure it.}
+    \item[\textbf{3}] \textbf{Mixed-task batches whose prompts need \emph{different} runtimes?}
+      \\{\scriptsize Task family is \textbf{data, not environment} (\texttt{task\_families.py}): \emph{one}
+      generic CPU runtime serves families \#1,\#2,\#4--8; only CUDA (\#3) needs the \textbf{GPU} runtime;
+      a custom-dependency task gets its \emph{own} image. The \texttt{generate} hook \textbf{routes each
+      prompt} to the ARN its family requires (CPU\,/\,\texttt{g6}\,/\,custom) by \texttt{metadata.task},
+      so one blended batch fans out across runtime pools concurrently --- each scored by its family checker.}
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{Experiments to run --- answering the three questions}
+  \footnotesize Concrete runs on the existing harness (\texttt{demo\_a} zoo $+$ \texttt{demo\_b} GPU $+$
+  \texttt{demo\_b4} Ray farm); all metrics already emitted by \texttt{metrics.py}\,/\,\texttt{train.csv}.
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \begin{block}{E1 --- sandbox scaling sweep (Q1)}
+        \scriptsize Fix engines $E$; sweep \texttt{CONC}\,$\in\{1,2,4,8,16\}$. Plot rollout throughput,
+        trainer \textbf{MFU}, engine-idle\,\%. Find the \textbf{knee} where the sandbox stops being the
+        bottleneck; then co-scale $(E,\texttt{CONC})$ for the balanced ratio.
+      \end{block}
+      \begin{block}{E2 --- goodput \& staleness (Q2)}
+        \scriptsize At each \texttt{CONC}: measure \textbf{goodput} (accepted on-policy trajectories/step),
+        MFU, reward-vs-walltime, and \textbf{staleness} (buffer depth). Quantify the async off-policy
+        penalty; locate the sweet spot.
+      \end{block}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \begin{block}{E3 --- mixed-task RL (Q3)}
+        \scriptsize Blended batch over the 6-family zoo $+$ KernelBench (GPU). Verify per-family
+        \textbf{routing} to CPU\,/\,\texttt{g6} ARNs; compare throughput vs single-family; test whether
+        mixed-task training lifts \textbf{generality} (held-out families). One-runtime-per-family vs
+        data-only-swap.
+      \end{block}
+      \begin{block}{E4 --- sandbox-tier infra (Q1)}
+        \scriptsize Capacity-provider autoscale ($N$ isolated instances) vs \texttt{b4} Ray fractional on
+        one L4: cost / goodput trade-off, cold-boot amortization, and where MIG-capable GPUs
+        (A100\,/\,H100) would change the sharing story.
+      \end{block}
+    \end{column}
+  \end{columns}
+  \vspace{0.1em}
+  {\scriptsize\itshape Deliverable: a \emph{sandbox scaling law} --- goodput \& MFU vs sandbox count ---
+  plus a validated mixed-task routing path, both on the same Slime\,$+$\,AgentCore seam the demos use.}
+\end{frame}
+
+% ============================================================
 \section*{Summary}
 % ============================================================
 
