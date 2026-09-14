@@ -617,9 +617,7 @@
     CTF & \texttt{solution.py} & --- & the challenge's \texttt{check(flag)} returns True \\
     RAG & \texttt{solution.py} & \texttt{docs/*.txt} & printed answer $=$ the fact only in the corpus \\
     SQL & \texttt{query.sql} & --- & run query on in-memory SQLite; rows $=$ gold \\
-    regex & \texttt{solution.py} & --- & \texttt{pattern} full-matches all pos, no neg \\
-    planning & \texttt{solution.py} & --- & hidden \texttt{verify(plan)} returns True \\
-    config & \texttt{solution.py} & --- & \texttt{config} dict satisfies every constraint \\
+    regex / planning / config & \texttt{solution.py} & --- & \texttt{pattern} matches / \texttt{verify(plan)} True / constraints hold \\
     data / ETL & \texttt{solution.py} & \texttt{input.json} & \texttt{output} $=$ gold transform of the input \\
     \bottomrule
   \end{tabular}
@@ -631,10 +629,10 @@
 
 \begin{frame}{AgentCore-as-sandbox generality --- one sandbox covers the common archetypes}
   \footnotesize The point of the zoo is \textbf{not} eleven sandboxes --- it is \textbf{one} AgentCore
-  sandbox standing in for every \emph{commonly-used} agentic-RL archetype; all on the \emph{same} CPU
-  Code-Interpreter microVM (a GPU instance only for \#3).
+  sandbox standing in for every \emph{commonly-used} agentic-RL archetype, all on the \emph{same} CPU
+  microVM (a GPU instance only for \#3).
   \begin{center}
-  \renewcommand{\arraystretch}{0.62}\scriptsize
+  \renewcommand{\arraystretch}{0.5}\scriptsize
   \begin{tabular}{@{}p{3.5cm}p{3.3cm}p{4.2cm}@{}}
     \toprule
     \textbf{Common sandbox archetype} & \textbf{Zoo family standing in} & \textbf{Real-world analog} \\
@@ -676,7 +674,7 @@
     \bottomrule
   \end{tabular}
   \end{center}
-  \vspace{-0.4em}
+  \vspace{-0.7em}
   \begin{columns}[T]
     \begin{column}{0.62\textwidth}
       {\scriptsize\textbf{Constant across every family} (\texttt{sandbox.py}): one AgentCore CPU sandbox
