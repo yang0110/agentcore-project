@@ -270,12 +270,11 @@
 % ============================================================
 
 \begin{frame}{``How does AWS know which runtime to launch per task?'' --- it doesn't}
-  \footnotesize A natural worry with the zoo: SQL, RAG, math, SWE, CTF\ldots\ surely each needs its own
-  runtime env? \textbf{No} --- AWS never sees the task type. There is \emph{one} generic sandbox runtime;
-  the task family is \textbf{data}, not environment (\texttt{task\_families.py}) --- the harness changes
-  only prompt, seed files, and checker.
+  \footnotesize A natural worry with the zoo: SQL, RAG, math, SWE, CTF --- surely each needs its own
+  runtime env? \textbf{No}: AWS never sees the task type. \emph{One} generic runtime; the task family is
+  \textbf{data}, not environment (\texttt{task\_families.py}) --- only prompt, seed files, and checker change.
   \begin{center}
-  \renewcommand{\arraystretch}{0.58}\scriptsize
+  \renewcommand{\arraystretch}{0.5}\scriptsize
   \begin{tabular}{@{}p{3.6cm}p{4.2cm}p{4.0cm}@{}}
     \toprule
     \textbf{Layer} & \textbf{Who decides} & \textbf{Varies per family?} \\
@@ -286,13 +285,13 @@
     \bottomrule
   \end{tabular}
   \end{center}
-  \vspace{-0.4em}
+  \vspace{-0.5em}
   \begin{columns}[T]
     \begin{column}{0.6\textwidth}
-      \textbf{Per-episode flow}
-      \begin{enumerate}\setlength\itemsep{0.03em}
+      \scriptsize\textbf{Per-episode flow}
+      \begin{enumerate}\setlength\itemsep{0.02em}
         \item[\textbf{1}] Generic microVM cold-boots --- AWS knows only \emph{``a Python sandbox for \texttt{sid=X}''}.
-        \item[\textbf{2}] The harness \texttt{write}s the family's seed files (SQLite DB, corpus\ldots) $+$ \texttt{run\_checks.py}.
+        \item[\textbf{2}] Harness \texttt{write}s the family's seed files (SQLite DB, corpus\ldots) $+$ \texttt{run\_checks.py}.
         \item[\textbf{3}] \texttt{exec} runs it; exit code $\to$ reward. AWS just ran the bytes pushed in.
       \end{enumerate}
     \end{column}
@@ -305,8 +304,8 @@
     \end{column}
   \end{columns}
   {\scriptsize\itshape The one genuine env change is \textbf{CPU$\leftrightarrow$GPU} (\texttt{a} vs
-  \texttt{b}): KernelBench needs CUDA, so the harness points at the \texttt{g6} ARN --- \emph{your}
-  deploy-time choice. Each task needs its own \emph{session}, not its own \emph{runtime}.}
+  \texttt{b}): KernelBench needs CUDA $\to$ point at the \texttt{g6} ARN. Each task needs its own
+  \emph{session}, not its own \emph{runtime}.}
 \end{frame}
 
 \begin{frame}{When the default microVM isn't enough --- build a \emph{custom} Runtime}
@@ -843,6 +842,30 @@ create_agent_runtime(
       Runtime instance} (custom CUDA container on a \texttt{g6}). Same tools, same exit-code reward.}
     \end{column}
   \end{columns}
+\end{frame}
+
+\begin{frame}{How each expansion's sandbox is \emph{built} --- microVM by default, custom container only for GPU/CLI}
+  \footnotesize Across \emph{all} demos there are only \textbf{two build recipes}: use the managed
+  microVM \emph{as-is}, or build \& push \emph{one} custom container (CPU serverless \emph{or} a GPU
+  capacity provider).
+  \begin{center}
+  \renewcommand{\arraystretch}{0.45}\scriptsize
+  \begin{tabular}{@{}p{2.5cm}p{4.0cm}p{5.0cm}@{}}
+    \toprule
+    \textbf{Expansion} & \textbf{What backs the sandbox} & \textbf{How it is built} \\
+    \midrule
+    \texttt{a} $+$ CPU zoo & Managed Code Interpreter microVM (AWS default image) & \textbf{Not built} --- harness \texttt{write}s seed files $+$ checker at runtime; \texttt{pip install} for an extra pkg \\
+    \texttt{b} (GPU) & Custom CUDA container $\to$ ECR & \texttt{buildx} (x86) $\to$ \texttt{create\_agent\_runtime} $+$ \texttt{g6} \textbf{capacity provider} \\
+    \texttt{b4} (Ray-shared GPU) & Same GPU container $+$ \texttt{ray} $+$ \texttt{B4\_*} env & As \texttt{b}; one shared \texttt{runtimeSessionId}, per-episode \texttt{sub\_session}, Ray splits the L4 \\
+    \texttt{a2}\,/\,\texttt{b2} \emph{(appx)} & Container with the real Claude Code CLI baked in & \texttt{Dockerfile.harness.claude} $\to$ ECR; CPU (\texttt{a2}) or \texttt{g6} (\texttt{b2}) \\
+    \texttt{a3}\,/\,\texttt{b3} \emph{(appx)} & Sandbox as its \emph{own} Runtime (two-Runtime split) & Same custom container, driven over \texttt{invoke\_agent\_runtime} \\
+    \bottomrule
+  \end{tabular}
+  \\[0.1em]\figtag{one microVM for all CPU work; one custom-container recipe, CPU or GPU, for everything else}
+  \end{center}
+  \vspace{-0.3em}
+  {\scriptsize\textbf{Takeaway.} You never build a sandbox \emph{per task} --- at most \emph{one} image
+  per compute mode (CPU / GPU); the ARN it produces is the only thing the harness swaps.}
 \end{frame}
 
 % ============================================================
