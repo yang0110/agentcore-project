@@ -443,7 +443,7 @@
   \footnotesize One AgentCore session lives for \emph{one} episode: created \textbf{lazily} on first tool
   use, torn down at episode end --- Slime never pre-launches a pool (\texttt{AgentCoreSandbox}).
   \begin{center}\scriptsize
-  \scalebox{0.55}{\begin{tikzpicture}[node distance=0.55cm, font=\scriptsize, >=stealth,
+  \scalebox{0.5}{\begin{tikzpicture}[node distance=0.55cm, font=\scriptsize, >=stealth,
       st/.style={box, minimum width=2.0cm, minimum height=0.75cm, align=center}]
     \node[st] (a) {\textbf{1. enter}\\\texttt{\_\_aenter\_\_}};
     \node[st, right=of a] (b) {\textbf{2. start}\\microVM boots};
@@ -458,7 +458,7 @@
     \draw[arb] (c.south) -- (r.north);
   \end{tikzpicture}}
   \end{center}
-  \vspace{-0.2em}
+  \vspace{-0.5em}
   \begin{columns}[T]
     \begin{column}{0.56\textwidth}
       \textbf{The walk-through}
@@ -467,7 +467,7 @@
         \item[\textbf{2}] \texttt{start(sid)} $\to$ \textbf{cold-boot}. \textbf{CPU $\approx$100--200\,ms} (Firecracker floor \textbf{<125\,ms}; \emph{measure} it); \textbf{GPU g6 $\sim$160\,s} (full EC2 launch).
         \item[\textbf{3}] Each turn runs an op over \texttt{invoke}; transport blips \textbf{retried in place} ($3\times$), same \texttt{sid} $\to$ warm VM.
         \item[\textbf{4}] Checker exit code $\to$ binary reward; the turn stream becomes loss-masked GRPO data.
-        \item[\textbf{5}] Episode ends $\to$ \texttt{\_\_aexit\_\_}$\to$\texttt{stop()} tears the microVM down (or idle-out at $\approx$600\,s).
+        \item[\textbf{5}] Episode ends $\to$ \texttt{\_\_aexit\_\_}$\to$\texttt{stop()} tears the microVM down (or idle-out $\approx$600\,s).
       \end{enumerate}
     \end{column}
     \begin{column}{0.44\textwidth}
@@ -689,6 +689,10 @@
     \end{column}
   \end{columns}
 \end{frame}
+
+% ============================================================
+\section{Customizing the sandbox --- from CPU to GPU}
+% ============================================================
 
 \begin{frame}{``How does AWS know which runtime to launch per task?'' --- it doesn't}
   \footnotesize A natural worry with the zoo: SQL, RAG, math, SWE, CTF\ldots\ surely each needs its own
@@ -1063,42 +1067,6 @@ create_agent_runtime(
       no isolation), or Ray fractions (\texttt{demo\_b4}). Size $N$ to $C = D \times L_e$; grow by
       raising \texttt{CONC} / adding ARNs.
   \end{enumerate}
-\end{frame}
-
-\begin{frame}{Splitting one GPU across many sandboxes --- \texttt{demo\_b4}}
-  \footnotesize The GPU answer to Q3. AgentCore maps \textbf{1 \texttt{runtimeSessionId} $\to$ 1 EC2
-  instance} and exposes \emph{no} cross-session GPU sharing --- so $N$ concurrent GPU episodes would
-  naively demand $N$ \texttt{g6} instances (what stalled \texttt{demo\_b3} on a capacity-starved fleet).
-  \texttt{demo\_b4} packs \textbf{several sandboxes onto \emph{one} g6} and splits its single L4 between them.
-  \begin{columns}[T]
-    \begin{column}{0.56\textwidth}
-      \textbf{How the one GPU is split \& assigned}
-      \begin{itemize}\setlength\itemsep{0.12em}
-        \item All episodes invoke the g6 under \textbf{one shared \texttt{runtimeSessionId}} (so they
-          land on the \emph{same} instance) $+$ a per-episode \texttt{sub\_session} in every op payload.
-        \item Inside the g6, a \textbf{Ray farm} leases one \textbf{fractional-GPU actor} per
-          \texttt{sub\_session}: \texttt{ray.remote(num\_gpus=frac)}. Ray schedules
-          $\lfloor 1/\texttt{frac}\rfloor$ actors onto the GPU and pins each via
-          \texttt{CUDA\_VISIBLE\_DEVICES} --- \texttt{frac=0.25} $\Rightarrow$ \textbf{4} concurrent
-          sandboxes on one L4.
-        \item Actors are \textbf{long-lived} (warm CUDA context, workdir cleared on release) and slot
-          in via the \emph{same} \texttt{Sandbox} contract --- the harness never knows it holds a slice.
-      \end{itemize}
-    \end{column}
-    \begin{column}{0.44\textwidth}
-      \begin{block}{Ray packs, \texttt{sitecustomize} isolates}
-        \scriptsize \texttt{num\_gpus} is a \textbf{scheduling} fraction only --- it caps \emph{how many}
-        actors land on the GPU, not their memory, and L4 (Ada Lovelace) has \textbf{no MIG}. So each
-        sandbox also caps its own share in software
-        (\texttt{torch.cuda.set\_per\_process\_memory\_fraction}), applied \emph{inside} the checker
-        subprocess via a dropped-in \texttt{sitecustomize.py}.
-      \end{block}
-      \vspace{0.15em}
-      {\scriptsize\textbf{Verified on real hardware}: 4 concurrent \texttt{sub\_session}s co-resided on
-      one g6 L4. \emph{Trade-off}: dense concurrency, but cooperative sharing --- no microVM isolation
-      \emph{between} co-resident sandboxes (full detail in appendix).}
-    \end{column}
-  \end{columns}
 \end{frame}
 
 % ============================================================
