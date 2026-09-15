@@ -30,10 +30,10 @@ diagram (or table) region and rendered at ~300 DPI PNG for pasting into other de
 | `fig23_all-rows-have-harness.png` | 23 | 42 | All rows have a harness — they differ in which & where (table) |
 | `fig24_demo-a-inprocess-cpu.png` | 24 | 44 | Demo a — in-process harness, CPU sandbox data flow |
 | `fig25_demo-b-inprocess-gpu.png` | 25 | 47 | Demo b — in-process harness, remote GPU sandbox data flow |
-| `fig26_demo-a2-colocated.png` | — | — | **REMOVED (obsolete)** — demo_a2 (real Claude Code CLI) deleted; slide no longer in the deck. Image file kept but unused. |
-| `fig27_demo-b2-two-runtimes.png` | — | — | **REMOVED (obsolete)** — demo_b2 (real CLI, two-Runtime) deleted; slide no longer in the deck. Image file kept but unused. |
-| `fig28_demo-a3-two-runtimes-cpu.png` | 28 | 56 | Demo a3 — mini harness (Runtime #1) ⊥ CPU sandbox (Runtime #2) |
-| `fig29_demo-b3-two-runtimes-gpu.png` | 29 | 59 | Demo b3 — mini harness (Runtime #1) ⊥ GPU sandbox (Runtime #2) |
+| `fig26_demo-a2-colocated.png` | — | — | **REMOVED (obsolete)** — demo_cpu_single2 (real Claude Code CLI) deleted; slide no longer in the deck. Image file kept but unused. |
+| `fig27_demo-b2-two-runtimes.png` | — | — | **REMOVED (obsolete)** — demo_gpu_single2 (real CLI, two-Runtime) deleted; slide no longer in the deck. Image file kept but unused. |
+| `fig28_demo-cpu-2runtime.png` | 28 | 56 | Demo a3 — mini harness (Runtime #1) ⊥ CPU sandbox (Runtime #2) |
+| `fig29_demo-gpu-2runtime.png` | 29 | 59 | Demo b3 — mini harness (Runtime #1) ⊥ GPU sandbox (Runtime #2) |
 | `fig30_colocated-vs-two-runtime.png` | 30 | 62 | In-process harness vs. two-Runtime topology & trade-offs |
 | `fig31_per-tier-replication.png` | 31 | 63 | Per-tier replication — C : E : C concurrency & GPU split (table) |
 | `fig32_network-posture-per-component.png` | 32 | 67 | Hosting & network posture per component (table) |

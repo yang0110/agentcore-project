@@ -60,7 +60,19 @@ async def run_episode(
     sampling_params = sampling_params or {"max_new_tokens": 1024, "temperature": 1.0}
     traj = Trajectory(task_id=task.task_id)
 
-    # Write the checker once; it's stable across turns.
+    # Family-agnostic hooks (CodingTask supplies the coding defaults; other families in
+    # task_families.py override them). getattr keeps this robust to minimal task objects.
+    artifact_filename = getattr(task, "artifact_filename", "solution.py")
+    check_command = getattr(task, "check_command", "python3 run_checks.py")
+    submission_hint = getattr(
+        task, "submission_hint",
+        "Reply with the full solution.py in one ```python code block.",
+    )
+
+    # Seed the workspace once: any family-specific files (tools module, doc corpus, ...),
+    # then the checker. All are stable across turns.
+    for name, content in getattr(task, "setup_files", lambda: {})().items():
+        await sandbox.write_file(name, content)
     await sandbox.write_file("run_checks.py", task.runner_source())
 
     messages: list[Message] = [
@@ -72,16 +84,14 @@ async def run_episode(
         completion = await policy.complete(messages, sampling_params)
         messages.append({"role": "assistant", "content": completion.text})
 
-        code = CodingTask.extract_code(completion.text)
+        code = task.extract_submission(completion.text)
         if code is None:
-            # No code this turn — nudge and record a "no submission" transition.
-            observation = "No ```python code block found. Reply with the full solution.py in one block."
+            # No submission this turn — nudge and record a "no submission" transition.
+            observation = f"No code block found. {submission_hint}"
             exit_code, submitted = 1, False
         else:
-            await sandbox.write_file("solution.py", code)
-            exit_code, stdout, stderr = await sandbox.exec(
-                "python3 run_checks.py", timeout=60
-            )
+            await sandbox.write_file(artifact_filename, code)
+            exit_code, stdout, stderr = await sandbox.exec(check_command, timeout=60)
             observation = task.observation(exit_code, stdout, stderr)
             submitted = True
 
@@ -99,5 +109,5 @@ async def run_episode(
 
         messages.append({"role": "user", "content": observation})
 
-    traj.reward = CodingTask.reward(0 if traj.solved else 1)
+    traj.reward = task.reward(0 if traj.solved else 1)
     return traj

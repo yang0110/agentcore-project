@@ -1,0 +1,2 @@
+eval/step,eval/mbpp,eval/mbpp-truncated_ratio,eval/mbpp/avg_cached_tokens_per_sample,eval/mbpp/prefix_cache_hit_rate,eval/mbpp/repetition_frac,eval/mbpp/response_len/max,eval/mbpp/response_len/mean,eval/mbpp/response_len/median,eval/mbpp/response_len/min,eval/mbpp/truncated_ratio
+9,0.5625,0.0,0.0,0.0,0.0,1348,350.5,185.5,19,0.0

@@ -32,6 +32,41 @@ ExecResult = tuple[int, str, str]  # (exit_code, stdout, stderr)
 FileContent = str | bytes | Path
 
 
+# --- Multi-Runtime fan-out (rollout-throughput ablation) --------------------------------------
+# To boost rollout throughput we can spread concurrent episodes across SEVERAL sandbox Runtimes
+# instead of hammering one. Set AGENTCORE_SANDBOX_RUNTIME_ARNS to a comma-separated list of
+# Runtime ARNs; make_sandbox() assigns each new episode's sandbox to the next ARN round-robin.
+# The number of ARNs in that list IS the ablation knob (sweep 1,2,4,...). Falls back to the
+# single AGENTCORE_SANDBOX_RUNTIME_ARN when the list is unset (backward compatible).
+import itertools as _itertools
+import threading as _threading
+
+_ARN_LOCK = _threading.Lock()
+_ARN_CYCLE = None  # itertools.cycle over the current ARN list
+_ARN_LIST: list[str] | None = None  # remembered list to detect env changes
+
+
+def _runtime_arns() -> list[str]:
+    listed = os.environ.get("AGENTCORE_SANDBOX_RUNTIME_ARNS", "").strip()
+    if listed:
+        return [a.strip() for a in listed.split(",") if a.strip()]
+    single = os.environ.get("AGENTCORE_SANDBOX_RUNTIME_ARN", "").strip()
+    return [single] if single else []
+
+
+def _next_runtime_arn() -> str | None:
+    """Round-robin the configured sandbox Runtime ARNs (thread-safe). None if none configured."""
+    global _ARN_CYCLE, _ARN_LIST
+    arns = _runtime_arns()
+    if not arns:
+        return None
+    with _ARN_LOCK:
+        if _ARN_LIST != arns:
+            _ARN_LIST = arns
+            _ARN_CYCLE = _itertools.cycle(arns)
+        return next(_ARN_CYCLE)
+
+
 @runtime_checkable
 class Sandbox(Protocol):
     """Provider-agnostic sandbox contract — signature-compatible with slime's
@@ -262,6 +297,9 @@ def make_sandbox(kind: str | None = None, **kwargs) -> Sandbox:
     * "agentcore-runtime"  — AgentCoreRuntimeSandbox: the sandbox as its OWN AgentCore Runtime,
                              driven over invoke_agent_runtime (the disaggregated two-Runtime
                              target, docs/harness-sandbox-decoupling.md §7). UNTESTED scaffolding.
+    * "agentcore-ray-farm" — RayFarmRuntimeSandbox (Demo B4): same harness as "agentcore-runtime",
+                             but several episodes SHARE one g6 instance whose GPU a Ray farm splits
+                             (shared runtimeSessionId + per-episode sub_session).
     """
     # Default is AWS: every demo runs against AgentCore. "local" (LocalSandbox) is retained only
     # for offline unit tests / CI and must be requested explicitly (SANDBOX=local); it is never
@@ -275,5 +313,22 @@ def make_sandbox(kind: str | None = None, **kwargs) -> Sandbox:
         # Imported here so the offline/Code-Interpreter paths never load the new backend.
         from .agentcore_runtime_sandbox import AgentCoreRuntimeSandbox
 
+        # Spread episodes across the configured Runtime ARNs round-robin (throughput fan-out).
+        # If a caller passed an explicit runtime_arn we honor it; otherwise pick the next ARN.
+        if "runtime_arn" not in kwargs:
+            arn = _next_runtime_arn()
+            if arn is not None:
+                kwargs["runtime_arn"] = arn
         return AgentCoreRuntimeSandbox(**kwargs)
+    if kind in ("agentcore-ray-farm", "ray-farm", "b4"):
+        # Demo B4: SAME in-process run_episode harness as "agentcore-runtime" (generate.generate
+        # drives it identically) — the ONLY difference is the sandbox. Here the sandbox is a
+        # sub_session slot on ONE shared g6 instance whose single GPU a Ray farm splits across
+        # several concurrent episodes (server-side sandbox_ray_farm.RayGpuFarm). shared_session_id
+        # comes from B4_SHARED_RUNTIME_SESSION (set once per job in run.sh so every episode lands on
+        # the SAME g6), and a per-episode sub_session is minted per sandbox. Deliberately NOT part of
+        # the ARN round-robin: B4 targets one instance and packs many episodes onto its one GPU.
+        from .agentcore_runtime_sandbox import RayFarmRuntimeSandbox
+
+        return RayFarmRuntimeSandbox(**kwargs)
     raise ValueError(f"unknown sandbox kind: {kind!r}")

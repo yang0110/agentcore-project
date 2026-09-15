@@ -89,8 +89,8 @@ AL's three decouplings map 1:1 to ①/②/③ below.
 
 | Row | Harness | Sandbox | Status |
 |---|---|---|---|
-| A / B (`demo_a`, `demo_b`) | our `run_episode`, in-process | `AgentCoreSandbox` (A) / remote GPU Runtime (B) | reference loop |
-| A3 / B3 (`demo_a3`, `demo_b3`) | mini harness on **AgentCore Runtime #1** (`harness_runtime_agent.py`, `HARNESS_KIND=mini`) | Code Interpreter (A3) / GPU Runtime (B3) on **Runtime #2** | two-Runtime showcase |
+| A / B (`demo_cpu_single`, `demo_gpu_single`) | our `run_episode`, in-process | `AgentCoreSandbox` (A) / remote GPU Runtime (B) | reference loop |
+| A3 / B3 (`demo_cpu_2runtime`, `demo_gpu_2runtime`) | mini harness on **AgentCore Runtime #1** (`harness_runtime_agent.py`, `HARNESS_KIND=mini`) | Code Interpreter (A3) / GPU Runtime (B3) on **Runtime #2** | two-Runtime showcase |
 
 (A prior A2 / B2 row ran the **real Claude Code CLI** co-located in the sandbox; that path has been
 removed in favor of the mini harness.)
@@ -104,4 +104,4 @@ AgentCore GPU Runtime instance** (capacity-provider EC2 GPU), not a local-GPU st
 > The two-Runtime backend (`agentcore_runtime_sandbox.py`, `sandbox_server_agent.py`,
 > `harness_runtime_agent.py`, `agentcore_runtime_generate.py`) is **untested scaffolding** on the
 > CPU rows — it has not been fully run against AWS (GPU instances cost money). The single-runtime
-> `demo_a` / `demo_b` reference paths still work.
+> `demo_cpu_single` / `demo_gpu_single` reference paths still work.

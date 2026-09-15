@@ -24,7 +24,7 @@ Companion docs: [`agentcore-slime-integration.md`](./agentcore-slime-integration
 > code and its CLI toolchain have since been **removed** from the repo; the live harness is now our
 > **mini Claude-Code-like harness** (`MiniClaudeHarness`, `mini_agent.py`), deployed on its own
 > AgentCore Runtime (see [`harness-sandbox-decoupling.md`](./harness-sandbox-decoupling.md) and demos
-> `demo_a3`/`demo_b3`). The principle below is unchanged — the slime policy is the agent's brain,
+> `demo_cpu_2runtime`/`demo_gpu_2runtime`). The principle below is unchanged — the slime policy is the agent's brain,
 > served through the adapter, with tool exec in an AgentCore sandbox — only the harness
 > implementation differs. Read §1/§1a/§5–§6 as the original CLI-based framing.
 

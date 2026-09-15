@@ -1,0 +1,7 @@
+[08:47:45] QUEUE START. Waiting for gpu_single (train_async.py) to finish...
+[10:54:53] GPUs free — gpu_single done.
+[10:54:53] BEGIN demo_gpu_2runtime
+[13:16:36] END   demo_gpu_2runtime rc=1
+[13:17:21] BEGIN demo_gpu_shared
+[13:31:27] END   demo_gpu_shared rc=1
+[13:32:12] QUEUE DONE.

@@ -81,5 +81,5 @@ EBS. `python3 deploy_two_runtime.py cleanup` deletes the runtimes and the capaci
 
 ## Then run the demos
 
-A3 uses the CPU sandbox ARN, B3 the GPU one — see `code/demos/demo_a3/README.md` and
-`code/demos/demo_b3/README.md`.
+A3 uses the CPU sandbox ARN, B3 the GPU one — see `code/demos/demo_cpu_2runtime/README.md` and
+`code/demos/demo_gpu_2runtime/README.md`.

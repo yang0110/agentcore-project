@@ -134,7 +134,7 @@ python train.py \
   tool, run it in the sandbox, repeat. The demos deploy it the **target** way: the harness runs on
   its **own AgentCore Runtime #1** (`harness_runtime_agent.py`, `HARNESS_KIND=mini`) and the sandbox
   is a **separate Runtime #2** (`AgentCoreRuntimeSandbox`, `SANDBOX=agentcore-runtime`) — see demos
-  `demo_a3`/`demo_b3` and `../docs/harness-sandbox-decoupling.md`. `tests/test_smoke.py` proves
+  `demo_cpu_2runtime`/`demo_gpu_2runtime` and `../docs/harness-sandbox-decoupling.md`. `tests/test_smoke.py` proves
   `AgentCoreSandbox` is a genuine drop-in via `isinstance(..., slime.agent.sandbox.Sandbox)`. (An
   earlier variant ran the **real Claude Code CLI** as the harness; that path has been removed in
   favor of this mini harness.) This demo's `run_episode` is the offline-runnable, simplified

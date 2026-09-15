@@ -1,0 +1,2 @@
+eval/step,eval/rag,eval/rag-truncated_ratio,eval/rag/avg_cached_tokens_per_sample,eval/rag/prefix_cache_hit_rate,eval/rag/repetition_frac,eval/rag/response_len/max,eval/rag/response_len/mean,eval/rag/response_len/median,eval/rag/response_len/min,eval/rag/truncated_ratio
+4,0.5,0.0,0.0,0.0,0.0,506,366.5,345.5,269,0.0

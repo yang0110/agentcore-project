@@ -29,6 +29,8 @@ import asyncio
 import contextlib
 import json
 import os
+import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -119,6 +121,36 @@ def _retry_invoke(call, *, what: str = "invoke"):
     raise last  # unreachable, keeps type-checkers happy
 
 
+# --- Sandbox response-time instrumentation (see demos/demo_cpu_single/metrics.py + the ablation) ---------
+# Every sandbox op is one invoke_agent_runtime round-trip; nothing else in this file times it, so
+# rollout latency lumped the sandbox cost in with SGLang decode inside slime's perf/rollout_time.
+# _timed_invoke wraps the (retrying) call, measures the WHOLE round-trip the rollout actually paid
+# (retries included — that is the real latency), and prints ONE raw per-op record to stdout. The
+# record is a plain, greppable line (not slime's `- perf N:` format), parsed by metrics.py into a
+# raw per-op CSV + per-step mean/p50/p95 `perf/sandbox_ms_*` columns. We print (not log) so the
+# record lands in the tee'd run log regardless of the process's logging level, and write it in ONE
+# sys.stdout.write call so lines from concurrent episode threads (asyncio.to_thread) don't interleave.
+def _arn_tail(arn: str | None) -> str:
+    return arn.rsplit("/", 1)[-1] if arn else "?"
+
+
+def _timed_invoke(call, *, op: str, arn: str | None, session: str, what: str):
+    t0 = time.perf_counter()
+    status = "ok"
+    try:
+        return _retry_invoke(call, what=what)
+    except Exception as exc:  # noqa: BLE001 — re-raised; we only tag the record with the error class
+        status = type(exc).__name__
+        raise
+    finally:
+        ms = (time.perf_counter() - t0) * 1000.0
+        sys.stdout.write(
+            f"[sbx-op] ts={time.time():.3f} op={op} ms={ms:.1f} "
+            f"arn={_arn_tail(arn)} session={session} status={status}\n"
+        )
+        sys.stdout.flush()
+
+
 class AgentCoreRuntimeSandbox:
     """Sandbox backed by a remote AgentCore Runtime (the disaggregated target).
 
@@ -174,12 +206,13 @@ class AgentCoreRuntimeSandbox:
         # (a2 died at step 8 after 7 good steps this way). Retry transient failures with backoff so a
         # single bad round-trip is absorbed instead of crashing a multi-hour run. Non-transient errors
         # (bad ARN, 4xx) still raise immediately.
-        resp = _retry_invoke(
+        resp = _timed_invoke(
             lambda: self._client.invoke_agent_runtime(
                 agentRuntimeArn=self._arn,
                 runtimeSessionId=self._session_id,
                 payload=json.dumps(payload).encode(),
             ),
+            op=str(payload.get("op")), arn=self._arn, session=self._session_id,
             what=f"sandbox invoke op={payload.get('op')}",
         )
         raw = resp["response"].read()
@@ -288,11 +321,12 @@ class RayFarmRuntimeSandbox:
         self._client = None
 
     def _invoke_sync(self, payload: dict) -> dict:
-        resp = _retry_invoke(
+        resp = _timed_invoke(
             lambda: self._client.invoke_agent_runtime(
                 agentRuntimeArn=self._arn,
                 runtimeSessionId=self._session_id,   # SHARED across episodes (one g6 instance)
                 payload=json.dumps(payload).encode()),
+            op=str(payload.get("op")), arn=self._arn, session=self._sub,
             what=f"b4-farm invoke op={payload.get('op')} sub={self._sub}",
         )
         raw = resp["response"].read()

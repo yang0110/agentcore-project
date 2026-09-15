@@ -1,13 +1,19 @@
 # Demos — the 2×2 matrix
 
-The demo directories are each **independently runnable**. Each one owns its `data/` (train +
-held-out eval jsonl), its `ckpt/` output dir, and its `run.sh`, so you can run any single demo
-without touching the others or the shared `code/p4_slime_train/` tree. The `agentcore_slime_demo`
-library is **imported from the shared copy** at `code/agentcore_slime_demo/` (put on `PYTHONPATH`
-as `/work/code` inside the container) — one source of truth, no per-demo copies. The other shared
-things a demo *references* (not copies) are the base Megatron checkpoint at
-`code/p4_slime_train/ckpt/Qwen3-4B_torch_dist` and the slime install at `/root/slime` inside the
-container.
+The demo directories are each **fully self-contained**. Every demo owns its `data/` (train +
+held-out eval jsonl), its `ckpt/` output dir, its `run.sh`, a **vendored copy of the
+`agentcore_slime_demo/` library** (it imports only this local copy — `PYTHONPATH` puts the demo dir
+first and no longer includes `/work/code`), and its own **`deploy/`** with the exact Dockerfile(s)
+its sandbox Runtime image is built from. So a client can read one folder end-to-end and see the
+whole recipe: task → dataset → Dockerfile → launch → run → terminate. Each README carries the
+AgentCore **launch / terminate / latency** basics inline.
+
+Three things a demo *references* rather than copies (shared infra that would only drift if
+duplicated): the base Megatron checkpoint at `code/p4_slime_train/ckpt/Qwen3-4B_torch_dist`, the
+slime install at `/root/slime`, and the **shared deploy orchestrator** `code/deploy/deploy_two_runtime.py`
+(+ its `redeploy_*`/`smoke_*` helpers) that creates the IAM roles, ECR repos, VPC endpoints, and the
+GPU capacity provider. The top-level `code/agentcore_slime_demo/` still exists because `code/deploy/`
+builds the Runtime images from it and `code/tests/` imports it.
 
 The matrix has two axes:
 
@@ -19,11 +25,11 @@ The matrix has two axes:
 
 |            | **A — MBPP / CPU microVM**            | **B — KernelBench / GPU sandbox**              |
 |------------|----------------------------------------|-------------------------------------------------|
-| **our harness**          | [`demo_a/`](demo_a/)   — 4 train + 4 infer + 0 env | [`demo_b/`](demo_b/)  — 4 train + 4 infer + 0 env (checker GPU on remote g6 sandbox) |
-| **mini Claude-Code (own Runtime)** | [`demo_a3/`](demo_a3/) — Demo A + mini harness | [`demo_b3/`](demo_b3/) — Demo B + mini harness |
+| **our harness**          | [`demo_cpu_single/`](demo_cpu_single/)   — 4 train + 4 infer + 0 env | [`demo_gpu_single/`](demo_gpu_single/)  — 4 train + 4 infer + 0 env (checker GPU on remote g6 sandbox) |
+| **mini Claude-Code (own Runtime)** | [`demo_cpu_2runtime/`](demo_cpu_2runtime/) — Demo A + mini harness | [`demo_gpu_2runtime/`](demo_gpu_2runtime/) — Demo B + mini harness |
 
 (A prior third row ran the **real Claude Code CLI** in a custom container; that path has been
-removed in favor of the mini harness.) Demo [`demo_b4/`](demo_b4/) extends the B / mini-harness path
+removed in favor of the mini harness.) Demo [`demo_gpu_shared/`](demo_gpu_shared/) extends the B / mini-harness path
 with a Ray GPU-sharing farm on the remote g6 sandbox Runtime.
 
 All four matrix demos share the training path: slime async/decoupled (`train_async.py`), Qwen3-4B,
@@ -33,13 +39,13 @@ the **agent harness** (a **dedicated harness Runtime**).
 
 ## Which to run
 
-- **`demo_a`** — the reference. Runs offline-friendly (`SANDBOX=local`) or on real AWS Code
+- **`demo_cpu_single`** — the reference. Runs offline-friendly (`SANDBOX=local`) or on real AWS Code
   Interpreter microVMs (`SANDBOX=agentcore`). Most battle-tested.
-- **`demo_b`** — GPU-sandbox path; the KernelBench checker's GPU is the remote g6 sandbox Runtime, so
+- **`demo_gpu_single`** — GPU-sandbox path; the KernelBench checker's GPU is the remote g6 sandbox Runtime, so
   the trainer box stays 4 train + 4 infer + 0 env. Trains on
   the real KernelBench (level_1, 100 single-op CUDA problems; 20 held-out level_2 fusions for eval).
   Defaults `RB=4/NS=8/NR=20`; keep `NR × RB ≤ 100` (see its README).
-- **`demo_a3` / `demo_b3`** — a **mini harness that mimics Claude Code** (call model → pick tool →
+- **`demo_cpu_2runtime` / `demo_gpu_2runtime`** — a **mini harness that mimics Claude Code** (call model → pick tool →
   run in sandbox → repeat) in ~1 file of Python. **No Node, no CLI** (it is not the Claude Code CLI),
   but it is deployed the **target** way: the harness runs on its **own AgentCore Runtime #1** and the
   sandbox is a **separate Runtime #2** (CPU Code-Interpreter-style for A3 / GPU for B3) — build and

@@ -1,0 +1,2 @@
+eval/step,eval/sql,eval/sql-truncated_ratio,eval/sql/avg_cached_tokens_per_sample,eval/sql/prefix_cache_hit_rate,eval/sql/repetition_frac,eval/sql/response_len/max,eval/sql/response_len/mean,eval/sql/response_len/median,eval/sql/response_len/min,eval/sql/truncated_ratio,eval/sql/zero_std/count_1.0
+4,1.0,0.0,0.0,0.0,0.0,18,17.0,17.0,16,0.0,1

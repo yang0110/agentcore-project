@@ -115,7 +115,7 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     slime's dispatch (generate_and_rm) treats a LIST return as the "fan-out" case and hands
     back list[list[Sample]] from generate_and_rm_group. The stock rollout path tolerates that
     nesting everywhere via `isinstance(group[0], list)` guards, but the fully-async path
-    (slime.rollout.fully_async_rollout, used by demo_a's Mode B ablation) does NOT guard its
+    (slime.rollout.fully_async_rollout, used by demo_cpu_single's Mode B ablation) does NOT guard its
     sort key and crashes on the nested shape. Returning a bare Sample keeps us on slime's
     primary (non-fan-out) shape, which BOTH the stock and fully-async paths handle. Behavior
     is identical for the stock demos (one flattened sample per episode either way)."""
@@ -162,11 +162,20 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     return out
 
 
-def _task_from_sample(sample) -> CodingTask:
-    """Extract a CodingTask from a slime Sample's prompt payload."""
+def _task_from_sample(sample):
+    """Extract the episode's Task from a slime Sample's prompt payload.
+
+    Dispatches on the `family` discriminator so any of the six task families
+    (coding/SWE/tool-use/SQL/math/CTF/RAG) rebuilds as its own class. Legacy
+    MBPP/KernelBench rows carry no `family` key and map to CodingTask."""
+    from .task import task_from_dict
+
     meta = getattr(sample, "metadata", None) or {}
     if "task" in meta:
-        return CodingTask(**meta["task"])
+        td = meta["task"]
+        if "family" in td:
+            return task_from_dict(td)
+        return CodingTask(**td)  # legacy coding/kernel rows
     # Fallback: prompt string is a JSON-encoded task.
     import json
     return CodingTask(**json.loads(sample.prompt))

@@ -1,0 +1,21 @@
+# Harness AgentCore Runtime #1 (CPU) — runs MiniClaudeHarness on its own Runtime.
+# Build context MUST be code/ (so agentcore_slime_demo/ is COPY-able):
+#   docker build -f code/deploy/Dockerfile.harness -t <ecr>/acs-harness:latest code/
+#
+# The harness needs only aiohttp (Messages API to the proxy), boto3 (invoke the sandbox Runtime),
+# and bedrock-agentcore (the Runtime server). It does NOT import slime/Megatron/transformers, so
+# the image stays small — well under the 2 GB Runtime image cap.
+FROM public.ecr.aws/docker/library/python:3.12-slim
+
+WORKDIR /app
+RUN pip install --no-cache-dir bedrock-agentcore boto3 aiohttp
+
+# Copy the package, then blank __init__.py: `python -m agentcore_slime_demo.harness_runtime_agent`
+# imports the package __init__ first, and the real __init__ pulls in policy.py -> transformers
+# (heavy, unneeded here). harness_runtime_agent only needs the light modules
+# (mini_agent, agentcore_runtime_sandbox, sandbox), which have no heavy top-level imports.
+COPY agentcore_slime_demo /app/agentcore_slime_demo
+RUN : > /app/agentcore_slime_demo/__init__.py
+
+EXPOSE 8080
+CMD ["python", "-m", "agentcore_slime_demo.harness_runtime_agent"]

@@ -19,6 +19,8 @@ Two implementations:
 from __future__ import annotations
 
 import os
+import sys
+import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -189,18 +191,26 @@ class SGLangPolicy:
         # slime also gates overall concurrency via --sglang-server-concurrency.
         timeout = aiohttp.ClientTimeout(total=600, connect=60)
         connector = aiohttp.TCPConnector(limit=0, force_close=True)
+
+        async def _do_post() -> dict:
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as sess:
+                async with sess.post(f"{self.router_url}/generate", json=payload) as resp:
+                    return await resp.json()
+
+        # Time the PURE SGLang decode round-trip only (not tokenization / sandbox / harness), so
+        # metrics.py can split SGLang generation latency out of slime's aggregate perf/rollout_time
+        # (which lumps sandbox round-trips + harness overhead in with decode). One greppable raw
+        # record per decode, parsed into per-step mean/p50/p95 perf/sglang_gen_ms_* columns.
         # Hold the inference gate (if enabled) across ONLY the decode round-trip, so at most
         # INFER_CONC episodes are decoding at once regardless of how many sandboxes are in flight.
         sem = _infer_sem()
+        t0 = time.perf_counter()
         if sem is None:
-            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as sess:
-                async with sess.post(f"{self.router_url}/generate", json=payload) as resp:
-                    data = await resp.json()
+            data = await _do_post()
         else:
             async with sem:
-                async with aiohttp.ClientSession(timeout=timeout, connector=connector) as sess:
-                    async with sess.post(f"{self.router_url}/generate", json=payload) as resp:
-                        data = await resp.json()
+                data = await _do_post()
+        gen_ms = (time.perf_counter() - t0) * 1000.0
 
         meta = data["meta_info"]
         # SGLang returns [[logprob, token_id, token_text], ...] under output_token_logprobs
@@ -209,4 +219,10 @@ class SGLangPolicy:
         token_ids = [int(p[1]) for p in pairs]
         logprobs = [float(p[0]) for p in pairs]
         text = data.get("text") or self.tokenizer.decode(token_ids, skip_special_tokens=True)
+        # One raw per-decode record (single write so concurrent episode coroutines don't interleave).
+        sys.stdout.write(
+            f"[sglang-gen] ts={time.time():.3f} ms={gen_ms:.1f} "
+            f"prompt_toks={len(input_ids)} gen_toks={len(token_ids)}\n"
+        )
+        sys.stdout.flush()
         return Completion(text=text, token_ids=token_ids, logprobs=logprobs)

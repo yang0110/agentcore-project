@@ -17,6 +17,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 _CODE_FENCE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 
@@ -32,6 +33,13 @@ _CODE_FENCE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL | re.IGNOR
 #                the tests call resolve. A raised AssertionError/Exception = fail.
 _RUNNER_TEMPLATE = """\
 import importlib.util, sys, traceback
+
+# Never cache bytecode: across turns the agent rewrites solution.py, and an edit of the
+# SAME byte-length within the same wall-clock second would otherwise let Python reuse the
+# STALE __pycache__/*.pyc (its validity check is only (mtime, size)) — silently re-running
+# the previous turn's code and reporting a wrong reward. Setting this before any import of
+# solution means no .pyc is ever written, so no turn can read a stale one.
+sys.dont_write_bytecode = True
 
 def _load():
     spec = importlib.util.spec_from_file_location("solution", "solution.py")
@@ -90,6 +98,32 @@ class CodingTask:
     # Only used by MockPolicy for deterministic offline runs; ignored by real policies.
     mock_attempts: list[str] = field(default_factory=list)
 
+    # ---- task-family interface (see task_families.py) ------------------------
+    # The harness is family-agnostic: it writes `setup_files()` + the checker, asks the
+    # policy for a submission, extracts it with `extract_submission`, writes it to
+    # `artifact_filename`, runs `check_command`, and turns the exit code into a reward.
+    # CodingTask is the "coding" family (MBPP/HumanEval-style); the other families in
+    # task_families.py subclass EpisodicTask and override these same hooks.
+    family: ClassVar[str] = "coding"
+    artifact_filename: ClassVar[str] = "solution.py"
+    check_command: ClassVar[str] = "python3 run_checks.py"
+    fence_lang: ClassVar[str] = "python"
+    submission_hint: ClassVar[str] = (
+        "Reply with the full solution.py in one ```python code block."
+    )
+
+    def setup_files(self) -> dict[str, str]:
+        """Extra files written into the sandbox once, before the loop (none for coding)."""
+        return {}
+
+    def extract_submission(self, text: str) -> str | None:
+        """Family-agnostic hook the harness calls to pull the turn's artifact."""
+        return self.extract_code(text)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CodingTask":
+        return cls(**{k: v for k, v in d.items() if k != "family"})
+
     # ---- prompts -------------------------------------------------------------
     def system_prompt(self) -> str:
         return (
@@ -140,3 +174,44 @@ def load_tasks(path: str | Path) -> list[CodingTask]:
             continue
         tasks.append(CodingTask(**json.loads(line)))
     return tasks
+
+
+# --- Shared checker builder + task-family registry --------------------------------------------
+
+def assert_runner(checks: list[str], setup: str = "") -> str:
+    """The MBPP-style assert checker as standalone source, reusable by other families.
+
+    Imports the agent's `solution.py`, seeds a namespace with its globals + `setup`, then
+    runs each bare-name assert statement; exit 0 iff all pass. Five of the six task families
+    (coding/SWE/tool-use/math/CTF/RAG) express their reward this way — they differ only in
+    the prompt, the seed files, and which asserts they hand in. SQL needs a custom runner
+    (it runs a query against a DB), so it overrides `runner_source` instead.
+    """
+    return _RUNNER_TEMPLATE.format(mode="assert", checks=checks, setup=setup)
+
+
+# family name -> Task class. Populated by CodingTask below and by task_families on import.
+FAMILY_REGISTRY: dict[str, type] = {}
+
+
+def register_family(cls: type) -> type:
+    """Class decorator / helper: register a task class under its ClassVar `family`."""
+    FAMILY_REGISTRY[cls.family] = cls
+    return cls
+
+
+def task_from_dict(d: dict):
+    """Reconstruct the right family Task from a serialized dict (dataset `metadata.task`).
+
+    Dispatches on the `family` key (default "coding" for legacy MBPP/KernelBench rows that
+    predate the task-family scaffold and carry no discriminator)."""
+    from . import task_families  # noqa: F401 — ensures every family self-registers
+
+    fam = d.get("family", "coding")
+    cls = FAMILY_REGISTRY.get(fam)
+    if cls is None:
+        raise ValueError(f"unknown task family: {fam!r} (known: {sorted(FAMILY_REGISTRY)})")
+    return cls.from_dict(d)
+
+
+register_family(CodingTask)
