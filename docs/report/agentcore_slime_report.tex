@@ -1,0 +1,3398 @@
+%%
+% Copyright (c) 2017 - 2026, Pascal Wagler;
+% Copyright (c) 2014 - 2026, John MacFarlane
+%
+% All rights reserved.
+%
+% Redistribution and use in source and binary forms, with or without
+% modification, are permitted provided that the following conditions
+% are met:
+%
+% - Redistributions of source code must retain the above copyright
+% notice, this list of conditions and the following disclaimer.
+%
+% - Redistributions in binary form must reproduce the above copyright
+% notice, this list of conditions and the following disclaimer in the
+% documentation and/or other materials provided with the distribution.
+%
+% - Neither the name of John MacFarlane nor the names of other
+% contributors may be used to endorse or promote products derived
+% from this software without specific prior written permission.
+%
+% THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+% "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+% LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+% FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+% COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+% INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+% BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+% LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+% CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+% LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+% ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+% POSSIBILITY OF SUCH DAMAGE.
+%%
+
+%%
+% This is the Eisvogel pandoc LaTeX template.
+%
+% For usage information and examples visit the official GitHub page:
+% https://github.com/Wandmalfarbe/pandoc-latex-template
+%%
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+\PassOptionsToPackage{dvipsnames,svgnames,x11names,table}{xcolor}
+\PassOptionsToPackage{space}{xeCJK}
+\documentclass[
+  paper=a4,
+  ,captions=tableheading
+]{scrartcl}
+\usepackage{xcolor}
+\usepackage[margin=2.5cm,includehead=true,includefoot=true,centering,]{geometry}
+\usepackage{amsmath,amssymb}
+
+% add backlinks to footnote references, cf. https://tex.stackexchange.com/questions/302266/make-footnote-clickable-both-ways
+\usepackage{footnotebackref}
+\setcounter{secnumdepth}{5}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math} % this also loads fontspec
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+\usepackage{lmodern}
+\ifPDFTeX\else
+  % xetex/luatex font selection
+  \setmainfont[]{DejaVu Sans}
+  \setmonofont[]{DejaVu Sans Mono}
+  \ifXeTeX
+    \usepackage{xeCJK}
+    \setCJKmainfont[]{Noto Serif CJK SC}
+  \fi
+  \ifLuaTeX
+    \usepackage[]{luatexja-fontspec}
+    \setmainjfont[]{Noto Serif CJK SC}
+  \fi
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+
+% Use setspace anyway because we change the default line spacing.
+% The spacing is changed early to affect the titlepage and the TOC.
+\usepackage{setspace}
+\setstretch{1.2}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{color}
+\usepackage{fancyvrb}
+\newcommand{\VerbBar}{|}
+\newcommand{\VERB}{\Verb[commandchars=\\\{\}]}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=\\\{\}}
+% Add ',fontsize=\small' for more characters per line
+\newenvironment{Shaded}{}{}
+\newcommand{\AlertTok}[1]{\textcolor[rgb]{1.00,0.00,0.00}{\textbf{#1}}}
+\newcommand{\AnnotationTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+\newcommand{\AttributeTok}[1]{\textcolor[rgb]{0.49,0.56,0.16}{#1}}
+\newcommand{\BaseNTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
+\newcommand{\BuiltInTok}[1]{\textcolor[rgb]{0.00,0.50,0.00}{#1}}
+\newcommand{\CharTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\CommentTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textit{#1}}}
+\newcommand{\CommentVarTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+\newcommand{\ConstantTok}[1]{\textcolor[rgb]{0.53,0.00,0.00}{#1}}
+\newcommand{\ControlFlowTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{\textbf{#1}}}
+\newcommand{\DataTypeTok}[1]{\textcolor[rgb]{0.56,0.13,0.00}{#1}}
+\newcommand{\DecValTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
+\newcommand{\DocumentationTok}[1]{\textcolor[rgb]{0.73,0.13,0.13}{\textit{#1}}}
+\newcommand{\ErrorTok}[1]{\textcolor[rgb]{1.00,0.00,0.00}{\textbf{#1}}}
+\newcommand{\ExtensionTok}[1]{#1}
+\newcommand{\FloatTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
+\newcommand{\FunctionTok}[1]{\textcolor[rgb]{0.02,0.16,0.49}{#1}}
+\newcommand{\ImportTok}[1]{\textcolor[rgb]{0.00,0.50,0.00}{\textbf{#1}}}
+\newcommand{\InformationTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+\newcommand{\KeywordTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{\textbf{#1}}}
+\newcommand{\NormalTok}[1]{#1}
+\newcommand{\OperatorTok}[1]{\textcolor[rgb]{0.40,0.40,0.40}{#1}}
+\newcommand{\OtherTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{#1}}
+\newcommand{\PreprocessorTok}[1]{\textcolor[rgb]{0.74,0.48,0.00}{#1}}
+\newcommand{\RegionMarkerTok}[1]{#1}
+\newcommand{\SpecialCharTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\SpecialStringTok}[1]{\textcolor[rgb]{0.73,0.40,0.53}{#1}}
+\newcommand{\StringTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\VariableTok}[1]{\textcolor[rgb]{0.10,0.09,0.49}{#1}}
+\newcommand{\VerbatimStringTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\WarningTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+
+% Workaround/bugfix from jannick0.
+% See https://github.com/jgm/pandoc/issues/4302#issuecomment-360669013)
+% or https://github.com/Wandmalfarbe/pandoc-latex-template/issues/2
+%
+% Redefine the verbatim environment 'Highlighting' to break long lines (with
+% the help of fvextra). Redefinition is necessary because it is unlikely that
+% pandoc includes fvextra in the default template.
+\usepackage{fvextra}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,fontsize=\footnotesize,commandchars=\\\{\}}
+
+\usepackage{longtable,booktabs,array}
+\newcounter{none} % for unnumbered tables
+\usepackage{calc} % for calculating minipage widths
+% Correct order of tables after \paragraph or \subparagraph
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+% Allow footnotes in longtable head/foot
+\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
+\makesavenoteenv{longtable}
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
+\usepackage{bookmark}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same}
+\definecolor{default-linkcolor}{HTML}{A50000}
+\definecolor{default-filecolor}{HTML}{A50000}
+\definecolor{default-citecolor}{HTML}{4077C0}
+\definecolor{default-urlcolor}{HTML}{4077C0}
+
+\hypersetup{
+  pdftitle={Using AgentCore Runtime in an Agentic RL Workflow},
+  pdfauthor={Kaige Yang --- Senior Applied Scientist, AWS},
+  colorlinks=true,
+  linkcolor={default-linkcolor},
+  filecolor={default-filecolor},
+  citecolor={default-citecolor},
+  urlcolor={default-urlcolor},
+  breaklinks=true,
+  pdfcreator={LaTeX via pandoc with the Eisvogel template}}
+
+\title{Using AgentCore Runtime in an Agentic RL Workflow}
+\usepackage{etoolbox}
+\makeatletter
+\providecommand{\subtitle}[1]{% add subtitle to \maketitle
+  \apptocmd{\@title}{\par {\large #1 \par}}{}{}
+}
+\makeatother
+\subtitle{Hands-on guidance, grounded in a working slime + AgentCore
+project}
+\author{Kaige Yang --- Senior Applied Scientist, AWS}
+\date{September 10, 2026}
+
+
+%
+% for the background color of the title page
+%
+\usepackage{pagecolor}
+\usepackage{afterpage}
+\usepackage[margin=2.5cm,includehead=true,includefoot=true,centering]{geometry}
+
+%
+% break urls
+%
+\PassOptionsToPackage{hyphens}{url}
+
+%
+% When using babel or polyglossia with biblatex, loading csquotes is recommended
+% to ensure that quoted texts are typeset according to the rules of your main language.
+%
+\usepackage{csquotes}
+
+%
+% captions
+%
+\definecolor{caption-color}{HTML}{777777}
+\usepackage[font={stretch=1.2}, textfont={color=caption-color}, position=top, skip=4mm, labelfont=bf, singlelinecheck=false, justification=raggedright]{caption}
+\setcapindent{0em}
+
+%
+% blockquote
+%
+\definecolor{blockquote-border}{RGB}{221,221,221}
+\definecolor{blockquote-text}{RGB}{119,119,119}
+\usepackage{mdframed}
+\newmdenv[rightline=false,bottomline=false,topline=false,linewidth=3pt,linecolor=blockquote-border,skipabove=\parskip]{customblockquote}
+\renewenvironment{quote}{\begin{customblockquote}\list{}{\rightmargin=0em\leftmargin=0em}%
+\item\relax\color{blockquote-text}\ignorespaces}{\unskip\unskip\endlist\end{customblockquote}}
+
+%
+% Source Sans as the default font family
+% Source Code Pro for monospace text
+%
+\ifnum 0\ifxetex 1\fi\ifluatex 1\fi=0 % if pdftex
+    \usepackage[default]{sourcesans}
+  \usepackage{sourcecodepro}
+  \else % if not pdftex (e.g. lualatex)
+    \fi
+
+%
+% heading color
+%
+\definecolor{heading-color}{RGB}{40,40,40}
+% By default, the KOMA-Script classes will typeset sectioning headings in
+% sans-serif. Use the normal body font for headings.
+\addtokomafont{disposition}{\normalfont\color{heading-color}\bfseries}
+
+%
+% variables for title, author and date
+%
+\usepackage{titling}
+\title{Using AgentCore Runtime in an Agentic RL Workflow}
+\author{Kaige Yang --- Senior Applied Scientist, AWS}
+\date{September 10, 2026}
+
+%
+% tables
+%
+
+\definecolor{table-row-color}{HTML}{F5F5F5}
+\definecolor{table-rule-color}{HTML}{999999}
+
+%\arrayrulecolor{black!40}
+\arrayrulecolor{table-rule-color}     % color of \toprule, \midrule, \bottomrule
+\setlength\heavyrulewidth{0.3ex}      % thickness of \toprule, \bottomrule
+\renewcommand{\arraystretch}{1.3}     % spacing (padding)
+
+
+%
+%
+% Listings
+%
+%
+
+
+%
+% header and footer
+%
+\usepackage[headsepline,footsepline]{scrlayer-scrpage}
+
+\newpairofpagestyles{eisvogel-header-footer}{
+  \clearpairofpagestyles
+  \ihead*{Using AgentCore Runtime in an Agentic RL Workflow}
+  \chead*{}
+  \ohead*{September 10, 2026}
+  \ifoot*{Kaige Yang --- Senior Applied Scientist, AWS}
+  \cfoot*{}
+  \ofoot*{\thepage}
+  \addtokomafont{pageheadfoot}{\upshape}
+}
+\pagestyle{eisvogel-header-footer}
+
+
+
+%
+% Define watermark
+%
+
+\begin{document}
+
+\begin{titlepage}
+\newgeometry{left=6cm}
+\newcommand{\colorRule}[3][black]{\textcolor[HTML]{#1}{\rule{#2}{#3}}}
+\begin{flushleft}
+\noindent
+\\[-1em]
+\color[HTML]{5F5F5F}
+\makebox[0pt][l]{\colorRule[5F5F5F]{1.3\textwidth}{4pt}}
+\par
+\noindent
+
+{
+  \setstretch{1.4}
+  \vfill
+  \noindent {\huge \textbf{\textsf{Using AgentCore Runtime in an Agentic
+RL Workflow}}}
+    \vskip 1em
+  {\Large \textsf{Hands-on guidance, grounded in a working slime +
+AgentCore project}}
+    \vskip 2em
+  \noindent {\Large \textsf{Kaige Yang --- Senior Applied Scientist,
+AWS}}
+  \vfill
+}
+
+
+\textsf{September 10, 2026}
+\end{flushleft}
+\end{titlepage}
+\restoregeometry
+\pagenumbering{arabic}
+
+% don't generate the default title
+% \maketitle
+
+
+{
+\setcounter{tocdepth}{3}
+\tableofcontents
+\newpage
+}
+\hypertarget{introduction}{%
+\section{Introduction}\label{introduction}}
+
+This report is a \textbf{hands-on guide for AWS customers doing agentic
+RL}. It is grounded in a working slime + AgentCore project and in the
+\textbf{official AgentCore docs} {[}D1{]}.
+
+\textbf{After reading it, you will know:}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{What AgentCore can and cannot do} as an RL sandbox (and,
+  optionally, harness).
+\item
+  \textbf{How to run a real task on it} --- with datasets, Dockerfiles,
+  and deploy commands.
+\item
+  \textbf{How to build and customize} your own Runtime --- CPU (Code
+  Interpreter) and GPU (Instances).
+\item
+  \textbf{How to train agentic RL on a GPU Runtime} --- an AgentCore
+  Runtime \textbf{Instance backed by GPU-based EC2} (g6 / L4), where
+  untrusted CUDA builds and runs against a checker on a disposable GPU.
+\item
+  \textbf{How to keep a sandbox live across a weight sync} --- a
+  \textbf{heartbeat ping (health check)} holds the session warm while
+  the trainer and inference engine sync weights, so once sync completes
+  the \emph{same} sandbox is reused for continuous rollouts (no cold
+  start per round).
+\item
+  \textbf{How to snapshot and resume at the application level} on a
+  GPU-EC2 Runtime Instance --- a \textbf{Dockerfile + a custom script,
+  triggered by the weight-sync event}, checkpoints application state;
+  training resumes from the saved application-level snapshot.
+\end{itemize}
+
+\textbf{Scope.} AgentCore = the execution \textbf{sandbox};
+\textbf{slime} = the RL trainer; the \textbf{harness stays in-process}.
+This report focuses on the sandbox seam: build image → deploy Runtime →
+seed a task → invoke → read the reward.
+
+\hypertarget{agentic-rl-and-its-reference-architecture}{%
+\section{Agentic RL and its reference
+architecture}\label{agentic-rl-and-its-reference-architecture}}
+
+\textbf{What is agentic RL?} In \emph{agentic} reinforcement learning
+the model under training is not asked for a single answer --- it acts as
+an \textbf{agent} over many turns against an \textbf{executable
+environment}: it writes code, runs a command, reads the result, and
+tries again. Only when the trajectory ends does a \textbf{programmatic
+checker} turn the outcome into a scalar reward (tests pass, result-set
+matches, flag verified) --- \textbf{no LLM judge} {[}1, 2{]}. This is
+reinforcement learning with \emph{verifiable} rewards (RLVR): the
+environment, not a model, decides who was right.
+
+Training that loop end-to-end uses a \textbf{disaggregated} design
+(following Agent Lightning {[}1{]}): a training side (trainer +
+inference engine) and an agent side (harness + sandbox), joined by an
+LLM-proxy / rollout-collection gateway. The reference architecture below
+traces the full cycle --- a \textbf{generation path} across the top and
+a \textbf{training-data path} back along the bottom.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=1.15cm, minimum width=2.4cm, align=center, thick, fill=white},
+  gpu/.style={box, fill=blue!8},
+  cpu/.style={box, fill=black!4},
+  focus/.style={box, fill=orange!18},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
+  ptitle/.style={font=\scriptsize\bfseries, text=black!55},
+  panel/.style={draw, rounded corners, dashed, thick, inner sep=0.34cm},
+  >={Stealth[]},
+]
+% --- Training server (left): generation top row, training-data bottom row ---
+\node[gpu] (trainer) at (0,0)    {\textbf{Training Engine}\\[1pt]\scriptsize Megatron};
+\node[gpu] (infer)   at (5.0,0)  {\textbf{Inference Engine}\\[1pt]\scriptsize SGLang};
+\node[cpu] (buffer)  at (0,-3.4) {\textbf{Buffer}\\[1pt]\scriptsize training samples};
+\node[cpu] (adapter) at (5.0,-3.4){\textbf{Sample Adapter}\\[1pt]\scriptsize retokenize + reward};
+% --- API gateway (middle) ---
+\node[cpu] (proxy)   at (10.0,0)   {\textbf{LLM API Proxy}\\[1pt]\scriptsize policy under training};
+\node[cpu] (rollout) at (10.0,-3.4){\textbf{Rollout API}\\[1pt]\scriptsize collect trajectory};
+% --- Agent runtime (right) ---
+\node[cpu]   (harness) at (15.0,0) {\textbf{Harness}\\[1pt]\scriptsize agent loop};
+\node[focus] (sandbox) at (20.0,0){\textbf{Sandbox}\\[1pt]\scriptsize AgentCore:\\tools + checker};
+
+% generation lane (top, left -> right)
+\draw[<->, thick] (trainer) -- node[lbl,above]{weight sync} (infer);
+\draw[->, thick]  (infer)   -- node[lbl,above]{serve} (proxy);
+\draw[->, thick]  (proxy)   -- node[lbl,above]{turn} (harness);
+\draw[<->, thick] (harness) -- node[lbl,above]{tool call / reward} (sandbox);
+% training-data lane (bottom, right -> left)
+\draw[->, thick]  (harness) -- node[lbl,pos=0.32]{rollout} (rollout);
+\draw[->, thick]  (rollout) -- node[lbl,above]{trajectory} (adapter);
+\draw[->, thick]  (adapter) -- node[lbl,above]{samples} (buffer);
+\draw[->, thick]  (buffer)  -- node[lbl,left]{sample batch} (trainer);
+
+% domain panels (drawn behind the boxes)
+\begin{scope}[on background layer]
+  \node[panel, fill=blue!3,  fit=(trainer)(infer)(buffer)(adapter)] (ptrain) {};
+  \node[panel, fill=black!3, fit=(proxy)(rollout)] (pgw) {};
+  \node[panel, fill=orange!4, fit=(harness)(sandbox)] (pagent) {};
+\end{scope}
+\node[ptitle, anchor=south west] at ([yshift=2pt]ptrain.north west) {Training server (GPU) --- slime};
+\node[ptitle, anchor=south] at ([yshift=2pt]pgw.north) {API gateway};
+\node[ptitle, anchor=south west] at ([yshift=2pt]pagent.north west) {Agent runtime (CPU + sandbox)};
+\end{tikzpicture}%
+}
+\caption{Reference architecture for (harnessed) agentic RL, following the disaggregated design of Agent Lightning [1] with slime [9] as the training server. Three domains: a \textbf{training server} (GPU), an \textbf{API gateway}, and an \textbf{agent runtime}. \textbf{Generation lane (top, $\rightarrow$):} the training engine syncs weights to the inference engine; the LLM API proxy fronts inference so every turn is served by the policy under training; the harness drives the agent loop; the sandbox (AgentCore) runs each tool call and the checker. \textbf{Training-data lane (bottom, $\leftarrow$):} the rollout is collected via the Rollout API, the Sample Adapter retokenizes it and attaches the reward to form training samples, which accumulate in the Buffer; the trainer draws a sample batch and updates --- closing the loop.}
+\end{figure}
+
+\textbf{The core components.}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Trainer} --- the learner (here \textbf{slime} driving
+  \textbf{Megatron}, on GPU). It samples prompts, collects finished
+  trajectories with their rewards, computes the policy-gradient update,
+  and periodically pushes fresh weights to the inference engine.
+\item
+  \textbf{Inference engine} --- the generation server (here
+  \textbf{SGLang}, on GPU) that produces the model's turns at rollout
+  speed. It holds the \emph{current} policy weights; the trainer
+  refreshes them via \textbf{weight sync} so rollouts always reflect the
+  latest policy.
+\item
+  \textbf{Proxy} --- a thin adapter (CPU) fronting the inference engine
+  so that every model call the harness makes is answered by the
+  \textbf{policy under training} (not some external API). It is the seam
+  that lets an off-the-shelf agent loop drive an in-training model.
+\item
+  \textbf{Harness} --- the \textbf{agent loop} (CPU): it holds the
+  conversation, calls the proxy for each turn, extracts the model's
+  proposed action (a code block, a tool call), submits it to the
+  sandbox, and feeds the result back as the next observation until the
+  episode ends.
+\item
+  \textbf{Sandbox} --- the \textbf{isolated execution environment} (CPU,
+  or GPU for CUDA work) where the model's untrusted output actually runs
+  (write → run → read) and where the \textbf{checker scores the reward}.
+  It must be ad-hoc and isolated per episode.
+\end{itemize}
+
+\textbf{The training-data path.} The bottom of Figure 1 shows how a
+finished episode becomes a gradient step. The \textbf{Rollout API}
+collects the trajectory (the sequence of LLM request--response pairs the
+harness made); the \textbf{Sample Adapter} retokenizes those calls and
+attaches the episode's reward and advantage, turning one rollout into
+one or more \textbf{training samples}; those land in the
+\textbf{Buffer}; and the trainer draws a \textbf{sample batch} from the
+buffer for each update. In \emph{harnessed} agentic RL the training
+engine never sees the environment directly --- only this stream of
+samples reconstructed from the proxy's request/response log {[}1{]}.
+
+\hypertarget{where-agentic-rl-is-used}{%
+\subsection{Where agentic RL is used}\label{where-agentic-rl-is-used}}
+
+The same loop --- act in an environment, score with a checker --- covers
+a wide range of tasks. The common thread is a \textbf{verifiable
+reward}: an environment (not a human or an LLM judge) decides success.
+Representative use cases:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Software engineering (SWE)} --- edit a real repository to
+  resolve an issue; reward = the project's test suite turns green
+  (e.g.~SWE-bench {[}6{]}).
+\item
+  \textbf{Code generation \& competitive programming} --- write a
+  function that passes hidden unit tests (e.g.~MBPP {[}8{]}).
+\item
+  \textbf{GPU-kernel / systems} --- write a CUDA kernel and optimize it;
+  reward = numerical \texttt{allclose} plus a speedup target
+  (e.g.~KernelBench {[}7{]}).
+\item
+  \textbf{Math \& logical reasoning} --- produce an answer checked for
+  exact/numeric equality against ground truth.
+\item
+  \textbf{Tool use / function calling} --- orchestrate multi-step API or
+  tool calls; reward = correct final result \emph{and} the right tools
+  invoked.
+\item
+  \textbf{SQL \& data analysis} --- generate a query whose result-set
+  matches the expected rows.
+\item
+  \textbf{RAG \& search agents} --- retrieve then answer; reward =
+  answer grounded in the retrieved facts.
+\item
+  \textbf{Web \& computer use} --- drive a browser or GUI to complete a
+  task.
+\item
+  \textbf{Security / CTF} --- exploit a challenge and capture the flag;
+  reward = the checker validates the flag.
+\item
+  \textbf{Multi-agent \& long-horizon workflows} --- several agents or
+  many turns cooperate toward a verifiable end state.
+\end{itemize}
+
+Every one of these needs an \textbf{isolated place to execute untrusted
+output and run the checker} --- the sandbox seam this report is about.
+
+\hypertarget{the-harness-the-agent-loop-that-owns-the-episode}{%
+\subsection{The harness --- the agent loop that owns the
+episode}\label{the-harness-the-agent-loop-that-owns-the-episode}}
+
+\textbf{What it is.} The harness is the \textbf{agent loop}: the
+orchestration code that runs \emph{one} episode end to end. In this
+project it is \texttt{run\_episode} (in \texttt{harness.py}), and it is
+\textbf{task-agnostic} --- the same loop serves every task family; only
+the task's prompt, seed files, and checker change. We keep it
+\textbf{in-process} (a warm Python coroutine next to the trainer),
+because episodes are independent and the loop needs \emph{warmth}, not
+isolation --- that isolation belongs to the sandbox.
+
+\textbf{How it works with the other components.} The harness sits
+between the proxy and the sandbox and is the only component that sees a
+whole episode:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{↔ Proxy:} for each turn it sends the running conversation to
+  the proxy and receives the model's response (the policy under
+  training).
+\item
+  \textbf{↔ Sandbox:} it extracts the model's proposed action (a code
+  block, a tool call) and executes it in the sandbox, then reads back
+  stdout / exit-code as the next observation.
+\item
+  \textbf{↔ Task / checker:} it seeds the workspace from the task and,
+  at the end, runs the checker (in the sandbox) to get the reward.
+\item
+  \textbf{→ Rollout / Sample Adapter:} the trajectory it produces (the
+  proxy-logged calls + the final reward) becomes the training sample.
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.95\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=1.15cm, minimum width=2.7cm, align=center, thick, fill=white},
+  svc/.style={box, fill=blue!8},
+  focus/.style={box, fill=orange!18},
+  stage/.style={box, fill=black!4},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
+  ptitle/.style={font=\scriptsize\bfseries, text=black!55},
+  panel/.style={draw, rounded corners, dashed, thick, inner sep=0.34cm},
+  >={Stealth[]},
+]
+% main lane: seed -> ask -> run -> reward
+\node[stage]  (seed)   at (0,0)     {\textbf{Seed}\\[1pt]\scriptsize PROBLEM.md +\\run\_checks.py};
+\node[stage]  (ask)    at (4.0,0)   {\textbf{Ask}\\[1pt]\scriptsize model turn\\(parse action)};
+\node[stage]  (run)    at (8.6,0)   {\textbf{Run}\\[1pt]\scriptsize exec action +\\checker};
+\node[stage]  (reward) at (13.2,0)  {\textbf{Reward}\\[1pt]\scriptsize 1.0 / 0.0 $\rightarrow$\\Sample};
+% services the loop calls
+\node[svc]   (proxy)  at (4.0,3.5) {\textbf{Proxy} $\rightarrow$ policy\\[1pt]\scriptsize SGLang (in training)};
+\node[focus] (sbx)    at (8.6,-2.8){\textbf{AgentCore sandbox}\\[1pt]\scriptsize tools + checker};
+
+% main flow
+\draw[->, thick] (seed) -- (ask);
+\draw[->, thick] (ask)  -- node[lbl,above]{action} (run);
+\draw[->, thick] (run)  -- node[lbl,above]{solved} (reward);
+% calls out to services
+\draw[<->, thick] (ask) -- node[lbl,left]{turn} (proxy);
+\draw[<->, thick] (run) -- node[lbl,right]{write+exec / stdout} (sbx);
+% feedback loop: not solved -> next turn (high arc, endpoints offset from the proxy connector)
+\draw[->, thick] (run.north) .. controls +(0,2.0) and +(0,2.0) ..
+      node[lbl,above,pos=0.5]{observation $\rightarrow$ next turn (if unsolved)} (ask.north east);
+
+% turn-loop panel
+\begin{scope}[on background layer]
+  \node[panel, fill=black!3, fit=(ask)(run)] (ploop) {};
+\end{scope}
+\node[ptitle, anchor=north west] at ([yshift=-2pt]ploop.south west) {turn loop ($\leq$ max\_turns)};
+\end{tikzpicture}%
+}
+\caption{The harness's episode loop (\texttt{run\_episode}). It \textbf{seeds} the sandbox once, then repeats a \textbf{turn loop}: ask the proxy for a model turn, parse the proposed action, run it (and the checker) in the AgentCore sandbox, and feed the observation back for the next turn. The loop exits when the checker passes or \texttt{max\_turns} is reached; the final \textbf{reward} and the loss-masked trajectory become one training \texttt{Sample}. The proxy (policy under training) and the sandbox are the only two services the loop calls each turn.}
+\end{figure}
+
+\textbf{Step-by-step example --- one MBPP episode from the harness's
+view.}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\ControlFlowTok{async} \KeywordTok{def}\NormalTok{ run\_episode(task, policy, sandbox):          }\CommentTok{\# one episode}
+    \CommentTok{\# 1. SEED: write the problem + the checker into the fresh sandbox}
+    \ControlFlowTok{for}\NormalTok{ name, content }\KeywordTok{in}\NormalTok{ task.setup\_files():           }\CommentTok{\# e.g. PROBLEM.md}
+        \ControlFlowTok{await}\NormalTok{ sandbox.write\_file(name, content)}
+    \ControlFlowTok{await}\NormalTok{ sandbox.write\_file(}\StringTok{"run\_checks.py"}\NormalTok{, task.runner\_source())}
+
+\NormalTok{    messages }\OperatorTok{=}\NormalTok{ task.initial\_messages()                 }\CommentTok{\# system + PROBLEM.md}
+\NormalTok{    solved }\OperatorTok{=} \VariableTok{False}
+    \ControlFlowTok{for}\NormalTok{ \_ }\KeywordTok{in} \BuiltInTok{range}\NormalTok{(task.max\_turns):                    }\CommentTok{\# 2. TURN LOOP}
+\NormalTok{        text }\OperatorTok{=} \ControlFlowTok{await}\NormalTok{ policy.complete(messages)         }\CommentTok{\#    (a) ask proxy {-}\textgreater{} policy turn}
+\NormalTok{        code }\OperatorTok{=}\NormalTok{ task.extract\_submission(text)           }\CommentTok{\#    (b) parse the action (fenced code)}
+        \ControlFlowTok{await}\NormalTok{ sandbox.write\_file(}\StringTok{"solution.py"}\NormalTok{, code)  }\CommentTok{\#    (c) place the artifact}
+\NormalTok{        exit\_code, out, err }\OperatorTok{=} \ControlFlowTok{await}\NormalTok{ sandbox.}\BuiltInTok{exec}\NormalTok{(       }\CommentTok{\#    (d) run the checker IN the sandbox}
+            \StringTok{"python3 run\_checks.py"}\NormalTok{, timeout}\OperatorTok{=}\DecValTok{60}\NormalTok{)}
+        \ControlFlowTok{if}\NormalTok{ exit\_code }\OperatorTok{==} \DecValTok{0}\NormalTok{:                              }\CommentTok{\#    (e) checker passed?}
+\NormalTok{            solved }\OperatorTok{=} \VariableTok{True}
+            \ControlFlowTok{break}
+\NormalTok{        messages.append(task.observation(out, err))    }\CommentTok{\#    (f) feed the failure back, loop}
+
+\NormalTok{    reward }\OperatorTok{=} \FloatTok{1.0} \ControlFlowTok{if}\NormalTok{ solved }\ControlFlowTok{else} \FloatTok{0.0}                    \CommentTok{\# 3. REWARD (from the checker)}
+    \ControlFlowTok{return}\NormalTok{ build\_token\_stream(messages, reward)        }\CommentTok{\# 4. loss{-}masked trajectory {-}\textgreater{} Sample}
+\end{Highlighting}
+\end{Shaded}
+
+Walking it: the harness \textbf{seeds} the sandbox (step 1), then
+repeats \textbf{ask → parse → run → observe} (step 2a--f), each ``ask''
+going through the proxy to the in-training policy and each ``run'' going
+to the AgentCore sandbox. When the checker exits \texttt{0} the episode
+is \textbf{solved}; otherwise the failure output is appended and the
+model tries again, up to \texttt{max\_turns}. The final \textbf{reward}
+(step 3) comes from the checker --- not a judge --- and the harness
+hands the loss-masked trajectory to the training-data path (step 4). The
+harness owns the loop; the proxy and sandbox are the two services it
+calls each turn.
+
+\hypertarget{the-proxy-every-model-call-is-the-policy-under-training}{%
+\subsection{The proxy --- every model call is the policy under
+training}\label{the-proxy-every-model-call-is-the-policy-under-training}}
+
+\textbf{What it is.} The proxy is a thin CPU service that exposes a
+\textbf{standard LLM API} (in this project an
+Anthropic-Messages--compatible \texttt{AnthropicAdapter}, but an
+OpenAI-compatible endpoint works the same) and routes every request to
+the \textbf{in-training inference engine} (SGLang) instead of to any
+external provider. It is the single seam that lets an
+\emph{off-the-shelf agent harness} --- one written to call a normal LLM
+API --- drive a model that is still being trained.
+
+\textbf{What it does.} Three jobs, all on the critical path of every
+turn:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{Substitute the endpoint.} The harness thinks it is calling a
+  hosted LLM; the proxy answers with the \textbf{policy under training},
+  holding the latest synced weights. No harness change is needed to
+  point it at the trainer.
+\item
+  \textbf{Record the exact tokens.} For each call the proxy captures the
+  \textbf{prompt token IDs and the sampled response token IDs} (and
+  log-probs). The training engine only ever observes this stream of
+  request/response pairs --- so recording the \emph{exact} sampled
+  tokens is what avoids the retokenization/decode-drift problem in
+  harnessed agentic RL {[}1{]}.
+\item
+  \textbf{Bucket by episode.} Each request is tagged with the episode's
+  \texttt{session\_id}, so all calls of one rollout are grouped into the
+  right trajectory before the Sample Adapter turns them into training
+  samples.
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.95\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=1.15cm, minimum width=2.8cm, align=center, thick, fill=white},
+  svc/.style={box, fill=blue!8},
+  focus/.style={box, fill=orange!18},
+  cpu/.style={box, fill=black!4},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
+  >={Stealth[]},
+]
+\node[cpu]   (harness) at (0,0)     {\textbf{Harness}\\[1pt]\scriptsize agent loop (text)};
+\node[focus] (proxy)   at (5.5,0)   {\textbf{Proxy}\\[1pt]\scriptsize LLM API $\rightarrow$ policy};
+\node[svc]   (infer)   at (11.0,0)  {\textbf{Inference engine}\\[1pt]\scriptsize SGLang (GPU)};
+\node[cpu]   (store)   at (5.5,-2.7) {\textbf{Rollout store}\\[1pt]\scriptsize per \texttt{session\_id}};
+\node[cpu]   (adapter) at (11.0,-2.7){\textbf{Sample Adapter}\\[1pt]\scriptsize + reward $\rightarrow$ trainer};
+
+% request / response (text side)
+\draw[->, thick] ([yshift=4pt]harness.east) -- node[lbl,above]{POST /v1/messages (text)} ([yshift=4pt]proxy.west);
+\draw[->, thick] ([yshift=-4pt]proxy.west)  -- node[lbl,below]{Anthropic-style reply} ([yshift=-4pt]harness.east);
+% token side
+\draw[->, thick] ([yshift=4pt]proxy.east) -- node[lbl,above]{prompt\_ids} ([yshift=4pt]infer.west);
+\draw[->, thick] ([yshift=-4pt]infer.west) -- node[lbl,below]{response\_ids, logprobs} ([yshift=-4pt]proxy.east);
+% record + hand off
+\draw[->, thick] (proxy) -- node[lbl,right]{record exact tokens} (store);
+\draw[->, thick] (store) -- node[lbl,above]{on episode end} (adapter);
+\end{tikzpicture}%
+}
+\caption{The proxy on the seam between the text-based harness and the token-based inference engine. It \textbf{substitutes} the endpoint (the harness's ordinary LLM API call is answered by the policy under training), and it \textbf{records} the exact prompt and response token IDs (with log-probs) into a per-\texttt{session\_id} rollout store. On episode end the Sample Adapter reads that store, attaches the reward, and emits training samples --- so the trainer learns from the exact tokens that were sampled --- the \emph{token-in-token-out} contract discussed next.}
+\end{figure}
+
+\textbf{End-to-end example --- one turn through the proxy.} Consider a
+single MBPP coding turn:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{1. Harness builds the chat and calls the proxy (drop{-}in LLM API):}
+\NormalTok{     POST /v1/messages   \{ model: "policy",}
+\NormalTok{                           messages: [system, PROBLEM.md, prior observations],}
+\NormalTok{                           metadata: \{ session\_id: "ep\_9f3c…" \} \}}
+
+\NormalTok{2. Proxy → Inference engine (SGLang, current policy weights):}
+\NormalTok{     generate(prompt\_ids) → response\_ids, text, logprobs}
+
+\NormalTok{3. Proxy records the on{-}policy call for training:}
+\NormalTok{     rollout\_store[session\_id].append(}
+\NormalTok{        \{ prompt\_ids, response\_ids, logprobs \} )   \# exact sampled tokens}
+
+\NormalTok{4. Proxy returns an Anthropic{-}style response to the harness:}
+\NormalTok{     \{ content: "\textasciigrave{}\textasciigrave{}\textasciigrave{}python\textbackslash{}n def solve(): …\textasciigrave{}\textasciigrave{}\textasciigrave{}", stop\_reason: "end\_turn" \}}
+
+\NormalTok{5. Harness extracts solution.py, runs it in the AgentCore sandbox,}
+\NormalTok{   appends the checker\textquotesingle{}s stdout/exit{-}code as the next observation, loops.}
+
+\NormalTok{6. Episode ends → reward = 1.0/0.0. Sample Adapter reads}
+\NormalTok{   rollout\_store["ep\_9f3c…"], attaches the reward/advantage, and emits}
+\NormalTok{   loss{-}masked training samples (mask 0 on prompt/observation tokens,}
+\NormalTok{   1 on the policy\textquotesingle{}s own response tokens).}
+\end{Highlighting}
+\end{Shaded}
+
+The key point: \textbf{without the proxy, the trainer could not observe
+--- or take credit for --- the tokens the harness actually sampled.} The
+proxy is simultaneously the \emph{substitution} point (external API →
+policy) and the \emph{observation} point (turns → training samples),
+which is exactly why the disaggregated design in Figure 1 puts it on the
+seam between the agent runtime and the training server.
+
+\hypertarget{token-in-token-out-tito-the-proxys-core-responsibility}{%
+\subsection{Token-in-token-out (TITO) --- the proxy's core
+responsibility}\label{token-in-token-out-tito-the-proxys-core-responsibility}}
+
+\textbf{What it is.} \emph{Token-in-token-out} (TITO) is the contract
+that the rollout path carries \textbf{token IDs}, not just text: the
+inference engine returns the \textbf{exact token IDs it sampled} (plus
+their log-probs), and the trainer consumes \textbf{those same token IDs}
+for the policy-gradient update --- never a sequence re-derived by
+tokenizing decoded text. In a disaggregated design the training engine
+never touches the environment; it only ever sees the request/response
+stream the proxy logged {[}1{]}. TITO is the guarantee that this stream
+is \emph{token-exact}.
+
+\textbf{Why it matters --- retokenization drift.} A harness works in
+\textbf{text}: it sends messages and reads a string back. But a
+tokenizer is not a clean round-trip --- decoding the sampled token IDs
+to a string and then \textbf{re-encoding} that string can yield a
+\emph{different} token sequence than the one the model actually sampled
+(whitespace merges, byte-pair boundary shifts, special-token handling).
+If training re-tokenizes, three things silently misalign:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{The action.} The token the loss is computed on is no longer
+  the token the policy emitted.
+\item
+  \textbf{The log-prob / importance ratio.} On-policy RL weights each
+  token by the ratio of new to old policy probability; if the ``old''
+  tokens are reconstructed rather than recorded, the ratio is computed
+  against tokens that were never sampled, biasing the gradient.
+\item
+  \textbf{The loss mask.} The mask that marks \emph{policy} tokens
+  (train) vs.~\emph{prompt/observation} tokens (ignore) is defined per
+  token; a shifted boundary leaks environment tokens into the loss, or
+  drops the model's own.
+\end{itemize}
+
+For RLVR --- where the reward is a precise 1.0/0.0 from a checker ---
+this token-level slop quietly corrupts the very signal the method
+depends on. TITO removes it by construction.
+
+\textbf{Why the proxy owns it.} The proxy is the \textbf{only} component
+that straddles both sides of the seam: it speaks the \textbf{text} LLM
+API to the harness and the \textbf{token} API to the inference engine
+(SGLang returns \texttt{response\_ids} + log-probs). So it is the
+natural --- and only correct --- place to \emph{capture the sampled
+token IDs at the moment of generation} and forward them intact, rather
+than letting a downstream step guess them from text. Concretely, the
+proxy records \texttt{\{prompt\_ids,\ response\_ids,\ logprobs\}} per
+turn (Figure above); the \textbf{Sample Adapter} then builds the
+training \texttt{Sample} directly from those IDs and the loss mask, and
+attaches the reward. The harness stays blissfully text-only, yet the
+trainer still gets token-exact, on-policy data. In short: \textbf{the
+proxy is where an off-the-shelf, text-based agent loop is reconciled
+with the token-exact requirement of RL --- that reconciliation is TITO.}
+
+\hypertarget{slime-the-trainer-and-its-asynchronous-rollout}{%
+\subsection{slime --- the trainer, and its asynchronous
+rollout}\label{slime-the-trainer-and-its-asynchronous-rollout}}
+
+The trainer in this report is \textbf{slime} (THUDM) --- an RL
+post-training framework built on \textbf{Megatron} (training) +
+\textbf{SGLang} (rollout), designed so that agentic workloads plug in as
+\emph{data-generation} functions without forking the training kernel
+{[}9{]}. Its documented architecture maps cleanly onto Figure 1: a
+\textbf{Data Buffer} bridges a \textbf{Megatron} training group and one
+or more \textbf{SGLang} rollout servers behind a \textbf{router}; a
+\emph{custom rollout generation} hook (where our harness + AgentCore
+sandbox live) produces samples into the buffer, and Megatron
+periodically pushes updated weights to the SGLang servers.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.95\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=1.2cm, minimum width=3.0cm, align=center, thick, fill=white},
+  gpu/.style={box, fill=blue!8},
+  cpu/.style={box, fill=black!4},
+  focus/.style={box, fill=orange!18},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
+  ptitle/.style={font=\scriptsize\bfseries, text=black!55},
+  panel/.style={draw, rounded corners, dashed, thick, inner sep=0.34cm},
+  >={Stealth[]},
+]
+% central bridge + custom hook
+\node[cpu]   (buffer)  at (0,0)      {\textbf{Data Buffer}\\[1pt]\scriptsize prompts + rollout data};
+\node[focus] (rollout) at (6.8,0)    {\textbf{Custom rollout gen.}\\[1pt]\scriptsize our harness + AgentCore};
+% rollout (SGLang) group
+\node[cpu]   (router)  at (6.8,-2.6) {\textbf{SGLang router}};
+\node[gpu]   (sg1)     at (5.0,-5.0) {\textbf{SGLang server}\\[1pt]\scriptsize GPU};
+\node[gpu]   (sg2)     at (8.6,-5.0) {\textbf{SGLang server}\\[1pt]\scriptsize GPU};
+% training group
+\node[gpu]   (mega)    at (0,-5.0)   {\textbf{Megatron}\\[1pt]\scriptsize training group (GPU)};
+
+% buffer <-> custom rollout generation
+\draw[->, thick] ([yshift=4pt]buffer.east) -- node[lbl,above]{send init prompt} ([yshift=4pt]rollout.west);
+\draw[->, thick] ([yshift=-4pt]rollout.west) -- node[lbl,below]{recv rollout data} ([yshift=-4pt]buffer.east);
+% custom rollout -> router -> servers  (generation)
+\draw[->, thick] (rollout) -- node[lbl,right]{LLM calls} (router);
+\draw[->, thick] (router)  -- (sg1);
+\draw[->, thick] (router)  -- (sg2);
+% buffer -> megatron (train data)
+\draw[->, thick] (buffer)  -- node[lbl,left]{send train data} (mega);
+% megatron -> servers (weight update)
+\draw[->, thick] (mega)    -- node[lbl,above]{update weights} (sg1);
+
+% domain panels (behind boxes)
+\begin{scope}[on background layer]
+  \node[panel, fill=blue!3,   fit=(mega)] (ptrain) {};
+  \node[panel, fill=orange!4, fit=(router)(sg1)(sg2)] (proll) {};
+\end{scope}
+\node[ptitle, anchor=south west] at ([yshift=2pt]ptrain.north west) {Training (Megatron)};
+\node[ptitle, anchor=south west] at ([yshift=2pt]proll.north west) {Rollout (SGLang)};
+\end{tikzpicture}%
+}
+\caption{slime's architecture (redrawn after the slime documentation [9]). A \textbf{Data Buffer} bridges the two sides: it hands prompts to a \emph{custom rollout generation} hook --- where our \textbf{harness + AgentCore sandbox} live --- and receives finished rollout data back. Generation runs through an \textbf{SGLang router} to one or more GPU \textbf{SGLang servers}. On the training side the buffer feeds \textbf{Megatron}, which periodically pushes \textbf{updated weights} to the SGLang servers. Agentic workloads plug into the hook without forking the training kernel.}
+\end{figure}
+
+\textbf{Asynchronous mode.} By default training and rollout alternate,
+so the GPUs on each side idle while the other runs. slime avoids this
+with an \textbf{async training driver} (\texttt{train\_async.py} instead
+of \texttt{train.py}): while Megatron trains on the current batch, the
+rollout side already generates the \emph{next} rollout's data,
+overlapping the two {[}9{]}. For agentic RL --- where rollouts have a
+\textbf{long tail} (one slow episode, e.g.~a lengthy compile, can stall
+a whole step) --- slime also offers a \textbf{fully-async rollout} path
+(\texttt{-\/-rollout-function-path\ slime.rollout.fully\_async\_rollout.generate\_rollout\_fully\_async})
+that keeps a fixed pool of in-flight generations across rollout
+boundaries, so a training step never waits on the slowest sample. This
+is exactly the regime this report targets: \textbf{AgentCore sandboxes
+have variable, sometimes long, per-episode latency}, and async rollout
+keeps the trainer fed while they run.
+
+\emph{Sources: slime repository \url{https://github.com/THUDM/slime} and
+documentation \url{https://thudm.github.io/slime/} {[}9{]}.}
+
+\hypertarget{scaling-the-sandbox-and-why-inference-can-become-the-bottleneck}{%
+\subsection{Scaling the sandbox --- and why inference can become the
+bottleneck}\label{scaling-the-sandbox-and-why-inference-can-become-the-bottleneck}}
+
+\textbf{Why scale the sandbox at all?} A policy only \emph{generalizes}
+if it is trained across many \textbf{diverse tasks} --- SWE repos, SQL,
+math, tool-use, RAG, CTF, GPU kernels --- and across \textbf{many
+episodes of each} so the reward signal is not dominated by one family.
+That means running a large number of \textbf{concurrent episodes} per
+training step, and every concurrent episode needs its own isolated
+sandbox. So scaling \emph{up the number of concurrent sandboxes} (the
+harness concurrency knob, \texttt{CONC}) is the direct lever on task
+diversity and throughput.
+
+\textbf{But sandboxes do not run in isolation.} Every one of those
+concurrent episodes still gets its model turns from the \textbf{same}
+inference engine. If we raise sandbox concurrency while holding the
+number (and size) of inference replicas \textbf{fixed}, generation
+requests start to \textbf{queue} at the inference engine: per-turn
+latency climbs, and the extra sandboxes sit idle waiting for their next
+turn. Past that point the inference engine --- not the sandbox --- is
+the bottleneck, and adding sandboxes buys nothing.
+
+\textbf{So first diagnose which side is slow.} Per episode the
+wall-clock is split between (a) \textbf{generation} --- the inference
+engine producing the turn --- and (b) \textbf{sandbox execution} ---
+running the tool call and the checker. The harness measures both:
+\texttt{{[}sglang-gen{]}} → \texttt{perf/sglang\_gen\_ms\_\{p50,p95\}}
+for generation, and \texttt{{[}sbx-op{]}} →
+\texttt{perf/sandbox\_ms\_\{p50,p95\}} for the sandbox round-trip.
+Compare them before scaling:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Generation dominates} (\texttt{sglang\_gen\_ms} ≫
+  \texttt{sandbox\_ms}) ⇒ \textbf{inference-bound}. Scale the inference
+  engine (more replicas / more GPUs / larger tensor-parallel),
+  \emph{not} the sandbox count.
+\item
+  \textbf{Sandbox dominates} (\texttt{sandbox\_ms} ≫
+  \texttt{sglang\_gen\_ms}) ⇒ \textbf{sandbox-bound}. Scale sandbox
+  concurrency / instances; one inference replica can feed many episodes.
+\end{itemize}
+
+\textbf{Examples.}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Sandbox-bound --- KernelBench (GPU).} The model emits a short
+  CUDA kernel in a few hundred ms, but \texttt{nvcc} compilation plus
+  \texttt{allclose} on the GPU takes \textbf{seconds}. Sandbox time
+  dwarfs generation → add GPU sandbox Instances; a single inference
+  replica keeps up.
+\item
+  \textbf{Inference-bound --- math / long-reasoning.} The checker is a
+  one-line stdlib assert (sandbox ≈ tens of ms), but the model generates
+  a long chain of thought (generation ≈ seconds). Inference time dwarfs
+  the sandbox → adding sandboxes does nothing; add inference replicas.
+\item
+  \textbf{Balanced --- SWE with a moderate test suite.} Generation and a
+  multi-second test run are comparable → scale \textbf{both} roughly in
+  proportion to keep either side from queuing.
+\end{itemize}
+
+The practical loop: pick a concurrency, read
+\texttt{perf/sglang\_gen\_ms\_*} and \texttt{perf/sandbox\_ms\_*}, and
+grow whichever side dominates until the two are balanced --- then raise
+both together.
+
+\textbf{Balancing load as you scale --- let the router do inference,
+round-robin the sandbox pool.} Once you add replicas on \emph{either}
+side, the next question is how episodes get spread across them. The two
+sides answer it differently, and it matters that you \emph{not} apply
+the same rule to both:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Inference --- do not hand-roll round-robin.} slime already
+  runs \textbf{one SGLang router} in front of its inference replicas,
+  and the router does \textbf{cache-aware (prefix-affinity) load
+  balancing}: it steers each request to the replica most likely to
+  already hold that prompt's prefix in its KV cache, falling back to
+  shortest-queue only when caches are cold. That beats naive
+  round-robin, which would scatter a shared system-prompt/few-shot
+  prefix across every replica and \emph{destroy} the prefix cache ---
+  inflating time-to-first-token. So every proxy and policy simply
+  targets the \textbf{router URL}; scaling inference is ``add
+  replicas,'' with zero client change and no load-balancing code of your
+  own.
+\item
+  \textbf{Sandbox --- the session id \emph{is} the load-balancing key.}
+  One \texttt{runtimeSessionId} maps to exactly one isolated microVM /
+  instance. Within a \textbf{single} Runtime, AgentCore's capacity
+  provider already \textbf{places each new session on an available
+  instance}, so simply minting a distinct per-episode session id spreads
+  the load for you. You only need \emph{explicit} round-robin when you
+  run a \textbf{pool of sandbox Runtimes} (several ARNs --- e.g.~to
+  exceed one Runtime's per-region concurrency, or to span AZs/accounts).
+  Then pin each episode to one ARN, and make it \textbf{sticky} so every
+  op of that episode returns to the same warm sandbox that holds its
+  workspace:
+\end{itemize}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\ImportTok{import}\NormalTok{ hashlib, os}
+\ImportTok{from}\NormalTok{ .generate }\ImportTok{import}\NormalTok{ SGLangPolicy}
+
+\CommentTok{\# 1) Inference: target the ROUTER, never an individual replica. The router}
+\CommentTok{\#    load{-}balances (cache{-}aware, shortest{-}queue fallback) across all replicas,}
+\CommentTok{\#    so scaling inference is "add replicas" — no client{-}side balancing at all.}
+\NormalTok{policy }\OperatorTok{=}\NormalTok{ SGLangPolicy(}
+\NormalTok{    router\_url}\OperatorTok{=}\SpecialStringTok{f"http://}\SpecialCharTok{\{}\NormalTok{args}\SpecialCharTok{.}\NormalTok{sglang\_router\_ip}\SpecialCharTok{\}}\SpecialStringTok{:}\SpecialCharTok{\{}\NormalTok{args}\SpecialCharTok{.}\NormalTok{sglang\_router\_port}\SpecialCharTok{\}}\SpecialStringTok{"}\NormalTok{,}
+\NormalTok{    model\_path}\OperatorTok{=}\NormalTok{args.hf\_checkpoint,}
+\NormalTok{)}
+
+\CommentTok{\# 2) Sandbox: within ONE Runtime the session id already spreads sessions across}
+\CommentTok{\#    instances. Across a POOL of sandbox Runtimes, round{-}robin BY session id so}
+\CommentTok{\#    the spread is even AND sticky (all ops of an episode hit one warm microVM).}
+\NormalTok{SANDBOX\_ARNS }\OperatorTok{=}\NormalTok{ os.environ[}\StringTok{"AGENTCORE\_SANDBOX\_RUNTIME\_ARNS"}\NormalTok{].split(}\StringTok{","}\NormalTok{)}
+
+\KeywordTok{def}\NormalTok{ pick\_sandbox\_arn(session\_id: }\BuiltInTok{str}\NormalTok{) }\OperatorTok{{-}\textgreater{}} \BuiltInTok{str}\NormalTok{:}
+\NormalTok{    h }\OperatorTok{=} \BuiltInTok{int}\NormalTok{(hashlib.sha1(session\_id.encode()).hexdigest(), }\DecValTok{16}\NormalTok{)}
+    \ControlFlowTok{return}\NormalTok{ SANDBOX\_ARNS[h }\OperatorTok{\%} \BuiltInTok{len}\NormalTok{(SANDBOX\_ARNS)]   }\CommentTok{\# deterministic, sticky per episode}
+\end{Highlighting}
+\end{Shaded}
+
+Hashing the session id (rather than a shared counter) gives an even,
+\textbf{sticky} spread with no cross-thread lock --- which matters
+because episodes run concurrently on \texttt{asyncio.to\_thread}. A
+plain counter (\texttt{itertools.cycle} behind a lock) is the simpler
+\emph{literal} round-robin, but only use it if you do not need
+stickiness --- and here you do: every op of an episode (seed → exec →
+read) must land on the microVM that holds that episode's files.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.95\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=1.05cm, minimum width=2.5cm, align=center, thick, fill=white},
+  gpu/.style={box, fill=blue!8},
+  cpu/.style={box, fill=black!4},
+  focus/.style={box, fill=orange!18},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
+  ptitle/.style={font=\scriptsize\bfseries, text=black!55},
+  panel/.style={draw, rounded corners, dashed, thick, inner sep=0.34cm},
+  >={Stealth[]},
+]
+% source
+\node[cpu] (eps) at (0,0) {\textbf{Concurrent}\\\textbf{episodes}\\[1pt]\scriptsize harness $\times$ CONC};
+
+% inference branch (top)
+\node[cpu] (router) at (4.8,2.3) {\textbf{SGLang router}\\[1pt]\scriptsize cache-aware};
+\node[gpu, minimum width=2.2cm] (sgA) at (9.4,3.5) {\scriptsize replica A};
+\node[gpu, minimum width=2.2cm] (sgB) at (9.4,2.3) {\scriptsize replica B};
+\node[gpu, minimum width=2.2cm] (sgC) at (9.4,1.1) {\scriptsize replica C};
+
+% sandbox branch (bottom)
+\node[cpu] (disp) at (4.8,-2.3) {\textbf{Sandbox dispatcher}\\[1pt]\scriptsize round-robin, sticky};
+\node[focus, minimum width=2.2cm] (sbA) at (9.4,-1.1) {\scriptsize sandbox A};
+\node[focus, minimum width=2.2cm] (sbB) at (9.4,-2.3) {\scriptsize sandbox B};
+\node[focus, minimum width=2.2cm] (sbC) at (9.4,-3.5) {\scriptsize sandbox C};
+
+% source -> branches
+\draw[->, thick] (eps.east) -- node[lbl,above,pos=0.55]{model turns} (router.west);
+\draw[->, thick] (eps.east) -- node[lbl,below,pos=0.55]{tool ops} (disp.west);
+
+% router -> replicas (cache-aware)
+\draw[->, thick] (router) -- (sgA);
+\draw[->, thick] (router) -- node[lbl,pos=0.42]{by prompt prefix} (sgB);
+\draw[->, thick] (router) -- (sgC);
+
+% dispatcher -> sandboxes (round-robin)
+\draw[->, thick] (disp) -- (sbA);
+\draw[->, thick] (disp) -- node[lbl,pos=0.42]{by session id} (sbB);
+\draw[->, thick] (disp) -- (sbC);
+
+% panels
+\begin{scope}[on background layer]
+  \node[panel, fill=blue!3,   fit=(router)(sgA)(sgC)] (pinf) {};
+  \node[panel, fill=orange!4, fit=(disp)(sbA)(sbC)]   (psbx) {};
+\end{scope}
+\node[ptitle, anchor=south west] at ([yshift=2pt]pinf.north west) {Inference --- cache-aware (prefix affinity), no client round-robin};
+\node[ptitle, anchor=north west] at ([yshift=-2pt]psbx.south west) {Sandbox --- round-robin by session id, sticky per episode};
+\end{tikzpicture}%
+}
+\caption{Load balancing differs by side. \textbf{Inference (top):} every episode's model turns go to \emph{one} SGLang router, which does \textbf{cache-aware} balancing --- it steers a request to the replica most likely to already hold its \emph{prompt prefix} in the KV cache (shortest-queue fallback), so a shared system/few-shot prefix is not scattered. The client never round-robins; it just targets the router URL, and scaling is ``add replicas.'' \textbf{Sandbox (bottom):} one \texttt{runtimeSessionId} $=$ one isolated microVM/instance. Within a single Runtime the capacity provider spreads sessions for you; across a \emph{pool} of sandbox Runtimes you \textbf{round-robin by session id}, kept \textbf{sticky} so every op of an episode (seed $\rightarrow$ exec $\rightarrow$ read) returns to the same warm microVM that holds its files.}
+\end{figure}
+
+\hypertarget{tasks-frontier-labs-run-in-a-sandbox}{%
+\section{Tasks frontier labs run in a
+sandbox}\label{tasks-frontier-labs-run-in-a-sandbox}}
+
+Frontier models are post-trained with \textbf{reinforcement learning
+against executable, verifiable environments} (RLVR). The common
+denominator is a \textbf{sandbox seam}: the model's untrusted output
+runs in an isolated environment, and a \textbf{programmatic verifier}
+--- not a human, and increasingly not an LLM judge --- turns the outcome
+into a scalar reward.
+
+\hypertarget{two-verifier-styles-verifiable-and-reference-based}{%
+\subsection{Two verifier styles --- verifiable and
+reference-based}\label{two-verifier-styles-verifiable-and-reference-based}}
+
+Two verifier styles recur across the open reports:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Verifiable / rule-based} --- a deterministic check: run
+  generated code against hidden unit tests, verify a math answer by
+  symbolic equivalence, compare a SQL result-set, or validate a captured
+  flag. The reward is typically \textbf{binary} (all tests pass → 1,
+  else 0) and cannot be gamed by an eloquent-but-wrong answer.
+\item
+  \textbf{Reference-based model judge} --- an LLM (or reward model)
+  scores the response against a ground-truth reference. Used where
+  outputs are open-ended (science explanations, instruction following,
+  chat), often alongside rule-based rewards.
+\end{itemize}
+
+\hypertarget{what-the-frontier-reports-describe}{%
+\subsection{What the frontier reports
+describe}\label{what-the-frontier-reports-describe}}
+
+The trend is toward \textbf{verifiable rewards at scale}: Kimi K2, for
+example, runs a rollout infrastructure of \textbf{more than 10,000
+concurrent execution sandboxes} on Kubernetes for its coding and
+software-engineering RL {[}5{]}. What the major open reports describe:
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Model
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+RL / verifier setup
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Task domains
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Reward
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+DeepSeek-R1 {[}2{]} & GRPO; rule-based verifier + code compiler (no
+neural reward model, to avoid reward hacking) & math, competitive code &
+answer match / tests pass (binary) \\
+Qwen3 {[}3{]} & Reasoning RL from \textbf{3,995 query--verifier pairs};
+General RL over \textbf{20+ tasks}; multi-turn tool use with
+real-environment feedback & math, code, tool-use, RAG, instruction &
+rule-based verifiable + reference-based model judge + reward model \\
+Llama-Nemotron {[}4{]} & GRPO (science) + RLOO (instruction following);
+vLLM + Megatron; prompts difficulty-filtered by pass-rate & science
+reasoning, math, instruction & \textbf{LLM-judge} (Llama-3.3-70B)
+answer-match + \texttt{\textless{}think\textgreater{}} format reward \\
+AceReason-Nemotron {[}10{]} & math-then-code RL; a \textbf{local sandbox
+verifier} runs code against \emph{all} test cases (64-worker pool) &
+math (\textasciitilde49k problems), code (\textasciitilde8.5k problems)
+& binary: pass \textbf{all} tests / \texttt{sympy} symbolic match on
+\texttt{\textbackslash{}boxed\{\}} \\
+Kimi K2 {[}5{]} & agentic RL; \textbf{verifiable-rewards ``gym'' + a
+tool simulator (world model) + real execution sandboxes}
+(\textgreater10k concurrent) & agentic tool use, coding, SWE, math,
+instruction & executable unit tests + verifiable checks + self-critique
+rubric \\
+\end{longtable}
+
+NVIDIA also \textbf{publishes the post-training data mix} openly: the
+Nemotron post-training datasets {[}12{]} quantify the domain balance
+used to train an open reasoning model --- roughly \textbf{Math 239k,
+Code 175k, STEM 355k, Chat 628k} samples (plus large multilingual
+splits) --- a concrete picture of how much of each family a frontier
+post-training run consumes.
+
+\hypertarget{task-families-in-detail}{%
+\subsection{Task families in detail}\label{task-families-in-detail}}
+
+Each family below lists its \textbf{dataset, reward function, key
+metric, and environment requirement} --- the properties that determine
+what a sandbox must provide --- plus an \textbf{episode shape}: the
+typical \emph{turns per episode}, the \emph{response length per turn}
+(the policy's own tokens), and the resulting \emph{total episode length}
+(all turns' responses plus the observations fed back). The episode shape
+is what you size the training config against: it sets
+\textbf{\texttt{-\/-rollout-max-response-len}} (per-turn generation
+budget), the \textbf{max turns} cap (\texttt{EPISODE\_MAX\_TURNS},
+default \textbf{3} in this project's demos), the \textbf{sequence-length
+/ context window} the trainer and inference engine must hold, and the
+\textbf{rollout-buffer} memory per sample. The numbers below are typical
+order-of-magnitude ranges (reasoning models sit at the high end of every
+response figure), not hard limits --- measure your own before committing
+a config.
+
+\hypertarget{single-turn-generation-bound-families}{%
+\subsubsection{Single-turn, generation-bound
+families}\label{single-turn-generation-bound-families}}
+
+The checker is milliseconds; nearly all the wall-clock is one long
+generation. These are the \emph{inference-bound} families --- scale the
+SGLang side.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Math \& logical reasoning} --- \emph{Dataset:} GSM8K, MATH-500
+  {[}2{]}, AIME / HMMT; \textbf{DeepScaleR + NuminaMath} for RL
+  (\textasciitilde49k problems) {[}10{]}. \emph{Reward:}
+  \textbf{verifiable answer match} --- e.g.~a \texttt{sympy}-based check
+  of symbolic equivalence on the \texttt{\textbackslash{}boxed\{\}}
+  answer, binary, with no format or length bonus {[}10{]}.
+  \emph{Metric:} accuracy, pass@k (Qwen3-235B's AIME'24 rose
+  \textbf{70.1 → 85.1} over 170 RL steps {[}3{]}). \emph{Env:} a
+  lightweight \textbf{CPU checker} (milliseconds). \emph{Episode shape:}
+  \textbf{almost always single-turn} --- there is no environment
+  feedback loop, just one answer. But that one response is a
+  \textbf{long reasoning trace: \textasciitilde1k--8k tokens, and up to
+  16k--32k} for hard competition problems on a reasoning model. Episode
+  length ≈ that one response; strongly \textbf{inference-bound} (the
+  checker is a one-line assert).
+\item
+  \textbf{Code generation \& competitive programming} ---
+  \emph{Dataset:} MBPP {[}8{]}, HumanEval, \textbf{LiveCodeBench}
+  {[}11{]}; competitive sets from \textbf{Codeforces, AtCoder, LeetCode}
+  {[}10{]}. \emph{Reward:} \textbf{hidden unit tests pass} --- AceReason
+  grants reward \emph{only if the code passes every test case} {[}10{]}.
+  \emph{Metric:} pass@1 / pass@k, Codeforces ELO, LiveCodeBench (Kimi K2
+  v6: \textbf{53.7\%} {[}5{]}). \emph{Env:} a language interpreter plus
+  a \textbf{test-runner sandbox with per-case time limits}, run at scale
+  (AceReason: a 64-worker process pool {[}10{]}; Kimi K2:
+  \textgreater10k concurrent {[}5{]}). \emph{Episode shape:} \textbf{few
+  turns --- often 1, up to \textasciitilde5} with retry on failed tests.
+  The submitted program is short (\textbf{\textasciitilde100--800
+  tokens}), but a \emph{reasoning} model prepends a long
+  chain-of-thought, pushing the per-turn response to \textbf{several
+  thousand tokens}; total episode is typically
+  \textbf{\textasciitilde2k--16k tokens}, generation-heavy rather than
+  context-heavy.
+\item
+  \textbf{Instruction following} --- \emph{Dataset:} synthetic prompts
+  carrying \textbf{one to ten verifiable instructions} (Llama-Nemotron's
+  RLOO stage {[}4{]}; part of Qwen3's 20+-task General RL {[}3{]}).
+  \emph{Reward:} \textbf{deterministic verification via a code
+  interpreter} for the checkable constraints, plus a \textbf{format
+  reward}, with an LLM judge for the open-ended remainder {[}3, 4{]}.
+  \emph{Metric:} IFEval-style constraint satisfaction. \emph{Env:} a
+  \textbf{code interpreter} to evaluate the constraints. \emph{Episode
+  shape:} \textbf{typically single-turn} --- one response scored against
+  the constraints. Response length tracks the asked-for output,
+  \textbf{\textasciitilde200 tokens--2k}; episode ≈ that one response.
+\end{itemize}
+
+\hypertarget{iterative-few-turn-families}{%
+\subsubsection{Iterative, few-turn
+families}\label{iterative-few-turn-families}}
+
+A short retry loop against a checker --- write, run, read the failure,
+fix. One family (GPU kernels) is where the \emph{checker} dominates
+cost.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{GPU kernels / systems} --- \emph{Dataset:} KernelBench
+  {[}7{]}. \emph{Reward:} numerical \textbf{\texttt{allclose}} vs.~a
+  reference \textbf{plus a speedup target}. \emph{Metric:} correctness
+  rate, speedup. \emph{Env:} an \textbf{NVIDIA GPU + CUDA toolchain}
+  (\texttt{nvcc}) --- the one family that requires a GPU, not just CPU.
+  \emph{Episode shape:} \textbf{a few turns
+  (\textsubscript{1--5)\textbf{, iterating on compile errors and
+  speedup. Each response is one CUDA kernel, }}200--1,000 tokens}; total
+  episode a \textbf{few thousand tokens}. Cost lives in the
+  \emph{sandbox} (\texttt{nvcc} + \texttt{allclose} take seconds), not
+  in generation --- the canonical sandbox-bound family.
+\item
+  \textbf{SQL / data analysis} --- \emph{Dataset:} text-to-SQL suites
+  (Spider-style). \emph{Reward:} \textbf{result-set equality} against
+  gold rows (the query is executed against a real engine).
+  \emph{Metric:} execution accuracy. \emph{Env:} a local SQL engine
+  (e.g.~SQLite), self-contained. \emph{Episode shape:} \textbf{1--3
+  turns} (write query; retry on a SQL error or empty result-set).
+  Response is a single query, \textbf{\textasciitilde30--300 tokens};
+  episode is \textbf{small (a few hundred to \textasciitilde2k tokens)}
+  --- cheap on both sides.
+\end{itemize}
+
+\hypertarget{multi-turn-observation-heavy-families}{%
+\subsubsection{Multi-turn, observation-heavy
+families}\label{multi-turn-observation-heavy-families}}
+
+The response each turn is short, but the sandbox feeds a large
+observation (tool result, retrieved passages, command output) back every
+turn --- cost moves into \emph{context growth and the sandbox}.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Tool use / function calling} --- \emph{Dataset:} live and
+  \textbf{simulated} tool environments; Kimi K2 builds a repository of
+  \textbf{3,000+ real MCP tools plus 20,000+ synthetic tools} and
+  generates multi-turn trajectories against a \textbf{tool simulator
+  that acts as a world model} {[}5{]}; Qwen3 trains with
+  real-environment execution feedback {[}3{]}. \emph{Reward:}
+  \textbf{correct final result \emph{and} the right tools invoked}
+  (verifiable), sometimes with a model judge. \emph{Metric:} task
+  success on agentic tool-use benchmarks (Kimi K2: \textbf{τ²-Bench
+  66.1, ACEBench 76.5} {[}5{]}). \emph{Env:} tool stubs / an API sandbox
+  / a \textbf{stateful simulator} that returns realistic feedback across
+  turns. \emph{Episode shape:} \textbf{multi-turn, one turn per tool
+  call --- typically \textasciitilde3--10+ turns}. The policy's response
+  each turn is short (a tool call plus brief reasoning,
+  \textbf{\textasciitilde50--300 tokens}), but the \emph{observations}
+  (tool results) can be large; total episode is
+  \textbf{\textasciitilde2k--10k tokens}, dominated by fed-back tool
+  output rather than by generation.
+\item
+  \textbf{RAG \& search agents} --- \emph{Dataset:} open-domain QA over
+  a corpus or live web search (part of Qwen3's General RL, which
+  explicitly targets RAG {[}3{]}). \emph{Reward:} \textbf{answer
+  grounded in retrieved facts} --- Kimi K2 adds a \textbf{sentence-level
+  faithfulness judge} {[}5{]}. \emph{Metric:} exact-match / F1.
+  \emph{Env:} a retrieval index or search API plus \textbf{network
+  egress}. \emph{Episode shape:} \textbf{multi-turn ---
+  \textasciitilde2--8 turns} (issue query → read passages → refine or
+  answer). The policy's responses (queries, final answer) are short, but
+  each retrieved-document observation is large, so the \textbf{episode
+  context is retrieval-heavy --- commonly 8k--32k+ tokens} even though
+  the model generates comparatively little.
+\item
+  \textbf{Security / CTF} --- \emph{Dataset:} CTF challenge sets.
+  \emph{Reward:} a \textbf{checker validates the captured flag}.
+  \emph{Metric:} solve rate. \emph{Env:} an isolated shell, sometimes
+  with network to a remote challenge service. \emph{Episode shape:}
+  \textbf{multi-turn exploration --- \textasciitilde5--30+ turns} of
+  shell commands. Per-turn responses are short (a command plus
+  reasoning, \textbf{\textasciitilde50--400 tokens}); observations
+  (command output) vary from a line to a hex dump, so the
+  \textbf{episode ranges from a few thousand to tens of thousands of
+  tokens}.
+\end{itemize}
+
+\hypertarget{long-horizon-session-bound-families}{%
+\subsubsection{Long-horizon, session-bound
+families}\label{long-horizon-session-bound-families}}
+
+Tens to hundreds of turns; the accumulated transcript is the largest of
+all, and the session must stay alive for the whole workflow --- the
+families that most need a warm, long-lived sandbox.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Software engineering (SWE)} --- \emph{Dataset:} SWE-bench /
+  SWE-bench Verified {[}6{]}; Kimi K2 additionally mines
+  \textbf{executable unit tests from real GitHub pull requests and
+  issues} {[}5{]}. \emph{Reward:} the repo's \textbf{test suite turns
+  green} (\texttt{FAIL\_TO\_PASS} + \texttt{PASS\_TO\_PASS}), binary.
+  \emph{Metric:} \% issues resolved (Kimi K2 reports \textbf{65.8\%}
+  single-attempt on SWE-bench Verified {[}5{]}). \emph{Env:} a
+  per-repository toolchain --- usually a \textbf{prebuilt Docker image}
+  carrying the exact dependencies, run in isolation per task.
+  \emph{Episode shape:} \textbf{long-horizon and multi-turn} --- real
+  SWE agents take \textbf{\textasciitilde15--50+ turns} (locate → edit →
+  run tests → read failure → re-edit); each turn's response is a command
+  or a \textbf{diff/patch of \textasciitilde100--1,000 tokens}, but the
+  observations (file contents, test logs) are large, so the
+  \textbf{episode context routinely reaches tens of thousands of tokens
+  (16k--128k+)} --- the most demanding family for context length.
+\item
+  \textbf{Web / computer use} --- \emph{Dataset:} WebArena-style browser
+  tasks. \emph{Reward:} \textbf{goal state reached} (a DOM / state
+  checker). \emph{Metric:} task success. \emph{Env:} a real
+  \textbf{browser / rendering engine} and network. \emph{Episode shape:}
+  \textbf{long-horizon --- \textasciitilde10--50+ turns}, one UI action
+  (click/type/scroll) per turn. Each response is tiny
+  (\textbf{\textasciitilde20--150 tokens}), but every observation (a DOM
+  dump or accessibility tree, sometimes a screenshot) is very large,
+  making this --- with SWE --- the \textbf{heaviest family for episode
+  context (tens of thousands of tokens, growing per turn)}.
+\item
+  \textbf{Multi-agent / long-horizon} --- \emph{Dataset:} cooperative or
+  long-workflow tasks. \emph{Reward:} a \textbf{verifiable end state}.
+  \emph{Metric:} task success. \emph{Env:} many turns / long wall-clock,
+  with state persisted across a long session. \emph{Episode shape:}
+  \textbf{the longest horizon --- tens to hundreds of turns}, per-turn
+  responses short-to-moderate, but the accumulated transcript makes the
+  \textbf{episode the largest of all (often 32k--128k+ tokens)} and
+  demands a session that stays alive for the whole workflow.
+\end{itemize}
+
+\hypertarget{reading-the-episode-shape-into-a-config}{%
+\subsection{Reading the episode shape into a
+config}\label{reading-the-episode-shape-into-a-config}}
+
+Two axes drive every knob. \textbf{Turns per episode} sets
+\texttt{EPISODE\_MAX\_TURNS} and, multiplied by the per-turn response,
+the \emph{sequence length} the trainer and inference engine must hold:
+single-turn families (math, instruction following) need only a long
+\texttt{-\/-rollout-max-response-len}; long-horizon ones (SWE,
+web/computer use, multi-agent) need a large \textbf{context window} and
+a \textbf{session that stays warm for the whole episode}. \textbf{Where
+the tokens are} sets which side you scale (§ Scaling the sandbox):
+generation-heavy families (math, reasoning code) are
+\emph{inference-bound} --- long responses, trivial checker;
+observation-heavy families (SWE, RAG, web, tool use) push cost into
+\emph{context growth and the sandbox}. Rule of thumb: budget context ≈
+\texttt{max\_turns\ ×\ (response\_per\_turn\ +\ observation\_per\_turn)},
+size \texttt{-\/-rollout-max-response-len} to the per-turn response at
+the high end (reasoning traces), and set rollout-buffer memory from the
+total episode length so long-horizon samples do not overflow it.
+
+\hypertarget{what-every-family-shares}{%
+\subsection{What every family shares}\label{what-every-family-shares}}
+
+Regardless of domain, each needs the same two things: an
+\textbf{isolated environment} to execute untrusted model output, and a
+\textbf{programmatic checker} to score it --- the sandbox seam. Where
+the reports differ is only in \emph{what runs inside} (a Python
+interpreter, a CUDA toolchain, a browser, a tool simulator, a full repo
+image) and \emph{how the checker scores} (tests pass, symbolic match,
+result-set equality, flag validation, or --- for open-ended work --- a
+reference-based judge). The rest of this report turns to running these
+workloads on a concrete sandbox platform.
+
+\hypertarget{foundations-of-agentcore-runtime}{%
+\section{Foundations of AgentCore
+Runtime}\label{foundations-of-agentcore-runtime}}
+
+Amazon Bedrock AgentCore {[}D1{]} is a family of managed services for
+running and securing agents and tools --- any framework, any model,
+fully serverless. This report uses one of them, \textbf{AgentCore
+Runtime}, as the execution \textbf{sandbox} for RL. This section defines
+its three core concepts, its two compute types, how AgentCore manages
+their lifecycle, and how you build and deploy a customized Runtime ---
+cross-checking the official documentation {[}D1--D13, D17{]} against
+AWS's own SDK and sample code {[}D14--D16{]}.
+
+\hypertarget{runtime-session-and-microvm-three-concepts-precisely}{%
+\subsection{Runtime, session, and microVM --- three concepts,
+precisely}\label{runtime-session-and-microvm-three-concepts-precisely}}
+
+These three words are used loosely elsewhere; the integration depends on
+keeping them distinct.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Runtime (agent runtime).} A \emph{versioned, containerized
+  host} you create with \texttt{CreateAgentRuntime} {[}D9{]}. It
+  packages your code --- a container image in ECR, or a zipped Python
+  bundle --- behind an ARN. Creating a Runtime auto-creates version
+  \textbf{V1} and a \textbf{DEFAULT endpoint}; you can publish further
+  versions and custom endpoints and route invocations to them. The
+  Runtime is the \emph{deployable unit}; it holds no per-user state of
+  its own.
+\item
+  \textbf{Session.} One logical task or conversation, addressed by a
+  \textbf{\texttt{runtimeSessionId}} you pass on
+  \texttt{InvokeAgentRuntime} {[}D8{]} (client-supplied or
+  Runtime-generated; \textbf{minimum 33 characters}, max 256, carried in
+  the \texttt{X-Amzn-Bedrock-AgentCore-Runtime-Session-Id} header). The
+  \textbf{first} invoke for a new id \textbf{cold-starts} dedicated
+  compute; every \textbf{subsequent} invoke with the same id
+  \textbf{re-routes to that same warm compute}, so files, memory, and
+  processes persist \emph{across turns within an episode}. Different ids
+  are fully isolated.
+\item
+  \textbf{microVM.} The \emph{unit of isolation} backing a session on
+  the default compute: a lightweight virtual machine with its
+  \textbf{own CPU, memory, and filesystem}, sanitized on termination.
+  One session maps to one microVM; a microVM is never shared across
+  sessions. Its container contract {[}D17{]}: an \textbf{ARM64} image
+  listening on \textbf{\texttt{0.0.0.0:8080}} that serves
+  \textbf{\texttt{POST\ /invocations}} (the work) and
+  \textbf{\texttt{GET\ /ping}} (health, returning
+  \texttt{\{"status":\ "Healthy"\}} or \texttt{"HealthyBusy"}) --- the
+  same contract AWS's SDK scaffolds for you {[}D15{]}.
+\end{itemize}
+
+In RL terms: \textbf{the Runtime is the deployable sandbox image, the
+session is one episode, and the microVM is the isolated box that episode
+executes in.}
+
+\hypertarget{microvm-vs-a-docker-container-vs-e2b}{%
+\subsection{microVM vs a Docker container vs
+E2B}\label{microvm-vs-a-docker-container-vs-e2b}}
+
+Because ``sandbox'' and ``container'' are often used interchangeably, it
+is worth being precise about what the microVM actually is --- especially
+since we are running \textbf{untrusted, model-generated code}, where the
+strength of the isolation boundary is the whole point.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{A Docker container} isolates via Linux namespaces and cgroups
+  but \textbf{shares the host kernel}. That is fine for packaging and
+  for trusted workloads, but a shared kernel is a comparatively soft
+  boundary for hostile code: a kernel exploit escapes to the host and to
+  co-tenants. Containers alone are not a safe multi-tenant boundary for
+  arbitrary generated code.
+\item
+  \textbf{An AgentCore microVM} is a lightweight,
+  \textbf{hardware-virtualized} virtual machine (a Firecracker-class
+  microVM) with its \textbf{own guest kernel}, its own
+  CPU/memory/filesystem, and a VM-strength boundary --- while still
+  booting \textbf{your OCI container image} inside it. So it is not
+  ``container \emph{or} VM'': you keep container packaging \emph{and}
+  gain VM isolation, provisioned per session and sanitized on
+  termination. On top of that it is \textbf{AWS-native} --- reached only
+  by in-account SigV4/IAM, placeable in your VPC, and integrated with
+  the other AgentCore services (Gateway, Memory, Identity,
+  Observability) --- and it can carry a \textbf{GPU} (via Instances) and
+  \textbf{long sessions} (8 h microVM / 14 d Instances).
+\item
+  \textbf{E2B} is an independent sandbox platform that, like AgentCore,
+  runs code in \textbf{Firecracker microVMs} (its templates are also
+  defined from Dockerfiles), so the \emph{isolation model is
+  comparable}. The differences are operational, not architectural: E2B
+  is its own cloud (or self-hosted) service with its own SDK and
+  identity, oriented to short-lived code-interpreter sandboxes, whereas
+  AgentCore is a managed AWS service that runs \textbf{in your own
+  account} under IAM/VPC, adds \textbf{GPU on Instances} and
+  \textbf{multi-hour/multi-day sessions}, and slots into the rest of the
+  Bedrock AgentCore stack.
+\end{itemize}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Docker container
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+AgentCore microVM
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+E2B sandbox
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Isolation boundary & shared host kernel (namespaces/cgroups) &
+\textbf{own kernel} --- Firecracker-class microVM & own kernel ---
+Firecracker microVM \\
+Runs your image? & yes (OCI) & yes --- your OCI image \emph{inside} a
+microVM & Dockerfile-defined templates \\
+Managed by & you / your orchestrator & \textbf{AWS, in your account}
+(IAM/SigV4/VPC) & E2B service (cloud or self-host) \\
+GPU & host-dependent & \textbf{via Instances} (EC2) & not the core
+offering \\
+Session length & you manage & 8 h microVM / 14 d Instances & short-lived
+(code-interpreter) \\
+\end{longtable}
+
+For an RL sandbox running untrusted policy output, the microVM's
+per-session hardware isolation is the property that matters: one
+episode's generated code cannot see another episode's files, the
+trainer's weights, or the host --- and the box is destroyed and its
+memory wiped when the session ends.
+
+\hypertarget{two-compute-types-managed-serverless-microvm-vs-instances-gpu-ec2}{%
+\subsection{Two compute types --- managed serverless (microVM) vs
+Instances (GPU
+EC2)}\label{two-compute-types-managed-serverless-microvm-vs-instances-gpu-ec2}}
+
+AgentCore Runtime offers two substrates, chosen at create time; the loop
+code is identical across them.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Serverless microVM (default).} No servers to manage: AgentCore
+  provisions a per-session microVM on demand. \textbf{CPU only} --- a
+  microVM has \emph{no GPU} {[}D5{]}. Sessions last up to \textbf{8
+  hours} with a \textbf{15-minute idle timeout} (reset on each invoke).
+  This fits the large majority of RL sandboxes: code execution + unit
+  tests, math/SQL checkers, tool simulators.
+\item
+  \textbf{Instances (GPU).} When a task needs a GPU, Runtime runs on the
+  \textbf{Instances} compute type --- real \textbf{EC2 instances in your
+  own account}, provisioned through a \textbf{capacity provider}
+  (\texttt{capacityProviderConfiguration} → \texttt{ec2Configuration})
+  {[}D5, D9{]}. Supported GPU families include \textbf{g4dn, g5, g6,
+  g6e, gr6, g6f, gr6f, g7e} (plus \texttt{inf2}); AgentCore provisions
+  the NVIDIA drivers, so a standard CUDA image works unmodified.
+  Sessions can run up to \textbf{14 days}, a \textbf{persistent EBS
+  volume} survives a session stop and re-attaches on resume, and ---
+  unlike the microVM --- one instance/session can host \textbf{many
+  agents} (1:N). Crucially, one \texttt{runtimeSessionId} still maps to
+  exactly \textbf{one instance = one GPU}, so there is \textbf{no
+  cross-session GPU time-slicing}: you scale GPUs by adding
+  sessions/instances, not by fractioning one.
+\end{itemize}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Property
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Serverless microVM
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Instances (GPU)
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Compute & managed, per session & EC2 in your account (capacity
+provider) \\
+GPU & none {[}D5{]} & g4dn/g5/g6/g6e/g7e\ldots{} + inf2 \\
+Max session & 8 h & 14 d \\
+Isolation unit & 1 microVM / session & 1 instance / session (1 GPU) \\
+Filesystem & ephemeral & persistent EBS across stop/resume \\
+Agents / session & 1 & many (1:N) \\
+\end{longtable}
+
+\hypertarget{how-agentcore-manages-the-lifecycle}{%
+\subsection{How AgentCore manages the
+lifecycle}\label{how-agentcore-manages-the-lifecycle}}
+
+\textbf{Runtime lifecycle (versions \& endpoints).}
+\texttt{CreateAgentRuntime} builds version V1 and the DEFAULT endpoint;
+updates publish new versions; you route traffic by endpoint. Deleting
+the Runtime removes the deployable --- sessions are not part of the
+Runtime's own state.
+
+\textbf{Session lifecycle (the part that matters for RL).} A session
+moves through \textbf{Active → Idle → Terminated} {[}D3, D4{]}:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Launch / cold start.} The first invoke with a fresh
+  \texttt{runtimeSessionId} provisions the microVM (or, on Instances,
+  may cold-launch an EC2 instance --- \emph{minutes} for a GPU box).
+  Same-id invokes thereafter hit warm compute.
+\item
+  \textbf{Active / Idle.} Each invoke resets the \textbf{15-minute idle
+  timer}; between invokes the session sits Idle but warm.
+\item
+  \textbf{Termination.} Automatic on \textbf{idle expiry (15 min)},
+  \textbf{max lifetime} (microVM \textbf{8 h} / Instances \textbf{14
+  d}), or a failed health check → the microVM is \textbf{terminated and
+  its memory sanitized}. You can also end a session explicitly with
+  \textbf{\texttt{StopRuntimeSession}} {[}D12{]}. On Instances, the EBS
+  volume persists across a stop.
+\end{itemize}
+
+\textbf{Latency --- measure, don't assume.} The docs promise ``fast cold
+starts'' but publish no number {[}D2{]}; a GPU first-invoke can take
+\textbf{minutes} to launch the EC2. This project therefore instruments
+every sandbox round-trip (\texttt{{[}sbx-op{]}} →
+\texttt{perf/sandbox\_ms\_\{p50,p95\}}) and every generation
+(\texttt{{[}sglang-gen{]}} → \texttt{perf/sglang\_gen\_ms\_*}) --- the
+same signals the scaling analysis in §``Scaling the sandbox'' depends
+on.
+
+\hypertarget{building-a-customized-runtime}{%
+\subsection{Building a customized
+Runtime}\label{building-a-customized-runtime}}
+
+There are three ways to put your code on a Runtime, in increasing order
+of control:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{The \texttt{agentcore} CLI (fastest).} AWS ships an official
+  CLI; the newer, \textbf{recommended} one is the
+  \textbf{\texttt{@aws/agentcore}} npm package {[}D16{]} (the earlier
+  Python \texttt{bedrock-agentcore-starter-toolkit} is the legacy path).
+  It offers \texttt{agentcore\ create}, \texttt{agentcore\ dev} (local
+  loop), \texttt{agentcore\ deploy}, and \texttt{agentcore\ invoke}. Its
+  default \textbf{CodeZip} build packages your Python without Docker;
+  the \textbf{Container} build builds an image from \textbf{your own
+  Dockerfile} (Docker required).
+\item
+  \textbf{Bring your own container (what this project does).} Author a
+  container satisfying the contract (ARM64; \texttt{0.0.0.0:8080};
+  \texttt{/invocations} + \texttt{/ping} {[}D17{]}) and register it with
+  \texttt{CreateAgentRuntime}'s
+  \textbf{\texttt{containerConfiguration.containerUri}} (an ECR image).
+  This is the maximum-control path --- you own the base image, system
+  packages, and toolchain, exactly what a task-specific sandbox (a CUDA
+  stack, a full repo image) needs. \texttt{CreateAgentRuntime} takes a
+  \textbf{union}: \texttt{containerConfiguration} (ECR image)
+  \textbf{or} \texttt{codeConfiguration} (zip) --- pick one {[}D9{]}.
+\item
+  \textbf{The Python SDK.} The \textbf{\texttt{bedrock-agentcore}} SDK
+  {[}D15{]} provides \texttt{BedrockAgentCoreApp} and the
+  \textbf{\texttt{@app.entrypoint}} decorator, which implements the
+  \texttt{/invocations} + \texttt{/ping} contract for you: you write one
+  function, the SDK serves it. This project's sandbox server is exactly
+  that (see §5).
+\end{enumerate}
+
+\textbf{The container contract, concretely.} A minimal CPU sandbox
+image:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{FROM}\NormalTok{ public.ecr.aws/docker/library/python:3.12{-}slim}
+\KeywordTok{RUN} \ExtensionTok{pip}\NormalTok{ install }\AttributeTok{{-}{-}no{-}cache{-}dir}\NormalTok{ bedrock{-}agentcore}
+\KeywordTok{COPY}\NormalTok{ agentcore\_slime\_demo/sandbox\_server\_agent.py /app/}
+\KeywordTok{ENV}\NormalTok{ SANDBOX\_WORKDIR=/workspace}
+\KeywordTok{CMD}\NormalTok{ [}\StringTok{"python"}\NormalTok{, }\StringTok{"{-}m"}\NormalTok{, }\StringTok{"agentcore\_slime\_demo.sandbox\_server\_agent"}\NormalTok{]   }\CommentTok{\# BedrockAgentCoreApp serves :8080}
+\end{Highlighting}
+\end{Shaded}
+
+A \textbf{GPU} sandbox changes two things: AgentCore injects
+\texttt{libcuda.so.1} (point \texttt{LD\_LIBRARY\_PATH} at it), and the
+CUDA torch wheel is large --- so install it \textbf{at \texttt{CMD}, not
+baked into the image}, keeping the built image under AgentCore's
+\textbf{2048 MB} cap:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\KeywordTok{ENV}\NormalTok{ LD\_LIBRARY\_PATH=/usr/lib64          }\CommentTok{\# AgentCore injects libcuda.so.1 here}
+\KeywordTok{CMD}\NormalTok{ [}\StringTok{"sh"}\NormalTok{,}\StringTok{"{-}c"}\NormalTok{,}\StringTok{"pip install torch==2.5.1 {-}{-}index{-}url https://download.pytorch.org/whl/cu124 }\OperatorTok{\textbackslash{}}
+\StringTok{                \&\& exec python {-}m agentcore\_slime\_demo.sandbox\_server\_agent"}\NormalTok{]}
+\end{Highlighting}
+\end{Shaded}
+
+\textbf{Deploy.} Managed microVM images must be \textbf{arm64}; a GPU
+capacity provider runs \textbf{amd64} --- so cross-build. This project's
+one driver does the whole sequence:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\BuiltInTok{export} \VariableTok{AWS\_REGION}\OperatorTok{=}\NormalTok{us{-}west{-}2}
+\ExtensionTok{python3}\NormalTok{ deploy/deploy\_two\_runtime.py all   }\CommentTok{\# ECR create → docker buildx {-}{-}platform → push}
+                                           \CommentTok{\# → CreateAgentRuntime (containerConfiguration)}
+                                           \CommentTok{\# → (GPU) CreateCapacityProvider + attach}
+\end{Highlighting}
+\end{Shaded}
+
+For GPU it additionally calls \textbf{\texttt{CreateCapacityProvider}}
+(\texttt{ec2Configuration}: \texttt{g6.xlarge}, VPC subnets/SGs, EBS,
+\texttt{idleInstanceTimeout=600}, \texttt{maxLifetime=86400}) and
+attaches it via \texttt{capacityProviderConfiguration} {[}D5, D9{]}.
+\textbf{IAM:} an execution role (ECR pull, logs,
+\texttt{InvokeAgentRuntime}) plus, for Instances, the operator policy
+\texttt{BedrockAgentCoreRuntimeInstancesOperatorRolePolicy}.
+
+\hypertarget{example-aws-repositories-use-cases}{%
+\subsection{Example AWS repositories (use
+cases)}\label{example-aws-repositories-use-cases}}
+
+To ground all of the above against AWS's own code, three official
+repositories are worth reading:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{AgentCore samples} {[}D14{]} ---
+  \texttt{awslabs/agentcore-samples}, the official example catalog,
+  organized as \texttt{00-getting-started}, \texttt{01-features}
+  (per-service examples, including the Runtime feature),
+  \texttt{02-use-cases} (e.g.~coding assistants, workflow-automation
+  agents, a data-analyst assistant), and
+  \texttt{04-infrastructure-as-code} (CloudFormation/CDK/Terraform).
+  Read \texttt{01-features} and \texttt{04-infrastructure-as-code} for
+  an end-to-end \texttt{CreateAgentRuntime} deploy in full.
+\item
+  \textbf{AgentCore Python SDK} {[}D15{]} ---
+  \texttt{aws/bedrock-agentcore-sdk-python} (PyPI
+  \texttt{bedrock-agentcore}): \texttt{BedrockAgentCoreApp} +
+  \texttt{@app.entrypoint}, and the runtime service contract this
+  project's sandbox server implements.
+\item
+  \textbf{AgentCore CLI} {[}D16{]} --- the newer \texttt{@aws/agentcore}
+  (npm) \texttt{agentcore} command (create/dev/deploy/invoke),
+  recommended over the legacy \texttt{bedrock-agentcore-starter-toolkit}
+  for the zero-Docker path.
+\end{itemize}
+
+\hypertarget{using-agentcore-as-the-sandbox-in-an-agentic-rl-workflow}{%
+\section{Using AgentCore as the sandbox in an agentic RL
+workflow}\label{using-agentcore-as-the-sandbox-in-an-agentic-rl-workflow}}
+
+With the foundations in place, this section shows how AgentCore Runtime
+plugs into a real RL trainer --- \textbf{slime} --- as the execution
+\textbf{sandbox}, with the harness kept \textbf{in-process}. The
+integration is deliberately small: \textbf{no fork of slime}, two hook
+flags, and a sandbox client that turns each tool call into one
+\texttt{InvokeAgentRuntime}.
+
+\hypertarget{where-agentcore-attaches-to-slime-hooks-not-a-fork}{%
+\subsection{Where AgentCore attaches to slime --- hooks, not a
+fork}\label{where-agentcore-attaches-to-slime-hooks-not-a-fork}}
+
+slime {[}9{]} runs Megatron (training) and SGLang (rollout)
+asynchronously (§``slime --- the trainer''). It exposes the rollout path
+as a \textbf{custom generation function}, so an agentic workload plugs
+in without touching the training kernel:
+
+\begin{itemize}
+\tightlist
+\item
+  \texttt{-\/-custom-generate-function-path\ agentcore\_slime\_demo.generate.generate}
+  --- the per-prompt rollout: it drives the in-process harness, and each
+  tool call goes to an AgentCore sandbox.
+\item
+  \texttt{-\/-custom-rm-path} --- an optional custom reward hook (here
+  the reward comes straight from the in-sandbox checker, so the generate
+  hook attaches it directly).
+\end{itemize}
+
+The key design choice: \textbf{AgentCore is the sandbox, not the
+harness.} The harness (agent loop) is independent per episode and
+benefits from \emph{warmth}, so it stays in-process next to the trainer;
+the sandbox needs \emph{isolation} per episode, which is exactly
+AgentCore's per-session microVM. AgentCore \emph{can} also host the
+harness (this project keeps that as untested scaffolding,
+\texttt{agentcore\_runtime\_generate.py}), but the recommended path is
+in-process.
+
+\hypertarget{the-call-path-one-diagram}{%
+\subsection{The call path --- one
+diagram}\label{the-call-path-one-diagram}}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.95\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=1.2cm, minimum width=3.0cm, align=center, thick, fill=white},
+  gpu/.style={box, fill=blue!8},
+  cpu/.style={box, fill=black!4},
+  focus/.style={box, fill=orange!18},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
+  ptitle/.style={font=\scriptsize\bfseries, text=black!55},
+  panel/.style={draw, rounded corners, dashed, thick, inner sep=0.34cm},
+  >={Stealth[]},
+]
+% nodes
+\node[cpu]   (slime)  at (0,0)     {\textbf{slime}\\[1pt]\scriptsize Data Buffer $\leftrightarrow$ Megatron\\\scriptsize + SGLang router};
+\node[focus] (hook)   at (5.4,0)   {\textbf{generate() hook}\\[1pt]\scriptsize run\_episode\\\scriptsize (in-process harness)};
+\node[cpu]   (proxy)  at (5.4,3.0) {\textbf{AnthropicAdapter}\\[1pt]\scriptsize proxy $\rightarrow$ SGLang};
+\node[focus] (sbx)    at (12.6,0)  {\textbf{AgentCore Runtime}\\[1pt]\scriptsize sandbox microVM\\\scriptsize \texttt{@app.entrypoint}:\\\scriptsize write / exec / read + checker};
+
+% slime <-> hook
+\draw[->, thick] ([yshift=5pt]slime.east) -- node[lbl,above]{prompt} ([yshift=5pt]hook.west);
+\draw[->, thick] ([yshift=-5pt]hook.west) -- node[lbl,below]{Sample + reward} ([yshift=-5pt]slime.east);
+% hook <-> proxy
+\draw[->, thick] ([xshift=-6pt]hook.north) -- node[lbl,left,pos=0.55]{model turn} ([xshift=-6pt]proxy.south);
+\draw[->, thick] ([xshift=6pt]proxy.south) -- node[lbl,right,pos=0.45]{tokens + logprobs} ([xshift=6pt]hook.north);
+% hook <-> sandbox
+\draw[->, thick] ([yshift=5pt]hook.east) -- node[lbl,above,pos=0.6]{invoke\_agent\_runtime (op)} ([yshift=5pt]sbx.west);
+\draw[->, thick] ([yshift=-5pt]sbx.west) -- node[lbl,below,pos=0.6]{exit\_code / stdout} ([yshift=-5pt]hook.east);
+
+% panels
+\begin{scope}[on background layer]
+  \node[panel, fill=blue!3,   fit=(slime)(proxy)(hook)] (phost) {};
+  \node[panel, fill=orange!4, fit=(sbx)]                (psbx)  {};
+\end{scope}
+\node[ptitle, anchor=south west] at ([yshift=2pt]phost.north west) {Trainer host --- in-process (warm)};
+\node[ptitle, anchor=north] at ([yshift=-2pt]psbx.south) {AgentCore session = 1 episode (isolated)};
+\end{tikzpicture}%
+}
+\caption{How AgentCore drops into slime. slime hands a \textbf{prompt} to the \texttt{generate()} hook, which runs the agent loop \emph{in-process}. Each \textbf{model turn} goes through the \textbf{proxy} (which returns the exact sampled \textbf{tokens + logprobs} --- the TITO property of §"Token-in-token-out"); each \textbf{tool call} becomes one SigV4 \texttt{invoke\_agent\_runtime} to the \textbf{AgentCore sandbox}, where \texttt{@app.entrypoint} runs the op and the \textbf{checker} (the reward source). The finished, loss-masked \textbf{Sample + reward} returns to slime's buffer. Everything but the sandbox is co-located on the trainer host; the sandbox is an isolated per-episode microVM.}
+\end{figure}
+
+\hypertarget{key-code-three-pieces}{%
+\subsection{Key code --- three pieces}\label{key-code-three-pieces}}
+
+\textbf{1. The generate hook (in-process rollout).} slime calls this
+once per prompt. It builds the policy pointed at the SGLang
+\textbf{router} (so inference stays cache-aware-balanced, §``Scaling the
+sandbox''), opens \textbf{one sandbox per episode}, runs the episode,
+and returns a single loss-masked \texttt{Sample}:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# agentcore\_slime\_demo/generate.py  (wired via {-}{-}custom{-}generate{-}function{-}path)}
+\ControlFlowTok{async} \KeywordTok{def}\NormalTok{ generate(args, sample, sampling\_params, evaluation}\OperatorTok{=}\VariableTok{False}\NormalTok{):}
+\NormalTok{    policy  }\OperatorTok{=}\NormalTok{ SGLangPolicy(router\_url}\OperatorTok{=}\SpecialStringTok{f"http://}\SpecialCharTok{\{}\NormalTok{args}\SpecialCharTok{.}\NormalTok{sglang\_router\_ip}\SpecialCharTok{\}}\SpecialStringTok{:}\SpecialCharTok{\{}\NormalTok{args}\SpecialCharTok{.}\NormalTok{sglang\_router\_port}\SpecialCharTok{\}}\SpecialStringTok{"}\NormalTok{,}
+\NormalTok{                           model\_path}\OperatorTok{=}\NormalTok{args.hf\_checkpoint,}
+\NormalTok{                           chat\_template\_kwargs}\OperatorTok{=}\NormalTok{\{}\StringTok{"enable\_thinking"}\NormalTok{: }\VariableTok{False}\NormalTok{\})}
+\NormalTok{    task    }\OperatorTok{=}\NormalTok{ \_task\_from\_sample(sample)                       }\CommentTok{\# rebuild Task from row metadata}
+\NormalTok{    sandbox }\OperatorTok{=}\NormalTok{ make\_sandbox(os.environ.get(}\StringTok{"SANDBOX"}\NormalTok{, }\StringTok{"agentcore"}\NormalTok{), region}\OperatorTok{=}\NormalTok{...)}
+    \ControlFlowTok{async} \ControlFlowTok{with}\NormalTok{ sandbox }\ImportTok{as}\NormalTok{ sb:                                 }\CommentTok{\# one session == one episode}
+\NormalTok{        traj }\OperatorTok{=} \ControlFlowTok{await}\NormalTok{ run\_episode(policy, sb, task, sampling\_params)}
+\NormalTok{    tokens, resp\_len, loss\_mask, rollout\_logprobs }\OperatorTok{=}\NormalTok{ build\_token\_stream(traj, tokenizer)}
+    \ControlFlowTok{return}\NormalTok{ Sample(tokens}\OperatorTok{=}\NormalTok{tokens, response\_length}\OperatorTok{=}\NormalTok{resp\_len, reward}\OperatorTok{=}\NormalTok{traj.reward,}
+\NormalTok{                  loss\_mask}\OperatorTok{=}\NormalTok{loss\_mask, rollout\_log\_probs}\OperatorTok{=}\NormalTok{rollout\_logprobs,}
+\NormalTok{                  metadata}\OperatorTok{=}\NormalTok{\{}\StringTok{"task\_id"}\NormalTok{: task.task\_id, }\StringTok{"solved"}\NormalTok{: traj.solved,}
+                            \StringTok{"num\_turns"}\NormalTok{: traj.num\_turns, }\StringTok{"sandbox\_id"}\NormalTok{: sb.sandbox\_id\})}
+\end{Highlighting}
+\end{Shaded}
+
+Two RL-critical details: the loss mask is \textbf{1 on the policy's own
+tokens, 0 on prompt/observation/tool tokens}, and
+\texttt{build\_token\_stream} reuses the \textbf{recorded
+\texttt{token\_ids} per turn} --- no re-tokenization, the TITO property
+of §``Token-in-token-out''. It returns a \emph{bare} \texttt{Sample}
+(not a list): slime's fully-async path chokes on nested sample lists.
+
+\textbf{2. The sandbox client (one op = one invoke).} Each
+\texttt{write\_file} / \texttt{exec} / \texttt{read\_file} becomes a
+single SigV4 \texttt{invoke\_agent\_runtime}, keyed by the episode's
+session id. boto3 is synchronous, so it is offloaded with
+\texttt{asyncio.to\_thread}, letting N episodes run concurrently:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# agentcore\_slime\_demo/agentcore\_runtime\_sandbox.py}
+\KeywordTok{def}\NormalTok{ \_invoke\_sync(}\VariableTok{self}\NormalTok{, payload: }\BuiltInTok{dict}\NormalTok{) }\OperatorTok{{-}\textgreater{}} \BuiltInTok{dict}\NormalTok{:}
+\NormalTok{    resp }\OperatorTok{=} \VariableTok{self}\NormalTok{.\_client.invoke\_agent\_runtime(               }\CommentTok{\# boto3 "bedrock{-}agentcore"}
+\NormalTok{        agentRuntimeArn}\OperatorTok{=}\VariableTok{self}\NormalTok{.\_arn,}
+\NormalTok{        runtimeSessionId}\OperatorTok{=}\VariableTok{self}\NormalTok{.\_session\_id,                  }\CommentTok{\# \textgreater{}=33 chars; one per episode}
+\NormalTok{        payload}\OperatorTok{=}\NormalTok{json.dumps(payload).encode())}
+    \ControlFlowTok{return}\NormalTok{ json.loads(resp[}\StringTok{"response"}\NormalTok{].read().decode())}
+
+\ControlFlowTok{async} \KeywordTok{def} \BuiltInTok{exec}\NormalTok{(}\VariableTok{self}\NormalTok{, cmd, }\OperatorTok{*}\NormalTok{, timeout}\OperatorTok{=}\DecValTok{120}\NormalTok{, }\OperatorTok{**}\NormalTok{kw):}
+\NormalTok{    res }\OperatorTok{=} \ControlFlowTok{await}\NormalTok{ asyncio.to\_thread(}\VariableTok{self}\NormalTok{.\_invoke\_sync,}
+\NormalTok{              \{}\StringTok{"op"}\NormalTok{: }\StringTok{"exec"}\NormalTok{, }\StringTok{"command"}\NormalTok{: cmd, }\StringTok{"timeout"}\NormalTok{: }\BuiltInTok{int}\NormalTok{(timeout), }\StringTok{"workdir"}\NormalTok{: }\VariableTok{self}\NormalTok{.\_workdir\})}
+    \ControlFlowTok{return} \BuiltInTok{int}\NormalTok{(res.get(}\StringTok{"exit\_code"}\NormalTok{, }\DecValTok{1}\NormalTok{)), res.get(}\StringTok{"stdout"}\NormalTok{, }\StringTok{""}\NormalTok{), res.get(}\StringTok{"stderr"}\NormalTok{, }\StringTok{""}\NormalTok{)}
+\end{Highlighting}
+\end{Shaded}
+
+The real client also \textbf{retries} transient 5xx/throttle blips with
+backoff (one bad round-trip must not crash a multi-hour run) and carries
+a much larger budget for GPU ``insufficient capacity'' while a g6
+launches.
+
+\textbf{3. The Runtime server (what runs inside the sandbox).} On the
+Runtime, the \texttt{bedrock-agentcore} SDK's \texttt{@app.entrypoint}
+receives each payload and dispatches on \texttt{op}. This is the whole
+sandbox server --- and \emph{the checker runs here, so the microVM is
+the reward source}:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# agentcore\_slime\_demo/sandbox\_server\_agent.py  (deployed as the Runtime image)}
+\ImportTok{from}\NormalTok{ bedrock\_agentcore.runtime }\ImportTok{import}\NormalTok{ BedrockAgentCoreApp}
+
+\KeywordTok{def}\NormalTok{ handle(request: }\BuiltInTok{dict}\NormalTok{) }\OperatorTok{{-}\textgreater{}} \BuiltInTok{dict}\NormalTok{:              }\CommentTok{\# pure dispatch (unit{-}testable without AgentCore)}
+\NormalTok{    op }\OperatorTok{=}\NormalTok{ (request }\KeywordTok{or}\NormalTok{ \{\}).get(}\StringTok{"op"}\NormalTok{, }\StringTok{"ping"}\NormalTok{)}
+    \ControlFlowTok{if}\NormalTok{ op }\OperatorTok{==} \StringTok{"ping"}\NormalTok{:       \_ensure\_workdir(request.get(}\StringTok{"workdir"}\NormalTok{))}\OperatorTok{;} \ControlFlowTok{return}\NormalTok{ \{}\StringTok{"ok"}\NormalTok{: }\VariableTok{True}\NormalTok{\}}
+    \ControlFlowTok{if}\NormalTok{ op }\OperatorTok{==} \StringTok{"write\_file"}\NormalTok{: }\ControlFlowTok{return}\NormalTok{ \_do\_write(request)     }\CommentTok{\# {-}\textgreater{} \{"ok": True\}}
+    \ControlFlowTok{if}\NormalTok{ op }\OperatorTok{==} \StringTok{"read\_file"}\NormalTok{:  }\ControlFlowTok{return}\NormalTok{ \_do\_read(request)      }\CommentTok{\# {-}\textgreater{} \{"text": ...\}}
+    \ControlFlowTok{if}\NormalTok{ op }\OperatorTok{==} \StringTok{"exec"}\NormalTok{:       }\ControlFlowTok{return}\NormalTok{ \_do\_exec(request)      }\CommentTok{\# {-}\textgreater{} \{exit\_code, stdout, stderr\}  (runs the checker)}
+
+\NormalTok{app }\OperatorTok{=}\NormalTok{ BedrockAgentCoreApp()}
+
+\AttributeTok{@app.entrypoint}
+\KeywordTok{def}\NormalTok{ entrypoint(request):}
+    \ControlFlowTok{return}\NormalTok{ handle(request)}
+
+\NormalTok{app.run()      }\CommentTok{\# serves 0.0.0.0:8080 — POST /invocations + GET /ping}
+\end{Highlighting}
+\end{Shaded}
+
+\hypertarget{one-harness-many-task-families}{%
+\subsection{One harness, many task
+families}\label{one-harness-many-task-families}}
+
+The loop inside \texttt{run\_episode} (\texttt{harness.py}) is
+\textbf{task-agnostic} --- the same seed → turn → check → reward cycle
+serves every family; only the \emph{prompt, seed files, and checker}
+change (\texttt{task\_families.py}), dispatched by
+\texttt{metadata.task.family}:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\ControlFlowTok{for}\NormalTok{ name, content }\KeywordTok{in}\NormalTok{ task.setup\_files():                   }\CommentTok{\# seed the workspace}
+    \ControlFlowTok{await}\NormalTok{ sandbox.write\_file(name, content)}
+\ControlFlowTok{await}\NormalTok{ sandbox.write\_file(}\StringTok{"run\_checks.py"}\NormalTok{, task.runner\_source())}
+\ControlFlowTok{for}\NormalTok{ \_ }\KeywordTok{in} \BuiltInTok{range}\NormalTok{(task.max\_turns):                            }\CommentTok{\# EPISODE\_MAX\_TURNS (default 3)}
+\NormalTok{    text }\OperatorTok{=} \ControlFlowTok{await}\NormalTok{ policy.complete(messages)                 }\CommentTok{\# model turn (via proxy)}
+    \ControlFlowTok{await}\NormalTok{ sandbox.write\_file(task.artifact\_filename, task.extract\_submission(text))}
+\NormalTok{    exit\_code, out, err }\OperatorTok{=} \ControlFlowTok{await}\NormalTok{ sandbox.}\BuiltInTok{exec}\NormalTok{(}\StringTok{"python3 run\_checks.py"}\NormalTok{, timeout}\OperatorTok{=}\DecValTok{60}\NormalTok{)}
+    \ControlFlowTok{if}\NormalTok{ exit\_code }\OperatorTok{==} \DecValTok{0}\NormalTok{: solved }\OperatorTok{=} \VariableTok{True}\OperatorTok{;} \ControlFlowTok{break}
+\NormalTok{    messages.append(task.observation(exit\_code, out, err)) }\CommentTok{\# feed failure back}
+\NormalTok{reward }\OperatorTok{=}\NormalTok{ task.reward(}\DecValTok{0} \ControlFlowTok{if}\NormalTok{ solved }\ControlFlowTok{else} \DecValTok{1}\NormalTok{)                   }\CommentTok{\# binary 1.0 / 0.0, from the in{-}sandbox checker}
+\end{Highlighting}
+\end{Shaded}
+
+Datasets are built once and seeded per episode: each row carries
+\texttt{metadata.task} (family + spec), reference answers are dropped so
+they cannot leak into prompts, and \texttt{generate.py} rebuilds the
+\texttt{Task} from that metadata. The same code runs the checker for
+MBPP, SWE, SQL, math, tool-use, RAG, CTF, and the rest --- the sandbox
+is the only thing that changes.
+
+\hypertarget{the-episode-end-to-end}{%
+\subsection{The episode, end to end}\label{the-episode-end-to-end}}
+
+Taking one MBPP episode:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \texttt{run.sh} sets \texttt{SANDBOX=agentcore}, \texttt{FAMILY},
+  \texttt{CONC}, \texttt{EPISODE\_MAX\_TURNS}, then
+  \texttt{ray\ job\ submit\ …\ train\_async.py\ -\/-custom-generate-function-path\ …generate.generate}.
+\item
+  slime hands a prompt to \texttt{generate()}, which rebuilds the Task
+  and opens \texttt{make\_sandbox("agentcore")} → \textbf{cold-start}
+  the session's microVM.
+\item
+  \textbf{Seed:} \texttt{write\_file} \texttt{PROBLEM.md} +
+  \texttt{run\_checks.py}.
+\item
+  \textbf{Turn loop} (≤ \texttt{EPISODE\_MAX\_TURNS}):
+  \texttt{policy.complete} via the proxy (\texttt{{[}sglang-gen{]}}) →
+  extract \texttt{solution.py} →
+  \texttt{exec("python3\ run\_checks.py")} (\texttt{{[}sbx-op{]}}) → on
+  failure, feed the observation back.
+\item
+  \texttt{exit\_code\ ==\ 0} → solved; \textbf{reward = 1.0 / 0.0} from
+  the in-sandbox checker.
+\item
+  \texttt{build\_token\_stream} → loss-masked \texttt{Sample} → buffer →
+  Megatron step → weight sync to SGLang.
+\end{enumerate}
+
+\textbf{CPU → GPU is one env var:} \texttt{SANDBOX=agentcore} (microVM,
+MBPP) → a GPU-Runtime ARN (Instances, KernelBench, \texttt{allclose} on
+cuda) --- \textbf{zero change to the loop}.
+
+\hypertarget{scaling-sharing-and-network-isolation}{%
+\subsection{Scaling, sharing, and network
+isolation}\label{scaling-sharing-and-network-isolation}}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Scaling} follows §``Scaling the sandbox'': grow the side that
+  dominates the per-op latencies, and balance by letting the SGLang
+  router handle inference (cache-aware) while round-robining a pool of
+  sandbox Runtimes (sticky per episode).
+\item
+  \textbf{Sharing a GPU.} One session = one GPU, with no cross-session
+  time-slicing {[}D5{]}. To pack several episodes onto one physical GPU
+  you either run \textbf{many agents in one session} (they share the
+  instance --- no isolation) or run \textbf{your own fractional
+  scheduler} (this project's \texttt{RayGpuFarm}, \texttt{num\_gpus=0.5}
+  actors, with an \texttt{nvcc} \texttt{flock} because a non-MIG L4
+  wedges under compile storms). Isolated scaling means \emph{more
+  instances}; there is \textbf{no MIG on L4}.
+\item
+  \textbf{Network isolation --- pull, don't expose.} Every Runtime is
+  \emph{reached} by an outbound SigV4 \texttt{invoke\_agent\_runtime};
+  \textbf{no Runtime has an inbound port}. IAM/SigV4 is the auth; the
+  \texttt{session\_id} is routing, not auth. For
+  \texttt{networkMode=VPC} the Runtime has no internet route, so it
+  needs interface endpoints (\texttt{ecr.api}, \texttt{ecr.dkr},
+  \texttt{s3}, \texttt{logs}, \texttt{sts}, \texttt{bedrock-agentcore}),
+  and the ENI must land in an AZ that serves \texttt{bedrock-agentcore}
+  --- miss one and create fails with a null reason {[}D10, D11{]}.
+\end{itemize}
+
+\hypertarget{can-agentcore-host-every-frontier-sandbox}{%
+\subsection{Can AgentCore host every frontier
+sandbox?}\label{can-agentcore-host-every-frontier-sandbox}}
+
+Mapping the task families of §``Tasks frontier labs run in a sandbox''
+onto AgentCore, the only hard limit is GPU \textbf{fractioning} --- not
+any missing capability (✓ native · ◑ needs a BYO container / egress):
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Task / sandbox
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+✓?
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+How --- and the limit
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Code exec + unit tests (DeepSeek, Qwen) {[}2,3{]} & ✓ & Code
+Interpreter, or your image on a Runtime \\
+Math / logic verifier & ✓ & stdlib checker in the CPU microVM \\
+Tool-use env (Kimi K2) {[}5{]} & ✓ & Python tools; MCP via Gateway \\
+Per-repo Docker image (SWE) {[}6{]} & ✓ & Runtime runs your OCI image;
+isolated per session \\
+Browser / computer use & ✓ & managed Browser tool \\
+Networked RAG / web read & ◑ & egress --- public, or VPC + endpoints
+{[}D11{]} \\
+GPU kernel / CUDA (KernelBench) {[}7{]} & ◑ & Instances only; 1 session
+= 1 GPU; \textbf{no MIG on L4} \\
+\end{longtable}
+
+In this project the policy is \textbf{Qwen3-4B}, trained by slime, with
+the harness in-process and AgentCore as the sandbox; a 2×2 of demos
+varies only the substrate (CPU microVM vs GPU Runtime instance) and the
+task (MBPP vs KernelBench), plus variants for math, heartbeat
+keep-alive, a Ray GPU-sharing farm, and app-level snapshot/resume.
+
+\hypertarget{demos-the-demo-set-at-a-glance}{%
+\section{Demos --- the demo set at a
+glance}\label{demos-the-demo-set-at-a-glance}}
+
+The project ships a set of runnable demos in \texttt{code/demos/}, all
+built to one design (\texttt{docs/demos-program.md}): the policy is
+always \textbf{Qwen3-4B} trained by \textbf{slime}, the \textbf{harness
+is in-process}, and \textbf{AgentCore is the sandbox} --- so what varies
+from demo to demo is only the \emph{sandbox substrate} (a CPU AgentCore
+Runtime / Code-Interpreter microVM vs a GPU \texttt{g6} Runtime
+instance) and the \emph{task}. The set has two layers. \textbf{Six
+canonical demos} anchor it: two CPU-sandbox references
+(\texttt{demo\_cpu\_single}, \texttt{demo\_cpu\_math}), two GPU-sandbox
+demos (\texttt{demo\_gpu\_single}, \texttt{demo\_gpu\_shared}), and two
+offline \textbf{resilience} demos (\texttt{demo\_cpu\_quiesce},
+\texttt{demo\_gpu\_snapshot}). On top of them a generator
+(\texttt{gen\_task\_demos.py}) fans \texttt{demo\_cpu\_single} into
+\textbf{eight per-task CPU demos}
+(\texttt{demo\_cpu\_\textless{}task\textgreater{}}), each a
+self-contained recipe wired to one real Hugging Face dataset (covered in
+§``The per-task CPU fan-out'' below). Each entry names the frontier task
+family from §``Tasks frontier labs run in a sandbox'' it exercises and a
+real-world scenario it stands in for; the \emph{Run status} column
+states honestly what has been \textbf{trained on hardware} versus what
+is a ready-to-run recipe.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2603}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1507}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1644}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1781}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2466}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Demo
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Substrate
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Task
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Frontier family (§3)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Run status
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{demo\_cpu\_single} & CPU microVM & MBPP code repair & code
+generation {[}8{]} & \textbf{trained} --- 10-step run + ablation
+sweep \\
+\texttt{demo\_cpu\_math} & CPU microVM & math word problems & math
+reasoning {[}2{]} & smoke only (NR=3) \\
+\texttt{demo\_gpu\_single} & GPU instance (g6) & KernelBench CUDA & GPU
+kernels {[}7{]} & \textbf{trained} --- 10-step run \\
+\texttt{demo\_gpu\_shared} & GPU instance (shared g6) & KernelBench CUDA
+& GPU kernels {[}7{]} & run attempted, failed (\texttt{rc=1}) \\
+\texttt{demo\_cpu\_quiesce} & CPU microVM & heartbeat / quiesce &
+resilience (long-horizon) & offline, seconds \\
+\texttt{demo\_gpu\_snapshot} & GPU instance & snapshot / resume &
+resilience (long-horizon) & offline, seconds \\
+\end{longtable}
+
+Only \texttt{demo\_cpu\_single} and \texttt{demo\_gpu\_single} carry
+committed training curves; \texttt{demo\_cpu\_math} has hardware
+\emph{smoke} logs (not convergence); \texttt{demo\_gpu\_shared}'s
+remote-g6 run never passed its health check; the two resilience demos
+train no policy. This is stated plainly here so the measured results in
+§7 are read for what they are.
+
+\hypertarget{demo_cpu_single-mbpp-code-repair-on-a-cpu-microvm}{%
+\subsection{\texorpdfstring{\texttt{demo\_cpu\_single} --- MBPP code
+repair on a CPU
+microVM}{demo\_cpu\_single --- MBPP code repair on a CPU microVM}}\label{demo_cpu_single-mbpp-code-repair-on-a-cpu-microvm}}
+
+Trains Qwen3-4B to fix Python until hidden unit tests pass, in a write →
+run → read → fix loop; each file/exec op runs inside one CPU AgentCore
+sandbox reached over \texttt{invoke\_agent\_runtime}, and the reward is
+1.0 iff the MBPP asserts pass. Its dataset is MBPP (500 train / 8
+held-out eval); the same task-agnostic harness also ships HumanEval,
+SQL, RAG, and tool-use seed sets in the folder. \emph{Exercises (§3):}
+\textbf{code generation \& competitive programming} (MBPP {[}8{]}) ---
+few turns, cheap checker, generation-bound. \emph{Scenario:} a
+unit-test-driven coding assistant that iterates against a test runner.
+
+\hypertarget{demo_cpu_math-math-word-problems-on-a-cpu-microvm}{%
+\subsection{\texorpdfstring{\texttt{demo\_cpu\_math} --- math word
+problems on a CPU
+microVM}{demo\_cpu\_math --- math word problems on a CPU microVM}}\label{demo_cpu_math-math-word-problems-on-a-cpu-microvm}}
+
+The same in-process loop with \texttt{FAMILY=math}: the policy writes
+\texttt{solution.py}, and a trivial numeric checker scores it. Its
+datasets are real Hugging Face slices wired through
+\texttt{real\_datasets.py} --- GSM8K (200/40), MATH-500 (160/40), and
+DeepScaleR (400/40). \emph{Exercises (§3):} \textbf{math \& logical
+reasoning} (GSM8K/MATH-500 {[}2{]}) --- typically single-turn, a long
+reasoning trace, strongly inference-bound. \emph{Scenario:}
+reasoning-model math post-training, where the checker is a one-line
+assert and all the cost lives in generation.
+
+\hypertarget{demo_gpu_single-kernelbench-cuda-on-a-gpu-runtime-instance}{%
+\subsection{\texorpdfstring{\texttt{demo\_gpu\_single} --- KernelBench
+CUDA on a GPU Runtime
+instance}{demo\_gpu\_single --- KernelBench CUDA on a GPU Runtime instance}}\label{demo_gpu_single-kernelbench-cuda-on-a-gpu-runtime-instance}}
+
+The policy writes a CUDA \texttt{ModelNew}; a torch/CUDA checker
+rebuilds the reference on the GPU with matched seeds, asserts
+\texttt{allclose}, and reports a speedup. The checker runs
+\textbf{remotely} on a single GPU AgentCore Runtime backed by a
+\texttt{g6} capacity-provider instance, so the trainer box keeps all
+eight of its GPUs for policy + inference. Its dataset is KernelBench
+(100 level-1 train / 20 level-2 eval). \emph{Exercises (§3):}
+\textbf{GPU kernels / systems} (KernelBench {[}7{]}) --- the one family
+whose \emph{checker} itself needs CUDA; sandbox-bound. \emph{Scenario:}
+a kernel-optimization agent whose reward requires running untrusted CUDA
+on a real GPU, isolated from training state.
+
+\hypertarget{demo_gpu_shared-kernelbench-many-episodes-packed-onto-one-gpu}{%
+\subsection{\texorpdfstring{\texttt{demo\_gpu\_shared} --- KernelBench,
+many episodes packed onto one
+GPU}{demo\_gpu\_shared --- KernelBench, many episodes packed onto one GPU}}\label{demo_gpu_shared-kernelbench-many-episodes-packed-onto-one-gpu}}
+
+The same KernelBench task, but several concurrent episodes share
+\textbf{one} remote g6 GPU inside a single AgentCore instance Runtime
+(one shared \texttt{runtimeSessionId}, a per-episode
+\texttt{sub\_session}); a Ray fractional-GPU farm inside the sandbox
+leases one \texttt{num\_gpus=0.5} actor per episode
+(\texttt{floor(1/fraction)} warm-CUDA actors on one L4, since L4/L40S
+offer no MIG). The point is that the isolated approach --- one whole g6
+\emph{per episode} --- needs N instances at once, which \textbf{stalls
+on a capacity-starved fleet} (you cannot launch the instances, before
+cost even enters), whereas the farm needs only one. \emph{Exercises
+(§3):} \textbf{GPU kernels / systems} --- the \emph{scaling} answer for
+a sandbox-bound family when one-whole-GPU-per-episode is unavailable or
+too costly. \emph{Scenario:} GPU-sandbox packing when a dedicated GPU
+per concurrent episode is either unobtainable on a capacity-starved
+fleet or too expensive.
+
+\hypertarget{demo_cpu_quiesce-microvm-heartbeat-across-the-weight-sync-barrier}{%
+\subsection{\texorpdfstring{\texttt{demo\_cpu\_quiesce} --- microVM
+heartbeat across the weight-sync
+barrier}{demo\_cpu\_quiesce --- microVM heartbeat across the weight-sync barrier}}\label{demo_cpu_quiesce-microvm-heartbeat-across-the-weight-sync-barrier}}
+
+A standalone three-act demo: during slime's trainer → inference weight
+sync, generation stalls and idle sandbox sessions would be reclaimed on
+the \textasciitilde15-minute idle timeout; a \texttt{SessionKeeper}
+heartbeat (with a quiesce gate) keeps them warm, and a recovery path
+re-seeds a session that dies anyway. Runs offline against an idle
+simulator. \emph{Exercises (§3):} not a task --- a resilience mechanism
+for \textbf{long-horizon families} (SWE, multi-agent) whose sessions
+must survive stalls. \emph{Scenario:} keeping warm per-episode sandboxes
+alive across the seconds-long weight-sync pause without paying a cold
+start every step.
+
+\hypertarget{demo_gpu_snapshot-application-level-snapshot-resume-across-a-recycle}{%
+\subsection{\texorpdfstring{\texttt{demo\_gpu\_snapshot} ---
+application-level snapshot / resume across a
+recycle}{demo\_gpu\_snapshot --- application-level snapshot / resume across a recycle}}\label{demo_gpu_snapshot-application-level-snapshot-resume-across-a-recycle}}
+
+The sibling resilience demo: a GPU Runtime instance can be
+\emph{recycled} and come back blank (AgentCore offers no VM/EBS
+snapshot), so accumulated workspace state is serialized to a store you
+own (S3 in production) and restored onto a fresh session. Run A (no
+snapshot) restarts from scratch; Run B resumes --- printing the rework
+saved. Offline, \textasciitilde1 s. \emph{Exercises (§3):} resilience
+for \textbf{long-horizon GPU families} whose multi-hour sessions may
+outlive an instance. \emph{Scenario:} surviving an instance recycle in a
+long RL run without discarding an episode's progress.
+
+\hypertarget{the-per-task-cpu-fan-out-one-recipe-per-real-dataset}{%
+\subsection{The per-task CPU fan-out --- one recipe per real
+dataset}\label{the-per-task-cpu-fan-out-one-recipe-per-real-dataset}}
+
+\texttt{demo\_cpu\_single} is a \emph{task-agnostic} recipe: the same
+in-process harness and CPU sandbox train any family by setting
+\texttt{FAMILY} and pointing at a dataset. To make each real dataset a
+first-class, self-contained demo,
+\texttt{code/demos/gen\_task\_demos.py} \textbf{generates eight
+\texttt{demo\_cpu\_\textless{}task\textgreater{}} folders} from
+\texttt{demo\_cpu\_single} --- each with its own vendored
+\texttt{agentcore\_slime\_demo/} library, \texttt{deploy/} Dockerfile,
+\texttt{data/} (that task's train/eval JSONL), a \texttt{run.sh} with
+\texttt{FAMILY} baked in, and a \texttt{verify\_data.py} that proves the
+checker offline (the reference solution passes, a wrong one fails).
+Re-running the generator re-syncs all eight after a library change. They
+exercise the math, coding, SQL, RAG, and tool-use families of §3 on
+exactly the CPU-sandbox path of \texttt{demo\_cpu\_single}; the reward
+is RLVR (a programmatic checker), no LLM judge.
+
+Each demo below is \texttt{demo\_cpu\_\textless{}name\textgreater{}};
+the \emph{Dataset} column gives a short label, with the full Hugging
+Face repo ID in the note that follows.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2063}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1587}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2381}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2857}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1111}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Demo (\texttt{demo\_cpu\_*})
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Family (§3)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Dataset
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Reward
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Train / eval
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{gsm8k} & math & GSM8K & exact integer match & 200 / 40 \\
+\texttt{math500} & math & MATH-500 & numeric match (tol 1e-4) & 160 /
+40 \\
+\texttt{deepscaler} & math & DeepScaleR & numeric match (tol 1e-4) & 400
+/ 40 \\
+\texttt{humaneval} & coding & HumanEval & the row's own \texttt{check()}
+unit test & 140 / 24 \\
+\texttt{gretelsql} & sql & Gretel text-to-SQL & result-set equality
+(\texttt{sqlite3}) & 300 / 40 \\
+\texttt{hotpotqa} & rag & HotpotQA & SQuAD-normalized exact match & 300
+/ 40 \\
+\texttt{xlam} & tool use & xLAM-60k & arg-normalized gold-call match &
+300 / 40 \\
+\texttt{mcp} & tool use & ToolACE (MCP) & arg-normalized gold-call match
+& 300 / 40 \\
+\end{longtable}
+
+Full repo IDs: \texttt{openai/gsm8k}, \texttt{HuggingFaceH4/MATH-500},
+\texttt{agentica-org/DeepScaleR-Preview-Dataset},
+\texttt{openai/openai\_humaneval},
+\texttt{gretelai/synthetic\_text\_to\_sql}, \texttt{hotpotqa/hotpot\_qa}
+(distractor; 10-passage corpus),
+\texttt{minpeter/xlam-function-calling-60k-parsed},
+\texttt{Team-ACE/ToolACE} (MCP-style schemas). Rewards are RLVR
+(arg-normalized matches are order-insensitive).
+
+These eight are \textbf{fully scaffolded and data-prepared but not yet
+trained on hardware} --- no committed run artifacts --- so they are
+honest \emph{ready-to-run recipes}, one per real dataset, rather than
+results. Because each is an architectural clone of
+\texttt{demo\_cpu\_single}, the deep-dive in §7 covers them by covering
+\texttt{demo\_cpu\_single}; only \texttt{FAMILY} and the dataset differ.
+Training them to convergence is the fan-out's open work item
+(§``Experiment plan'').
+
+\hypertarget{demos-in-depth-architecture-pipeline-lifecycle-and-measured-results}{%
+\section{Demos in depth --- architecture, pipeline, lifecycle, and
+measured
+results}\label{demos-in-depth-architecture-pipeline-lifecycle-and-measured-results}}
+
+This section is the deep dive. Because the four canonical training demos
+share one architecture --- in-process harness, AgentCore sandbox, slime
+trainer --- the first subsection establishes the \textbf{shared
+skeleton} once (the pipeline, the step-by-step, the lifecycle, the
+scaling method, and the metric glossary); the second covers how to
+\textbf{size the two config knobs} every demo exposes; and the per-demo
+subsections then give only what differs --- task, dataset, runtime,
+reward --- and the \textbf{measured} results. The eight per-task CPU
+demos of §6 are architectural clones of \texttt{demo\_cpu\_single} (same
+skeleton, differing only in \texttt{FAMILY} and dataset), so they are
+not re-analyzed individually. The Ray-farm and the two resilience demos
+have a genuinely different topology and carry their own diagram.
+
+A note on grounding: the numbers below are read from this project's own
+committed run artifacts (\texttt{train.csv}, the ablation CSVs under
+\texttt{demo\_cpu\_single/logs/}, and the
+\texttt{{[}sbx-op{]}}/\texttt{{[}sglang-gen{]}} records in the smoke and
+GPU logs). They come from \textbf{short runs} (≈10 training steps, or
+smoke runs), so treat them as \emph{shape and order-of-magnitude}, not
+as converged science. Where a metric is only \emph{instrumented} ---
+emitted by the code but not yet populated in a committed run --- this is
+said explicitly rather than filled with an invented value.
+
+\hypertarget{the-shared-skeleton-one-pipeline-one-set-of-metrics}{%
+\subsection{The shared skeleton --- one pipeline, one set of
+metrics}\label{the-shared-skeleton-one-pipeline-one-set-of-metrics}}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.98\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=1.0cm, minimum width=2.0cm, align=center, thick, fill=white},
+  gpu/.style={box, fill=blue!8},
+  cpu/.style={box, fill=black!4},
+  focus/.style={box, fill=orange!18},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
+  ptitle/.style={font=\scriptsize\bfseries, text=black!55},
+  panel/.style={draw, rounded corners, dashed, thick, inner sep=0.30cm},
+  >={Stealth[]},
+  node distance=0.55cm,
+]
+\node[cpu]              (cold) {cold-start\\\scriptsize microVM / g6};
+\node[cpu, right=of cold](seed) {seed\\\scriptsize \texttt{write\_file}$\times2$};
+\node[focus, right=of seed](loop){turn loop\\\scriptsize $\le$\texttt{EPISODE\_MAX\_TURNS}};
+\node[cpu, right=of loop](reward){reward\\\scriptsize checker exit code};
+\node[cpu, right=of reward](tok) {token stream\\\scriptsize loss-masked \texttt{Sample}};
+\node[gpu, right=of tok] (buf)  {rollout\\buffer};
+\node[gpu, right=of buf] (step) {Megatron\\\scriptsize GRPO step};
+\node[gpu, right=of step](sync) {weight\\sync};
+% flow
+\draw[->,thick] (cold)--(seed);
+\draw[->,thick] (seed)--(loop);
+\draw[->,thick] (loop)--(reward);
+\draw[->,thick] (reward)--(tok);
+\draw[->,thick] (tok)--(buf);
+\draw[->,thick] (buf)--(step);
+\draw[->,thick] (step)--(sync);
+% feedback: weight sync -> inference used in the loop
+\draw[->,thick,dashed] (sync.north) to[out=120,in=60] node[lbl,above]{weight sync $\to$ SGLang (new policy; the staleness source)} (loop.north);
+% panels
+\begin{scope}[on background layer]
+  \node[panel, fill=orange!4, fit=(cold)(seed)(loop)(reward)(tok)] (proll) {};
+  \node[panel, fill=blue!3,  fit=(buf)(step)(sync)]                 (ptr)   {};
+\end{scope}
+\node[ptitle, anchor=north] at ([yshift=-2pt]proll.south) {Rollout --- per episode (harness in-process; sandbox = AgentCore)};
+\node[ptitle, anchor=north] at ([yshift=-2pt]ptr.south) {Training --- per step};
+\end{tikzpicture}%
+}
+\caption{The demo pipeline, shared by all four training demos. An episode cold-starts its sandbox session, seeds the workspace, then runs the \textbf{turn loop} --- each turn a generation through the proxy (\texttt{[sglang-gen]}) followed by a checker \texttt{exec} in the sandbox (\texttt{[sbx-op]}). The checker's exit code is the reward; \texttt{build\_token\_stream} emits a loss-masked \texttt{Sample} into the rollout buffer; Megatron takes a GRPO step and \textbf{weight-syncs} the new policy back to SGLang --- the point at which rollouts generated on an older policy version become \emph{stale}. The two labeled latencies are the two things the scaling decision (§"Scaling the sandbox") is made from.}
+\end{figure}
+
+\textbf{Architecture.} Every training demo is the topology of §``The
+call path'': slime's \texttt{generate()} hook runs the agent loop
+in-process, each \textbf{model turn} goes through the proxy (which
+returns the exact sampled tokens + logprobs --- the TITO property), and
+each \textbf{tool call} becomes one \texttt{invoke\_agent\_runtime} to
+an AgentCore sandbox where the checker produces the reward. The four
+training demos differ only in the sandbox ARN (CPU microVM vs GPU
+instance) and the task.
+
+\textbf{The four configs --- trainer, inference, harness, sandbox.} The
+training demos fix three of the four components and vary only the
+sandbox:
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Component
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Where it runs
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Config (shared across the training demos)
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\textbf{Trainer} & 4 GPUs on the 8×L40S box & Megatron-LM, GRPO;
+\texttt{global\_batch\_size=32}; async checkpoint save;
+\texttt{ACTOR\_GPUS=4} \\
+\textbf{Inference} & 4 GPUs on the same box & SGLang, 2 engines (2 GPUs
+each), \texttt{sglang-mem-fraction-static=0.7}, one \textbf{cache-aware
+router}; \texttt{ROLLOUT\_GPUS=4} \\
+\textbf{Harness} & in-process (CPU) next to the trainer &
+\texttt{run\_episode}; fully-async \texttt{MODE=B} (deep buffer);
+\texttt{CONC=4} rollout concurrency; \texttt{INFER\_CONC=0};
+\texttt{EPISODE\_MAX\_TURNS=3} \\
+\textbf{Sandbox} & \textbf{the only variable} --- remote AgentCore & CPU
+microVM (arm64) or GPU \texttt{g6} instance (amd64); one
+\texttt{runtimeSessionId} per episode; the \texttt{SANDBOX} env var
+selects it \\
+\end{longtable}
+
+Each per-demo subsection states that demo's \textbf{sandbox} row; the
+trainer, inference, and harness rows are identical unless noted. This is
+the disaggregation of §``Agentic RL and its reference architecture''
+made concrete: GPUs go to training and inference, the harness rides
+cheap CPU in-process, and the sandbox is the isolated remote seam.
+
+\textbf{Step by step (one episode).} Cold-start the session's microVM
+(or launch the g6) → seed \texttt{PROBLEM.md} + \texttt{run\_checks.py}
+→ the turn loop (≤ \texttt{EPISODE\_MAX\_TURNS}): generate via the proxy
+(\texttt{{[}sglang-gen{]}}), write the artifact, \texttt{exec} the
+checker (\texttt{{[}sbx-op{]}}), feed any failure back → reward from the
+checker's exit code → \texttt{build\_token\_stream} → a loss-masked
+\texttt{Sample} → the rollout buffer → a Megatron GRPO step → weight
+sync back to SGLang.
+
+\textbf{Lifecycle.} One session = one episode: the first invoke
+cold-starts the microVM (or launches the g6), the same
+\texttt{runtimeSessionId} re-routes to the warm VM, and the session is
+reclaimed on idle (\textasciitilde15 min CPU / 600 s GPU) or on max
+lifetime (8 h microVM / up to 14 d instance). Under asynchronous
+training, the pause during weight sync can trip the idle clock --- which
+is what the resilience demos address.
+
+\textbf{Scaling method.} Following §``Scaling the sandbox'': read
+\texttt{perf/sandbox\_ms\_*} against \texttt{perf/sglang\_gen\_ms\_*},
+then grow the dominant side --- inference (more SGLang replicas behind
+the \textbf{cache-aware} router) when generation dominates, or the
+sandbox (more microVM sessions, or a pool of Runtime ARNs round-robined
+\textbf{sticky per episode}; on GPU, the Ray farm) when the checker
+dominates. The demos are chosen so both cases actually occur: MBPP/math
+are generation-bound, KernelBench is sandbox-bound.
+
+\textbf{What is measured --- and what is only instrumented.} The metric
+glossary the deep-dives use:
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Metric
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Meaning
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Status in these demos
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{rollout/raw\_reward},
+\texttt{eval/\textless{}task\textgreater{}} & mean binary checker reward
+per step; held-out solve rate & \textbf{measured} (per step + eval) \\
+\texttt{perf/actor\_train\_tok\_per\_s},
+\texttt{perf/actor\_train\_tflops} & trainer throughput and achieved
+FLOPs & \textbf{measured} \\
+\texttt{perf/mfu} & model FLOPs utilization = TFLOPS ÷ 362 (L40S peak) &
+\textbf{measured} (ablation CSVs) \\
+\texttt{perf/wait\_time\_ratio} & fraction of the step the trainer waits
+on rollout --- the pipeline-balance / GPU-idle proxy &
+\textbf{measured} \\
+\texttt{perf/goodput\_tok\_per\_s} & throughput × (1 − discard ratio) &
+\textbf{measured}, but = throughput (discard = 0) \\
+\texttt{train/pg\_clipfrac} & PPO/GRPO clip fraction &
+\textbf{measured}, uniformly 0.0 \\
+\texttt{{[}sglang-gen{]}}, \texttt{{[}sbx-op{]}} p50/p95 &
+\textbf{per-turn inference latency} (generation) and per-op sandbox
+latency & \textbf{measured} in the run logs \\
+\texttt{perf/step\_time} & per-step wall-clock --- \textbf{batch
+training} + rollout & \textbf{measured} (≈ 23--78 s/step,
+\texttt{demo\_cpu\_single}; 110--804 s/step on
+\texttt{demo\_gpu\_single}, where the remote-g6 checker dominates) \\
+weight-sync latency & broadcasting new weights trainer → SGLang each
+step & \textbf{not separately recorded} here (folded into
+\texttt{step\_time}); ≈ 20--30 s for a 1T model at frontier scale
+{[}29{]} \\
+staleness (\texttt{v\_use\ −\ v\_gen}), discard/staleness ratio,
+importance-sampling ratio (ρ, TIS), \texttt{num\_turns}, buffer depth,
+samples/s, direct GPU utilization & off-policy and horizon signals &
+\textbf{instrumented or configured only} --- no value recorded yet \\
+\end{longtable}
+
+The last row matters: the code emits
+\texttt{{[}sbx-op{]}}/\texttt{{[}sglang-gen{]}} and the derived columns
+exist, but staleness, discard ratio, and the importance-sampling ratio
+are described in \texttt{docs/observability.md} as slime keys we would
+read --- they are not populated in any committed run here, so no number
+is claimed for them below. Trainer-vs-inference GPU utilization is
+likewise not directly sampled; the split is \emph{configured} (4 trainer
++ 4 inference GPUs), and \texttt{perf/wait\_time\_ratio} is the recorded
+proxy.
+
+\hypertarget{sizing-the-config-response-length-per-turn-and-turns-per-episode}{%
+\subsection{Sizing the config --- response length per turn, and turns
+per
+episode}\label{sizing-the-config-response-length-per-turn-and-turns-per-episode}}
+
+Every demo exposes two knobs that follow directly from the episode
+shapes of §``Tasks frontier labs run in a sandbox''. Getting them right
+is what makes a run efficient rather than wasteful or broken.
+
+\textbf{Max response length per turn
+(\texttt{-\/-rollout-max-response-len}).} This is the per-turn
+generation budget. Set it from the \textbf{p95 of the policy's own
+per-turn response length} for your family (from §3: math reasoning
+traces run 1k--8k and up to 32k tokens; a raw code submission is
+100--800 but a reasoning model prepends thousands; a CUDA kernel is
+200--1,000; a tool call is 50--300). Size to that p95 with headroom.
+\textbf{Too small} truncates the reasoning trace mid-thought: the
+checker then scores an incomplete artifact (depressing reward), and the
+truncated sequence is still trained on (a biased gradient). \textbf{Too
+large} wastes KV cache and slows decode, because SGLang reserves
+capacity per sequence. In these demos \texttt{enable\_thinking=False}
+keeps Qwen3-4B's per-turn responses short, so a modest budget suffices;
+a reasoning policy on hard math would need a far larger one --- measure
+before committing.
+
+\textbf{Max turns per episode (\texttt{EPISODE\_MAX\_TURNS}, default
+3).} This caps how many generate→exec rounds an episode may take. It is
+the single biggest lever on episode cost: each extra turn adds one full
+generation \emph{and} one sandbox round-trip, and it grows the context
+every subsequent turn must attend over --- so per-episode cost ≈
+\texttt{turns\ ×\ (generation\ +\ exec\ +\ observation)}, and the
+trainer's ref/actor forward passes scale with the resulting sequence
+length. More turns raise the \emph{ceiling} on reward (more chances to
+read a failure and fix it) but lengthen episodes, which under
+asynchronous training means \textbf{more staleness} (a long episode
+spans more weight-sync barriers) and more sandbox operations. Set it
+from the family's horizon: single-turn families (math, instruction
+following) → 1; iterative code/kernel/SQL → 3--5; long-horizon SWE / web
+/ multi-agent → 15--50+, at which point a \textbf{warm, long-lived
+session} (§\texttt{demo\_cpu\_quiesce}) becomes necessary. It is
+controlled per run as an env var in \texttt{run.sh}, threaded into the
+harness as \texttt{max\_turns} --- no redeploy needed. These demos use
+\texttt{EPISODE\_MAX\_TURNS=3} and rollout concurrency \texttt{CONC=4}.
+
+\hypertarget{experiment-plan-training-each-demo-to-convergence}{%
+\subsection{Experiment plan --- training each demo to
+convergence}\label{experiment-plan-training-each-demo-to-convergence}}
+
+A demo is ``done'' only when it shows \textbf{learning to convergence},
+not a smoke run (\texttt{docs/demos-program.md}). What is committed
+today is deliberately short: \texttt{demo\_cpu\_single} and
+\texttt{demo\_gpu\_single} have \textasciitilde10-step runs (enough to
+read the bottleneck, not to converge), \texttt{demo\_cpu\_math} has
+\texttt{NR=3} smoke logs, \texttt{demo\_gpu\_shared}'s run failed, and
+the eight per-task fan-out demos are scaffolded but unrun. The plan to
+convergence has the same shape for every training demo and differs only
+in the step budget and which side gets scaled once the bottleneck is
+measured.
+
+\textbf{The convergence bar (all training demos).} (1) Train enough
+steps that the \textbf{held-out eval solve rate rises then plateaus} ---
+log \texttt{eval/\textless{}task\textgreater{}} every
+\texttt{EVAL\_INTERVAL} steps, not the default \textasciitilde10-step
+run. (2) \texttt{rollout/raw\_reward} and
+\texttt{eval/\textless{}task\textgreater{}} trend up then flat on the
+folder's \texttt{train.png}. (3) \texttt{train/grad\_norm} and
+\texttt{train/kl\_loss} stay sane (the policy is moving, not diverging).
+(4) Only then apply the §``Scaling the sandbox'' decision: scale the
+\emph{measured} bottleneck and show the \texttt{perf/step\_time}
+improvement --- confirming the other side would not have helped.
+
+Because the metric that decides scaling (\texttt{perf/sandbox\_ms\_*} vs
+\texttt{perf/sglang\_gen\_ms\_*}) is measured \emph{per demo}, the
+experiment plan is per demo too --- the bottleneck column below is what
+each demo's own latencies (in its subsection) already show:
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2468}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1818}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1818}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1818}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2078}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Demo
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Eval metric
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Measured bottleneck
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Scale
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Convergence note
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{demo\_cpu\_single} & \texttt{mbpp} & generation (sandbox 0.12 s
+≪ gen 1.76 s) & inference --- SGLang replicas & run past 10 steps until
+\texttt{eval/mbpp} plateaus \\
+\texttt{demo\_cpu\_math} & \texttt{math} & generation (trivial checker,
+long traces) & inference & long-reasoning → largest
+\texttt{-\/-rollout-max-response-len} \\
+\texttt{demo\_gpu\_single} & \texttt{kernelbench} & sandbox (exec 8.5 s
+≫ gen 2.5 s; high \texttt{wait\_time\_ratio}) & sandbox --- more g6 or
+the farm & budget the \textasciitilde90 s torch + g6 cold start \\
+\texttt{demo\_gpu\_shared} & \texttt{kernelbench} & sandbox, packed &
+Ray fractional actors per GPU & fix the \texttt{rc=1} queued run first,
+then converge \\
+\end{longtable}
+
+That table says \emph{what} to scale; the protocol below says \emph{how
+far to run} each demo to earn the right to scale --- a concrete step
+budget (\texttt{NR}), eval cadence (\texttt{EVAL\_INTERVAL}), a target
+held-out plateau, and a wall-clock estimate. All share the committed
+config (\texttt{global\_batch\_size=32}, \texttt{CONC=4},
+\texttt{EPISODE\_MAX\_TURNS=3}):
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2347}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1224}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.0714}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.4286}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1429}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Demo
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Steps (\texttt{NR})
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Eval every
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Held-out start → target plateau
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Est. wall-clock*
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{demo\_cpu\_single} & 150--200 & 10 & \texttt{eval/mbpp} 0.56 → ≥
+0.80 & \textasciitilde1--4 h \\
+\texttt{demo\_cpu\_math} & 150--200 /split & 10 & \texttt{eval/gsm8k}
+0.94 → flat; MATH-500 / DeepScaleR climb from cold & \textasciitilde2--6
+h /split \\
+\texttt{demo\_gpu\_single} & 100--150 & 10 & \texttt{eval/kernelbench}
+0.65 → ≥ 0.80 & \textasciitilde4--24 h \\
+\texttt{demo\_gpu\_shared} & 100--150 & 10 & same task as the single-GPU
+demo, on \textbf{one} g6 & ≈ single-GPU/step \\
+\end{longtable}
+
+* \emph{Wall-clock is each demo's measured \texttt{perf/step\_time} (§
+metric glossary) times the step budget --- a planning extrapolation, not
+a measured convergence time. The step budgets (chosen so MBPP's 500-row
+/ KernelBench's 100-row splits see \textasciitilde10 epochs at
+\texttt{GBS=32}) and the target plateaus are likewise \textbf{targets}:
+no demo has yet been run to plateau --- the committed runs are the
+\textasciitilde10-step \texttt{demo\_cpu\_single} /
+\texttt{demo\_gpu\_single}, the \texttt{NR=3} \texttt{demo\_cpu\_math}
+smoke, and the failed \texttt{demo\_gpu\_shared}. The GPU range is wide
+because \texttt{perf/step\_time} spans 110--804 s: the remote-g6 cold
+start (\textasciitilde90 s torch install + \textasciitilde123 s first
+ping) and per-episode checker variance dominate it.}
+
+The \textbf{eight per-task CPU demos} (§``The per-task CPU fan-out'')
+inherit \texttt{demo\_cpu\_single}'s plan unchanged --- they are
+generation-bound (cheap checker,
+\texttt{math}/\texttt{coding}/\texttt{sql}/\texttt{rag}/\texttt{tool\ use}),
+so each converges by running past the smoke budget while tracking its
+own \texttt{eval/\textless{}task\textgreater{}} every 10 steps and, if
+generation dominates, adding SGLang replicas. Concretely:
+\texttt{NR\ ≈\ 100–200} (scaled to each 140--400-row split, so
+\textasciitilde10 epochs at \texttt{GBS=32}),
+\texttt{EVAL\_INTERVAL=10}, \textasciitilde1--3 h each on CPU --- the
+same 23--78 s/step envelope as \texttt{demo\_cpu\_single}. Running these
+eight to convergence is the fan-out's open work item.
+
+\hypertarget{demo_cpu_single-in-depth-mbpp-on-a-cpu-microvm}{%
+\subsection{\texorpdfstring{\texttt{demo\_cpu\_single} in depth --- MBPP
+on a CPU
+microVM}{demo\_cpu\_single in depth --- MBPP on a CPU microVM}}\label{demo_cpu_single-in-depth-mbpp-on-a-cpu-microvm}}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Task / harness:} MBPP multi-turn Python repair; task-agnostic
+  \texttt{run\_episode}, in-process.
+\item
+  \textbf{Dataset:} MBPP 500 train / 8 eval
+  (\texttt{build\_dataset.py}), plus family seed sets in \texttt{data/}.
+\item
+  \textbf{Runtime:} one CPU AgentCore Runtime
+  (\texttt{sandbox\_server\_agent.py}, arm64,
+  \texttt{deploy/Dockerfile.sandbox.cpu});
+  \texttt{SANDBOX=agentcore-runtime} (or \texttt{agentcore} for the
+  Code-Interpreter microVM, \texttt{local} for offline CI). All 8 L40S
+  serve the policy (4 train + 4 inference); 0 env GPUs.
+\item
+  \textbf{Reward:} run the candidate against hidden MBPP asserts; 1.0
+  iff exit code 0.
+\item
+  \textbf{Sandbox scaling:} round-robin a fleet of sandbox Runtime ARNs
+  (\texttt{AGENTCORE\_SANDBOX\_RUNTIME\_ARNS},
+  \texttt{deploy\_cpu\_sandbox\_fleet.py},
+  \texttt{run\_runtime\_ablation.sh}), sticky per episode.
+\end{itemize}
+
+\textbf{Measured results.} Over the committed 10-step run
+(\texttt{train.csv}), \texttt{rollout/raw\_reward} moved in the
+\textasciitilde0.53--1.0 band (0.875 at step 1) and held-out
+\texttt{eval/mbpp\ =\ 0.5625} at step 9. Trainer throughput
+\texttt{perf/actor\_train\_tok\_per\_s\ ≈\ 1.5k–3.3k} tok/s,
+\texttt{perf/actor\_train\_tflops\ ≈\ 8.9–20.4},
+\texttt{perf/step\_time\ ≈\ 23–78\ s},
+\texttt{perf/wait\_time\_ratio\ ≈\ 0.39–0.84}, and
+\texttt{train/pg\_clipfrac\ =\ 0.0} at every step. The runtime-count
+ablation (\texttt{logs/ablation\_summary.csv}, sweeping 1/2/4 sandbox
+Runtimes) adds \texttt{mean\_mfu\ ≈\ 0.018–0.043} (2--4 \% of the L40S
+362-TFLOPS peak), \texttt{mean\_goodput\_tok\_per\_s\ ≈\ 1.1k–2.6k}
+(equal to throughput --- discard ratio 0), and a wider
+\texttt{wait\_time\_ratio} spread. Real latencies (from
+\texttt{smoke\_realaws.log}): \textbf{sandbox} ops p50 123 ms / p95 900
+ms (\texttt{write\_file} p50 94 ms, \texttt{exec} p50 123 ms,
+\texttt{ping} p50 546 ms); \textbf{SGLang} decode p50 1.76 s / p95 5.0
+s. Reading them: generation (1.76 s) ≫ sandbox (0.12 s), so this family
+is \textbf{generation-bound} --- scale inference, exactly as §3 predicts
+for a cheap-checker code task. \textbf{Plan to convergence:} run
+\texttt{NR\ ≈\ 150–200} steps (MBPP is 500 rows ≈ 16 steps/epoch at
+\texttt{GBS=32}, so \textasciitilde10 epochs) with
+\texttt{EVAL\_INTERVAL=10}, until \texttt{eval/mbpp} climbs from its
+0.56 start to a ≥ 0.80 plateau --- an estimated \textasciitilde1--4 h at
+the measured 23--78 s/step; then add SGLang replicas (the
+generation-bound side) and confirm \texttt{perf/step\_time} drops while
+\texttt{eval/mbpp} holds.
+
+\hypertarget{demo_cpu_math-in-depth-math-word-problems-on-a-cpu-microvm}{%
+\subsection{\texorpdfstring{\texttt{demo\_cpu\_math} in depth --- math
+word problems on a CPU
+microVM}{demo\_cpu\_math in depth --- math word problems on a CPU microVM}}\label{demo_cpu_math-in-depth-math-word-problems-on-a-cpu-microvm}}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Task / harness:} \texttt{FAMILY=math}; write
+  \texttt{solution.py}, numeric checker; same in-process loop.
+\item
+  \textbf{Dataset:} real HF slices via \texttt{real\_datasets.py} ---
+  GSM8K 200/40, MATH-500 160/40, DeepScaleR 400/40.
+\item
+  \textbf{Runtime / reward / scaling:} identical to
+  \texttt{demo\_cpu\_single} (CPU microVM; 1.0/0.0 on the checker's exit
+  code; scale inference).
+\end{itemize}
+
+\textbf{Measured results --- smoke only.} The committed artifacts are
+hardware \emph{smoke} runs (\texttt{NR=3}), not convergence runs: on
+\texttt{smoke\_gsm8k.log} \texttt{rollout/raw\_reward} was 0.9375 then
+1.0 across the two training rollouts, with held-out
+\texttt{eval/gsm8k\ =\ 0.9375}; a matching
+\texttt{smoke\_deepscaler.log} exists. Both carry real
+\texttt{{[}sbx-op{]}}/\texttt{{[}sglang-gen{]}} records. Treat these as
+a \emph{sanity signal that the loop and the numeric checker work}, not
+as a learning curve --- the README states the convergence bar is
+deliberately not met by a smoke run. The family is nonetheless clearly
+\textbf{inference-bound}: the reasoning traces dominate wall-clock while
+the numeric checker is milliseconds, so the \texttt{{[}sglang-gen{]}}
+records --- not the \texttt{{[}sbx-op{]}} records --- set the step time,
+and the scaling answer is more SGLang capacity behind the cache-aware
+router. \textbf{Plan to convergence:} run \texttt{NR\ ≈\ 150–200} per
+split with \texttt{EVAL\_INTERVAL=10}, tracking \texttt{eval/math} on
+GSM8K / MATH-500 / DeepScaleR (the per-task fan-out demos
+\texttt{demo\_cpu\_gsm8k}/\texttt{demo\_cpu\_math500}/\texttt{demo\_cpu\_deepscaler}
+package exactly these) --- \texttt{eval/gsm8k} starts near its 0.94
+smoke value and should flatten quickly, while MATH-500 and DeepScaleR
+climb from cold; size \texttt{-\/-rollout-max-response-len} to the
+reasoning-trace p95 and scale SGLang, since the bottleneck is
+generation. Estimate \textasciitilde2--6 h/split --- longer than
+\texttt{demo\_cpu\_single} because the reasoning traces are longer.
+
+\hypertarget{demo_gpu_single-in-depth-kernelbench-on-a-gpu-runtime-instance}{%
+\subsection{\texorpdfstring{\texttt{demo\_gpu\_single} in depth ---
+KernelBench on a GPU Runtime
+instance}{demo\_gpu\_single in depth --- KernelBench on a GPU Runtime instance}}\label{demo_gpu_single-in-depth-kernelbench-on-a-gpu-runtime-instance}}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Task / harness:} write a CUDA \texttt{ModelNew}; the harness
+  is in-process, only the checker is remote.
+\item
+  \textbf{Dataset:} KernelBench 100 level-1 train / 20 level-2 eval
+  (\texttt{build\_dataset.py\ -\/-dataset\ kernelbench}).
+\item
+  \textbf{Runtime:} one GPU AgentCore Runtime on the
+  \texttt{acs\_gpu\_cp} capacity provider (a real \texttt{g6.xlarge} /
+  L4, amd64, \texttt{deploy/Dockerfile.sandbox.gpu}, ECR
+  \texttt{acs-sandbox-gpu}); \texttt{SANDBOX=agentcore-runtime}.
+  \textbf{torch 2.5.1 is pip-installed at container start
+  (\textasciitilde90 s cold)} to dodge the 2048 MB image cap. The
+  trainer box's 8 GPUs all go to slime (4 train + 4 inference); the
+  checker's GPU is the remote g6.
+\item
+  \textbf{Reward:} rebuild the reference on CUDA with matched seeds,
+  assert \texttt{allclose}, report speedup; failure text feeds the next
+  turn.
+\item
+  \textbf{Sandbox scaling:} more g6 instances (isolated) or the Ray farm
+  of \texttt{demo\_gpu\_shared} (packed).
+\end{itemize}
+
+\textbf{Measured results.} Over the committed 10-step run,
+\texttt{rollout/raw\_reward} moved in the 0.125--0.75 band (0.81 at step
+1) and \texttt{eval/kernelbench\ =\ 0.65} (CSV) / 0.725 (log). Trainer
+throughput \texttt{perf/actor\_train\_tok\_per\_s\ ≈\ 2.9k–4.0k} tok/s,
+\texttt{perf/actor\_train\_tflops\ ≈\ 19–26},
+\texttt{perf/step\_time\ ≈\ 110–804\ s}.
+\texttt{perf/wait\_time\_ratio\ ≈\ 0.79–0.96} --- high, meaning the
+trainer spends most of the step waiting on rollout + the remote GPU
+checker. Real latencies (from the GPU run log): \textbf{sandbox}
+\texttt{exec} p50 8.5 s / p95 17.3 s / max 24 s; the first \texttt{ping}
+p50 ≈ 123 s (the g6 EC2 cold launch, amortized once per session);
+\texttt{write\_file} p50 170 ms. \textbf{SGLang} decode p50 2.5 s / p95
+6.4 s. Reading them: \texttt{exec} (8.5 s) ≫ generation (2.5 s), so
+KernelBench is \textbf{sandbox-bound} --- scale the sandbox (more
+instances, or the Ray farm), exactly as §3 predicts. The high
+\texttt{wait\_time\_ratio} is the same story from the trainer's side.
+\textbf{Plan to convergence:} run \texttt{NR\ ≈\ 100–150} steps
+(KernelBench is 100 train rows) with \texttt{EVAL\_INTERVAL=10}, until
+\texttt{eval/kernelbench} plateaus above its \textasciitilde0.65--0.73
+start toward ≥ 0.80; budget the one-time \textasciitilde90 s torch
+install + \textasciitilde123 s g6 cold launch per session, and expect
+\textasciitilde4--24 h given the 110--804 s/step range; because it is
+sandbox-bound, scale the sandbox (more g6 instances or the Ray farm)
+rather than inference.
+
+\hypertarget{demo_gpu_shared-in-depth-packing-many-episodes-onto-one-gpu}{%
+\subsection{\texorpdfstring{\texttt{demo\_gpu\_shared} in depth ---
+packing many episodes onto one
+GPU}{demo\_gpu\_shared in depth --- packing many episodes onto one GPU}}\label{demo_gpu_shared-in-depth-packing-many-episodes-onto-one-gpu}}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.9\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=1.0cm, minimum width=2.4cm, align=center, thick, fill=white},
+  gpu/.style={box, fill=blue!8},
+  cpu/.style={box, fill=black!4},
+  focus/.style={box, fill=orange!18},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
+  ptitle/.style={font=\scriptsize\bfseries, text=black!55},
+  panel/.style={draw, rounded corners, dashed, thick, inner sep=0.32cm},
+  >={Stealth[]},
+]
+\node[cpu] (eps) at (0,0) {N episodes\\[1pt]\scriptsize one \texttt{sub\_session}\\\scriptsize each};
+\node[focus] (disp) at (6.4,0) {shared session\\[1pt]\scriptsize \texttt{sandbox\_server\_agent}\\\scriptsize \texttt{\_handle\_farm}};
+\node[gpu] (a1) at (13.0,1.3) {Ray actor\\\scriptsize \texttt{num\_gpus=0.5}};
+\node[gpu] (a2) at (13.0,-1.3) {Ray actor\\\scriptsize \texttt{num\_gpus=0.5}};
+\draw[->,thick] (eps) -- node[lbl,above]{\texttt{invoke\_agent\_runtime}}
+                          node[lbl,below]{shared \texttt{runtimeSessionId}} (disp);
+\draw[->,thick] (disp.east) -- node[lbl,above,pos=0.55]{lease by \texttt{sub\_session}} (a1.west);
+\draw[->,thick] (disp.east) -- (a2.west);
+\begin{scope}[on background layer]
+  \node[panel, fill=blue!5, fit=(a1)(a2)] (gpu) {};
+\end{scope}
+\node[ptitle, anchor=north] at ([yshift=-2pt]gpu.south) {one physical L4 (no MIG) --- \texttt{floor(1/fraction)} warm-CUDA actors};
+\end{tikzpicture}%
+}
+\caption{The Ray fractional-GPU farm of \texttt{demo\_gpu\_shared}. All concurrent episodes invoke \emph{one} AgentCore GPU Runtime under a single shared \texttt{runtimeSessionId}; inside it, \texttt{\_handle\_farm} leases one fractional-GPU Ray actor per episode (keyed by a per-episode \texttt{sub\_session}). With \texttt{num\_gpus=0.5}, two warm-CUDA actors share the one L4; at \texttt{fraction=0.25}, four. Because L4/L40S offer no MIG, isolation is software-only (per-process memory caps + an \texttt{nvcc} \texttt{flock}, since a non-MIG L4 wedges under sustained compile storms).}
+\end{figure}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{What differs from \texttt{demo\_gpu\_single}:} one line ---
+  \texttt{SANDBOX=agentcore-ray-farm}. The sandbox image bakes Ray
+  (\texttt{deploy/Dockerfile.sandbox.gpu.shared}), deployed as
+  \texttt{acs\_sandbox\_gpu\_b4} via
+  \texttt{redeploy\_gpu\_sandbox\_shared.py}. Farm knobs
+  (\texttt{B4\_GPU\_FRACTION}, \texttt{B4\_MAX\_SANDBOXES},
+  \texttt{B4\_PER\_SANDBOX\_MEM\_FRACTION}) are runtime env on the g6,
+  retunable without a rebuild; \texttt{INVOKE\_MAX\_RETRIES} is raised
+  for the minutes-long cold launch.
+\item
+  \textbf{Task / dataset / reward:} identical to
+  \texttt{demo\_gpu\_single} (KernelBench, \texttt{allclose}/speedup).
+\end{itemize}
+
+\textbf{Results --- honest status.} The fractional-GPU \emph{packing}
+has been validated on hardware (a non-MIG L4 wedges under sustained
+\texttt{nvcc} load, which \texttt{fraction=0.5} mitigates), but the
+committed end-to-end \emph{training} run was queued and exited
+\texttt{rc=1} (\texttt{b\_queue.out}, 2026-09-15); its queued log holds
+0 completed reward steps. So there is no convergence curve for this demo
+yet --- use \texttt{demo\_gpu\_single}'s per-episode numbers as the
+baseline this farm is designed to pack several-fold onto one GPU. This
+is the sandbox-side answer to KernelBench's sandbox-bound profile, and
+its \textbf{primary motivation is capacity, not just cost}: the
+isolated-per-session path needs \emph{N whole g6 instances at once},
+which stalls on a capacity-starved fleet --- you cannot launch the
+instances at all (the committed run's own
+\texttt{RuntimeClientError}/health-check timeouts are that fragility
+showing through). Packing N episodes onto \textbf{one} g6 needs only a
+single instance, at the price of software-only isolation --- so the
+trade is: isolated = N clean instances (N× cost, and unobtainable when
+the fleet is starved) versus shared = one instance, weaker isolation.
+\textbf{Plan to convergence:} first make the queued run pass (it exits
+\texttt{rc=1} today), then run the same \texttt{NR\ ≈\ 100–150} /
+\texttt{EVAL\_INTERVAL=10} protocol as \texttt{demo\_gpu\_single} ---
+but on \textbf{one} g6 with two \texttt{num\_gpus=0.5} actors instead of
+N instances --- and compare goodput-per-GPU against
+\texttt{demo\_gpu\_single}'s one-instance-per-episode baseline to
+quantify the packing win.
+
+\hypertarget{demo_cpu_quiesce-and-demo_gpu_snapshot-in-depth-surviving-the-pause-and-the-recycle}{%
+\subsection{\texorpdfstring{\texttt{demo\_cpu\_quiesce} and
+\texttt{demo\_gpu\_snapshot} in depth --- surviving the pause and the
+recycle}{demo\_cpu\_quiesce and demo\_gpu\_snapshot in depth --- surviving the pause and the recycle}}\label{demo_cpu_quiesce-and-demo_gpu_snapshot-in-depth-surviving-the-pause-and-the-recycle}}
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.95\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=0.9cm, minimum width=1.9cm, align=center, thick, fill=white},
+  cpu/.style={box, fill=black!4},
+  focus/.style={box, fill=orange!18},
+  bad/.style={box, fill=red!10},
+  good/.style={box, fill=green!10},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.2pt},
+  ptitle/.style={font=\scriptsize\bfseries, text=black!55},
+  >={Stealth[]},
+  node distance=0.5cm,
+]
+% heartbeat lane
+\node[ptitle] (h) at (-0.2,1.9) {\texttt{demo\_cpu\_quiesce} --- heartbeat (CPU microVM)};
+\node[cpu]               (hb0) at (0,1.1)  {sync begin};
+\node[focus, right=of hb0](hb1) {ping};
+\node[focus, right=of hb1](hb2) {ping};
+\node[cpu, right=of hb2] (hb3) {sync end};
+\node[good, right=of hb3](hb4) {resume\\\scriptsize (warm)};
+\draw[->,thick] (hb0)--(hb1); \draw[->,thick] (hb1)--(hb2); \draw[->,thick] (hb2)--(hb3); \draw[->,thick] (hb3)--(hb4);
+\node[lbl, below=0.14cm of hb1, text width=5.0cm] {each ping resets the $\sim$15-min idle clock so the session is not reclaimed};
+% snapshot lane
+\node[ptitle] (s) at (-0.2,-1.0) {\texttt{demo\_gpu\_snapshot} --- snapshot/resume (GPU instance)};
+\node[cpu]               (sn0) at (0,-1.8) {work};
+\node[focus, right=of sn0](sn1) {snapshot\\\scriptsize $\to$ S3};
+\node[bad, right=of sn1] (sn2) {recycle\\\scriptsize (blank)};
+\node[focus, right=of sn2](sn3) {restore\\\scriptsize $\gets$ S3};
+\node[good, right=of sn3](sn4) {resume\\\scriptsize (progress kept)};
+\draw[->,thick] (sn0)--(sn1); \draw[->,thick] (sn1)--(sn2); \draw[->,thick] (sn2)--(sn3); \draw[->,thick] (sn3)--(sn4);
+\end{tikzpicture}%
+}
+\caption{The two resilience levers. \textbf{Heartbeat} (top) keeps a \emph{live} session warm across the seconds-long weight-sync pause by resetting the idle clock --- no state is lost. \textbf{Application-level snapshot} (bottom) restores a \emph{lost} session after a genuine instance recycle by serializing the workspace to S3 and restoring it onto a fresh session --- because AgentCore offers no VM/EBS snapshot. Heartbeat prevents loss; snapshot recovers from it.}
+\end{figure}
+
+Neither demo trains a policy, so neither reports RL metrics; both run
+offline in seconds and demonstrate a mechanism the training demos would
+compose in production.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{\texttt{demo\_cpu\_quiesce}} --- the reusable
+  \texttt{SessionKeeper} (a process-wide registry + one background
+  heartbeat loop driven by the trainer's
+  \texttt{sync\_begin()}/\texttt{sync\_end()} barrier) and
+  \texttt{KeptSandbox} (wraps any \texttt{Sandbox}), in
+  \texttt{session\_keeper.py}. The three-act arc: ACT 1 naive ``stop
+  invoking'' → the session is idle-reclaimed; ACT 2 the heartbeat keeps
+  it warm across an arbitrarily long pause while the gate holds new
+  invokes during sync; ACT 3 recover-by-reseed if a session dies anyway.
+  The heartbeat lives \textbf{outside} the harness by design, so no
+  harness grows its own keepalive.
+\item
+  \textbf{\texttt{demo\_gpu\_snapshot}} ---
+  \texttt{snapshot\_workspace()} / \texttt{restore\_workspace()} in
+  \texttt{snapshot\_store.py}, backend-agnostic
+  (\texttt{LocalSnapshotStore} offline, \texttt{S3SnapshotStore} for
+  production --- no mount, AZ-agnostic). The A/B arc: RUN A (no
+  snapshot) redoes from step 0 after a recycle; RUN B snapshots before
+  the recycle and restores onto a fresh session, printing the rework
+  saved (e.g.~``6 vs 4 steps → 2 saved''). This is explicitly \emph{not}
+  a VM/EBS snapshot --- see \texttt{docs/gpu-snapshot.md} for why an
+  application-level snapshot is the only feasible option on AgentCore.
+\end{itemize}
+
+\hypertarget{open-problems-in-production-agentic-rl-infrastructure-and-algorithms}{%
+\section{Open problems in production agentic RL --- infrastructure and
+algorithms}\label{open-problems-in-production-agentic-rl-infrastructure-and-algorithms}}
+
+The workflow in this report is deliberately small --- one policy, an
+in-process harness, a per-episode sandbox. Running agentic RL at
+\emph{frontier} scale surfaces a set of recurring hard problems that the
+open reports (2024--2026) now describe in detail. This section catalogs
+them in two groups --- infrastructure/systems and algorithms --- with
+the mitigations people actually ship, and notes where this project's
+design already meets one and where it remains open.
+
+\hypertarget{infrastructure-and-systems}{%
+\subsection{Infrastructure and
+systems}\label{infrastructure-and-systems}}
+
+\textbf{Long-tail stragglers and partial rollouts.} Rollout lengths are
+heavily right-skewed, so a synchronous step idles the whole cluster
+waiting on the last few long trajectories --- and generation is more
+than 90 \% of RL runtime {[}20{]}. Mitigations: \emph{partial rollouts}
+that cap output and resume the unfinished portion next iteration (Kimi
+k1.5 {[}17{]}; Kimi K2 {[}5{]}); \emph{active partial rollouts} that
+over-provision and recycle interrupted requests (APRIL, +22--44 \%
+rollout throughput, now in slime {[}28{]}); \emph{interruptible
+generation} that resumes decoding after a weight update (AReaL
+{[}18{]}); \emph{skewness-aware routing} of long prompts (StreamRL
+{[}20{]}); and \emph{dynamic sampling} that drops zero-gradient groups
+(DAPO {[}14{]}).
+
+\textbf{Weight-sync cost and staleness.} Trainer and inference are
+separate backends; after each optimizer step, new weights must reach
+every rollout replica. Synchronously this is a serialization bubble; at
+1T scale it moves hundreds of GB. Mitigations: \emph{fast weight
+transfer} (Moonshot's checkpoint-engine updates all of Kimi-K2's
+\textasciitilde1T parameters in \textasciitilde20 s {[}29{]});
+\emph{zero-redundancy resharding} between train and generate layouts
+(veRL / HybridFlow {[}19{]}); and \emph{decoupled, ``one-step-off''
+async RL with a bounded staleness} and a staleness-aware objective
+(AReaL, up to \textasciitilde2.77× {[}18{]}; Asynchronous RLHF
+{[}21{]}). \emph{This project uses slime's fully-async rollout
+(\texttt{MODE=B}), so staleness is the accepted cost --- and it is
+exactly the signal that is instrumented-yet-unrecorded here (§``The
+shared skeleton'').}
+
+\textbf{Goodput vs MFU, and placement.} An iteration interleaves a
+bandwidth-bound, long-tailed generation phase with a compute-bound
+training phase, so one engine's GPUs idle while the other works ---
+which is why MFU is misleading for RL and practitioners reason in
+\emph{goodput} (useful samples per GPU-second). \emph{This project's
+measured MFU of 2--4 \% (§\texttt{demo\_cpu\_single}) is a concrete
+instance of that gap.} Mitigations: \emph{colocate-with-offload} (veRL /
+HybridFlow, the frontier default {[}19{]}, used by Kimi K2 {[}5{]}) vs
+\emph{disaggregated placement} for heterogeneous or elastic hardware
+(StreamRL, up to 2.66× {[}20{]}; slime supports both). \emph{Here the
+4-train + 4-inference colocation is the simple default; disaggregation
+is the lever once the sandbox or a second cluster enters the picture.}
+
+\textbf{Scaling execution sandboxes to tens of thousands.} Every step
+runs untrusted code in an isolated sandbox, so the sandbox layer --- not
+the GPU --- often becomes the bottleneck: constant create/destroy,
+strong isolation, real startup cost. Kimi K2 runs more than 10,000
+concurrent Kubernetes sandboxes for its coding / SWE RL {[}5{]}.
+Mitigations: \emph{microVM isolation} (Firecracker-class, sub-second
+boot) and \emph{managed remote code-exec backends} (E2B, Modal).
+\emph{This is precisely AgentCore Runtime's per-session microVM --- the
+seam this whole report builds on; the project scales it by
+round-robining a pool of Runtime ARNs (sticky per episode) and, on GPU,
+the Ray fractional farm (§\texttt{demo\_gpu\_shared}).}
+
+\textbf{Cache-aware routing.} Rollout throughput lives on prefix
+KV-cache reuse; a round-robin balancer scatters prefix-sharing requests
+and collapses the hit rate --- acute in agentic RL, where a group of
+trajectories shares one task prefix and multi-turn rollouts grow a long
+shared prefix. Mitigations: RadixAttention plus SGLang's cache-aware
+router (\textasciitilde1.9× throughput; hit rate \textasciitilde20
+\%→\textasciitilde75 \%) {[}27{]}, and session-affinity routing for
+multi-turn (slime \texttt{consistent\_hashing} {[}9{]}). \emph{This is
+the reasoning behind §``Scaling the sandbox'': one cache-aware SGLang
+router for inference, round-robin only on the sandbox side.}
+
+\textbf{Fault tolerance.} One step couples training + inference + reward
++ thousands of live sandboxes, so the blast radius is large.
+Mitigations: \emph{async checkpointing}; \emph{worker heartbeats}
+(slime's \texttt{/health\_generate} with restart-and-re-sync,
+\texttt{-\/-use-fault-tolerance} {[}9{]}); and \emph{sandbox recycling}
+with timeouts and rate limits so one bad tool call does not abort a
+rollout. \emph{The project's two resilience demos
+(§\texttt{demo\_cpu\_quiesce}, §\texttt{demo\_gpu\_snapshot}) address
+the sandbox-side failure modes --- idle reclamation and instance
+recycle.}
+
+\hypertarget{algorithms}{%
+\subsection{Algorithms}\label{algorithms}}
+
+\textbf{The train/inference logprob mismatch and off-policy correction.}
+Even with identical parameters, the inference engine and the trainer
+assign different token probabilities (differing parallelism, precision,
+kernels), so ``on-policy'' RL is silently off-policy --- biasing
+gradients and risking entropy collapse, and worse for long responses.
+Mitigations: \emph{Truncated Importance Sampling} (clip
+π\_learner/π\_sampler, now in veRL) {[}22{]}; \emph{fixing the precision
+root cause} by reverting to FP16 {[}23{]}; and \emph{decoupled /
+staleness-aware PPO} {[}18{]}. \emph{This project's TITO property (the
+proxy records the exact sampled \texttt{token\_ids} + logprobs, no
+re-tokenization --- §``Token-in-token-out'') removes the tokenization
+half of the mismatch, but not the engine-vs-trainer numeric half; TIS is
+the missing piece, and the importance-sampling ratio is
+instrumented-but-unrecorded here.}
+
+\textbf{GRPO and its variants.} GRPO drops PPO's critic by normalizing
+advantages within a group of K sampled responses {[}13{]}, but has
+documented failure modes (entropy collapse, length bias, zero-gradient
+groups, MoE instability). Upgrades: \emph{DAPO} (clip-higher
+ε\_high≈0.28, dynamic sampling, token-level loss, overlong reward
+shaping) {[}14{]}; \emph{Dr.~GRPO} (removes the length and std
+normalization that inflate wrong-answer length) {[}16{]}; \emph{GSPO} (a
+sequence-level, length-normalized importance ratio that stabilizes MoE
+RL and underpins Qwen3) {[}15{]}. \emph{This project trains with GRPO;
+these are the drop-in improvements as runs scale up.}
+
+\textbf{Credit assignment over long horizons.} An agentic episode is
+many steps but the verifiable reward is sparse and terminal, so
+trajectory-level GRPO mis-credits the actions inside a failed or
+successful trajectory. Mitigations: \emph{hierarchical / turn-level
+grouping} (GiGPO, +9--12 \% over GRPO on ALFWorld / WebShop) {[}26{]};
+entropy-aware step attribution; and denser process rewards derived from
+outcome labels alone. \emph{The demos use a binary end-of-episode reward
+with \texttt{EPISODE\_MAX\_TURNS=3}; long-horizon families (SWE, web)
+are where turn-level credit becomes necessary.}
+
+\textbf{Reward hacking and verifier trust.} Any learned reward can be
+gamed, so frontier labs prefer rule-based verifiable rewards ---
+DeepSeek-R1 explicitly avoids neural reward models to prevent reward
+hacking {[}2{]}. But verifiers are not automatically trustworthy:
+``Spurious Rewards'' shows RLVR with \emph{random} rewards still
+improved a Qwen math model, because a clipping bias amplifies
+pretraining behaviors rather than reward correctness --- and the effect
+is model-dependent {[}24{]}. \emph{The project's rewards are binary RLVR
+checkers run inside the sandbox (no LLM judge), which sidesteps
+neural-RM hacking; the caution is that a benchmark gain does not by
+itself prove the checker is doing the work.}
+
+\textbf{Entropy collapse.} During long RL, entropy drops early and
+exploration dies; performance is effectively ``traded from policy
+entropy'' {[}25{]}. Mitigations: clip-higher {[}14{]};
+covariance-targeted regularization (Clip-Cov / KL-Cov) that intervenes
+only on the few high-covariance tokens driving entropy decay {[}25{]};
+and KL control or removal.
+
+\textbf{Curriculum, dynamic sampling, and the discard ratio.}
+All-correct or all-wrong groups give zero advantage → wasted compute.
+Mitigations: \emph{dynamic sampling} to keep only groups with 0
+\textless{} correct \textless{} G (DAPO {[}14{]}) and \emph{pass-rate
+difficulty curricula} (AdaRFT, up to 2× less training time {[}30{]}).
+\emph{This is exactly where the project's \texttt{discard\_ratio} metric
+would come alive --- it is defined (goodput depends on it) but zero in
+the current runs.}
+
+\hypertarget{takeaways}{%
+\subsection{Takeaways}\label{takeaways}}
+
+Most of these are already partly handled by the stack this report uses:
+slime provides async rollout, fault-tolerant SGLang workers, and
+cache-aware routing; AgentCore provides the isolated, scalable sandbox.
+The open work for a production run concentrates in three places --- (1)
+turning on and \emph{recording} the off-policy signals (staleness,
+importance-sampling ratio, discard ratio) and adding TIS; (2) moving
+from GRPO to a variant (DAPO / GSPO) as scale and response length grow;
+and (3) turn-level credit assignment for the long-horizon families.
+These are algorithm choices layered on top of the infrastructure the
+demos already exercise.
+
+\hypertarget{summary}{%
+\section{Summary}\label{summary}}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Can:} an isolated per-session sandbox for untrusted model
+  output (CPU by default), fully in-account (IAM/SigV4, VPC), long
+  sessions, bring-your-own container, and \textbf{GPU on Instances}; a
+  clean one-hook integration into slime with the harness in-process.
+\item
+  \textbf{Cannot:} a microVM has no GPU; there is no cross-session GPU
+  fractioning (and no MIG on L4); and a session cannot exceed the
+  microVM's 8 h cap without moving to Instances (14 d).
+\item
+  \textbf{How to run:} build a sandbox image → deploy a Runtime (or a
+  GPU capacity provider) → seed a task → \texttt{invoke\_agent\_runtime}
+  per tool call → the in-sandbox checker gives the reward → slime trains
+  via a single \texttt{generate} hook. CPU↔GPU is one env var.
+\item
+  \textbf{Grounding:} the concepts and lifecycle are cross-checked
+  between the official AgentCore documentation {[}D1--D13, D17{]} and
+  AWS's own SDK, CLI, and samples {[}D14--D16{]}; the code is this
+  project's \texttt{agentcore\_slime\_demo/} (harness, sandbox, tasks),
+  \texttt{deploy/} (Dockerfiles + \texttt{deploy\_two\_runtime.py}), and
+  \texttt{demos/}.
+\end{itemize}
+
+\hypertarget{references-papers-models}{%
+\section{References --- papers \&
+models}\label{references-papers-models}}
+
+\footnotesize
+
+\textbf{Agentic RL \& models.} {[}1{]} Agent Lightning --- Harnessed
+Agentic RL. \url{https://arxiv.org/abs/2508.03680} · {[}2{]}
+DeepSeek-R1. \url{https://arxiv.org/abs/2501.12948} · {[}3{]} Qwen3
+Technical Report. \url{https://arxiv.org/abs/2505.09388} · {[}4{]}
+Llama-Nemotron. \url{https://arxiv.org/abs/2505.00949} · {[}5{]} Kimi
+K2. \url{https://arxiv.org/abs/2507.20534} · {[}6{]} SWE-bench.
+\url{https://arxiv.org/abs/2310.06770} · {[}7{]} KernelBench.
+\url{https://huggingface.co/datasets/ScalingIntelligence/KernelBench} ·
+{[}8{]} MBPP. \url{https://arxiv.org/abs/2108.07732} · {[}9{]} slime.
+\url{https://github.com/THUDM/slime} · {[}10{]} AceReason-Nemotron:
+Advancing Math and Code Reasoning through RL.
+\url{https://arxiv.org/abs/2505.16400} · {[}11{]} LiveCodeBench.
+\url{https://arxiv.org/abs/2403.07974} · {[}12{]} NVIDIA Nemotron
+Post-Training Dataset v2.
+\url{https://huggingface.co/datasets/nvidia/Nemotron-Post-Training-Dataset-v2}
+
+\hypertarget{references-agentcore-docs-12}{%
+\section{References --- AgentCore docs
+(1/2)}\label{references-agentcore-docs-12}}
+
+\scriptsize
+
+\textbf{Official AgentCore docs.} {[}D1{]} What is AgentCore.
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html}
+· {[}D2{]} Host with Runtime (isolation, compute types).
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html}
+· {[}D3{]} Runtime how it works (idle 15 m / max 8 h).
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}
+· {[}D4{]} Lifecycle settings.
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-lifecycle-settings.html}
+· {[}D5{]} Instances (GPU).
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-how-it-works.html}
+· {[}D6{]} Code Interpreter.
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-tool.html}
+· {[}D7{]} Code Interpreter session.
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-session-characteristics.html}
+
+\hypertarget{references-agentcore-docs-22}{%
+\section{References --- AgentCore docs
+(2/2)}\label{references-agentcore-docs-22}}
+
+\scriptsize
+
+{[}D8{]} InvokeAgentRuntime.
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_InvokeAgentRuntime.html}
+· {[}D9{]} CreateAgentRuntime.
+\url{https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_CreateAgentRuntime.html}
+· {[}D10{]} NetworkConfiguration.
+\url{https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_NetworkConfiguration.html}
+· {[}D11{]} VPC interface endpoints.
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/vpc-interface-endpoints.html}
+· {[}D12{]} StopRuntimeSession.
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html}
+· {[}D13{]} Observability.
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability.html}
+· {[}D17{]} Runtime service contract (port 8080, /invocations, /ping).
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-service-contract.html}
+
+\hypertarget{references-agentcore-sdk-cli-samples}{%
+\section{References --- AgentCore SDK, CLI \&
+samples}\label{references-agentcore-sdk-cli-samples}}
+
+\scriptsize
+
+\textbf{AWS code, cross-checked against the docs.} {[}D14{]} AgentCore
+samples (\texttt{awslabs/agentcore-samples}).
+\url{https://github.com/awslabs/agentcore-samples} · {[}D15{]} AgentCore
+Python SDK (\texttt{bedrock-agentcore}; \texttt{BedrockAgentCoreApp} /
+\texttt{@app.entrypoint}).
+\url{https://github.com/aws/bedrock-agentcore-sdk-python} · {[}D16{]}
+AgentCore CLI (\texttt{@aws/agentcore}, recommended)
+\url{https://www.npmjs.com/package/@aws/agentcore} · legacy starter
+toolkit \url{https://github.com/aws/bedrock-agentcore-starter-toolkit}
+
+\hypertarget{references-production-agentic-rl-open-problems}{%
+\section{References --- production agentic RL (open
+problems)}\label{references-production-agentic-rl-open-problems}}
+
+\scriptsize
+
+\textbf{RL algorithms \& systems.} {[}13{]} DeepSeekMath (GRPO).
+\url{https://arxiv.org/abs/2402.03300} · {[}14{]} DAPO.
+\url{https://arxiv.org/abs/2503.14476} · {[}15{]} GSPO (Group Sequence
+Policy Optimization). \url{https://arxiv.org/abs/2507.18071} · {[}16{]}
+Understanding R1-Zero-Like Training (Dr.~GRPO).
+\url{https://arxiv.org/abs/2503.20783} · {[}17{]} Kimi k1.5.
+\url{https://arxiv.org/abs/2501.12599} · {[}18{]} AReaL (asynchronous RL
+system). \url{https://arxiv.org/abs/2505.24298} · {[}19{]} HybridFlow
+(veRL). \url{https://arxiv.org/abs/2409.19256} · {[}20{]} StreamRL
+(disaggregated stream generation).
+\url{https://arxiv.org/abs/2504.15930} · {[}21{]} Asynchronous RLHF.
+\url{https://arxiv.org/abs/2410.18252} · {[}22{]} Truncated Importance
+Sampling / train--inference mismatch (Yao et al.).
+\url{https://fengyao.notion.site/off-policy-rl} · {[}23{]} Defeating the
+Training--Inference Mismatch via FP16.
+\url{https://arxiv.org/abs/2510.26788} · {[}24{]} Spurious Rewards.
+\url{https://arxiv.org/abs/2506.10947} · {[}25{]} The Entropy Mechanism
+of RL. \url{https://arxiv.org/abs/2505.22617} · {[}26{]} GiGPO
+(hierarchical group advantages). \url{https://arxiv.org/abs/2505.10978}
+· {[}27{]} SGLang / RadixAttention.
+\url{https://arxiv.org/abs/2312.07104} --- cache-aware router:
+\url{https://lmsys.org/blog/2024-12-04-sglang-v0-4/} · {[}28{]} APRIL
+(active partial rollouts). \url{https://arxiv.org/abs/2509.18521} ·
+{[}29{]} Moonshot checkpoint-engine.
+\url{https://github.com/MoonshotAI/checkpoint-engine} · {[}30{]} AdaRFT
+(difficulty curriculum). \url{https://arxiv.org/abs/2504.05520}
+
+\end{document}
