@@ -35,12 +35,41 @@ triggered by an op you define, persisted where you own it (S3 / session storage)
 - **(a) State serialization — recommended.** On a `{"op":"quiesce"}` invoke, serialize the meaningful
   state (workspace files, partial results, seeds) to S3 / the session's persistent path; restore on
   the next invoke after a recycle. Cheap, robust, no exotic deps. This *is* the re-seed recovery
-  model made explicit (`recovery.py`).
+  model made explicit (`recovery.py`). **Built + demonstrated:**
+  [`code/demos/demo_gpu_snapshot/`](../code/demos/demo_gpu_snapshot/) (reusable mechanism:
+  `agentcore_slime_demo/snapshot_store.py`).
 - **(b) Full process+GPU checkpoint — possible, heavy, fragile.** Bake NVIDIA `cuda-checkpoint`
   (evicts the CUDA context to host memory) + `CRIU` (dumps the process tree) into the image; on
   quiesce, checkpoint and push to S3; on restore, pull + `criu restore` + re-toggle CUDA. Real
   technique, but brittle across driver/instance mismatches, adds minutes, and a CRIU image only
   restores on a compatible instance — which AgentCore does not guarantee you'll get back.
+
+## Where to put the app-level snapshot: S3 vs FSx (and EFS)
+For tier (a), the state store is a real choice. The decider is a hard AgentCore constraint, not the
+storage feature set: **S3 needs no mount; FSx/EFS need one AgentCore won't hand you.**
+
+- **S3 (recommended).** `boto3.put_object`/`get_object` over HTTPS — **no mount**, works from any
+  instance in any AZ, VPC or not. Fits the RL case exactly (small workspace: PROBLEM.md, solution
+  files, partial results) and the from-scratch re-seed model. Dead simple.
+- **FSx for Lustre.** POSIX + high throughput, so state is simply *present* on a fresh instance (no
+  serialize/restore). But it's the wrong tool here for three reasons:
+  1. **Mount.** AgentCore Runtime is a managed, container-image runtime with no declarative volume
+     mount. Your only route is to mount at container startup from the entrypoint, and Lustre needs
+     the **lustre client kernel module** — which you generally cannot load in a managed container.
+  2. **AZ.** FSx for Lustre *scratch* is **single-AZ**; AgentCore picks your instance's AZ, so a
+     recycle in another AZ may not reach the filesystem. (Persistent/multi-AZ deployments exist but
+     cost more and still don't solve the mount.)
+  3. **Fit.** FSx earns its keep only for **large, throughput-bound** state (multi-GB checkpoints /
+     datasets). Our snapshot is tiny; Lustre throughput buys nothing, and FSx-linked-to-S3 or plain
+     S3 is simpler.
+- **EFS** (the NFS sibling, if you meant that): more plausible than FSx — regional/multi-AZ, no
+  kernel module, just an NFS mount — and it removes the serialize step. But it **still requires
+  `networkMode=VPC` + an NFS mount at startup + the SG/endpoint/AZ plumbing** (see the VPC-mode
+  notes), which is exactly the operational surface S3 lets you skip.
+
+Net: mounting FSx/EFS re-introduces VPC-mode complexity to save a serialize step on state that is
+trivial to serialize. Use **S3** unless the snapshot is huge and throughput-bound *and* you're
+already committed to VPC mode — then reconsider EFS (not FSx/Lustre).
 
 ## Why none of this matters for weight-sync quiesce
 The pause we care about — trainer→inference weight sync — is **seconds**, never near max-lifetime

@@ -83,21 +83,28 @@ Decision procedure:
 
 This is why disaggregation matters: each component is sized to its own bottleneck, per task.
 
-### Advanced: quiesce / resume the sandbox across the weight-sync barrier
-
-> Built: [`code/demos/demo_cpu_quiesce/`](../code/demos/demo_cpu_quiesce/) — a standalone,
-> offline (no AWS/GPU) runnable of the full arc below, in seconds. The reusable mechanism lives in
-> `agentcore_slime_demo/session_keeper.py` (`SessionKeeper` + `KeptSandbox`).
+### Advanced: keeping a paused sandbox alive across the weight-sync barrier — two demos
 
 During slime's trainer→inference **weight sync**, generation stalls, so open sandbox sessions sit
-idle. This demo **quiesces** the sandbox for that window and **resumes** after. Chosen semantics:
-**lightweight quiesce (a gate)** — hold new sandbox invokes during sync, keep sessions warm, resume
-after. Targets the **GPU-instance** tier (where idle time is real cost), with a **CPU-microVM
-quiesce variant** shown purely as the coordination pattern (no cost payoff on serverless).
+idle. Surviving that pause is **two patterns on two substrates** — one demo each:
 
-The heartbeat lives **outside the harness** by design: `SessionKeeper` is a process-wide registry +
-one background heartbeat loop driven by the trainer's `sync_begin()`/`sync_end()` barrier, and
-`KeptSandbox` composes it with any `Sandbox` — so no harness grows its own keepalive.
+| Demo | Substrate | Lever | Survives |
+|---|---|---|---|
+| [`demo_cpu_quiesce`](../code/demos/demo_cpu_quiesce/) | serverless CPU **Code-Interpreter microVM** | **heartbeat** (+ quiesce gate) | the *idle timeout* — keep the warm session from being reclaimed during the pause |
+| [`demo_gpu_snapshot`](../code/demos/demo_gpu_snapshot/) | **GPU Runtime instance** | **application-level snapshot & resume** | a genuine *recycle* — restore workspace state onto a fresh session (there is no VM snapshot; [gpu-snapshot.md](gpu-snapshot.md)) |
+
+**Heartbeat keeps a *live* session warm; snapshot restores a *lost* one.** Both are standalone,
+offline (no AWS/GPU), runnable in seconds. Reusable mechanisms:
+`agentcore_slime_demo/session_keeper.py` (`SessionKeeper` + `KeptSandbox`) and
+`agentcore_slime_demo/snapshot_store.py` (`snapshot_workspace`/`restore_workspace`).
+
+#### Demo 1 — microVM heartbeat (`demo_cpu_quiesce`)
+
+Chosen semantics: **lightweight quiesce (a gate)** — hold new sandbox invokes during sync, keep
+sessions warm via heartbeat, resume after. The heartbeat lives **outside the harness** by design:
+`SessionKeeper` is a process-wide registry + one background heartbeat loop driven by the trainer's
+`sync_begin()`/`sync_end()` barrier, and `KeptSandbox` composes it with any `Sandbox` — so no harness
+grows its own keepalive.
 
 **The trap this demo must handle: idle-timeout termination.** Nothing about weight sync terminates
 the sandbox — but a sandbox is auto-reclaimed by *absence of invokes*:
@@ -120,12 +127,27 @@ which is exactly why the demo shows the failure first. The robust pattern:
    option — see [gpu-snapshot.md](gpu-snapshot.md).)*
 2. **Recovery fallback** — if the session dies anyway (idle trip / instance recycle), resume via
    `recovery.py` self-heal: restart the session and re-seed/restore the workspace, don't crash the
-   episode.
+   episode. The *restore-with-progress* form (application-level snapshot to S3, since there is no VM
+   snapshot — [gpu-snapshot.md](gpu-snapshot.md)) is built + demonstrated in
+   [`code/demos/demo_gpu_snapshot/`](../code/demos/demo_gpu_snapshot/) (`snapshot_store.py`).
 
 Demo arc: naive "stop invoking" (anti-pattern, silently loses the GPU instance) → heartbeat quiesce
 that survives the idle timeout → resume → recover-if-reclaimed. This deliberately re-couples the
 sandbox to the trainer's sync barrier — a **cost** optimization, not a correctness fix (async RL
 episodes are otherwise designed to span weight versions).
+
+#### Demo 2 — runtime-instance application-level snapshot & resume (`demo_gpu_snapshot`)
+
+For the **GPU Runtime instance**, the failure mode is not idle reclamation but a **recycle** that
+comes back blank — and AgentCore offers **no VM/EC2 snapshot** ([gpu-snapshot.md](gpu-snapshot.md)).
+So the only feasible snapshot is **application-level**: serialize the sandbox workspace to a store
+you own (**S3** in production — no mount, AZ-agnostic; FSx/EFS need a mount AgentCore won't give you)
+and **restore** it onto a fresh session after the recycle. `snapshot_workspace` / `restore_workspace`
+(`agentcore_slime_demo/snapshot_store.py`) do this backend-agnostically.
+
+Demo arc: RUN A (no snapshot — recycle loses progress, redo from scratch) vs RUN B (snapshot before
+recycle → restore on fresh session → resume), printing the rework saved. Use this to survive a real
+recycle; use the heartbeat (Demo 1) for the seconds-long weight-sync pause where no state is lost.
 
 ---
 

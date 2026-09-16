@@ -1,4 +1,10 @@
-# demo_cpu_quiesce — pause/resume the sandbox across the weight-sync barrier
+# demo_cpu_quiesce — microVM heartbeat: keep the serverless sandbox warm across the weight-sync barrier
+
+**Substrate:** the AgentCore **serverless CPU Code-Interpreter microVM**. **Lever:** a **heartbeat**
+(+ a quiesce gate) that keeps the session from being idle-reclaimed while generation is stalled. Its
+sibling demo, [`demo_gpu_snapshot`](../demo_gpu_snapshot/), covers the other substrate + lever: a
+**GPU Runtime instance** with **application-level snapshot & resume** (survive a recycle). Together
+they are the two resilience patterns for a paused sandbox.
 
 A **standalone, self-contained** demo of the *quiesce/resume* pattern from
 [`docs/demos-program.md`](../../../docs/demos-program.md) ("quiesce / resume the sandbox across the
@@ -62,8 +68,12 @@ Delete the local idle simulator and let AWS be the clock:
   Runtime with a low `idleRuntimeSessionTimeout`. ACT 2 (heartbeat survival) and ACT 3 (recovery)
   work at any pause length.
 
-The **GPU-instance tier** is where this pays off (idle GPU time is real money). On serverless CPU
-microVMs the same coordination runs but there is no cost payoff — it's shown purely as the pattern.
+On the **serverless microVM** the payoff is **correctness** — the heartbeat stops the ~15-min idle
+timer from reclaiming the warm session during the pause (you don't pay for idle serverless time). The
+same mechanism also serves the **GPU-instance tier**, where it additionally saves **cost** (idle GPU
+time is billed). Losing state to a genuine recycle is the *other* demo's job
+([`demo_gpu_snapshot`](../demo_gpu_snapshot/)): heartbeat keeps a live session warm; snapshot restores
+a lost one.
 
 ## Wiring it into a real slime run
 `SessionKeeper` is driven by the weight-sync barrier, so a real integration is two calls around
