@@ -1,4 +1,3 @@
-# Agentic RL: AgentCore as Sandbox and Harness
 
 **Kaige Yang** — Senior Applied Scientist, 亚马逊云科技 (AWS)
 
@@ -6,7 +5,6 @@ September 10, 2026
 
 ---
 
-# Overview
 
 ## Purpose — a practitioner's guide to AgentCore as an RL sandbox
 
@@ -18,7 +16,7 @@ This deck is a **hands-on guide for AWS customers doing agentic RL**. It is grou
 - **How to run a real task on it** — with datasets, Dockerfiles, and deploy commands.
 - **How to build and customize** your own Runtime — CPU (Code Interpreter) and GPU (Instances).
 
-**Scope.** AgentCore = the execution **sandbox** (and optionally the **harness**); **slime** = the RL trainer. This deck focuses on the sandbox seam: build image → deploy Runtime → seed a task → invoke → read the reward.
+**Scope.** AgentCore = the execution **sandbox**; **slime** = the RL trainer; the **harness stays in-process**. This deck focuses on the sandbox seam: build image → deploy Runtime → seed a task → invoke → read the reward.
 
 ## The RL loop in one slide — the two seams AgentCore fills
 
@@ -28,29 +26,24 @@ In agentic RL the policy acts over many turns against an executable environment;
 
 **Two seams AgentCore fills:**
 
-- **Sandbox** — the isolated place untrusted model code executes (write→run→read) and the reward is scored. *This deck's focus.*
-- **Harness** (optional) — the agent loop itself, hosted on its own Runtime.
+- **Sandbox** — the isolated place untrusted model code executes (write→run→read) and the reward is scored. *This is what we use AgentCore for.* A sandbox wants to be ad-hoc + isolated per episode — a perfect fit for AgentCore's per-session microVM.
+- **Harness** — the agent loop itself. We keep it **in-process** (warm, next to the trainer); episodes are independent so it needs warmth, not isolation. AgentCore *can* host a harness, but that is not the recommended path for RL.
 
 Only Trainer, Inference, and a GPU sandbox spend GPUs; harness and proxy run on cheap CPU.
 
 ## What tasks do frontier labs run in a sandbox?
 
-The strongest recent models are trained with **RL against executable, verifiable environments** — the pattern this deck operationalizes.
+Frontier models train with **RL against executable, verifiable environments** — the pattern this deck operationalizes. **Common denominator:** untrusted output runs in an isolated sandbox; a checker produces the reward — exactly the sandbox seam (MAI / Qwen3.5 publish no RL-sandbox details — omitted).
 
 | Model | Sandbox / verifier | Tasks | Reward |
 |---|---|---|---|
-| DeepSeek-R1 [2] | code compiler + rule verifier | math, competitive code | tests pass / boxed-answer match |
-| Qwen3 [3] | RLVR verifiers + live tool/agent env | math, code, tool-use, RAG | rule-based + model-judge (w/ ref) |
-| Llama-Nemotron [4] | **LLM-judge answer-match (no code exec)** | math, science, instruction-following | answer-match + format |
+| DeepSeek-R1 [2] | code compiler + rule verifier | math, competitive code | tests pass / answer match |
+| Qwen3 [3] | RLVR verifiers + live tool/agent env | math, code, tool-use, RAG | rule + model-judge (w/ ref) |
+| Llama-Nemotron [4] | **LLM-judge, no code exec** | math, science, instruction | answer-match + format |
 | Kimi K2 [5] | simulated tool-use envs + verifiers | agentic tool use, math, code | verifiable rewards |
-
-**Note.** Microsoft **MAI** (MAI-DS-R1 / MAI-1) and **Qwen3.5** exist but publish **no RL-sandbox details** — omitted rather than guessed. Nemotron verifies by LLM answer-match, *not* code execution.
-
-**Common denominator:** untrusted output runs in an isolated sandbox, a checker produces the reward — exactly the sandbox seam.
 
 ---
 
-# AgentCore basics
 
 ## AgentCore basics — services, and can / cannot
 
@@ -72,35 +65,29 @@ Amazon Bedrock AgentCore [D1] runs and secures agents & tools — any framework,
 
 ---
 
-# Tasks & datasets
 
 ## The task zoo — 11 families, one harness
 
-One **task-agnostic** harness; each family changes only **prompt + seed files + checker** (`agentcore_slime_demo/task_families.py`). All **RLVR** — reward from a checker, no LLM judge. **87 seed tasks** across ten families, plus MBPP / KernelBench.
+One **task-agnostic** harness; each family changes only **prompt + seed files + checker** (`task_families.py`). All **RLVR** — reward is binary **1.0/0.0** from a checker, no LLM judge. **87 seeds** across ten families + MBPP/KernelBench; select with `FAMILY=sql`, dispatch by `metadata.task.family`.
 
 | Family | Seed files | Checker |
 |---|---|---|
 | coding (MBPP/KernelBench) | — | hidden asserts / allclose on cuda |
 | swe | — | assert suite green |
-| tool_use | `tools.py` | result==gold ∧ tools were called |
-| sql | → `query.sql` | result-set == gold (in-mem SQLite) |
-| math | — | `|ans − gold| ≤ 1e-6` |
-| ctf | — | `check(flag)` True |
-| rag | `docs/{a,b,c}.txt` | answer == grounded fact |
-| regex / planning / config / data | (varies) | matches POS/¬NEG · `verify()` · constraints · `output==gold` |
-
-Reward is binary **1.0 / 0.0**. Select with `FAMILY=sql`; per-sample dispatch by `metadata.task.family`.
+| tool_use | `tools.py` | result==gold ∧ tools called |
+| sql | → `query.sql` | result-set == gold (SQLite) |
+| math · ctf | — | `|ans−gold|≤1e-6` · `check(flag)` |
+| rag | `docs/*.txt` | answer == grounded fact |
+| regex · planning · config · data | (varies) | POS/¬NEG · `verify()` · constraints · `output==gold` |
 
 ## The task→sandbox pattern — seed, run, check, reward
 
 `run_episode` (`harness.py`) is family-agnostic — the same loop for all 11 families:
 
 ```python
-# 1. seed the sandbox workspace once (tools.py, docs/*, input.json, ...)
 for name, content in task.setup_files():
     await sandbox.write_file(name, content)
 await sandbox.write_file("run_checks.py", task.runner_source())
-# 2. multi-turn loop
 for _ in range(task.max_turns):
     text = await policy.complete(messages)                 # model turn (via proxy)
     code = task.extract_submission(text)                   # fenced block
@@ -130,7 +117,6 @@ Builders (in `demos/demo_cpu_single/`): `build_dataset.py` (MBPP/KernelBench) an
 
 ---
 
-# Build & deploy the sandbox
 
 ## CPU sandbox — Code Interpreter (the default)
 
@@ -166,11 +152,11 @@ RUN pip install --no-cache-dir bedrock-agentcore
 COPY agentcore_slime_demo/sandbox_server_agent.py /app/
 ENV LD_LIBRARY_PATH=/usr/lib64          # AgentCore injects libcuda.so.1 here
 ENV SANDBOX_WORKDIR=/workspace
-# torch installed at CMD, not baked: the CUDA wheel exceeds the 2048 MB image cap
-CMD ["sh","-c","pip install torch==2.5.1 --index-url .../cu124 && exec python -m sandbox_server_agent"]
+CMD ["sh","-c","pip install torch==2.5.1 --index-url .../cu124 \
+                && exec python -m sandbox_server_agent"]
 ```
 
-**Why remote GPU:** untrusted CUDA never shares VRAM/host with training state; the checker's g6 is disposable.
+Torch is installed **at `CMD`, not baked** — the CUDA wheel exceeds AgentCore's 2048 MB image cap. **Why remote GPU:** untrusted CUDA never shares VRAM/host with training state; the checker's g6 is disposable.
 
 ## Build & deploy a custom Runtime — the how-to
 
@@ -190,23 +176,20 @@ python3 deploy_two_runtime.py all                  # ECR + buildx + create runti
 
 ## Can AgentCore host every frontier sandbox? — tick by tick
 
-*Legend:* ✓ native · ◑ with a BYO container / egress caveat.
+**Bottom line:** the only hard limit is GPU **sharing / fractioning** — not any missing capability. *Legend:* ✓ native · ◑ needs a BYO container / egress.
 
-| Task / sandbox | AgentCore? | How — and the limit |
+| Task / sandbox | ✓? | How — and the limit |
 |---|---|---|
-| Code exec + unit tests (DeepSeek, Qwen) [2, 3] | ✓ | Code Interpreter, or your image on a Runtime |
+| Code exec + unit tests (DeepSeek, Qwen) [2,3] | ✓ | Code Interpreter, or your image on a Runtime |
 | Math / logic verifier | ✓ | stdlib checker in the CPU microVM |
-| Tool-use env (Kimi K2) [5] | ✓ | Python tools; MCP tools via Gateway |
-| Per-repo Docker image (SWE) [6] | ✓ | Runtime runs your OCI image; per-session isolation |
+| Tool-use env (Kimi K2) [5] | ✓ | Python tools; MCP via Gateway |
+| Per-repo Docker image (SWE) [6] | ✓ | Runtime runs your OCI image; isolated per session |
 | Browser / computer use | ✓ | managed Browser tool |
-| Networked RAG / web read | ◑ | needs egress — public, or VPC + endpoints [D11] |
+| Networked RAG / web read | ◑ | egress — public, or VPC + endpoints [D11] |
 | GPU kernel / CUDA (KernelBench) [7] | ◑ | Instances only; 1 session = 1 GPU; **no MIG on L4** |
-
-**Bottom line.** The only hard limit is GPU **sharing / fractioning** — not any missing capability.
 
 ---
 
-# Integrate, demo & operate
 
 ## slime integration — one hook, no fork
 
@@ -218,6 +201,26 @@ slime (THUDM) [9] = Megatron trainer + SGLang inference, run **async/decoupled**
 Each tool call is `invoke_agent_runtime(ARN, session_id)` (SigV4); boto3 sync is offloaded via `asyncio.to_thread`; **one session = one episode**. A proxy (`AnthropicAdapter`) fronts SGLang so every model call is the policy under training. Bound episode cost with `EPISODE_MAX_TURNS` (default 3).
 
 **Caveat.** The two-Runtime sandbox client (`AgentCoreRuntimeSandbox`) is labeled scaffolding in-repo — validate before production.
+
+## slime ↔ AgentCore Runtime — the call path
+
+slime calls the `generate` hook once per prompt; the hook opens **one AgentCore session per episode** and each tool call becomes one SigV4 `InvokeAgentRuntime` [D8]:
+
+```python
+async def generate(args, sample, sampling_params):        # slime hook
+    task = task_from_dict(sample.metadata["task"])
+    async with make_sandbox("agentcore-runtime") as sb:   # -> AgentCoreRuntimeSandbox
+        traj = await run_episode(task, policy, sb)        # seed/turn/check loop
+    return build_token_stream(traj, sample)               # loss-masked Sample
+
+def _invoke(self, op, **kw):                               # sandbox client: 1 op = 1 invoke
+    body = json.dumps({"op": op, "session_id": self.session_id, **kw})
+    r = self._rt.invoke_agent_runtime(                    # boto3 bedrock-agentcore
+        agentRuntimeArn=self.arn, runtimeSessionId=self.session_id, payload=body)
+    return json.loads(r["response"].read())               # {"exit_code","stdout",...}
+```
+
+`session_id` (≥33 chars) pins every op of an episode to **one warm microVM** [D2]; boto3's sync call is offloaded with `asyncio.to_thread`, so N episodes run concurrently. The `agentcore_slime_demo.sandbox_server_agent` `@app.entrypoint` on the Runtime dispatches `op` → `ping/write_file/exec/read_file`.
 
 ## Step-by-step — one MBPP episode end-to-end
 
@@ -233,14 +236,12 @@ Each tool call is `invoke_agent_runtime(ARN, session_id)` (SigV4); boto3 sync is
 
 ## Demos — two harnesses × two sandboxes
 
-Policy is always **Qwen3-4B**, trained by slime.
+Policy is always **Qwen3-4B**, trained by slime. **Columns vary the sandbox; rows vary where the harness runs.** The **recommended path is the in-process harness** (top row) with **AgentCore as the sandbox** — the proven, natural-fit config. The `*_2runtime` rows put the harness on its *own* Runtime too (`MiniClaudeHarness` on Runtime #1 driving sandbox Runtime #2 by ARN over `invoke_agent_runtime`); we keep them as a reference that AgentCore *can* host a harness, but that is **not the recommended RL path** (a harness wants warmth, not a cold session per episode). **Identical code CPU vs GPU — only the sandbox ARN differs.**
 
 | | CPU sandbox — MBPP | GPU sandbox — KernelBench |
 |---|---|---|
-| in-process harness | `demo_cpu_single` | `demo_gpu_single` |
-| harness on its own Runtime | `demo_cpu_2runtime` | `demo_gpu_2runtime` |
-
-**Rows vary harness fidelity; columns vary the sandbox.** The `*_2runtime` rows are the clean disaggregated target: `MiniClaudeHarness` on **Runtime #1** (dials the proxy back over the VPC) drives **sandbox Runtime #2** by ARN — tool calls bridge #1→#2 over `invoke_agent_runtime`, so each tier scales/fails/secures independently. Files: `harness_runtime_agent.py` (#1), `sandbox_server_agent.py` (#2); `ADAPTER_PORT` 18021 pinned. **Identical code CPU vs GPU — only the sandbox ARN differs.**
+| in-process harness *(recommended)* | `demo_cpu_single` | `demo_gpu_single` |
+| harness on its own Runtime *(variant)* | `demo_cpu_2runtime` | `demo_gpu_2runtime` |
 
 ## The GPU limit — and how you'd share one L4
 
@@ -249,12 +250,12 @@ AgentCore hands **one whole GPU per session** (1 `runtimeSessionId` = 1 EC2 inst
 - **Isolated scaling** = more instances (1 GPU each) — clean, N× cost.
 - **Free concurrency** = many agents in one session (share the instance GPU; "must be mutually trusted" — no isolation).
 
+Our B4 farm: a `RayGpuFarm` of fractional actors (`num_gpus=0.5`) in one session, with a per-process memory cap + an nvcc `flock` (a non-MIG L4 wedges under compile storms). **Takeaway:** isolated scaling → more instances; fractioning → many-agents-per-session or your own Ray/EKS.
+
 | Share one physical GPU by | Isolation | AgentCore |
 |---|---|---|
 | Agents / session · MPS · time-slice · Ray `num_gpus<1` | none | native / self-managed |
 | NVIDIA MIG | hard | **no on L4** |
-
-Our B4 farm: a `RayGpuFarm` of fractional actors (`num_gpus=0.5`) inside one session, with a per-process memory cap + an nvcc `flock` (a non-MIG L4 wedges under compile storms). **Takeaway:** isolated scaling → more instances; fractioning → many-agents-per-session or your own Ray/EKS.
 
 ## Networking & isolation — private by default
 
@@ -275,11 +276,29 @@ The loop runs untrusted model code, so the network is the primary control. Princ
 
 ---
 
-## References
+## References — papers & models
+
+```{=latex}
+\footnotesize
+```
 
 **Agentic RL & models.** [1] Agent Lightning — Harnessed Agentic RL. <https://arxiv.org/abs/2508.03680> · [2] DeepSeek-R1. <https://arxiv.org/abs/2501.12948> · [3] Qwen3 Technical Report. <https://arxiv.org/abs/2505.09388> · [4] Llama-Nemotron. <https://arxiv.org/abs/2505.00949> · [5] Kimi K2. <https://arxiv.org/abs/2507.20534> · [6] SWE-bench. <https://arxiv.org/abs/2310.06770> · [7] KernelBench. <https://huggingface.co/datasets/ScalingIntelligence/KernelBench> · [8] MBPP. <https://arxiv.org/abs/2108.07732> · [9] slime. <https://github.com/THUDM/slime>
 
-**Official AgentCore docs.** [D1] What is AgentCore. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html> · [D2] Host with Runtime (isolation, compute types). <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html> · [D3] Runtime how it works (idle 15 m / max 8 h). <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html> · [D4] Lifecycle settings. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-lifecycle-settings.html> · [D5] Instances (GPU). <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-how-it-works.html> · [D6] Code Interpreter. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-tool.html> · [D7] Code Interpreter session. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-session-characteristics.html> · [D8] InvokeAgentRuntime. <https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_InvokeAgentRuntime.html> · [D9] CreateAgentRuntime. <https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_CreateAgentRuntime.html> · [D10] NetworkConfiguration. <https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_NetworkConfiguration.html> · [D11] VPC interface endpoints. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/vpc-interface-endpoints.html> · [D12] StopRuntimeSession. <https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html> · [D13] Observability. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability.html>
+## References — AgentCore docs (1/2)
+
+```{=latex}
+\scriptsize
+```
+
+**Official AgentCore docs.** [D1] What is AgentCore. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html> · [D2] Host with Runtime (isolation, compute types). <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html> · [D3] Runtime how it works (idle 15 m / max 8 h). <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html> · [D4] Lifecycle settings. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-lifecycle-settings.html> · [D5] Instances (GPU). <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-how-it-works.html> · [D6] Code Interpreter. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-tool.html> · [D7] Code Interpreter session. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-session-characteristics.html>
+
+## References — AgentCore docs (2/2)
+
+```{=latex}
+\scriptsize
+```
+
+[D8] InvokeAgentRuntime. <https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_InvokeAgentRuntime.html> · [D9] CreateAgentRuntime. <https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_CreateAgentRuntime.html> · [D10] NetworkConfiguration. <https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_NetworkConfiguration.html> · [D11] VPC interface endpoints. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/vpc-interface-endpoints.html> · [D12] StopRuntimeSession. <https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html> · [D13] Observability. <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability.html>
 
 ---
 

@@ -22,6 +22,16 @@ components separated by **three decouplings**. Longer treatment in
 The five components: **trainer · inference · proxy · harness · sandbox** — each scales, fails, and
 (for the sandbox on GPU rows) acquires GPUs independently.
 
+> **Where AgentCore fits (the one claim this project makes).** AgentCore is used as the
+> **sandbox** — the per-episode execution environment (Code Interpreter for CPU rows, a GPU
+> Runtime instance for CUDA rows). That is a natural fit: a sandbox *wants* to be ad-hoc and
+> isolated, which is exactly AgentCore's per-session microVM model. The **harness stays
+> in-process** (a warm, pooled agent loop next to the trainer). AgentCore *can* also host a
+> harness (its managed-agent product), but for RL rollouts we deliberately do **not** — episodes
+> are independent, so the harness needs process *warmth*, not per-episode *isolation*, and minting
+> a fresh AgentCore session per episode (a cold start) is the wrong lifecycle for it. See
+> [harness-sandbox-decoupling.md](harness-sandbox-decoupling.md) for the full argument.
+
 ---
 
 ## Alignment with Agent Lightning (Figure 1)
@@ -62,10 +72,9 @@ AL's three decouplings map 1:1 to ①/②/③ below.
   training through an LLM endpoint proxy."
 - **Where in code:** the proxy is slime's `AnthropicAdapter` (`slime.agent.adapters`;
   `open_session` / `finish_session` / `drop_session`), stood up via `run_app_in_thread`
-  (`slime.agent.aiohttp_threaded`) in the generate hook `agentcore_runtime_generate.py` (the mini
-  harness's home — its own Runtime). The **mini harness** (`MiniClaudeHarness`, A3/B3, and the
-  Runtime harness) is given the adapter URL directly and carries the session id in an
-  `Authorization: Bearer <sid>` header.
+  (`slime.agent.aiohttp_threaded`) in the generate hook. The **mini harness**
+  (`MiniClaudeHarness`), run in-process, is given the adapter URL directly and carries the session
+  id in an `Authorization: Bearer <sid>` header.
 - **Why:** any black-box agent (real Claude Code, a mini loop, anything speaking the Anthropic
   Messages API) connects with **zero agent changes**; the trainer never imports the agent's code.
 
@@ -73,7 +82,10 @@ AL's three decouplings map 1:1 to ①/②/③ below.
 
 - **What:** the **harness** owns the agent loop (tool selection, context, control flow); the
   **sandbox** is the execution environment where tool actions run. Two distinct component types —
-  do not merge them.
+  do not merge them. Note this decoupling is about the **interface** (tool calls cross a boundary
+  to a separate sandbox), *not* about which service hosts the harness: the harness is decoupled
+  from the sandbox whether it runs in-process or on its own Runtime. We keep the harness in-process
+  and put **only the sandbox on AgentCore**.
 - **Where in code:** the harness = our own `MiniClaudeHarness`
   (`agentcore_slime_demo/mini_agent.py`, A3/B3), run either in-process for the reference loop or
   hosted by `harness_runtime_agent.py` (which wraps `MiniClaudeHarness`, `HARNESS_KIND=mini`).
@@ -87,21 +99,27 @@ AL's three decouplings map 1:1 to ①/②/③ below.
 
 ## Current implementations vs. target
 
-| Row | Harness | Sandbox | Status |
+| Row | Harness | Sandbox on AgentCore | Status |
 |---|---|---|---|
-| A / B (`demo_cpu_single`, `demo_gpu_single`) | our `run_episode`, in-process | `AgentCoreSandbox` (A) / remote GPU Runtime (B) | reference loop |
-| A3 / B3 (`demo_cpu_2runtime`, `demo_gpu_2runtime`) | mini harness on **AgentCore Runtime #1** (`harness_runtime_agent.py`, `HARNESS_KIND=mini`) | Code Interpreter (A3) / GPU Runtime (B3) on **Runtime #2** | two-Runtime showcase |
+| A / B (`demo_cpu_single`, `demo_gpu_single`) | our `run_episode`, **in-process** | `AgentCoreSandbox` (A, Code Interpreter) / remote GPU Runtime (B) | **recommended path** |
+| A3 / B3 (`demo_cpu_2runtime`, `demo_gpu_2runtime`) | mini harness *also* on an AgentCore Runtime | Code Interpreter (A3) / GPU Runtime (B3) | possible, **not recommended** — see below |
+
+The **recommended path is A/B**: harness in-process, **AgentCore = the sandbox only**. That is the
+proven, natural-fit configuration and the one this project's story is built on.
 
 (A prior A2 / B2 row ran the **real Claude Code CLI** co-located in the sandbox; that path has been
 removed in favor of the mini harness.)
 
-**The two-Runtime path (A3/B3):** harness on **AgentCore Runtime #1**
-(`harness_runtime_agent.py`, `HARNESS_KIND=mini`), sandbox on **AgentCore Runtime #2**
+**Why A3/B3 (harness on its own Runtime) is *not* the recommended path.** It also puts the harness
+on AgentCore (`harness_runtime_agent.py`, `HARNESS_KIND=mini`), sandbox on a second Runtime
 (`sandbox_server_agent.py`), wired by `agentcore_runtime_generate.generate` with
-`SANDBOX=agentcore-runtime` (`AgentCoreRuntimeSandbox`). For B rows the sandbox Runtime is a **real
-AgentCore GPU Runtime instance** (capacity-provider EC2 GPU), not a local-GPU stand-in.
+`SANDBOX=agentcore-runtime`. It is kept as a reference for the "AgentCore *can* host a harness"
+claim, but for RL it is a poor fit: the current hook mints a **fresh harness session per episode**
+(`agentcore_runtime_generate.py`), i.e. a cold start each episode, when the harness actually wants
+to be a **warm, reused pool** — persistence the harness needs but the sandbox does not. If ever
+pursued, the harness would need a bounded pool of reused `runtimeSessionId`s, not one per episode.
 
 > The two-Runtime backend (`agentcore_runtime_sandbox.py`, `sandbox_server_agent.py`,
-> `harness_runtime_agent.py`, `agentcore_runtime_generate.py`) is **untested scaffolding** on the
-> CPU rows — it has not been fully run against AWS (GPU instances cost money). The single-runtime
-> `demo_cpu_single` / `demo_gpu_single` reference paths still work.
+> `harness_runtime_agent.py`, `agentcore_runtime_generate.py`) is **untested scaffolding** — it has
+> not been fully run against AWS (GPU instances cost money) and is retained for reference only. The
+> recommended `demo_cpu_single` / `demo_gpu_single` paths (AgentCore = sandbox) are what work.

@@ -1,10 +1,12 @@
-"""`harness_runtime_agent` — the harness as its OWN AgentCore Runtime (Runtime #1).
+"""`harness_runtime_agent` — the harness as its OWN AgentCore Runtime (Runtime #1). VARIANT ONLY.
 
-STATUS: untested scaffolding for the two-Runtime target (docs/harness-sandbox-decoupling.md §7).
-This is the *harness* half of the disaggregated target: a `BedrockAgentCoreApp` that runs the
-agent loop on its own AgentCore Runtime, deployed separately from the sandbox Runtime (#2). It is
-the AgentCore-hosted replacement for the two current shortcuts — the in-process `MiniClaudeHarness`
-(A3/B3) and the in-sandbox Claude Code CLI (A2/B2).
+STATUS: untested scaffolding, NOT the recommended path (docs/harness-sandbox-decoupling.md §3).
+This project uses AgentCore as the *sandbox* and keeps the harness IN-PROCESS. This file is kept
+only as a reference that AgentCore *can* host a harness — but for RL that is the wrong lifecycle
+(the harness wants to be warm/long-standing across independent episodes; AgentCore's per-session
+microVM is designed for the ad-hoc, isolated sandbox instead). This is the *harness* half of the
+two-Runtime variant: a `BedrockAgentCoreApp` running the agent loop on its own Runtime, deployed
+separately from the sandbox Runtime (#2).
 
 Wiring per rollout (driven by agentcore_runtime_generate.generate):
     invoke_agent_runtime(harness ARN, session_id, payload={

@@ -1,23 +1,33 @@
-# Decoupling & disaggregating harness and sandbox (A3 / B3)
+# Decoupling harness and sandbox — and why AgentCore is the sandbox, not the harness
 
-**Status: target architecture, partially wired (untested scaffolding).** In (harnessed) agentic RL
-the **harness** and the **sandbox** are two distinct component types (Agent Lightning v1.0, §1). The
-**target for the harness rows — A3 and B3 — is fully decoupled and disaggregated**: the harness runs
-on **its own AgentCore Runtime** and the sandbox is a **separate AgentCore Runtime**, with the slime
-trainer (policy) and the proxy (`AnthropicAdapter`) as the other two components. See **§3 for the
-canonical target**; §1 walks through the intermediate topology and §2 covers the GPU sandbox.
+**The one claim: AgentCore is the *sandbox*.** In (harnessed) agentic RL the **harness** and the
+**sandbox** are two distinct component types (Agent Lightning v1.0, §1). This project uses
+**AgentCore as the sandbox** — the per-episode execution environment (Code Interpreter for CPU
+rows, a GPU Runtime instance for CUDA rows). That is the natural fit and the recommended,
+proven path. The **harness stays in-process** (a warm agent loop next to the trainer, §1A).
 
-The current implementation is a bring-up shortcut, not the target: A3 / B3 run the mini harness
-(`MiniClaudeHarness`) *in the trainer/rollout process* against an in-process sandbox object (§1). The
-target moves that same loop onto its own Runtime (`harness_runtime_agent.py`, `HARNESS_KIND=mini`),
-with tool calls dispatched to a separate sandbox Runtime.
+**Why not put the harness on AgentCore too?** You *can* — AgentCore has a managed-agent product —
+but for RL it is the wrong lifecycle, so we don't:
 
-> **Removed:** an earlier variant co-located the **real Claude Code CLI** *inside* the sandbox (rows
-> A2/B2) and redirected its built-in tools to the sandbox over an MCP bridge. That real-CLI path —
-> and its custom multi-user container / CLI-deploy tooling — has been removed in favor of the mini
-> harness. This doc describes the mini-harness A3/B3 path only. (The in-process MCP helper
-> `sandbox_mcp.py` still exists in the tree if a black-box CLI is ever reintroduced, but it is not
-> part of the current path.)
+- A **sandbox** wants to be **ad-hoc and isolated**: a fresh, throwaway environment per episode.
+  That is exactly AgentCore's per-session microVM model → perfect fit.
+- A **harness** wants to be **long-standing and warm**: episodes are independent, so the harness
+  carries *no* cross-episode state and gains nothing from per-episode isolation — it only wants to
+  avoid cold starts. AgentCore's unit of compute is the session, spun up per invoke and reclaimed
+  on idle; using it for the harness means a **cold start per episode** unless you hand-build a warm
+  reused-session pool. That is fighting the platform to get something the harness didn't need from
+  it.
+
+So: **sandbox → AgentCore; harness → in-process (or, if ever decoupled onto a service, a warm
+pooled one).** §1 covers the in-process harness (the recommended path), §2 the GPU sandbox, and §3
+documents the two-Runtime harness variant that is **kept for reference but not recommended**.
+
+> **Removed variant (A2/B2):** an earlier variant co-located the **real Claude Code CLI** *inside*
+> the sandbox and redirected its tools over an MCP bridge. That real-CLI path — and its custom
+> multi-user container / CLI-deploy tooling — has been removed in favor of the mini harness.
+
+> (The in-process MCP helper `sandbox_mcp.py` still exists in the tree if a black-box CLI is ever
+> reintroduced, but it is not part of the current path.)
 
 ---
 
@@ -117,12 +127,14 @@ checkers. slime runs **4 train + 4 infer** on all 8 local GPUs (like A/A3).
 
 ---
 
-## 3. The real target: TWO AgentCore Runtimes — one harness, one sandbox
+## 3. Variant (not recommended): TWO AgentCore Runtimes — one harness, one sandbox
 
-**Correction to §1A.** Running A3/B3's mini harness **in-process** is a bring-up shortcut, not the
-target. AgentCore is not only a sandbox — it can host the **harness** too (its own Runtime running
-the agent loop, or the managed harness product, use case 10). So the target topology puts **each
-component type on its own AgentCore Runtime**:
+**This section documents a variant we deliberately do not use as the main path.** AgentCore *can*
+host the **harness** too (its own Runtime running the agent loop, or the managed harness product,
+use case 10), so it is *possible* to put each component type on its own AgentCore Runtime. We keep
+this wired as a reference for that claim, but **the in-process harness of §1A is the recommended
+path** — see the top of this doc for why AgentCore fits the sandbox but not the harness in RL. The
+topology, if pursued, is:
 
 ```
   trainer box (slime)                AgentCore Runtime #1              AgentCore Runtime #2
@@ -145,7 +157,7 @@ component type on its own AgentCore Runtime**:
 - **Two Runtimes, two roles.** This is the clean four-component split with AgentCore owning both
   the harness and the sandbox as distinct managed services.
 
-### How the row gets to the two-Runtime target
+### How the variant is wired (if pursued)
 
 - **A3 / B3 (mini harness):** deploy `MiniClaudeHarness` as a `BedrockAgentCoreApp` on its own
   AgentCore Runtime (`harness_runtime_agent.py`). Its LLM calls go to the proxy; its tool calls go
@@ -161,8 +173,9 @@ component type on its own AgentCore Runtime**:
 > (`turns`, `stop_reason`, …) — the trajectory itself is captured proxy-side, so GRPO sample capture
 > is unchanged whether the harness is in-process or on Runtime #1.
 
-> **Takeaway:** the goal for **A3/B3** is *harness on one AgentCore Runtime, sandbox on another*.
-> The in-process harness is a bring-up shortcut to be replaced. The two-Runtime backend
+> **Takeaway:** the recommended architecture is **harness in-process, sandbox on AgentCore**. The
+> two-Runtime harness above is a documented *variant*, not the goal, and its backend
 > (`agentcore_runtime_sandbox.py`, `sandbox_server_agent.py`, `harness_runtime_agent.py`,
-> `agentcore_runtime_generate.py`) is built but is **untested scaffolding** — it has not been fully
-> run against AWS (GPU instances cost money).
+> `agentcore_runtime_generate.py`) is **untested scaffolding** — it has not been fully run against
+> AWS (GPU instances cost money) and, per the top of this doc, would need a warm reused-session
+> pool (not the current per-episode harness session) before it made sense.

@@ -62,8 +62,13 @@ driver `train_async.py`**, which overlaps rollout *N+1* with training of *N*. As
    SGLang **inference** GPUs are disjoint — no `--colocate`. Async hard-requires this
    (`train_async.py` asserts `not args.colocate`).
 2. **Harness ⟂ sandbox (Agent Lightning disaggregation).** The **harness** (the agent loop) and
-   the **sandbox** (where its tool actions execute) are separate components too — the *target*
-   puts each on its own AgentCore Runtime (see `docs/harness-sandbox-decoupling.md`).
+   the **sandbox** (where its tool actions execute) are separate components too. **AgentCore is
+   used as the sandbox**; the harness stays **in-process** (a warm agent loop next to the trainer).
+   This is deliberate: a sandbox wants to be ad-hoc and isolated per episode — AgentCore's
+   per-session microVM model exactly — whereas the harness wants to be long-standing and warm, and
+   episodes are independent, so it needs no per-episode isolation. AgentCore *can* host a harness
+   too, but for RL that is the wrong lifecycle (a cold session per episode); see
+   `docs/harness-sandbox-decoupling.md`.
 
 **Why this matters: all five components scale independently.** Disaggregating both levels means
 the pipeline is five separately-scalable services — **trainer**, **inference engine**, **proxy**
@@ -75,7 +80,7 @@ lock-stepped to the others:
 | **Trainer** (Megatron) | more train GPUs / TP·DP | gradient compute |
 | **Inference** (SGLang) | more engines / GPUs | rollout token throughput |
 | **Proxy** (`AnthropicAdapter`) | more adapter replicas | request fan-in (CPU/IO) |
-| **Harness** (Claude Code / mini) | more harness Runtimes / concurrency | agent-loop latency |
+| **Harness** (mini, in-process) | more rollout concurrency / warm workers | agent-loop latency |
 | **Sandbox** (Code Interpreter / GPU Runtime) | more sessions / `GpuPool` gate | tool-exec (CPU or CUDA) |
 
 GPU split on this 8×L40S box (trainer + inference; sandbox is CPU for A, and for B a *local*

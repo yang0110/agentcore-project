@@ -1,11 +1,16 @@
-"""`agentcore_runtime_generate.generate` — slime hook for the TWO-Runtime target (A3/B3 path).
+"""`agentcore_runtime_generate.generate` — slime hook for the two-Runtime harness VARIANT (A3/B3).
 
-This is the disaggregated custom-generate path and the ONLY home for the mini harness: it runs on
-AgentCore Runtime #1 (harness_runtime_agent.py) and the sandbox on AgentCore Runtime #2
-(sandbox_server_agent.py). The slime trainer only ever sees the LLM request/response pairs,
-captured by the proxy (AnthropicAdapter) — exactly Agent Lightning. Demos A3 and B3 wire this hook
-(the earlier in-process shortcut, mini_agent_generate.generate, has been removed — the mini harness
-has ONE home now, its own Runtime).
+NOT the recommended path. This project uses AgentCore as the *sandbox*; the harness is kept
+in-process (see docs/harness-sandbox-decoupling.md). This hook is retained only as a reference that
+AgentCore *can* also host the harness (Runtime #1 = harness_runtime_agent.py, Runtime #2 = sandbox
+= sandbox_server_agent.py). It is untested scaffolding.
+
+Caveat for RL: this hook mints a FRESH harness runtimeSessionId per episode (see `session_id`
+below) — a cold start each episode. A harness wants to be warm and long-standing (episodes are
+independent, so it needs no per-episode isolation), so a real deployment would need a bounded pool
+of REUSED harness session ids, not one-per-episode. The per-episode session is correct only for the
+sandbox. The slime trainer still only ever sees the LLM request/response pairs captured by the
+proxy (AnthropicAdapter) — exactly Agent Lightning.
 
 It differs from the other hooks only in WHERE the harness runs:
   * generate.generate               — our run_episode, in-process, local `sb`  (Demos A/B).

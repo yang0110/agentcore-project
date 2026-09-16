@@ -4,9 +4,10 @@
 \PassOptionsToPackage{space}{xeCJK}
 %
 \documentclass[
+  10pt,
   ignorenonframetext,
   aspectratio=169,
-]{beamer}
+  t]{beamer}
 \usepackage{pgfpages}
 \setbeamertemplate{caption}[numbered]
 \setbeamertemplate{caption label separator}{: }
@@ -139,6 +140,17 @@
 \providecommand{\tightlist}{%
   \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
 \setcounter{secnumdepth}{-\maxdimen} % remove section numbering
+% Tighten vertical rhythm so dense slides fit on a single frame.
+\usepackage{etoolbox}
+\setlength{\parskip}{3pt plus 1pt minus 1pt}
+\setbeamertemplate{itemize/enumerate body begin}{\small}
+\setbeamertemplate{itemize/enumerate subbody begin}{\footnotesize}
+\AtBeginEnvironment{itemize}{\setlength{\itemsep}{2pt}\setlength{\topsep}{2pt}}
+\AtBeginEnvironment{enumerate}{\setlength{\itemsep}{2pt}\setlength{\topsep}{2pt}}
+% Shrink code listings and tables so long lines do not force a page break.
+\AtBeginEnvironment{Highlighting}{\footnotesize}
+\AtBeginEnvironment{verbatim}{\footnotesize}
+\AtBeginEnvironment{longtable}{\footnotesize}
 \ifLuaTeX
   \usepackage{selnolig}  % disable illegal ligatures
 \fi
@@ -146,12 +158,12 @@
 \IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
 \urlstyle{same}
 \hypersetup{
-  pdftitle={Agentic RL: AgentCore as Sandbox and Harness},
+  pdftitle={Hands-on: AgentCore as the Sandbox in Agentic RL},
   pdfauthor={Kaige Yang --- Senior Applied Scientist, AWS},
   hidelinks,
   pdfcreator={LaTeX via pandoc}}
 
-\title{Agentic RL: AgentCore as Sandbox and Harness}
+\title{Hands-on: AgentCore as the Sandbox in Agentic RL}
 \author{Kaige Yang --- Senior Applied Scientist, AWS}
 \date{September 10, 2026}
 
@@ -181,10 +193,10 @@ RL}. It is grounded in a working slime + AgentCore project and in the
   Interpreter) and GPU (Instances).
 \end{itemize}
 
-\textbf{Scope.} AgentCore = the execution \textbf{sandbox} (and
-optionally the \textbf{harness}); \textbf{slime} = the RL trainer. This
-deck focuses on the sandbox seam: build image → deploy Runtime → seed a
-task → invoke → read the reward.
+\textbf{Scope.} AgentCore = the execution \textbf{sandbox};
+\textbf{slime} = the RL trainer; the \textbf{harness stays in-process}.
+This deck focuses on the sandbox seam: build image → deploy Runtime →
+seed a task → invoke → read the reward.
 \end{frame}
 
 \begin{frame}[allowframebreaks]{The RL loop in one slide --- the two seams AgentCore
@@ -205,10 +217,14 @@ each tool call + the checker → reward.
 \tightlist
 \item
   \textbf{Sandbox} --- the isolated place untrusted model code executes
-  (write→run→read) and the reward is scored. \emph{This deck's focus.}
+  (write→run→read) and the reward is scored. \emph{This is what we use
+  AgentCore for} --- a sandbox wants to be ad-hoc + isolated per episode,
+  a perfect fit for AgentCore's per-session microVM.
 \item
-  \textbf{Harness} (optional) --- the agent loop itself, hosted on its
-  own Runtime.
+  \textbf{Harness} --- the agent loop itself. We keep it
+  \textbf{in-process} (warm, next to the trainer); episodes are
+  independent so it needs warmth, not isolation. AgentCore \emph{can}
+  host a harness, but that is not the recommended path for RL.
 \end{itemize}
 
 Only Trainer, Inference, and a GPU sandbox spend GPUs; harness and proxy
@@ -217,9 +233,11 @@ run on cheap CPU.
 
 \begin{frame}[allowframebreaks]{What tasks do frontier labs run in a sandbox?}
 \protect\hypertarget{what-tasks-do-frontier-labs-run-in-a-sandbox}{}
-The strongest recent models are trained with \textbf{RL against
-executable, verifiable environments} --- the pattern this deck
-operationalizes.
+Frontier models train with \textbf{RL against executable, verifiable
+environments} --- the pattern this deck operationalizes. \textbf{Common
+denominator:} untrusted output runs in an isolated sandbox; a checker
+produces the reward --- exactly the sandbox seam (MAI / Qwen3.5 publish
+no RL-sandbox details --- omitted).
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
@@ -239,30 +257,16 @@ Reward
 \midrule\noalign{}
 \endhead
 DeepSeek-R1 {[}2{]} & code compiler + rule verifier & math, competitive
-code & tests pass / boxed-answer match \\
+code & tests pass / answer match \\
 Qwen3 {[}3{]} & RLVR verifiers + live tool/agent env & math, code,
-tool-use, RAG & rule-based + model-judge (w/ ref) \\
-Llama-Nemotron {[}4{]} & \textbf{LLM-judge answer-match (no code exec)}
-& math, science, instruction-following & answer-match + format \\
+tool-use, RAG & rule + model-judge (w/ ref) \\
+Llama-Nemotron {[}4{]} & \textbf{LLM-judge, no code exec} & math,
+science, instruction & answer-match + format \\
 Kimi K2 {[}5{]} & simulated tool-use envs + verifiers & agentic tool
 use, math, code & verifiable rewards \\
 \bottomrule\noalign{}
 \end{longtable}
-
-\textbf{Note.} Microsoft \textbf{MAI} (MAI-DS-R1 / MAI-1) and
-\textbf{Qwen3.5} exist but publish \textbf{no RL-sandbox details} ---
-omitted rather than guessed. Nemotron verifies by LLM answer-match,
-\emph{not} code execution.
-
-\textbf{Common denominator:} untrusted output runs in an isolated
-sandbox, a checker produces the reward --- exactly the sandbox seam.
 \end{frame}
-
-\begin{frame}
-\end{frame}
-
-\hypertarget{agentcore-basics}{%
-\section{AgentCore basics}\label{agentcore-basics}}
 
 \begin{frame}[fragile,allowframebreaks]{AgentCore basics --- services, and can / cannot}
 \protect\hypertarget{agentcore-basics-services-and-can-cannot}{}
@@ -321,19 +325,14 @@ terminate}
 \end{itemize}
 \end{frame}
 
-\begin{frame}
-\end{frame}
-
-\hypertarget{tasks-datasets}{%
-\section{Tasks \& datasets}\label{tasks-datasets}}
-
 \begin{frame}[fragile,allowframebreaks]{The task zoo --- 11 families, one harness}
 \protect\hypertarget{the-task-zoo-11-families-one-harness}{}
 One \textbf{task-agnostic} harness; each family changes only
-\textbf{prompt + seed files + checker}
-(\texttt{agentcore\_slime\_demo/task\_families.py}). All \textbf{RLVR}
---- reward from a checker, no LLM judge. \textbf{87 seed tasks} across
-ten families, plus MBPP / KernelBench.
+\textbf{prompt + seed files + checker} (\texttt{task\_families.py}). All
+\textbf{RLVR} --- reward is binary \textbf{1.0/0.0} from a checker, no
+LLM judge. \textbf{87 seeds} across ten families + MBPP/KernelBench;
+select with \texttt{FAMILY=sql}, dispatch by
+\texttt{metadata.task.family}.
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
@@ -351,18 +350,15 @@ Checker
 \endhead
 coding (MBPP/KernelBench) & --- & hidden asserts / allclose on cuda \\
 swe & --- & assert suite green \\
-tool\_use & \texttt{tools.py} & result==gold ∧ tools were called \\
-sql & → \texttt{query.sql} & result-set == gold (in-mem SQLite) \\
-math & --- & \texttt{\textbar{}ans\ −\ gold\textbar{}\ ≤\ 1e-6} \\
-ctf & --- & \texttt{check(flag)} True \\
-rag & \texttt{docs/\{a,b,c\}.txt} & answer == grounded fact \\
-regex / planning / config / data & (varies) & matches POS/¬NEG ·
+tool\_use & \texttt{tools.py} & result==gold ∧ tools called \\
+sql & → \texttt{query.sql} & result-set == gold (SQLite) \\
+math · ctf & --- & \texttt{\textbar{}ans−gold\textbar{}≤1e-6} ·
+\texttt{check(flag)} \\
+rag & \texttt{docs/*.txt} & answer == grounded fact \\
+regex · planning · config · data & (varies) & POS/¬NEG ·
 \texttt{verify()} · constraints · \texttt{output==gold} \\
 \bottomrule\noalign{}
 \end{longtable}
-
-Reward is binary \textbf{1.0 / 0.0}. Select with \texttt{FAMILY=sql};
-per-sample dispatch by \texttt{metadata.task.family}.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{The task→sandbox pattern --- seed, run, check,
@@ -373,11 +369,9 @@ same loop for all 11 families:
 
 \begin{Shaded}
 \begin{Highlighting}[]
-\CommentTok{\# 1. seed the sandbox workspace once (tools.py, docs/*, input.json, ...)}
 \ControlFlowTok{for}\NormalTok{ name, content }\KeywordTok{in}\NormalTok{ task.setup\_files():}
     \ControlFlowTok{await}\NormalTok{ sandbox.write\_file(name, content)}
 \ControlFlowTok{await}\NormalTok{ sandbox.write\_file(}\StringTok{"run\_checks.py"}\NormalTok{, task.runner\_source())}
-\CommentTok{\# 2. multi{-}turn loop}
 \ControlFlowTok{for}\NormalTok{ \_ }\KeywordTok{in} \BuiltInTok{range}\NormalTok{(task.max\_turns):}
 \NormalTok{    text }\OperatorTok{=} \ControlFlowTok{await}\NormalTok{ policy.complete(messages)                 }\CommentTok{\# model turn (via proxy)}
 \NormalTok{    code }\OperatorTok{=}\NormalTok{ task.extract\_submission(text)                   }\CommentTok{\# fenced block}
@@ -428,12 +422,6 @@ Builders (in \texttt{demos/demo\_cpu\_single/}):
   rows so they can't leak into prompts.
 \end{itemize}
 \end{frame}
-
-\begin{frame}
-\end{frame}
-
-\hypertarget{build-deploy-the-sandbox}{%
-\section{Build \& deploy the sandbox}\label{build-deploy-the-sandbox}}
 
 \begin{frame}[fragile,allowframebreaks]{CPU sandbox --- Code Interpreter (the default)}
 \protect\hypertarget{cpu-sandbox-code-interpreter-the-default}{}
@@ -488,13 +476,15 @@ tweaks:}
 \KeywordTok{COPY}\NormalTok{ agentcore\_slime\_demo/sandbox\_server\_agent.py /app/}
 \KeywordTok{ENV}\NormalTok{ LD\_LIBRARY\_PATH=/usr/lib64          }\CommentTok{\# AgentCore injects libcuda.so.1 here}
 \KeywordTok{ENV}\NormalTok{ SANDBOX\_WORKDIR=/workspace}
-\CommentTok{\# torch installed at CMD, not baked: the CUDA wheel exceeds the 2048 MB image cap}
-\KeywordTok{CMD}\NormalTok{ [}\StringTok{"sh"}\NormalTok{,}\StringTok{"{-}c"}\NormalTok{,}\StringTok{"pip install torch==2.5.1 {-}{-}index{-}url .../cu124 \&\& exec python {-}m sandbox\_server\_agent"}\NormalTok{]}
+\KeywordTok{CMD}\NormalTok{ [}\StringTok{"sh"}\NormalTok{,}\StringTok{"{-}c"}\NormalTok{,}\StringTok{"pip install torch==2.5.1 {-}{-}index{-}url .../cu124 }\OperatorTok{\textbackslash{}}
+\StringTok{                \&\& exec python {-}m sandbox\_server\_agent"}\NormalTok{]}
 \end{Highlighting}
 \end{Shaded}
 
-\textbf{Why remote GPU:} untrusted CUDA never shares VRAM/host with
-training state; the checker's g6 is disposable.
+Torch is installed \textbf{at \texttt{CMD}, not baked} --- the CUDA
+wheel exceeds AgentCore's 2048 MB image cap. \textbf{Why remote GPU:}
+untrusted CUDA never shares VRAM/host with training state; the checker's
+g6 is disposable.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{Build \& deploy a custom Runtime --- the how-to}
@@ -531,7 +521,9 @@ image with \texttt{redeploy\_gpu\_sandbox.py} /
 \begin{frame}[allowframebreaks]{Can AgentCore host every frontier sandbox? --- tick by
 tick}
 \protect\hypertarget{can-agentcore-host-every-frontier-sandbox-tick-by-tick}{}
-\emph{Legend:} ✓ native · ◑ with a BYO container / egress caveat.
+\textbf{Bottom line:} the only hard limit is GPU \textbf{sharing /
+fractioning} --- not any missing capability. \emph{Legend:} ✓ native · ◑
+needs a BYO container / egress.
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
@@ -541,36 +533,26 @@ tick}
 \begin{minipage}[b]{\linewidth}\raggedright
 Task / sandbox
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-AgentCore?
+✓?
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 How --- and the limit
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-Code exec + unit tests (DeepSeek, Qwen) {[}2, 3{]} & ✓ & Code
+Code exec + unit tests (DeepSeek, Qwen) {[}2,3{]} & ✓ & Code
 Interpreter, or your image on a Runtime \\
 Math / logic verifier & ✓ & stdlib checker in the CPU microVM \\
-Tool-use env (Kimi K2) {[}5{]} & ✓ & Python tools; MCP tools via
-Gateway \\
+Tool-use env (Kimi K2) {[}5{]} & ✓ & Python tools; MCP via Gateway \\
 Per-repo Docker image (SWE) {[}6{]} & ✓ & Runtime runs your OCI image;
-per-session isolation \\
+isolated per session \\
 Browser / computer use & ✓ & managed Browser tool \\
-Networked RAG / web read & ◑ & needs egress --- public, or VPC +
-endpoints {[}D11{]} \\
+Networked RAG / web read & ◑ & egress --- public, or VPC + endpoints
+{[}D11{]} \\
 GPU kernel / CUDA (KernelBench) {[}7{]} & ◑ & Instances only; 1 session
 = 1 GPU; \textbf{no MIG on L4} \\
 \bottomrule\noalign{}
 \end{longtable}
-
-\textbf{Bottom line.} The only hard limit is GPU \textbf{sharing /
-fractioning} --- not any missing capability.
 \end{frame}
-
-\begin{frame}
-\end{frame}
-
-\hypertarget{integrate-demo-operate}{%
-\section{Integrate, demo \& operate}\label{integrate-demo-operate}}
 
 \begin{frame}[fragile,allowframebreaks]{slime integration --- one hook, no fork}
 \protect\hypertarget{slime-integration-one-hook-no-fork}{}
@@ -596,6 +578,36 @@ episode cost with \texttt{EPISODE\_MAX\_TURNS} (default 3).
 \textbf{Caveat.} The two-Runtime sandbox client
 (\texttt{AgentCoreRuntimeSandbox}) is labeled scaffolding in-repo ---
 validate before production.
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{slime ↔ AgentCore Runtime --- the call path}
+\protect\hypertarget{slime-agentcore-runtime-the-call-path}{}
+slime calls the \texttt{generate} hook once per prompt; the hook opens
+\textbf{one AgentCore session per episode} and each tool call becomes
+one SigV4 \texttt{InvokeAgentRuntime} {[}D8{]}:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\ControlFlowTok{async} \KeywordTok{def}\NormalTok{ generate(args, sample, sampling\_params):        }\CommentTok{\# slime hook}
+\NormalTok{    task }\OperatorTok{=}\NormalTok{ task\_from\_dict(sample.metadata[}\StringTok{"task"}\NormalTok{])}
+    \ControlFlowTok{async} \ControlFlowTok{with}\NormalTok{ make\_sandbox(}\StringTok{"agentcore{-}runtime"}\NormalTok{) }\ImportTok{as}\NormalTok{ sb:   }\CommentTok{\# {-}\textgreater{} AgentCoreRuntimeSandbox}
+\NormalTok{        traj }\OperatorTok{=} \ControlFlowTok{await}\NormalTok{ run\_episode(task, policy, sb)        }\CommentTok{\# seed/turn/check loop}
+    \ControlFlowTok{return}\NormalTok{ build\_token\_stream(traj, sample)               }\CommentTok{\# loss{-}masked Sample}
+
+\KeywordTok{def}\NormalTok{ \_invoke(}\VariableTok{self}\NormalTok{, op, }\OperatorTok{**}\NormalTok{kw):                               }\CommentTok{\# sandbox client: 1 op = 1 invoke}
+\NormalTok{    body }\OperatorTok{=}\NormalTok{ json.dumps(\{}\StringTok{"op"}\NormalTok{: op, }\StringTok{"session\_id"}\NormalTok{: }\VariableTok{self}\NormalTok{.session\_id, }\OperatorTok{**}\NormalTok{kw\})}
+\NormalTok{    r }\OperatorTok{=} \VariableTok{self}\NormalTok{.\_rt.invoke\_agent\_runtime(                    }\CommentTok{\# boto3 bedrock{-}agentcore}
+\NormalTok{        agentRuntimeArn}\OperatorTok{=}\VariableTok{self}\NormalTok{.arn, runtimeSessionId}\OperatorTok{=}\VariableTok{self}\NormalTok{.session\_id, payload}\OperatorTok{=}\NormalTok{body)}
+    \ControlFlowTok{return}\NormalTok{ json.loads(r[}\StringTok{"response"}\NormalTok{].read())               }\CommentTok{\# \{"exit\_code","stdout",...\}}
+\end{Highlighting}
+\end{Shaded}
+
+\texttt{session\_id} (≥33 chars) pins every op of an episode to
+\textbf{one warm microVM} {[}D2{]}; boto3's sync call is offloaded with
+\texttt{asyncio.to\_thread}, so N episodes run concurrently. The
+\texttt{agentcore\_slime\_demo.sandbox\_server\_agent}
+\texttt{@app.entrypoint} on the Runtime dispatches \texttt{op} →
+\texttt{ping/write\_file/exec/read\_file}.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{Step-by-step --- one MBPP episode end-to-end}
@@ -634,7 +646,17 @@ validate before production.
 
 \begin{frame}[fragile,allowframebreaks]{Demos --- two harnesses × two sandboxes}
 \protect\hypertarget{demos-two-harnesses-two-sandboxes}{}
-Policy is always \textbf{Qwen3-4B}, trained by slime.
+Policy is always \textbf{Qwen3-4B}, trained by slime. \textbf{Columns
+vary the sandbox; rows vary where the harness runs.} The
+\textbf{recommended path is the in-process harness} (top row) with
+\textbf{AgentCore as the sandbox} --- the proven, natural-fit config. The
+\texttt{*\_2runtime} rows put the harness on its \emph{own} Runtime too
+(\texttt{MiniClaudeHarness} on Runtime \#1 driving sandbox Runtime \#2 by
+ARN over \texttt{invoke\_agent\_runtime}); we keep them as a reference
+that AgentCore \emph{can} host a harness, but that is \textbf{not the
+recommended RL path} (a harness wants warmth, not a cold session per
+episode). \textbf{Identical code CPU vs GPU --- only the sandbox ARN
+differs.}
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
@@ -649,23 +671,12 @@ GPU sandbox --- KernelBench
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-in-process harness & \texttt{demo\_cpu\_single} &
+in-process harness \emph{(recommended)} & \texttt{demo\_cpu\_single} &
 \texttt{demo\_gpu\_single} \\
-harness on its own Runtime & \texttt{demo\_cpu\_2runtime} &
+harness on its own Runtime \emph{(variant)} & \texttt{demo\_cpu\_2runtime} &
 \texttt{demo\_gpu\_2runtime} \\
 \bottomrule\noalign{}
 \end{longtable}
-
-\textbf{Rows vary harness fidelity; columns vary the sandbox.} The
-\texttt{*\_2runtime} rows are the clean disaggregated target:
-\texttt{MiniClaudeHarness} on \textbf{Runtime \#1} (dials the proxy back
-over the VPC) drives \textbf{sandbox Runtime \#2} by ARN --- tool calls
-bridge \#1→\#2 over \texttt{invoke\_agent\_runtime}, so each tier
-scales/fails/secures independently. Files:
-\texttt{harness\_runtime\_agent.py} (\#1),
-\texttt{sandbox\_server\_agent.py} (\#2); \texttt{ADAPTER\_PORT} 18021
-pinned. \textbf{Identical code CPU vs GPU --- only the sandbox ARN
-differs.}
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{The GPU limit --- and how you'd share one L4}
@@ -683,6 +694,12 @@ time-slicing {[}D5{]}.
   \textbf{Free concurrency} = many agents in one session (share the
   instance GPU; ``must be mutually trusted'' --- no isolation).
 \end{itemize}
+
+Our B4 farm: a \texttt{RayGpuFarm} of fractional actors
+(\texttt{num\_gpus=0.5}) in one session, with a per-process memory cap +
+an nvcc \texttt{flock} (a non-MIG L4 wedges under compile storms).
+\textbf{Takeaway:} isolated scaling → more instances; fractioning →
+many-agents-per-session or your own Ray/EKS.
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
@@ -703,12 +720,6 @@ Agents / session · MPS · time-slice · Ray \texttt{num\_gpus\textless{}1}
 NVIDIA MIG & hard & \textbf{no on L4} \\
 \bottomrule\noalign{}
 \end{longtable}
-
-Our B4 farm: a \texttt{RayGpuFarm} of fractional actors
-(\texttt{num\_gpus=0.5}) inside one session, with a per-process memory
-cap + an nvcc \texttt{flock} (a non-MIG L4 wedges under compile storms).
-\textbf{Takeaway:} isolated scaling → more instances; fractioning →
-many-agents-per-session or your own Ray/EKS.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{Networking \& isolation --- private by default}
@@ -766,8 +777,10 @@ control. Principle: \textbf{pull, don't expose.}
 \end{itemize}
 \end{frame}
 
-\begin{frame}[allowframebreaks]{References}
-\protect\hypertarget{references}{}
+\begin{frame}[allowframebreaks]{References --- papers \& models}
+\protect\hypertarget{references-papers-models}{}
+\footnotesize
+
 \textbf{Agentic RL \& models.} {[}1{]} Agent Lightning --- Harnessed
 Agentic RL. \url{https://arxiv.org/abs/2508.03680} · {[}2{]}
 DeepSeek-R1. \url{https://arxiv.org/abs/2501.12948} · {[}3{]} Qwen3
@@ -778,6 +791,11 @@ K2. \url{https://arxiv.org/abs/2507.20534} · {[}6{]} SWE-bench.
 \url{https://huggingface.co/datasets/ScalingIntelligence/KernelBench} ·
 {[}8{]} MBPP. \url{https://arxiv.org/abs/2108.07732} · {[}9{]} slime.
 \url{https://github.com/THUDM/slime}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{References --- AgentCore docs (1/2)}
+\protect\hypertarget{references-agentcore-docs-12}{}
+\scriptsize
 
 \textbf{Official AgentCore docs.} {[}D1{]} What is AgentCore.
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html}
@@ -793,7 +811,13 @@ K2. \url{https://arxiv.org/abs/2507.20534} · {[}6{]} SWE-bench.
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-tool.html}
 · {[}D7{]} Code Interpreter session.
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-session-characteristics.html}
-· {[}D8{]} InvokeAgentRuntime.
+\end{frame}
+
+\begin{frame}[allowframebreaks]{References --- AgentCore docs (2/2)}
+\protect\hypertarget{references-agentcore-docs-22}{}
+\scriptsize
+
+{[}D8{]} InvokeAgentRuntime.
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_InvokeAgentRuntime.html}
 · {[}D9{]} CreateAgentRuntime.
 \url{https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_CreateAgentRuntime.html}

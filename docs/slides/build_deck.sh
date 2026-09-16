@@ -16,7 +16,7 @@ MD="$BASE.md"
 TEX="$BASE.tex"
 PDF="$BASE.pdf"
 
-TITLE="Agentic RL: AgentCore as Sandbox and Harness"
+TITLE="Hands-on: AgentCore as the Sandbox in Agentic RL"
 # ASCII author on purpose: avoids needing a CJK font just for the header line.
 AUTHOR="Kaige Yang --- Senior Applied Scientist, AWS"
 DATE="September 10, 2026"
@@ -32,10 +32,26 @@ trap 'rm -f "$TMP" '"$BASE"'.{aux,log,nav,out,snm,toc,vrb}' EXIT
 } > "$TMP"
 
 # 2. pandoc -> Beamer
+#    fontsize=10pt + tighter list/paragraph spacing so dense slides fit ONE
+#    frame instead of spilling a 1-3 line orphan onto an allowframebreaks page.
 pandoc "$TMP" -t beamer --slide-level=2 \
-  -V theme=Madrid -V aspectratio=169 \
+  -V theme=Madrid -V aspectratio=169 -V fontsize=10pt -V classoption=t \
   -V mainfont="DejaVu Sans" -V monofont="DejaVu Sans Mono" \
   -V CJKmainfont="Noto Serif CJK SC" \
+  -H <(cat <<'PREAMBLE'
+% Tighten vertical rhythm so dense slides fit on a single frame.
+\usepackage{etoolbox}
+\setlength{\parskip}{3pt plus 1pt minus 1pt}
+\setbeamertemplate{itemize/enumerate body begin}{\small}
+\setbeamertemplate{itemize/enumerate subbody begin}{\footnotesize}
+\AtBeginEnvironment{itemize}{\setlength{\itemsep}{2pt}\setlength{\topsep}{2pt}}
+\AtBeginEnvironment{enumerate}{\setlength{\itemsep}{2pt}\setlength{\topsep}{2pt}}
+% Shrink code listings and tables so long lines do not force a page break.
+\AtBeginEnvironment{Highlighting}{\footnotesize}
+\AtBeginEnvironment{verbatim}{\footnotesize}
+\AtBeginEnvironment{longtable}{\footnotesize}
+PREAMBLE
+) \
   --pdf-engine=xelatex \
   -s -o "$TEX"
 
