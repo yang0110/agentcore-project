@@ -45,7 +45,7 @@ shortcuts, see the table at the bottom), not architecture.
 | **Training Engine** | slime Megatron actor | ① (⟂ Inference Engine) |
 | **Inference Engine** | SGLang | ① |
 | **LLM API Proxy** | slime `AnthropicAdapter` | ② (*is* the seam between harness ↔ inference) |
-| **Agents with Harness** | our mini harness `MiniClaudeHarness` (A3/B3) | ② and ③ |
+| **Agents with Harness** | our in-process mini harness `MiniClaudeHarness` | ② and ③ |
 | *(execution environment)* | AgentCore sandbox (Code Interpreter / GPU Runtime) | ③ (⟂ harness) |
 | **Sample Adapter** | slime `TrajectoryManager` | — (turns → loss-masked samples) |
 
@@ -82,16 +82,14 @@ AL's three decouplings map 1:1 to ①/②/③ below.
 
 - **What:** the **harness** owns the agent loop (tool selection, context, control flow); the
   **sandbox** is the execution environment where tool actions run. Two distinct component types —
-  do not merge them. Note this decoupling is about the **interface** (tool calls cross a boundary
-  to a separate sandbox), *not* about which service hosts the harness: the harness is decoupled
-  from the sandbox whether it runs in-process or on its own Runtime. We keep the harness in-process
-  and put **only the sandbox on AgentCore**.
-- **Where in code:** the harness = our own `MiniClaudeHarness`
-  (`agentcore_slime_demo/mini_agent.py`, A3/B3), run either in-process for the reference loop or
-  hosted by `harness_runtime_agent.py` (which wraps `MiniClaudeHarness`, `HARNESS_KIND=mini`).
-  Sandboxes implement the `Sandbox` protocol (`code/agentcore_slime_demo/sandbox.py`):
-  `LocalSandbox`, `AgentCoreSandbox` (Code Interpreter), `AgentCoreRuntimeSandbox` (separate
-  Runtime).
+  do not merge them. This decoupling is about the **interface** (tool calls cross a boundary to a
+  separate sandbox), *not* about which service hosts the harness. We keep the harness **in-process**
+  and put **only the sandbox on AgentCore** — as its own Runtime (GPU) or a Code Interpreter session
+  (CPU).
+- **Where in code:** the harness = our own in-process `MiniClaudeHarness`
+  (`agentcore_slime_demo/mini_agent.py`). Sandboxes implement the `Sandbox` protocol
+  (`code/agentcore_slime_demo/sandbox.py`): `LocalSandbox`, `AgentCoreSandbox` (Code Interpreter),
+  `AgentCoreRuntimeSandbox` (the sandbox on its own AgentCore Runtime — the GPU rows).
 - **Why:** swap CPU ↔ GPU sandbox without touching the harness; isolate untrusted / CUDA tool exec
   off the trainer GPUs; scale harness (latency-bound) and sandbox (tool-exec-bound) separately.
 
@@ -101,25 +99,16 @@ AL's three decouplings map 1:1 to ①/②/③ below.
 
 | Row | Harness | Sandbox on AgentCore | Status |
 |---|---|---|---|
-| A / B (`demo_cpu_single`, `demo_gpu_single`) | our `run_episode`, **in-process** | `AgentCoreSandbox` (A, Code Interpreter) / remote GPU Runtime (B) | **recommended path** |
-| A3 / B3 (`demo_cpu_2runtime`, `demo_gpu_2runtime`) | mini harness *also* on an AgentCore Runtime | Code Interpreter (A3) / GPU Runtime (B3) | possible, **not recommended** — see below |
+| A / B (`demo_cpu_single`, `demo_gpu_single`) | our `run_episode`, **in-process** | `AgentCoreSandbox` (A, Code Interpreter) / remote GPU Runtime (B) | **the path** |
 
-The **recommended path is A/B**: harness in-process, **AgentCore = the sandbox only**. That is the
-proven, natural-fit configuration and the one this project's story is built on.
+The configuration is settled: **harness in-process, AgentCore = the sandbox only.** That is the
+proven, natural-fit topology and the one this project's story is built on. Every demo folder now
+varies the **task** and the **sandbox substrate** (CPU Code Interpreter vs GPU Runtime instance) —
+never the harness placement.
 
-(A prior A2 / B2 row ran the **real Claude Code CLI** co-located in the sandbox; that path has been
-removed in favor of the mini harness.)
-
-**Why A3/B3 (harness on its own Runtime) is *not* the recommended path.** It also puts the harness
-on AgentCore (`harness_runtime_agent.py`, `HARNESS_KIND=mini`), sandbox on a second Runtime
-(`sandbox_server_agent.py`), wired by `agentcore_runtime_generate.generate` with
-`SANDBOX=agentcore-runtime`. It is kept as a reference for the "AgentCore *can* host a harness"
-claim, but for RL it is a poor fit: the current hook mints a **fresh harness session per episode**
-(`agentcore_runtime_generate.py`), i.e. a cold start each episode, when the harness actually wants
-to be a **warm, reused pool** — persistence the harness needs but the sandbox does not. If ever
-pursued, the harness would need a bounded pool of reused `runtimeSessionId`s, not one per episode.
-
-> The two-Runtime backend (`agentcore_runtime_sandbox.py`, `sandbox_server_agent.py`,
-> `harness_runtime_agent.py`, `agentcore_runtime_generate.py`) is **untested scaffolding** — it has
-> not been fully run against AWS (GPU instances cost money) and is retained for reference only. The
-> recommended `demo_cpu_single` / `demo_gpu_single` paths (AgentCore = sandbox) are what work.
+(Two prior rows are gone: an A2/B2 row ran the **real Claude Code CLI** co-located in the sandbox,
+and an A3/B3 row hosted the mini harness on its *own* AgentCore Runtime. Both are removed. AgentCore
+*can* host a harness — its managed-agent product — but for RL rollouts it is the wrong lifecycle:
+the harness wants a **warm, reused pool**, not a fresh per-episode session (a cold start), whereas
+the sandbox wants exactly the ad-hoc per-episode isolation AgentCore provides. See
+[harness-sandbox-decoupling.md](harness-sandbox-decoupling.md).)

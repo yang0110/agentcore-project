@@ -218,8 +218,8 @@ each tool call + the checker → reward.
 \item
   \textbf{Sandbox} --- the isolated place untrusted model code executes
   (write→run→read) and the reward is scored. \emph{This is what we use
-  AgentCore for} --- a sandbox wants to be ad-hoc + isolated per episode,
-  a perfect fit for AgentCore's per-session microVM.
+  AgentCore for.} A sandbox wants to be ad-hoc + isolated per episode
+  --- a perfect fit for AgentCore's per-session microVM.
 \item
   \textbf{Harness} --- the agent loop itself. We keep it
   \textbf{in-process} (warm, next to the trainer); episodes are
@@ -514,8 +514,7 @@ VPC subnets/SGs, EBS, \texttt{idleInstanceTimeout=600},
 
 \textbf{Customize} = edit \texttt{sandbox\_server\_agent.py} --- a
 \texttt{BedrockAgentCoreApp} with \texttt{@app.entrypoint}. Redeploy one
-image with \texttt{redeploy\_gpu\_sandbox.py} /
-\texttt{redeploy\_harness.py}.
+sandbox image with \texttt{redeploy\_gpu\_sandbox.py}.
 \end{frame}
 
 \begin{frame}[allowframebreaks]{Can AgentCore host every frontier sandbox? --- tick by
@@ -644,39 +643,30 @@ one SigV4 \texttt{InvokeAgentRuntime} {[}D8{]}:
 \textbf{zero loop change} (KernelBench, allclose on cuda).
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{Demos --- two harnesses × two sandboxes}
-\protect\hypertarget{demos-two-harnesses-two-sandboxes}{}
-Policy is always \textbf{Qwen3-4B}, trained by slime. \textbf{Columns
-vary the sandbox; rows vary where the harness runs.} The
-\textbf{recommended path is the in-process harness} (top row) with
-\textbf{AgentCore as the sandbox} --- the proven, natural-fit config. The
-\texttt{*\_2runtime} rows put the harness on its \emph{own} Runtime too
-(\texttt{MiniClaudeHarness} on Runtime \#1 driving sandbox Runtime \#2 by
-ARN over \texttt{invoke\_agent\_runtime}); we keep them as a reference
-that AgentCore \emph{can} host a harness, but that is \textbf{not the
-recommended RL path} (a harness wants warmth, not a cold session per
-episode). \textbf{Identical code CPU vs GPU --- only the sandbox ARN
-differs.}
+\begin{frame}[fragile,allowframebreaks]{Demos --- one in-process harness, the sandbox is
+what varies}
+\protect\hypertarget{demos-one-in-process-harness-the-sandbox-is-what-varies}{}
+Policy is always \textbf{Qwen3-4B}, trained by slime. The harness is
+\textbf{in-process} --- a warm agent loop next to the trainer (a harness
+wants warmth, not a cold session per episode). \textbf{AgentCore is the
+sandbox}, and that is the only thing that varies across demos: the
+sandbox substrate (CPU microVM vs GPU Runtime instance) and the task.
+\textbf{Identical code CPU vs GPU --- only the sandbox ARN differs.}
 
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\begin{longtable}[]{@{}lll@{}}
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-CPU sandbox --- MBPP
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-GPU sandbox --- KernelBench
-\end{minipage} \\
+& CPU sandbox --- MBPP & GPU sandbox --- KernelBench \\
 \midrule\noalign{}
 \endhead
-in-process harness \emph{(recommended)} & \texttt{demo\_cpu\_single} &
+in-process harness & \texttt{demo\_cpu\_single} &
 \texttt{demo\_gpu\_single} \\
-harness on its own Runtime \emph{(variant)} & \texttt{demo\_cpu\_2runtime} &
-\texttt{demo\_gpu\_2runtime} \\
 \bottomrule\noalign{}
 \end{longtable}
+
+Same substrates, more tasks/patterns: \texttt{demo\_cpu\_math},
+\texttt{demo\_cpu\_quiesce} (heartbeat keepalive),
+\texttt{demo\_gpu\_shared} (Ray pack-many farm),
+\texttt{demo\_gpu\_snapshot} (app-level snapshot/resume).
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{The GPU limit --- and how you'd share one L4}

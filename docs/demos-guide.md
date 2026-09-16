@@ -54,7 +54,7 @@ slime manages all **train + inference** GPUs on this box; the KernelBench checke
 - **Demo A (4 + 4 + 0):** the MBPP checker is plain Python/IO, so envs use no GPU; all 8 GPUs
   serve the policy (train + infer).
 - **Demo B (4 + 4 + 0):** the KernelBench checker runs torch on CUDA, but *inside the remote
-  GPU sandbox Runtime #2* (a g6 capacity-provider instance), not on this box. So all 8 local
+  GPU sandbox Runtime* (a g6 capacity-provider instance), not on this box. So all 8 local
   GPUs go to slime and none are held back for envs (§6).
 
 ### Checkpoints & eval cadence (disk-saving policy)
@@ -196,7 +196,7 @@ stream — proving each rollout is genuinely trainable data, not just a pass/fai
 In Demo B **none** of the 8 local GPUs are held back for env checkers — all 8 go to slime
 (4 train + 4 infer). The KernelBench checker still needs CUDA (it imports torch and asserts
 the candidate `ModelNew` ran on a `cuda` device), but that CUDA runs on a **separate remote
-AgentCore GPU Runtime** — the sandbox as its own Runtime #2 (`sandbox_server_agent.py` on a
+AgentCore GPU Runtime** — the sandbox as its own Runtime (`sandbox_server_agent.py` on a
 **g6** capacity-provider EC2 GPU instance).
 
 - The harness drives the multi-turn loop **in-process on this box**, but each `write_file` /
@@ -259,7 +259,7 @@ worker (the fork-of-CUDA-process deadlock is **fixed** — §7, `megatron_init.p
 **Not yet:** (a) a logged end-to-end run of the **async Demo B** combination specifically —
 async trainer + SGLang + KernelBench envs whose checker runs on the remote GPU sandbox Runtime,
 all at once (each piece is proven; the combined async run is the next milestone); (b) **Demo B on a real
-AgentCore GPU Runtime instance** — the sandbox Runtime #2 image is built and the GPU Runtime
+AgentCore GPU Runtime instance** — the sandbox Runtime image is built and the GPU Runtime
 deploys, but a full logged training run against it is still pending (the *managed* Code
 Interpreter can't run the full multi-user Claude Code harness); (c) **SGLang throughput path for the standalone
 `e2e_rl.py` driver** — blocked on the local ABI break, so that driver uses `LocalHFPolicy`

@@ -129,13 +129,13 @@ python train.py \
 - `AgentCoreSandbox` field shapes (`structuredContent.stdout/exitCode`, `writeFiles`/`readFiles`)
   follow the AWS samples repo, not a formal schema — pin your SDK version and keep the Phase-0
   smoke test. See `../docs/agentcore-slime-integration.md` §4 and `../docs/demo-plan.md`.
-- **Mini Claude-Code harness (two-Runtime path):** `MiniClaudeHarness` (`mini_agent.py`) is our
-  ~1-file Claude-Code-like agent loop — call the model through slime's `AnthropicAdapter`, pick a
-  tool, run it in the sandbox, repeat. The demos deploy it the **target** way: the harness runs on
-  its **own AgentCore Runtime #1** (`harness_runtime_agent.py`, `HARNESS_KIND=mini`) and the sandbox
-  is a **separate Runtime #2** (`AgentCoreRuntimeSandbox`, `SANDBOX=agentcore-runtime`) — see demos
-  `demo_cpu_2runtime`/`demo_gpu_2runtime` and `../docs/harness-sandbox-decoupling.md`. `tests/test_smoke.py` proves
-  `AgentCoreSandbox` is a genuine drop-in via `isinstance(..., slime.agent.sandbox.Sandbox)`. (An
-  earlier variant ran the **real Claude Code CLI** as the harness; that path has been removed in
-  favor of this mini harness.) This demo's `run_episode` is the offline-runnable, simplified
-  stand-in for the agent loop.
+- **Mini Claude-Code harness (in-process):** `MiniClaudeHarness` (`mini_agent.py`) is our ~1-file
+  Claude-Code-like agent loop — call the model through slime's `AnthropicAdapter`, pick a tool, run
+  it in the sandbox, repeat. It runs **in-process** next to the trainer and talks to whichever
+  AgentCore sandbox the demo uses (a CPU Code-Interpreter microVM, or a GPU Runtime instance —
+  `AgentCoreSandbox` / `AgentCoreRuntimeSandbox`). `tests/test_smoke.py` proves `AgentCoreSandbox` is
+  a genuine drop-in via `isinstance(..., slime.agent.sandbox.Sandbox)`. (Earlier variants hosted the
+  harness on its *own* AgentCore Runtime, and before that ran the real Claude Code CLI as the
+  harness; both paths have been removed in favor of the in-process mini harness — see
+  `../docs/harness-sandbox-decoupling.md`.) This demo's `run_episode` is the offline-runnable,
+  simplified stand-in for the agent loop.

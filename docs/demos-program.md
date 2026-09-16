@@ -164,16 +164,6 @@ Each Tier-1/2 README states the step budget and the observed convergence point f
 
 ---
 
-## Appendix — variant (not recommended): harness on its own AgentCore Runtime
-
-`demo_cpu_2runtime` / `demo_gpu_2runtime` also host the *harness* on an AgentCore Runtime (Runtime #1
-driving sandbox Runtime #2). Kept only as a reference that AgentCore *can* host a harness. Not part
-of the recommended program: the current hook mints a fresh harness session per episode (a cold
-start), when the harness wants a warm reused-session pool. See
-[harness-sandbox-decoupling.md](harness-sandbox-decoupling.md) §3.
-
----
-
 ## Shared vs copied (layout B)
 
 Each demo folder is self-contained: its own `data/`, `run.sh`, `README.md`, a vendored copy of the

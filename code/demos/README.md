@@ -1,4 +1,10 @@
-# Demos — the 2×2 matrix
+# Demos — the sandbox demo set
+
+Every demo here is about **the sandbox**: the agent harness stays **in-process** (a warm
+`run_episode` loop next to the trainer), and each demo varies the **task** and the **AgentCore
+sandbox substrate** it talks to. The policy is always Qwen3-4B trained by slime (async/decoupled
+GRPO), talking to the agent loop through slime's Anthropic adapter; only the task and the sandbox
+change.
 
 The demo directories are each **fully self-contained**. Every demo owns its `data/` (train +
 held-out eval jsonl), its `ckpt/` output dir, its `run.sh`, a **vendored copy of the
@@ -15,27 +21,24 @@ slime install at `/root/slime`, and the **shared deploy orchestrator** `code/dep
 GPU capacity provider. The top-level `code/agentcore_slime_demo/` still exists because `code/deploy/`
 builds the Runtime images from it and `code/tests/` imports it.
 
-The matrix has two axes:
+## The demos
 
-- **Task / sandbox** (columns): **A** = MBPP on a CPU microVM · **B** = KernelBench on a GPU sandbox.
-- **Agent harness** (rows): **our** lightweight `run_episode` loop · a **mini Claude-Code-like**
-  harness we wrote (no CLI) that runs on its **own AgentCore Runtime**. In every row the policy is
-  still Qwen3-4B trained by slime; only the agent loop changes, talking to the policy through slime's
-  Anthropic adapter.
+Two sandbox substrates, plus two resilience demos:
 
-|            | **A — MBPP / CPU microVM**            | **B — KernelBench / GPU sandbox**              |
-|------------|----------------------------------------|-------------------------------------------------|
-| **our harness**          | [`demo_cpu_single/`](demo_cpu_single/)   — 4 train + 4 infer + 0 env | [`demo_gpu_single/`](demo_gpu_single/)  — 4 train + 4 infer + 0 env (checker GPU on remote g6 sandbox) |
-| **mini Claude-Code (own Runtime)** | [`demo_cpu_2runtime/`](demo_cpu_2runtime/) — Demo A + mini harness | [`demo_gpu_2runtime/`](demo_gpu_2runtime/) — Demo B + mini harness |
+| Substrate | Demo | Task / point |
+|---|---|---|
+| **CPU serverless microVM** (Code Interpreter) | [`demo_cpu_single/`](demo_cpu_single/) | the reference — MBPP on a CPU microVM, 4 train + 4 infer + 0 env |
+| | [`demo_cpu_math/`](demo_cpu_math/) | math word problems (generation-bound: long reasoning, trivial check) |
+| | [`demo_cpu_quiesce/`](demo_cpu_quiesce/) | **resilience** — heartbeat that keeps the microVM warm across the weight-sync barrier |
+| **GPU Runtime instance** (g6 capacity provider) | [`demo_gpu_single/`](demo_gpu_single/) | KernelBench (level_1 CUDA); checker's GPU is the remote g6 sandbox Runtime, so the trainer box stays 4 train + 4 infer + 0 env |
+| | [`demo_gpu_shared/`](demo_gpu_shared/) | KernelBench + a Ray GPU-sharing farm — many envs share one GPU on the remote g6 sandbox Runtime |
+| | [`demo_gpu_snapshot/`](demo_gpu_snapshot/) | **resilience** — application-level snapshot & resume across a GPU instance recycle |
 
-(A prior third row ran the **real Claude Code CLI** in a custom container; that path has been
-removed in favor of the mini harness.) Demo [`demo_gpu_shared/`](demo_gpu_shared/) extends the B / mini-harness path
-with a Ray GPU-sharing farm on the remote g6 sandbox Runtime.
-
-All four matrix demos share the training path: slime async/decoupled (`train_async.py`), Qwen3-4B,
-GRPO, the checkpoint-deadlock fix (`--async-save` + `--custom-megatron-init-path …enable_persistent_async_ckpt`),
-and save-only-at-end. They differ only in the **task**, the **sandbox**, and (the mini-harness rows)
-the **agent harness** (a **dedicated harness Runtime**).
+In every demo the **harness is in-process**; the sandbox is the AgentCore surface that changes (a
+CPU Code-Interpreter microVM, or a GPU Runtime instance on a capacity provider). A prior variant that
+hosted the harness on its *own* AgentCore Runtime (the "two-Runtime" demos) has been removed — see
+[`../../docs/harness-sandbox-decoupling.md`](../../docs/harness-sandbox-decoupling.md) for why
+in-process is the recommended path.
 
 ## Which to run
 
@@ -45,14 +48,14 @@ the **agent harness** (a **dedicated harness Runtime**).
   the trainer box stays 4 train + 4 infer + 0 env. Trains on
   the real KernelBench (level_1, 100 single-op CUDA problems; 20 held-out level_2 fusions for eval).
   Defaults `RB=4/NS=8/NR=20`; keep `NR × RB ≤ 100` (see its README).
-- **`demo_cpu_2runtime` / `demo_gpu_2runtime`** — a **mini harness that mimics Claude Code** (call model → pick tool →
-  run in sandbox → repeat) in ~1 file of Python. **No Node, no CLI** (it is not the Claude Code CLI),
-  but it is deployed the **target** way: the harness runs on its **own AgentCore Runtime #1** and the
-  sandbox is a **separate Runtime #2** (CPU Code-Interpreter-style for A3 / GPU for B3) — build and
-  create both with `code/deploy/deploy_two_runtime.py`, then pass the two ARNs to `run.sh`. The
-  earlier in-process shortcut has been removed; the harness logic still has an offline smoke
-  (`code/scripts/mini_agent_smoke.py`). Start here if you want a real agentic loop without the CLI
-  packaging. Built from the AgentCore
-  [harness](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/harness.html) concept.
+- **`demo_gpu_shared`** — extends the GPU-sandbox path with a Ray GPU-sharing farm on the remote g6
+  sandbox Runtime (many envs packed onto one GPU).
+- **`demo_cpu_quiesce` / `demo_gpu_snapshot`** — the two **resilience** demos (keeping a paused
+  sandbox alive / recovering a lost one across the weight-sync barrier). Both run offline in seconds,
+  no AWS or GPU. See [`../../docs/demos-program.md`](../../docs/demos-program.md).
+
+The training demos share the training path: slime async/decoupled (`train_async.py`), Qwen3-4B,
+GRPO, the checkpoint-deadlock fix (`--async-save` + `--custom-megatron-init-path …enable_persistent_async_ckpt`),
+and save-only-at-end. They differ only in the **task** and the **sandbox**.
 
 Each directory has its own `README.md` with exact build/run commands and knobs.

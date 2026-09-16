@@ -449,8 +449,8 @@ def prepare_gpu_volume(gpu_arn: str) -> None:
 
 
 def _build_push_one(repo: str, dockerfile: str, platform: str) -> str:
-    """Build+push a SINGLE image (used by redeploy_harness.py so we don't rebuild the whole A3/B3
-    set). Returns the :latest image URI. Honors SKIP_BUILD=1 to reuse an already-pushed image."""
+    """Build+push a SINGLE image (used by the redeploy_*_sandbox.py helpers so we don't rebuild the
+    whole set). Returns the :latest image URI. Honors SKIP_BUILD=1 to reuse an already-pushed image."""
     acct = account()
     registry = f"{acct}.dkr.ecr.{REGION}.amazonaws.com"
     uri = ensure_ecr(repo) + ":latest"

@@ -172,7 +172,7 @@ python3 deploy_two_runtime.py all                  # ECR + buildx + create runti
 
 **IAM:** `acs-exec-role` (ECR pull, logs, `InvokeAgentRuntime`) + `acs-operator-role` (`BedrockAgentCoreRuntimeInstancesOperatorRolePolicy`).
 
-**Customize** = edit `sandbox_server_agent.py` — a `BedrockAgentCoreApp` with `@app.entrypoint`. Redeploy one image with `redeploy_gpu_sandbox.py` / `redeploy_harness.py`.
+**Customize** = edit `sandbox_server_agent.py` — a `BedrockAgentCoreApp` with `@app.entrypoint`. Redeploy one sandbox image with `redeploy_gpu_sandbox.py`.
 
 ## Can AgentCore host every frontier sandbox? — tick by tick
 
@@ -234,14 +234,15 @@ def _invoke(self, op, **kw):                               # sandbox client: 1 o
 
 **Swap to GPU:** `SANDBOX=agentcore-runtime` + a GPU ARN — **zero loop change** (KernelBench, allclose on cuda).
 
-## Demos — two harnesses × two sandboxes
+## Demos — one in-process harness, the sandbox is what varies
 
-Policy is always **Qwen3-4B**, trained by slime. **Columns vary the sandbox; rows vary where the harness runs.** The **recommended path is the in-process harness** (top row) with **AgentCore as the sandbox** — the proven, natural-fit config. The `*_2runtime` rows put the harness on its *own* Runtime too (`MiniClaudeHarness` on Runtime #1 driving sandbox Runtime #2 by ARN over `invoke_agent_runtime`); we keep them as a reference that AgentCore *can* host a harness, but that is **not the recommended RL path** (a harness wants warmth, not a cold session per episode). **Identical code CPU vs GPU — only the sandbox ARN differs.**
+Policy is always **Qwen3-4B**, trained by slime. The harness is **in-process** — a warm agent loop next to the trainer (a harness wants warmth, not a cold session per episode). **AgentCore is the sandbox**, and that is the only thing that varies across demos: the sandbox substrate (CPU microVM vs GPU Runtime instance) and the task. **Identical code CPU vs GPU — only the sandbox ARN differs.**
 
 | | CPU sandbox — MBPP | GPU sandbox — KernelBench |
 |---|---|---|
-| in-process harness *(recommended)* | `demo_cpu_single` | `demo_gpu_single` |
-| harness on its own Runtime *(variant)* | `demo_cpu_2runtime` | `demo_gpu_2runtime` |
+| in-process harness | `demo_cpu_single` | `demo_gpu_single` |
+
+Same substrates, more tasks/patterns: `demo_cpu_math`, `demo_cpu_quiesce` (heartbeat keepalive), `demo_gpu_shared` (Ray pack-many farm), `demo_gpu_snapshot` (app-level snapshot/resume).
 
 ## The GPU limit — and how you'd share one L4
 
