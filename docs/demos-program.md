@@ -81,6 +81,14 @@ Decision procedure:
 4. Show the throughput / step-time improvement after scaling the correct side — and that scaling the
    *other* side would not have helped.
 
+There is a **third** tier hiding behind those two: the **harness** that drives the episodes. Rollout
+throughput is `min(inference, sandbox, harness)`, so even after inference + sandbox are scaled, a
+single-process harness can cap everything. [`demo_cpu_harness_scale`](../code/demos/demo_cpu_harness_scale/)
+isolates that tier — one task, a pool of **W warm mini-Claude harness workers** — and shows the knee
+(throughput rises ~linearly with `W`, then plateaus at `min(inference, sandbox)`) plus how the three
+tiers route/load-balance differently (per-request router vs per-episode sticky sandbox vs per-episode
+pull queue). Full write-up: [harness-scaling.md](harness-scaling.md).
+
 This is why disaggregation matters: each component is sized to its own bottleneck, per task.
 
 ### Advanced: keeping a paused sandbox alive across the weight-sync barrier — two demos

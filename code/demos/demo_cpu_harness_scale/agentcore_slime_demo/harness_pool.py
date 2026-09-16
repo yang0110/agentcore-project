@@ -1,0 +1,223 @@
+"""In-process WARM harness worker pool — the harness-scaling demo's core.
+
+This module exists to demonstrate ONE thing: the async-RL rollout scaling law
+
+        throughput  =  min( inference , sandbox , harness )
+
+If you deepen the async rollout buffer and scale inference + sandbox but leave a SINGLE
+process driving every episode, the *harness* becomes the ceiling (its concurrency, the
+asyncio event loop, FDs, RAM for in-flight trajectories). So the harness has to scale too —
+and because a harness is persistent/warm while a sandbox is ad-hoc per episode, "scale the
+harness" does NOT mean "make it ad-hoc": it means run a fixed set of WARM workers and route
+episodes to them.
+
+The three replicated tiers scale AND load-balance DIFFERENTLY — this is the whole point of
+the demo, and the asymmetry is deliberate:
+
+  * inference  (E SGLang engines)  — STATELESS per request. slime's SGLang ROUTER load-balances
+        every `/generate` call across the E engines (cache-aware). A single episode's turns may
+        land on different engines. LB granularity = per REQUEST.
+  * sandbox    (K sandbox Runtimes)— STATEFUL per episode: a sandbox holds the episode's files
+        (solution.py, run_checks.py). So it is STICKY for the episode's whole life; we round-robin
+        NEW episodes across the K endpoints (make_sandbox -> _next_runtime_arn), one fresh session
+        per episode. LB granularity = per EPISODE, sticky.
+  * harness    (W warm workers)    — STATELESS but WARM. A shared asyncio.Queue; whichever worker
+        is free PULLS the next episode. Pull/work-stealing balances by AVAILABILITY, which is
+        robust to the wide, variable per-episode latency of multi-turn agentic rollouts (a push /
+        hash assignment would hot-spot a worker stuck on a slow episode). LB granularity = per
+        EPISODE, by pull. A worker holds its episode start->finish (it owns the aiohttp session and
+        the adapter session id), so an episode is sticky to its worker just as it is to its sandbox.
+
+Placement is IN-PROCESS (asyncio workers in the trainer process — the demo's chosen design).
+Honest ceiling note: in-process workers lift the IO-CONCURRENCY ceiling — episodes spend almost
+all wall-clock AWAITING (LLM turns over HTTP to the adapter, tool exec over HTTP to the sandbox
+Runtime), which asyncio overlaps well. They do NOT lift the CPU ceiling: the GIL still serialises
+the CPU-bound bits (tokenisation / trajectory flattening in the adapter's finish_session). Lifting
+THAT needs separate processes or dedicated harness Runtimes — a different placement, out of scope
+for this demo (see docs/harness-scaling.md).
+
+The harness itself is the SAME MiniClaudeHarness (the "mimic Claude Code" agent): it speaks the
+Anthropic Messages API to slime's in-process AnthropicAdapter (which serves completions from the
+policy under training and records the trajectory), and runs its tools in the remote sandbox
+Runtime. So this demo also exercises the adapter / tool-parser path (needs --sglang-tool-call-parser
+qwen25 + --sglang-reasoning-parser qwen3) that the in-process run_episode harness sidesteps.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import secrets
+import threading
+
+logger = logging.getLogger(__name__)
+
+_POOL: "HarnessPool | None" = None
+_POOL_LOCK = threading.Lock()
+
+
+def get_pool(args) -> "HarnessPool":
+    """Process-wide singleton. Built once from slime `args` on the first episode."""
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is None:
+            _POOL = HarnessPool(args)
+    return _POOL
+
+
+class HarnessPool:
+    """W warm in-process harness workers fed by one shared asyncio.Queue.
+
+    One shared AnthropicAdapter (localhost, in-process) fronts SGLang for all workers; each
+    worker owns a warm aiohttp session it reuses across episodes and a fresh remote sandbox
+    session per episode.
+    """
+
+    def __init__(self, args) -> None:
+        self.args = args
+        # THE scaling knob. Default 4 to sit symmetric with the demo's 4 inference engines and
+        # 4 sandbox Runtimes (throughput = min over the three tiers; all-4 is the balanced point).
+        self.num_workers = int(os.environ.get("HARNESS_WORKERS", "4"))
+        self.max_turns = int(os.environ.get("EPISODE_MAX_TURNS", "4"))
+        self.max_tokens = int(os.environ.get("EPISODE_MAX_TOKENS", "1024"))
+        self.region = os.environ.get("AGENTCORE_REGION", os.environ.get("AWS_REGION", "us-west-2"))
+        self.sandbox_kind = os.environ.get("SANDBOX", "agentcore-runtime")
+        self._queue: asyncio.Queue | None = None
+        self._workers: list[asyncio.Task] = []
+        self._sessions: list = []          # per-worker warm aiohttp sessions
+        self._adapter = None
+        self._adapter_url: str | None = None
+        self._harness = None
+        self._started = False
+        self._start_lock = asyncio.Lock()
+
+    # ---- lifecycle -----------------------------------------------------------
+    async def _ensure_started(self) -> None:
+        """Stand up the adapter + the W warm workers exactly once, on the calling loop."""
+        if self._started:
+            return
+        async with self._start_lock:
+            if self._started:
+                return
+            import aiohttp
+
+            from slime.agent.adapters import AnthropicAdapter
+            from slime.agent.aiohttp_threaded import run_app_in_thread
+            from slime.utils.processing_utils import load_tokenizer
+
+            from .mini_agent import MiniClaudeHarness
+
+            # ONE shared in-process adapter (localhost, ephemeral port). Workers dial 127.0.0.1,
+            # so no security group / public port is needed (unlike the harness-Runtime variant).
+            tokenizer = load_tokenizer(self.args.hf_checkpoint, trust_remote_code=True)
+            self._adapter = AnthropicAdapter(
+                tokenizer=tokenizer,
+                sglang_url=f"http://{self.args.sglang_router_ip}:{self.args.sglang_router_port}",
+                tool_parser=getattr(self.args, "sglang_tool_call_parser", None) or None,
+                reasoning_parser=getattr(self.args, "sglang_reasoning_parser", None) or None,
+            )
+            handle = run_app_in_thread(
+                self._adapter.app, host="127.0.0.1", port=0, thread_name="anthropic-adapter-inproc",
+            )
+            self._adapter_url = f"http://127.0.0.1:{handle.port}"
+
+            self._harness = MiniClaudeHarness(max_turns=self.max_turns)
+            self._queue = asyncio.Queue()
+            for wid in range(self.num_workers):
+                sess = aiohttp.ClientSession()   # created on THIS loop; reused across episodes (warm)
+                self._sessions.append(sess)
+                self._workers.append(asyncio.create_task(self._worker_loop(wid, sess)))
+            self._started = True
+            logger.info(
+                "[harness_pool] started W=%d warm workers, adapter=%s, sandbox=%s",
+                self.num_workers, self._adapter_url, self.sandbox_kind,
+            )
+
+    async def _worker_loop(self, wid: int, http) -> None:
+        assert self._queue is not None
+        while True:
+            job = await self._queue.get()
+            if job is None:  # shutdown sentinel
+                self._queue.task_done()
+                return
+            task, sampling_params, base_sample, fut = job
+            try:
+                result = await self._run_episode(wid, http, task, sampling_params, base_sample)
+                if not fut.done():
+                    fut.set_result(result)
+            except Exception as exc:  # noqa: BLE001 — never let one episode kill the worker
+                logger.warning("[harness_pool] worker %d episode failed: %s", wid, exc)
+                if not fut.done():
+                    fut.set_exception(exc)
+            finally:
+                self._queue.task_done()
+
+    # ---- the episode --------------------------------------------------------
+    def _problem_text(self, task) -> str:
+        """PROBLEM.md the agent reads. We put the task-specific instructions HERE (not in the
+        harness's fixed system prompt) so the coding-shape mini harness stays unchanged: the
+        family's own system prompt (e.g. math's 'store the answer in `answer`') + the question."""
+        return f"{task.system_prompt()}\n\n{task.initial_user_prompt()}\n"
+
+    _AGENT_PROMPT = (
+        "Read PROBLEM.md in this directory and follow it. Write your solution to solution.py using "
+        "the write_file tool, then run `python3 run_checks.py` with the bash tool and read its "
+        "output. If any check fails, revise solution.py and run the checks again. Repeat until the "
+        "command exits 0."
+    )
+
+    async def _run_episode(self, wid: int, http, task, sampling_params, base_sample):
+        from .sandbox import make_sandbox
+
+        # Adapter Bearer session id == the trajectory key; AgentCore runtimeSessionId needs len>=33.
+        sid = getattr(base_sample, "session_id", None)
+        if not sid or len(sid) < 33:
+            sid = f"hs-{task.task_id}-{secrets.token_hex(16)}"
+        base_sample.session_id = sid
+        self._adapter.open_session(sid, sampling_defaults=sampling_params)
+
+        # Fresh sandbox session per episode; make_sandbox round-robins across the K ARNs (sticky
+        # for this episode's life — it holds the episode's files).
+        sandbox = make_sandbox(self.sandbox_kind, region=self.region)
+        try:
+            async with sandbox as sb:
+                # Seed the workspace exactly like run_episode: family files, then the checker,
+                # then PROBLEM.md — all RELATIVE paths (resolved against the sandbox workdir).
+                for name, content in getattr(task, "setup_files", lambda: {})().items():
+                    await sb.write_file(name, content)
+                await sb.write_file("run_checks.py", task.runner_source())
+                await sb.write_file("PROBLEM.md", self._problem_text(task))
+
+                # The WARM harness drives the write->run->fix loop, reusing this worker's session.
+                await self._harness.run(
+                    sb,
+                    session_id=sid,
+                    adapter_url=self._adapter_url,
+                    prompt=self._AGENT_PROMPT,
+                    max_tokens=self.max_tokens,
+                    http=http,
+                )
+
+                # Score with the SAME checker (RLVR — reward from verification, no LLM judge).
+                exit_code, _out, _err = await sb.exec(
+                    getattr(task, "check_command", "python3 run_checks.py"), timeout=120,
+                )
+                reward = task.reward(int(exit_code))
+
+            # Drain the adapter-captured trajectory into loss-masked GRPO samples (a LIST).
+            return await self._adapter.finish_session(
+                sid, base_sample=base_sample, reward=float(reward),
+                extra_metadata={"task_id": task.task_id, "solved": reward == 1.0, "harness_worker": wid},
+            )
+        finally:
+            await self._adapter.drop_session(sid, wait_timeout=30)
+
+    # ---- public entry point -------------------------------------------------
+    async def submit(self, task, sampling_params, base_sample):
+        """Enqueue one episode and await the finished Sample list (blocks until a worker frees)."""
+        await self._ensure_started()
+        assert self._queue is not None
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        await self._queue.put((task, sampling_params, base_sample, fut))
+        return await fut

@@ -33,8 +33,14 @@ Two sandbox substrates, plus two resilience demos:
 | **GPU Runtime instance** (g6 capacity provider) | [`demo_gpu_single/`](demo_gpu_single/) | KernelBench (level_1 CUDA); checker's GPU is the remote g6 sandbox Runtime, so the trainer box stays 4 train + 4 infer + 0 env |
 | | [`demo_gpu_shared/`](demo_gpu_shared/) | KernelBench + a Ray GPU-sharing farm — many envs share one GPU on the remote g6 sandbox Runtime |
 | | [`demo_gpu_snapshot/`](demo_gpu_snapshot/) | **resilience** — application-level snapshot & resume across a GPU instance recycle |
+| **harness-scaling** (varies the *harness* tier, not the sandbox) | [`demo_cpu_harness_scale/`](demo_cpu_harness_scale/) | one task (DeepScaleR), a pool of **W warm mini-Claude harness workers** → the async-RL scaling law `throughput = min(inference, sandbox, harness)` |
 
-In every demo the **harness is in-process**; the sandbox is the AgentCore surface that changes (a
+The demos above vary the **sandbox**; `demo_cpu_harness_scale` is the exception — it fixes the task
+and sandbox and makes the **harness the scalable tier** (a warm in-process worker pool), to show the
+rollout scaling law and how the three tiers route/load-balance differently. See
+[`../../docs/harness-scaling.md`](../../docs/harness-scaling.md).
+
+In the other demos the **harness is in-process and single**; the sandbox is the AgentCore surface that changes (a
 CPU Code-Interpreter microVM, or a GPU Runtime instance on a capacity provider). A prior variant that
 hosted the harness on its *own* AgentCore Runtime (the "two-Runtime" demos) has been removed — see
 [`../../docs/harness-sandbox-decoupling.md`](../../docs/harness-sandbox-decoupling.md) for why
