@@ -2971,12 +2971,12 @@ reasoning {[}2{]} & smoke only (NR=3) \\
 \texttt{demo\_gpu\_single} & GPU instance (g6) & KernelBench CUDA & GPU
 kernels {[}7{]} & \textbf{trained} --- 10-step run \\
 \texttt{demo\_gpu\_shared} & GPU instance (shared g6, Ray farm) &
-KernelBench CUDA & GPU kernels {[}7{]} & run attempted, failed
-(\texttt{rc=1}) \\
+KernelBench CUDA & GPU kernels {[}7{]} & smoke passes end-to-end
+(\texttt{Job\ succeeded} + ckpt) \\
 \texttt{demo\_cpu\_quiesce} & CPU microVM & heartbeat / quiesce &
 resilience (long-horizon) & offline, seconds \\
 \texttt{demo\_gpu\_snapshot} & GPU instance & snapshot / resume &
-resilience (long-horizon) & offline, seconds \\
+resilience (long-horizon) & offline + real-recycle verified \\
 \emph{--- per-task CPU fan-out (8) ---} & & & & \\
 \texttt{demo\_cpu\_gsm8k} & CPU microVM & GSM8K & math reasoning {[}2{]}
 & smoke (NR=3), \texttt{eval} 0.91 \\
@@ -3636,8 +3636,8 @@ long traces) & inference & long-reasoning → largest
 ≫ gen 2.5 s; high \texttt{wait\_time\_ratio}) & sandbox --- more g6 or
 the farm & budget the \textasciitilde90 s torch + g6 cold start \\
 \texttt{demo\_gpu\_shared} & \texttt{kernelbench} & sandbox, packed &
-Ray fractional actors per GPU & fix the \texttt{rc=1} queued run first,
-then converge \\
+Ray fractional actors per GPU & smoke passes end-to-end; now run to
+convergence \\
 \end{longtable}
 
 That table says \emph{what} to scale; the protocol below says \emph{how
@@ -3864,7 +3864,17 @@ start toward ≥ 0.80; budget the one-time \textasciitilde90 s torch
 install + \textasciitilde123 s g6 cold launch per session, and expect
 \textasciitilde4--24 h given the 110--804 s/step range; because it is
 sandbox-bound, scale the sandbox (more g6 instances or the Ray farm)
-rather than inference.
+rather than inference. The end-to-end path was re-verified on hardware
+via the \texttt{LOCAL\_GPU} fallback (\texttt{2026-09-18},
+\texttt{NR=3}): \texttt{Job\ succeeded}, final checkpoint
+\texttt{iter\_0000002}, with the KernelBench checker genuinely
+exercising the local Runtime container (117 \texttt{op=exec} / 173
+\texttt{op=write\_file} / 56 \texttt{op=ping}, all \texttt{status=ok}).
+Note this demo keeps \texttt{-\/-async-save}: unlike
+\texttt{demo\_gpu\_shared}, its persistent-async-ckpt worker detects the
+unfinalized save and \emph{degrades gracefully to a synchronous
+finalize} rather than crashing on the \texttt{pidfd\_getfd} seccomp
+block, so it needs no explicit sync-save change.
 
 \hypertarget{demo_gpu_shared-in-depth-packing-many-episodes-onto-one-gpu}{%
 \subsection{\texorpdfstring{\texttt{demo\_gpu\_shared} in depth ---
@@ -3919,31 +3929,44 @@ GPU}{demo\_gpu\_shared in depth --- packing many episodes onto one GPU}}\label{d
   \texttt{demo\_gpu\_single} (KernelBench, \texttt{allclose}/speedup).
 \end{itemize}
 
-\textbf{Results --- honest status.} The fractional-GPU \emph{packing}
-has been validated on hardware (a non-MIG L4 wedges under sustained
-\texttt{nvcc} load, which \texttt{fraction=0.5} mitigates), but the
-committed end-to-end \emph{training} run was queued and exited
-\texttt{rc=1} (\texttt{b\_queue.out}, 2026-09-15); its queued log holds
-0 completed reward steps. So there is no convergence curve for this demo
-yet --- use \texttt{demo\_gpu\_single}'s per-episode numbers as the
-baseline this farm is designed to pack several-fold onto one GPU. This
-is the sandbox-side answer to KernelBench's sandbox-bound profile, and
-its \textbf{primary motivation is capacity, not just cost}: the
-isolated-per-session path needs \emph{N whole g6 instances at once},
-which stalls on a capacity-starved fleet --- you cannot launch the
-instances at all (the committed run's own
-\texttt{RuntimeClientError}/health-check timeouts are that fragility
-showing through). Packing N episodes onto \textbf{one} g6 needs only a
-single instance, at the price of software-only isolation --- so the
-trade is: isolated = N clean instances (N× cost, and unobtainable when
-the fleet is starved) versus shared = one instance, weaker isolation.
-\textbf{Plan to convergence:} first make the queued run pass (it exits
-\texttt{rc=1} today), then run the same \texttt{NR\ ≈\ 100–150} /
-\texttt{EVAL\_INTERVAL=10} protocol as \texttt{demo\_gpu\_single} ---
-but on \textbf{one} g6 with two \texttt{num\_gpus=0.5} actors instead of
-N instances --- and compare goodput-per-GPU against
-\texttt{demo\_gpu\_single}'s one-instance-per-episode baseline to
-quantify the packing win.
+\textbf{Results --- honest status.} The full pipeline now runs
+\textbf{end-to-end on hardware} via the \texttt{LOCAL\_GPU} fallback
+(the same \texttt{Dockerfile.sandbox.gpu.shared} image served locally on
+one GPU of the 8×L40S box, reached over the identical
+\texttt{/invocations} contract; slime on the other seven). A real smoke
+run (\texttt{NR=3}, \texttt{fraction=0.5} → two \texttt{num\_gpus=0.5}
+actors, \texttt{2026-09-18}) reached \texttt{Job\ succeeded} with a
+valid final checkpoint (\texttt{iter\_0000002}), and --- critically ---
+the concurrency behaviour is now correct: the client-side
+\textbf{open-concurrency gate} capped opens at the farm's slot count
+(2), so of the many concurrent episode opens \textbf{10 succeeded and 0
+were refused}, where before the overflow opens blocked on the server
+gate until a \textasciitilde15-min invoke timeout. Getting there took
+two fixes (both committed): (1) that client-side
+\texttt{asyncio.Semaphore} in \texttt{RayFarmRuntimeSandbox} sized to
+farm capacity, since neither \texttt{-\/-sglang-server-concurrency} nor
+the GRPO group size \texttt{NS} bounds \texttt{op=open}; and (2)
+\textbf{synchronous checkpoint save} --- this container's seccomp blocks
+\texttt{pidfd\_getfd}, which slime's persistent async-ckpt child needs
+for the CUDA storage fds, so \texttt{-\/-async-save} hangs the job even
+at \texttt{PP=1} (the save writes a 53 GB \texttt{torch\_dist}
+checkpoint that takes \textasciitilde7 min to fsync --- the log
+\emph{looks} frozen but is flushing). The fractional-GPU \emph{packing}
+itself was already validated on hardware (a non-MIG L4/L40S wedges under
+sustained \texttt{nvcc} load, which \texttt{fraction=0.5} mitigates).
+What remains is a \emph{convergence} curve --- this smoke run does only
+two training steps --- so use \texttt{demo\_gpu\_single}'s per-episode
+numbers as the baseline this farm is designed to pack several-fold onto
+one GPU. The demo's \textbf{primary motivation is capacity, not just
+cost}: the isolated-per-session path needs \emph{N whole g6 instances at
+once}, which stalls on a capacity-starved fleet; packing N episodes onto
+\textbf{one} GPU needs a single instance, at the price of software-only
+isolation. \textbf{Plan to convergence:} run the same
+\texttt{NR\ ≈\ 100–150} / \texttt{EVAL\_INTERVAL=10} protocol as
+\texttt{demo\_gpu\_single} --- but on \textbf{one} GPU with two
+\texttt{num\_gpus=0.5} actors instead of N instances --- and compare
+goodput-per-GPU against \texttt{demo\_gpu\_single}'s
+one-instance-per-episode baseline to quantify the packing win.
 
 \hypertarget{demo_cpu_quiesce-and-demo_gpu_snapshot-in-depth-surviving-the-pause-and-the-recycle}{%
 \subsection{\texorpdfstring{\texttt{demo\_cpu\_quiesce} and
@@ -4016,6 +4039,15 @@ compose in production.
   saved (e.g.~``6 vs 4 steps → 2 saved''). This is explicitly \emph{not}
   a VM/EBS snapshot --- see \texttt{docs/gpu-snapshot.md} for why an
   application-level snapshot is the only feasible option on AgentCore.
+  Beyond the default offline sim, the demo has a
+  \textbf{\texttt{REAL\_SNAPSHOT=1} mode exercised on hardware}
+  (\texttt{2026-09-18}) against a live local Runtime container: the
+  recycle is genuine --- session \#1 is closed and a fresh, blank
+  session is opened in a new per-episode workdir --- and the workspace
+  is restored from the store onto it, with every
+  \texttt{read\_file}/\texttt{write\_file}/\texttt{ping} a real
+  \texttt{/invocations} call, confirming the mechanism end-to-end and
+  not merely in simulation.
 \end{itemize}
 
 \hypertarget{demo_cpu_harness_scale-in-depth-scaling-the-harness-worker-pool}{%
