@@ -58,20 +58,43 @@ EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-kernelbench}"
 SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_rayfarm_async}"
 
-# ---- GPU split: ALL 8 to slime (4 train + 4 infer). The env-checker GPU is REMOTE (the shared g6),
-# so no reserved env GPUs here — identical to B2/B3.
-ACTOR_GPUS="${ACTOR_GPUS:-4}"
-ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
-
-# ---- Remote GPU-shared sandbox env (REQUIRED for a real run) ----
-# The run_episode harness is IN-PROCESS (like Demo B); the ONLY remote piece is the shared-GPU
-# sandbox Runtime #2 (g6 with the ray farm baked in).
-AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the B4 GPU-shared sandbox Runtime #2 ARN (g6 with ray farm baked in)}"
+# ---- GPU split + where the shared-GPU sandbox Runtime lives --------------------------------------
+# DEFAULT (remote): ALL 8 GPUs to slime (4 train + 4 infer); the shared-GPU checker is REMOTE (the
+# shared g6 whose one GPU a Ray farm splits) — identical to B2/B3.
+# LOCAL_GPU=1 fallback (remote g6 unavailable): run the SAME Ray-farm sandbox Runtime LOCALLY on THIS
+# box. We reserve GPUs 6,7 for the local farm container (a `docker run` of sandbox_server_agent with
+# the ray farm + B4_FARM_GPUS=2 — start it on the HOST first: `code/deploy/run_local_gpu_runtime.sh
+# shared`) and give slime 6 GPUs. Still one AgentCore runtime session (shared runtimeSessionId +
+# per-episode sub_session), reached over http://127.0.0.1:8080 (agentcore_p4 is --network host); the
+# farm now splits the LOCAL reserved GPUs instead of the g6's.
+LOCAL_GPU="${LOCAL_GPU:-0}"
+if [ "$LOCAL_GPU" = "1" ]; then
+   ACTOR_GPUS="${ACTOR_GPUS:-4}"
+   ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"                       # 4 train + 2 infer = 6; GPUs 6,7 reserved
+   SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-6}"
+   SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-0,1,2,3,4,5}" # keep slime OFF the reserved farm GPUs
+   AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-http://127.0.0.1:8080}"
+   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:-}"   # no remote ARN needed
+else
+   ACTOR_GPUS="${ACTOR_GPUS:-4}"
+   ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"                       # 4 train + 4 infer = 8; farm GPU is remote
+   SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-8}"
+   SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-}"
+   AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-}"
+   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the B4 GPU-shared sandbox Runtime #2 ARN (g6 with ray farm baked in), or set LOCAL_GPU=1 to serve the farm locally on GPUs 6,7}"
+fi
 # ONE shared runtimeSessionId for the WHOLE job: every episode (across every rollout worker) invokes
 # the g6 under this id, so they all land on the SAME g6 instance whose one GPU the farm splits. Minted
 # once here if unset (AgentCore requires length in [33,128]: "b4farm-" + 32 hex = 39). Pin it to reuse
 # a warm instance across runs.
 B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-b4farm-$(python3 -c 'import secrets;print(secrets.token_hex(16))')}"
+# Client-side OPEN-concurrency gate (agentcore_runtime_sandbox._farm_open_gate): cap how many episodes
+# hold a farm slot at once to the g6 farm's actor count. The async rollout submits RB*NS episodes that
+# each open their own sandbox, and neither --sglang-server-concurrency (gates GENERATION) nor NS caps
+# `op=open`; without this gate the overflow opens block on the SERVER farm gate until the invoke times
+# out (~min) and stall the step. Must EQUAL the server's B4_MAX_SANDBOXES = floor(B4_FARM_GPUS/
+# B4_GPU_FRACTION) (set on the runtime by run_local_gpu_runtime.sh; default 1 GPU / 0.25 = 4 slots).
+export B4_FARM_MAX_CONCURRENT="${B4_FARM_MAX_CONCURRENT:-$(python3 -c "import os,math;print(max(1,math.floor(float(os.environ.get('B4_FARM_GPUS','1'))/float(os.environ.get('B4_GPU_FRACTION','0.25')))))")}"
 # Runtime-invoke transient-retry budget (agentcore_runtime_sandbox._retry_invoke). B4 invokes the g6
 # once per tool op (open + writes + exec + close), so a transient 502/blip on ANY of them would kill
 # the whole job at the default 8 attempts (~150s) — a2 died this way. 20 attempts ≈ 10 min patience.
@@ -91,11 +114,10 @@ CKPT_ARGS=(
    --load "$CKPT"
    --save "$SAVE"
    --save-interval "$SAVE_INTERVAL"
-   # PP=1 here (mini-harness trajectories are short, like B3), so the SPAWN-based persistent async
-   # ckpt worker is safe. (PP=2 would break it: the async-save child fails with pidfd_getfd EPERM,
-   # which is why the PP=2 demos had to fall back to sync save.) Both flags go together.
-   --async-save
-   --custom-megatron-init-path agentcore_slime_demo.megatron_init.enable_persistent_async_ckpt
+   # SYNC save (no --async-save): this local sandbox-runtime container's seccomp profile blocks
+   # pidfd_getfd, which slime's persistent async-ckpt child uses to grab the CUDA storage fds
+   # ("RuntimeError: pidfd_getfd: Operation not permitted") — the async save hangs the job even at
+   # PP=1. Same class of failure the PP=2 demos hit, so we take the same fix: save synchronously.
 )
 
 EVAL_ARGS=()
@@ -178,9 +200,12 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-# Give ray ALL 8 physical GPUs. slime reserves (ACTOR_GPUS + ROLLOUT_GPUS) = 8; the KernelBench
-# checker's GPU is on the remote shared g6 sandbox Runtime #2, so no local GPUs are held back.
-ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 \
+# Ray gets SLIME_NUM_GPUS (8 remote-mode; 6 in LOCAL_GPU mode). In LOCAL_GPU mode we pin
+# CUDA_VISIBLE_DEVICES to 0-5 BEFORE `ray start` so ray only discovers/schedules those 6 — GPUs 6,7
+# stay free for the local Ray-farm sandbox Runtime container. (Do NOT set CUDA_VISIBLE_DEVICES in the
+# ray job runtime-env: ray assigns it per-actor.)
+[ -n "$SLIME_CUDA_VISIBLE" ] && export CUDA_VISIBLE_DEVICES="$SLIME_CUDA_VISIBLE"
+ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "$SLIME_NUM_GPUS" \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 RUNTIME_ENV_JSON="{
@@ -193,6 +218,7 @@ RUNTIME_ENV_JSON="{
     \"AGENTCORE_REGION\": \"${AGENTCORE_REGION:-${AWS_REGION:-us-west-2}}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\",
+    \"AGENTCORE_LOCAL_ENDPOINT\": \"${AGENTCORE_LOCAL_ENDPOINT}\",
     \"B4_SHARED_RUNTIME_SESSION\": \"${B4_SHARED_RUNTIME_SESSION}\",
     \"INVOKE_MAX_RETRIES\": \"${INVOKE_MAX_RETRIES}\"
   }

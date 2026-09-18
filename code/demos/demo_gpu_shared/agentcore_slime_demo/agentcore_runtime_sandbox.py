@@ -47,6 +47,13 @@ _RETRYABLE_CODES = {
 
 
 def _is_transient(exc: Exception) -> bool:
+    # Local-endpoint transport (urllib): a 5xx from the local runtime is transient (server still
+    # booting / pip-installing torch); a connection refused / timeout while it warms is too. 4xx is not.
+    import urllib.error
+    if isinstance(exc, urllib.error.HTTPError):
+        return 500 <= exc.code < 600
+    if isinstance(exc, (ConnectionError, urllib.error.URLError, TimeoutError)):
+        return True
     from botocore.exceptions import ClientError, ConnectionError as BotoConnError, EndpointConnectionError
     if isinstance(exc, (BotoConnError, EndpointConnectionError)):
         return True
@@ -130,6 +137,82 @@ def _retry_invoke(call, *, what: str = "invoke"):
 # raw per-op CSV + per-step mean/p50/p95 `perf/sandbox_ms_*` columns. We print (not log) so the
 # record lands in the tee'd run log regardless of the process's logging level, and write it in ONE
 # sys.stdout.write call so lines from concurrent episode threads (asyncio.to_thread) don't interleave.
+def _local_endpoint() -> str | None:
+    """If set, run the sandbox against a LOCAL AgentCore Runtime container (a `docker run` of
+    sandbox_server_agent on the host's reserved GPUs) instead of a remote runtime ARN. It is the
+    SAME AgentCore runtime session — same BedrockAgentCoreApp HTTP contract (`POST /invocations` +
+    the session-id header) and the SAME op payloads (op/sub_session/...). Only the transport changes
+    (urllib POST to localhost vs boto3 `invoke_agent_runtime`). Used by the GPU demos' local-GPU
+    fallback when remote g6 capacity is unavailable and we serve the runtime on the host's 8 GPUs."""
+    return os.environ.get("AGENTCORE_LOCAL_ENDPOINT", "").strip() or None
+
+
+# --- B4 shared-farm OPEN-CONCURRENCY GATE ---------------------------------------------------------
+# The ray farm inside the shared g6/local runtime has a FIXED number of fractional-GPU actor slots:
+#   capacity = B4_FARM_GPUS × floor(1 / B4_GPU_FRACTION)   (e.g. 1 GPU × floor(1/0.25) = 4).
+# The async rollout, however, submits RB×NS episodes that each open their OWN sandbox at once, and
+# NEITHER --sglang-server-concurrency (throttles GENERATION) NOR NS (the GRPO group size) caps how
+# many `op=open` invokes fire concurrently. So with capacity=4 and ~8 episodes in flight, 4 opens
+# lease an actor and the other 4 hammer the server's full farm-gate until the long invoke timeout
+# (~15 min), stalling the whole step. The remote-capacity retry budget (_retry_invoke, ~28 min) makes
+# it worse. This CLIENT-side semaphore is the real fix: it caps concurrent `op=open`→`op=close`
+# lifetimes to the farm capacity, so overflow episodes QUEUE cheaply in-process for a free slot
+# ("many episodes share ONE GPU — N run, the rest wait") instead of overwhelming the server.
+#
+# Sized from B4_FARM_MAX_CONCURRENT (run.sh sets it to the farm capacity); if unset we derive it from
+# B4_FARM_GPUS/B4_GPU_FRACTION, else fall back to a safe 4. The semaphore binds to an event loop, and
+# each async-rollout worker may drive its own loop, so we key one semaphore PER loop (a module-level
+# object shared across the loop's episodes — that is exactly the process-wide gate we want per worker).
+def _farm_open_capacity() -> int:
+    v = os.environ.get("B4_FARM_MAX_CONCURRENT", "").strip()
+    if v:
+        with contextlib.suppress(ValueError):
+            return max(1, int(v))
+    try:
+        gpus = max(1, int(os.environ.get("B4_FARM_GPUS", "1")))
+        frac = float(os.environ.get("B4_GPU_FRACTION", "0.25"))
+        return max(1, gpus * int(1.0 / frac)) if frac > 0 else 4
+    except (ValueError, ZeroDivisionError):
+        return 4
+
+
+_FARM_GATES: dict[int, "asyncio.Semaphore"] = {}
+
+
+def _farm_open_gate() -> "asyncio.Semaphore":
+    """The open-concurrency semaphore for the CURRENT event loop (one per loop, created lazily)."""
+    loop = asyncio.get_running_loop()
+    gate = _FARM_GATES.get(id(loop))
+    if gate is None:
+        cap = _farm_open_capacity()
+        gate = asyncio.Semaphore(cap)
+        _FARM_GATES[id(loop)] = gate
+        sys.stdout.write(f"[b4-farm-gate] open-concurrency capped at {cap} slot(s) "
+                         f"(overflow episodes queue for a free farm slot)\n")
+        sys.stdout.flush()
+    return gate
+
+
+def _http_invoke_sync(url: str, session_id: str, payload: dict, read_timeout: float) -> dict:
+    """POST one op to a LOCAL AgentCore Runtime's `/invocations` (BedrockAgentCoreApp contract).
+    Mirrors the boto3 invoke_agent_runtime round-trip: JSON payload in, JSON handler-return out."""
+    import urllib.request
+    req = urllib.request.Request(
+        url.rstrip("/") + "/invocations",
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type": "application/json",
+            # AgentCore's runtime session header (>=33 chars). Locally there is one container so it
+            # is advisory, but we send it so the contract is identical to the remote path.
+            "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=read_timeout) as resp:
+        raw = resp.read()
+    return json.loads(raw.decode()) if raw else {}
+
+
 def _arn_tail(arn: str | None) -> str:
     return arn.rsplit("/", 1)[-1] if arn else "?"
 
@@ -173,13 +256,20 @@ class AgentCoreRuntimeSandbox:
         # One session id == one isolated sandbox for the whole episode.
         self._session_id = session_id or f"sbx-{uuid.uuid4().hex}"
         self._read_timeout = read_timeout or int(os.environ.get("INVOKE_READ_TIMEOUT", "900"))
+        self._local_url = _local_endpoint()  # local AgentCore runtime container, if any
         self._client = None
 
     async def __aenter__(self) -> "AgentCoreRuntimeSandbox":
+        if self._local_url:
+            # Local AgentCore runtime session (docker-run server on the host's reserved GPUs):
+            # no ARN / boto3 client — just ping the local /invocations to init the workspace.
+            await self._invoke({"op": "ping", "workdir": self._workdir})
+            return self
         if not self._arn:
             raise RuntimeError(
                 "AGENTCORE_SANDBOX_RUNTIME_ARN unset — deploy sandbox_server_agent.py as an "
-                "AgentCore Runtime first (see gpu_deploy.py runtime-on-cp)."
+                "AgentCore Runtime first (see gpu_deploy.py runtime-on-cp), or set "
+                "AGENTCORE_LOCAL_ENDPOINT to run the runtime locally on the host GPUs."
             )
         import boto3
         from botocore.config import Config
@@ -200,6 +290,13 @@ class AgentCoreRuntimeSandbox:
         self._client = None
 
     def _invoke_sync(self, payload: dict) -> dict:
+        if self._local_url:
+            # Local AgentCore runtime session: same op payload, urllib POST to /invocations.
+            return _timed_invoke(
+                lambda: _http_invoke_sync(self._local_url, self._session_id, payload, self._read_timeout),
+                op=str(payload.get("op")), arn=f"local:{self._local_url}", session=self._session_id,
+                what=f"local sandbox invoke op={payload.get('op')}",
+            )
         # AgentCore Runtimes intermittently return transient 5xx / throttling (e.g. a 502 while a
         # microVM is briefly unavailable). With retries disabled at the client, ONE such blip on ONE
         # episode's invoke used to bubble out of generate() and kill the whole ray job mid-training
@@ -295,32 +392,67 @@ class RayFarmRuntimeSandbox:
         self._sub = sub_session or f"ep-{uuid.uuid4().hex[:16]}"
         self.sandbox_id = f"rayfarm-{self._sub}"
         self._read_timeout = read_timeout or int(os.environ.get("INVOKE_READ_TIMEOUT", "900"))
+        self._local_url = _local_endpoint()  # local AgentCore runtime container (host GPUs), if any
         self._client = None
+        self._gate = None  # held open-concurrency slot (released on close); see _farm_open_gate
 
     async def __aenter__(self) -> "RayFarmRuntimeSandbox":
-        if not self._arn:
-            raise RuntimeError(
-                "AGENTCORE_SANDBOX_RUNTIME_ARN unset — deploy the B4 GPU-shared sandbox_server_agent "
-                "(ray farm baked in) as an AgentCore Runtime first."
-            )
-        import boto3
-        from botocore.config import Config
+        # CLIENT-side open-concurrency gate: acquire a farm slot BEFORE opening. If the farm is full
+        # this queues in-process (cheap) instead of firing an `op=open` that would block on the
+        # server's farm gate until the long invoke timeout. Held for the whole episode; freed on close.
+        gate = _farm_open_gate()
+        await gate.acquire()
+        self._gate = gate
+        try:
+            if self._local_url:
+                # Local AgentCore runtime session: the SAME g6 ray farm, served by a docker-run
+                # sandbox_server_agent on the host's reserved GPUs. All episodes share one local
+                # container (one shared runtimeSessionId) and lease a fractional-GPU actor per sub_session.
+                await self._invoke({"op": "open", "sub_session": self._sub, "workdir": self._workdir})
+                return self
+            if not self._arn:
+                raise RuntimeError(
+                    "AGENTCORE_SANDBOX_RUNTIME_ARN unset — deploy the B4 GPU-shared sandbox_server_agent "
+                    "(ray farm baked in) as an AgentCore Runtime first, or set AGENTCORE_LOCAL_ENDPOINT "
+                    "to run the shared-GPU farm locally on the host GPUs."
+                )
+            import boto3
+            from botocore.config import Config
 
-        cfg = Config(read_timeout=self._read_timeout, connect_timeout=60, retries={"max_attempts": 0})
-        self._client = await asyncio.to_thread(
-            boto3.client, "bedrock-agentcore", region_name=self._region, config=cfg
-        )
-        # Lease a fractional-GPU actor for this episode (blocks on the g6 farm's gate if full).
-        await self._invoke({"op": "open", "sub_session": self._sub, "workdir": self._workdir})
-        return self
+            cfg = Config(read_timeout=self._read_timeout, connect_timeout=60, retries={"max_attempts": 0})
+            self._client = await asyncio.to_thread(
+                boto3.client, "bedrock-agentcore", region_name=self._region, config=cfg
+            )
+            # Lease a fractional-GPU actor for this episode (the client gate above bounds concurrency
+            # to the farm capacity, so this open finds a slot instead of blocking on the server gate).
+            await self._invoke({"op": "open", "sub_session": self._sub, "workdir": self._workdir})
+            return self
+        except BaseException:
+            # Open failed — don't leak the slot (otherwise capacity leaks and later opens deadlock).
+            self._gate = None
+            gate.release()
+            raise
 
     async def __aexit__(self, *exc) -> None:
-        if self._client is not None:
-            with contextlib.suppress(Exception):
-                await self._invoke({"op": "close", "sub_session": self._sub})
-        self._client = None
+        try:
+            if self._client is not None or self._local_url:
+                with contextlib.suppress(Exception):
+                    await self._invoke({"op": "close", "sub_session": self._sub})
+            self._client = None
+        finally:
+            if self._gate is not None:
+                self._gate.release()
+                self._gate = None
 
     def _invoke_sync(self, payload: dict) -> dict:
+        if self._local_url:
+            # Local AgentCore runtime session: same shared-farm op payload, urllib POST. The shared
+            # session id still keys "one local container" (advisory); sub_session keys the actor.
+            return _timed_invoke(
+                lambda: _http_invoke_sync(self._local_url, self._session_id, payload, self._read_timeout),
+                op=str(payload.get("op")), arn=f"local:{self._local_url}", session=self._sub,
+                what=f"b4-farm local invoke op={payload.get('op')} sub={self._sub}",
+            )
         resp = _timed_invoke(
             lambda: self._client.invoke_agent_runtime(
                 agentRuntimeArn=self._arn,
