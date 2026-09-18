@@ -7,8 +7,22 @@ serverless sandbox Runtime, reached over `invoke_agent_runtime`, while the multi
 harness and the slime trainer stay on the training box.
 
 ## What this demo shows
-- **Task:** MBPP (`agentcore_slime_demo/mbpp.py`) — multi-turn Python code repair. 500-prompt train
-  split + 8-prompt held-out eval split.
+- **Task:** multi-turn "write `solution.py` → run hidden checker → fix" over a **zoo of real,
+  verifiable-reward (RLVR) datasets** pulled from HuggingFace. The in-process harness is
+  task-agnostic — the SAME `run_episode` loop trains any of them; only the seed dataset + hidden
+  checker differ. Select one with `FAMILY=<name>` (the file prefix); no other change:
+
+  | `FAMILY`      | family    | dataset (HuggingFace)                          | train/eval | reward |
+  |---------------|-----------|------------------------------------------------|-----------:|--------|
+  | `coding`      | coding    | MBPP (`mbpp`, via `build_dataset.py`)          |    500/8   | hidden asserts |
+  | `humaneval`   | coding    | `openai/openai_humaneval`                      |    140/24  | row's own `test` fn |
+  | `gretelsql`   | sql       | `gretelai/synthetic_text_to_sql`               |    300/40  | SQL execution vs gold result set |
+  | `hotpotqa`    | rag       | `hotpotqa/hotpot_qa` (distractor)              |    300/40  | SQuAD-normalized exact match |
+  | `xlam`        | toolcall  | `minpeter/xlam-function-calling-60k-parsed`    |    300/40  | order-insensitive gold-call match |
+  | `mcp`         | toolcall  | `Team-ACE/ToolACE` (MCP-style tool schemas)    |    300/40  | order-insensitive gold-call match |
+
+  (The tiny hand-authored `swe/tool_use/sql/ctf/rag/…` seeds from `build_family_datasets.py` remain
+  for offline smoke tests but are too small — 4–9 rows — for a real run.)
 - **Reward:** the candidate's `solution.py` is run against the task's hidden MBPP asserts; the
   learning signal is `rollout/raw_reward`, and held-out **solve-rate** is the key eval metric. GRPO
   advantage is 0 when every sample in a prompt's group gets the same reward, so reward variance
@@ -38,9 +52,11 @@ harness and the slime trainer stay on the training box.
 
 ## Folder layout (self-contained)
 - `agentcore_slime_demo/` — vendored shared library (this demo imports only this copy;
-  `run.sh` puts `$DEMO_DIR` on `PYTHONPATH`, not `/work/code`)
+  `run.sh` puts `$DEMO_DIR` on `PYTHONPATH`, not `/work/code`), incl. `build_real_datasets.py` +
+  `real_datasets.py` (the HuggingFace loaders → task rows)
 - `deploy/` — `Dockerfile.sandbox.cpu`, the Dockerfile the sandbox image is built from
-- `build_dataset.py`, `data/` — the MBPP dataset (`mbpp_train.jsonl`, `mbpp_eval.jsonl`)
+- `prepare_data.sh` — **download + prepare all datasets** (step 1); one idempotent script
+- `build_dataset.py` — the MBPP loader; `data/` — every task's `*_train.jsonl` / `*_eval.jsonl`
 - `run.sh` — the RL training run (async/decoupled slime)
 - `metrics.py` — reward + latency parsing (CSVs + PNG)
 
@@ -56,16 +72,22 @@ harness and the slime trainer stay on the training box.
   `CKPT_BASE`). The Qwen3-4B HF snapshot must be in the container HF cache (baked into `run.sh` as
   `$HF`).
 
-### 1. Build the dataset
-`data/` is already populated; rebuild only to change size/splits:
+### 1. Download + prepare the datasets
+`data/` is already populated; step 1 re-pulls the whole zoo from scratch (one-time network for the
+HF rows). One idempotent script builds every task's train+eval JSONL:
 ```bash
-python build_dataset.py --dataset mbpp --split "train+test" --limit 500 \
-    --out data/mbpp_train.jsonl
-python build_dataset.py --dataset mbpp --split validation --limit 8 \
-    --out data/mbpp_eval.jsonl
+bash prepare_data.sh          # mbpp 500/8, humaneval 140/24, gretelsql 300/40, hotpotqa 300/40, xlam 300/40, mcp 300/40
 ```
-Keep the train set `>= NR*RB` prompts so one epoch spans the whole run (500 ≥ 11×4) — that keeps
-save-only-at-end holding.
+It calls the two vendored builders — `build_dataset.py` (MBPP) and
+`agentcore_slime_demo/build_real_datasets.py` (the HF zoo) — with the exact splits/limits/offsets
+that produced the on-disk files (see the script header). Each file's prefix == the `FAMILY` label,
+so training needs no `DATA`/`EVAL_DATA` overrides. Keep the train set `>= NR*RB` prompts so one epoch
+spans the whole run (e.g. 500 ≥ 11×4) — that keeps save-only-at-end holding.
+
+Verify the checkers offline before any GPU run (reference solution PASSES, a wrong one FAILS):
+```bash
+python3 /work/code/verify_real_datasets.py
+```
 
 ### 2. Build the sandbox image
 Build from INSIDE this demo dir so `COPY agentcore_slime_demo/...` resolves against the vendored
@@ -98,8 +120,15 @@ export AGENTCORE_SANDBOX_RUNTIME_ARNS=<arn0>,<arn1>,...
 K=2 default ARNS list; override by exporting your own.
 
 ### 5. Run RL training
+Pick a task with `FAMILY` (defaults to `coding`=MBPP); the file prefix == `FAMILY`, so nothing else
+changes between tasks:
 ```bash
-SANDBOX=agentcore-runtime ./run.sh 2>&1 | tee train.log
+FAMILY=coding    SANDBOX=agentcore-runtime ./run.sh 2>&1 | tee train.log   # MBPP
+FAMILY=humaneval SANDBOX=agentcore-runtime ./run.sh 2>&1 | tee train.log
+FAMILY=gretelsql SANDBOX=agentcore-runtime ./run.sh 2>&1 | tee train.log   # text-to-SQL
+FAMILY=hotpotqa  SANDBOX=agentcore-runtime ./run.sh 2>&1 | tee train.log   # multi-hop RAG
+FAMILY=xlam      SANDBOX=agentcore-runtime ./run.sh 2>&1 | tee train.log   # function calling
+FAMILY=mcp       SANDBOX=agentcore-runtime ./run.sh 2>&1 | tee train.log   # MCP-style tool calling (ToolACE)
 ```
 Key knobs (env vars, defaults from `run.sh`):
 - `SANDBOX` (`agentcore-runtime`) — remote Runtime; `agentcore` = Code Interpreter microVM;
@@ -112,10 +141,22 @@ Key knobs (env vars, defaults from `run.sh`):
   buffer depth (the sandbox-concurrency ablation knob). `INFER_CONC` (`0`=off) caps decode
   concurrency to hold inference load constant while sweeping `CONC`.
 - `EVAL_INTERVAL` (`10`), `EVAL_NS` (`2`), `SAVE_INTERVAL` (`1000000`, save-only-at-end).
-- `FAMILY` (`coding`=MBPP) — the in-process harness is task-agnostic and can also train
-  swe/tool_use/sql/math/ctf/rag families (see `build_family_datasets.py`).
+- `FAMILY` (`coding`=MBPP) — selects the task (data-file prefix + eval label). Real datasets:
+  `humaneval`, `gretelsql`, `hotpotqa`, `xlam`, `mcp` (see the task table up top). The tiny hand-authored
+  seeds `swe/tool_use/sql/ctf/rag/…` from `build_family_datasets.py` are offline-smoke only.
 
 Runtime-count ablation (sweeps `RUNTIMES={1 2 4}`): `./run_runtime_ablation.sh`.
+
+**One-command train-to-convergence.** `train.sh` wraps `run.sh` with three top-level knobs —
+training **steps**, eval **cadence**, and the two **sandbox** counts — passing `FAMILY` (and
+everything else) through:
+```bash
+FAMILY=coding STEPS=50 EVAL_EVERY=10 SANDBOX_CONC=4 SANDBOX_RUNTIMES=2 ./train.sh 2>&1 | tee train.log
+```
+`STEPS` → `NR=STEPS+1` (real GRPO updates; `STEPS=2` = smoke); `EVAL_EVERY` → `EVAL_INTERVAL`;
+`SANDBOX_CONC` → `CONC` (concurrent episodes, `S=CONC×2`); `SANDBOX_RUNTIMES` → # distinct sandbox
+Runtimes (K, truncates the ARN list). Convergence is task-dependent — watch `eval/<task>` and raise
+`STEPS`.
 
 ### 6. Read metrics / latency
 ```bash

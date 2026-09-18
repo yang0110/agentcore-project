@@ -19,8 +19,26 @@ in production — no mount, AZ-agnostic; docs/gpu-snapshot.md "S3 vs FSx"). The 
 `agentcore_idle_sim.force_recycle` so the demo runs offline; against real AgentCore the store is S3
 and the recycle is a real instance recycle.
 
-    python3 snapshot_demo.py            # TARGET=4 steps, recycle after step 2
+TWO MODES (default = offline sim, unchanged):
+  * OFFLINE (default): ReclaimableLocalSandbox + AgentCoreIdleSim.force_recycle model the recycle.
+    No AWS, no GPU.
+  * REAL (set REAL_SNAPSHOT=1, or LOCAL_GPU=1, or SANDBOX!=local): run against a REAL AgentCore
+    Runtime sandbox — a local GPU container served at AGENTCORE_LOCAL_ENDPOINT (host GPUs 6,7), or a
+    deployed ARN. The recycle is GENUINE: session #1 (a real runtimeSessionId) is CLOSED and a NEW
+    AgentCoreRuntimeSandbox is opened with a fresh runtimeSessionId AND a fresh per-session workdir
+    (/workspace/ep-<uuid>), so the new session truly starts blank and must be restored from the store
+    (LocalSnapshotStore, or S3SnapshotStore if SNAPSHOT_S3_BUCKET is set). No container is (re)started
+    from inside this demo — that is the harness/deploy's job.
+
+    python3 snapshot_demo.py            # OFFLINE: TARGET=4 steps, recycle after step 2
     TARGET=6 RECYCLE_AFTER=3 python3 snapshot_demo.py
+
+REAL-mode recipe (do NOT run while the GPUs are busy):
+    host:      bash code/deploy/run_local_gpu_runtime.sh single
+    container: REAL_SNAPSHOT=1 LOCAL_GPU=1 AGENTCORE_LOCAL_ENDPOINT=http://127.0.0.1:8080 \\
+                   SANDBOX=agentcore-runtime TARGET=4 RECYCLE_AFTER=2 \\
+                   python3 demo_gpu_snapshot/snapshot_demo.py
+    host:      bash code/deploy/run_local_gpu_runtime.sh stop
 """
 
 from __future__ import annotations
@@ -30,9 +48,11 @@ import json
 import os
 import sys
 import tempfile
+import uuid
 
 from agentcore_slime_demo.snapshot_store import (
     LocalSnapshotStore,
+    S3SnapshotStore,
     restore_workspace,
     snapshot_workspace,
 )
@@ -42,6 +62,19 @@ from agentcore_idle_sim import AgentCoreIdleSim, ReclaimableLocalSandbox
 TARGET = int(os.environ.get("TARGET", "4"))            # steps needed to finish the task
 RECYCLE_AFTER = int(os.environ.get("RECYCLE_AFTER", "2"))  # instance recycle after this many steps
 SNAPSHOT_PATHS = ["progress.json", "work.log"]         # the workspace state worth preserving
+
+
+def real_mode() -> bool:
+    """REAL mode runs against a genuine AgentCore Runtime sandbox instead of the offline sim.
+    Selected by REAL_SNAPSHOT=1, LOCAL_GPU=1, or any SANDBOX other than 'local'. Default is offline."""
+    return (
+        os.environ.get("REAL_SNAPSHOT") == "1"
+        or os.environ.get("LOCAL_GPU") == "1"
+        or os.environ.get("SANDBOX", "").lower() not in ("", "local")
+    )
+
+
+REAL_MODE = real_mode()
 
 
 def banner(text: str) -> None:
@@ -73,9 +106,71 @@ def fresh_sandbox(sim: AgentCoreIdleSim) -> ReclaimableLocalSandbox:
     return sb
 
 
+def make_store():
+    """The store we OWN the snapshot in. S3 in production (no mount, AZ-agnostic) when
+    SNAPSHOT_S3_BUCKET is set; else a host directory (offline / single-box REAL runs)."""
+    if os.environ.get("SNAPSHOT_S3_BUCKET"):
+        return S3SnapshotStore()
+    return LocalSnapshotStore(root=tempfile.mkdtemp(prefix="snap-"))
+
+
+def real_sandbox():
+    """A fresh REAL sandbox session: a brand-new AgentCoreRuntimeSandbox (=> a fresh
+    runtimeSessionId) with a DISTINCT per-session workdir. Against a single local container the
+    distinct workdir is what makes "recycle => blank workspace" genuine: the next session cannot see
+    the previous session's files and must be restored from the snapshot store."""
+    # Imported lazily so the offline default never loads the sandbox backend stack.
+    from agentcore_slime_demo.sandbox import make_sandbox
+
+    workdir = f"/workspace/ep-{uuid.uuid4().hex[:12]}"
+    return make_sandbox(os.environ.get("SANDBOX", "agentcore-runtime"), workdir=workdir)
+
+
+async def run_real(*, use_snapshot: bool) -> int:
+    """REAL mode: same snapshot/resume task against a REAL AgentCore Runtime sandbox. The recycle is
+    genuine — session #1 is CLOSED and a NEW AgentCoreRuntimeSandbox (fresh runtimeSessionId + fresh
+    workdir) is opened, so the fresh session truly starts blank. No AgentCoreIdleSim/force_recycle
+    here; we never restart the container from inside the demo."""
+    store = make_store()
+    key = "episode-42"
+    executed = 0
+
+    # --- session #1: work until the recycle point --------------------------------------------
+    sb = real_sandbox()
+    async with sb:
+        while await progress(sb) < RECYCLE_AFTER:
+            executed += 1
+            n = await do_step(sb)
+            print(f"  step {n} on {sb.sandbox_id} [{sb._workdir}]")
+        if use_snapshot:
+            manifest = await snapshot_workspace(sb, SNAPSHOT_PATHS, store, key)
+            print(f"  snapshot: saved {list(manifest)} at step {await progress(sb)} -> store")
+    # --- closing session #1 == the GPU instance recycle: session + workdir are gone ----------
+    print(f"  !! instance recycled — session {sb.sandbox_id} closed; a fresh session starts blank")
+
+    # --- session #2: fresh runtimeSessionId + fresh (empty) workdir --------------------------
+    sb2 = real_sandbox()
+    async with sb2:
+        if use_snapshot:
+            restored = await restore_workspace(sb2, store, key)
+            print(f"  restore: wrote {restored} onto fresh {sb2.sandbox_id} [{sb2._workdir}] "
+                  f"-> resuming at step {await progress(sb2)}")
+        else:
+            print(f"  no snapshot: fresh {sb2.sandbox_id} [{sb2._workdir}] starts at step "
+                  f"{await progress(sb2)} (all prior work lost)")
+        while await progress(sb2) < TARGET:
+            executed += 1
+            n = await do_step(sb2)
+            print(f"  step {n} on {sb2.sandbox_id}")
+        print(f"  DONE: {await progress(sb2)}/{TARGET} steps; executed {executed} total")
+    return executed
+
+
 async def run(*, use_snapshot: bool) -> int:
     """Drive the task to completion across ONE mid-run recycle. Returns total steps EXECUTED
     (TARGET is the useful amount; anything above TARGET is wasted rework)."""
+    if REAL_MODE:
+        return await run_real(use_snapshot=use_snapshot)
     # idle_timeout huge: we only trigger the recycle explicitly, not via idle here.
     sim = AgentCoreIdleSim(idle_timeout=1e9)
     store = LocalSnapshotStore(root=tempfile.mkdtemp(prefix="snap-"))
@@ -115,8 +210,15 @@ async def run(*, use_snapshot: bool) -> int:
 
 
 async def main() -> int:
-    print(f"demo_gpu_snapshot — TARGET={TARGET} steps, recycle after {RECYCLE_AFTER} "
-          f"(offline LocalSandbox; store=LocalSnapshotStore)")
+    if REAL_MODE:
+        endpoint = os.environ.get("AGENTCORE_LOCAL_ENDPOINT") or os.environ.get(
+            "AGENTCORE_SANDBOX_RUNTIME_ARN", "?")
+        store = "S3SnapshotStore" if os.environ.get("SNAPSHOT_S3_BUCKET") else "LocalSnapshotStore"
+        print(f"demo_gpu_snapshot — TARGET={TARGET} steps, recycle after {RECYCLE_AFTER} "
+              f"(REAL AgentCoreRuntimeSandbox @ {endpoint}; store={store})")
+    else:
+        print(f"demo_gpu_snapshot — TARGET={TARGET} steps, recycle after {RECYCLE_AFTER} "
+              f"(offline LocalSandbox; store=LocalSnapshotStore)")
 
     banner("RUN A — no snapshot: recycle loses progress, redo from scratch")
     a = await run(use_snapshot=False)

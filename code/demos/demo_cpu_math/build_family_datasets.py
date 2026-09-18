@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Build slime-format JSONL for the demo_cpu_single task-family zoo (SWE, tool-use, SQL, math, CTF, RAG).
+"""Build slime-format JSONL for the demo_cpu_math task-family zoo (SWE, tool-use, SQL, math, CTF, RAG).
 
-demo_cpu_single's in-process harness is task-agnostic (see agentcore_slime_demo/task_families.py), so
+demo_cpu_math's in-process harness is task-agnostic (see agentcore_slime_demo/task_families.py), so
 each family is just a different seed set + checker feeding the SAME custom generate. This emits
 `<family>_train.jsonl` + `<family>_eval.jsonl` per family, in the exact row schema the MBPP/
 KernelBench builder uses:
@@ -13,8 +13,8 @@ right Task class. `mock_attempts` (offline MockPolicy only) are intentionally NO
 reference answer can never leak into a real-RL prompt.
 
 Run inside the container (stdlib-only, no network/GPU needed):
-    python /work/code/demos/demo_cpu_single/build_family_datasets.py --out-dir /work/code/demos/demo_cpu_single/data
-Then point demo_cpu_single/run.sh at one family, e.g. `FAMILY=sql bash run.sh` (see run.sh).
+    python /work/code/demos/demo_cpu_math/build_family_datasets.py --out-dir /work/code/demos/demo_cpu_math/data
+Then point demo_cpu_math/run.sh at one family, e.g. `FAMILY=sql bash run.sh` (see run.sh).
 """
 from __future__ import annotations
 

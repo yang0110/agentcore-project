@@ -833,6 +833,64 @@ class DataTask(EpisodicTask):
         ]
 
 
+# ==============================================================================
+# 11. Tool-call (REAL: xLAM function-calling) — emit the correct function call(s)
+# ==============================================================================
+# The checker `setup` embeds the gold calls + an order-insensitive, arg-normalized comparator;
+# the agent writes solution.py setting a module-level `calls` list of {"name", "arguments"}.
+_TOOLCALL_SETUP_HEAD = (
+    "import json as _json\n"
+    "def _norm_calls(cs):\n"
+    "    out = []\n"
+    "    for c in (cs or []):\n"
+    "        name = c['name'] if isinstance(c, dict) else getattr(c, 'name', None)\n"
+    "        args = c.get('arguments', {}) if isinstance(c, dict) else {}\n"
+    "        if isinstance(args, str):\n"
+    "            args = _json.loads(args) if args.strip() else {}\n"
+    "        out.append((name, _json.dumps(args, sort_keys=True, default=str)))\n"
+    "    return sorted(out)\n"
+)
+
+
+@register_family
+class ToolCallTask(EpisodicTask):
+    """Real function-calling (xLAM). The agent sees a natural-language request plus the JSON
+    specs of the available tools, and must emit the exact function call(s) — name + arguments —
+    that answer it. Reward = order-insensitive, argument-normalized exact match of the agent's
+    `calls` against the gold calls. This is the real-dataset replacement for the synthetic
+    ToolUseTask; it uses family key `toolcall` so it never collides with that scaffold family."""
+
+    family = "toolcall"
+    SYSTEM = (
+        "You are a function-calling agent. You are given a user request and a list of available "
+        "tools (JSON function specs). Decide which tool(s) to call and with what arguments. Write "
+        "solution.py that sets a module-level variable `calls` to a list of dicts, each "
+        "{\"name\": <tool name>, \"arguments\": {<arg>: <value>, ...}} — one entry per call, in "
+        "any order. Use ONLY the listed tools and their documented parameters. Reply with ONE "
+        "fenced ```python block, no prose outside it."
+    )
+    submission_hint = "Reply with solution.py that sets `calls` (a list of {name, arguments}) in one ```python block."
+
+    def initial_user_prompt(self) -> str:
+        return (
+            f"{self.prompt}\n\nAvailable tools (JSON):\n```json\n{self.spec['tools_text']}\n```\n\n"
+            "Set `calls` to the list of function calls that satisfy the request."
+        )
+
+    @classmethod
+    def build(cls, task_id: str, query: str, tools_text: str, gold_calls: list[dict],
+              max_turns: int = 3) -> "ToolCallTask":
+        setup = _TOOLCALL_SETUP_HEAD + f"GOLD = {gold_calls!r}\n"
+        check = "assert _norm_calls(calls) == _norm_calls(GOLD), f'calls={calls!r} expected {GOLD!r}'"
+        wrong = "calls = []  # no tool calls\n"
+        right = f"calls = {gold_calls!r}\n"
+        return cls(
+            task_id=task_id, prompt=query, max_turns=max_turns,
+            spec={"tools_text": tools_text, "checks": [check], "setup": setup},
+            mock_attempts=[wrong, right],
+        )
+
+
 # Every family class self-registers via @register_family on import; nothing else to do.
 FAMILY_CLASSES = [
     SweTask, ToolUseTask, SqlTask, MathTask, CtfTask, RagTask,

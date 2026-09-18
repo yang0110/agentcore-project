@@ -123,6 +123,17 @@ Knobs (defaults in run.sh): `RB` (4), `NS` (8), `NR` (11 ⇒ real steps = NR−1
 `b4farm-<32 hex>` if unset). All 8 local GPUs go to slime (`ACTOR_GPUS=4` + `ROLLOUT_GPUS=4`); the
 shared GPU is the remote g6's.
 
+**One-command train-to-convergence.** `train.sh` wraps this with top-level knobs — training
+**steps**, eval **cadence**, sandbox **concurrency** — passing `LOCAL_GPU`/`AGENTCORE_SANDBOX_RUNTIME_ARN`
+through: `STEPS` → `NR=STEPS+1` (default 20; **keep `STEPS × RB ≤ 100`**), `EVAL_EVERY` →
+`EVAL_INTERVAL`, `SANDBOX_CONC` → `CONC` (keep `SANDBOX_CONC ≤ B4_MAX_SANDBOXES`). (No `K` knob: the
+farm packs many envs onto the single g6's GPU, not across multiple Runtimes.)
+```bash
+docker exec agentcore_p4 bash -lc 'cd /work \
+  && AGENTCORE_SANDBOX_RUNTIME_ARN=<b4 arn> STEPS=20 EVAL_EVERY=10 SANDBOX_CONC=4 \
+     bash code/demos/demo_gpu_shared/train.sh'
+```
+
 ### 7. Read metrics / latency
 ```bash
 python3 metrics.py train.log --csv train.csv --eval-csv train.eval.csv --plot train.png

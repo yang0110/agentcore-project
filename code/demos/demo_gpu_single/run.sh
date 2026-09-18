@@ -30,9 +30,11 @@ SANDBOX="${SANDBOX:-agentcore-runtime}"   # the sandbox is its OWN GPU-backed Ag
 # Train = level_1 (100 single-op CUDA problems); held-out eval = 20 level_2 fusion problems (disjoint,
 # no leakage). Build with build_dataset.py --dataset kernelbench --level level_1 --limit 100 (train)
 # and --level level_2 --limit 20 (eval). This replaced the old hand-written 3-op smoke stub, so real
-# RB/NR now work. Keep the save-only-at-end invariant: dataset_size (100) >= NR * RB (see below);
-# slime force-saves at every epoch boundary (step % (dataset_size/RB) == 0), so with RB=4 the epoch
-# is 100/4 = 25 steps and NR=11 (10 real steps) never crosses it => the ONLY checkpoint is the final.
+# RB/NR now work. Save-only-at-end holds regardless of dataset size: run.sh passes an explicit
+# --num-rollout, so slime leaves num_rollout_per_epoch=None and its epoch-boundary save never fires;
+# with the huge SAVE_INTERVAL below the periodic save never fires either => the ONLY checkpoint is
+# slime's forced final-rollout one. (Keep NR*RB <= 100 only so a run stays within one pass of the
+# 100-prompt level_1 pool, not for checkpoint reasons.)
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
 NR="${NR:-11}"         # num-rollout; real training steps = NR-1 => 10 train (SMOKE; no more needed). Keep NR*RB <= 100.
@@ -50,21 +52,36 @@ DEMO_DIR=/work/code/demos/demo_gpu_single
 CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"
 HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
 
-# ---- GPU split: 4 train + 4 inference + 0 env. The KernelBench checker's GPU is REMOTE (on the
-# sandbox Runtime #2 g6 instance), so no reserved local env GPUs here.
-ACTOR_GPUS="${ACTOR_GPUS:-4}"
-ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
+# ---- GPU split + where the sandbox Runtime lives -------------------------------------------------
+# DEFAULT (remote): ALL 8 GPUs to slime (4 train + 4 infer); the KernelBench checker's GPU is REMOTE
+# (the sandbox Runtime #2 g6), reached over invoke_agent_runtime.
+# LOCAL_GPU=1 fallback (when remote g6 capacity is unavailable): serve the SAME AgentCore sandbox
+# Runtime LOCALLY on THIS 8xL40S box. We reserve GPUs 6,7 for the local runtime container and give
+# slime 6 GPUs (4 train + 2 infer). The container is a `docker run` of sandbox_server_agent
+# (BedrockAgentCoreApp) — start it on the HOST first with `code/deploy/run_local_gpu_runtime.sh
+# single` — and the client reaches it over http://127.0.0.1:8080 (agentcore_p4 is --network host).
+# It is STILL an AgentCore runtime session (same /invocations contract + session id); only the
+# transport is localhost instead of a remote ARN.
+LOCAL_GPU="${LOCAL_GPU:-0}"
+if [ "$LOCAL_GPU" = "1" ]; then
+   ACTOR_GPUS="${ACTOR_GPUS:-4}"
+   ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"                       # 4 train + 2 infer = 6; GPUs 6,7 reserved
+   SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-6}"
+   SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-0,1,2,3,4,5}" # keep slime OFF the reserved checker GPUs
+   AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-http://127.0.0.1:8080}"
+   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:-}"   # no remote ARN needed
+else
+   ACTOR_GPUS="${ACTOR_GPUS:-4}"
+   ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"                       # 4 train + 4 infer = 8; checker GPU is remote
+   SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-8}"
+   SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-}"
+   AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-}"
+   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU sandbox Runtime #2 ARN, or set LOCAL_GPU=1 to serve it locally on GPUs 6,7}"
+fi
 DATA="${DATA:-$DEMO_DIR/data/kernelbench_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-kernelbench}"
 SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_async}"
-
-# ---- Remote GPU sandbox Runtime #2 (REQUIRED) ----
-# run_episode's checker exec (python3 run_checks.py imports torch on CUDA) runs on the REMOTE g6
-# sandbox Runtime, reached over invoke_agent_runtime. No adapter/harness Runtime: demo_gpu_single's
-# generate.generate drives SGLang directly and only the SANDBOX is remote. Deploy the GPU sandbox
-# (deploy_two_runtime.py) + run its one-time mode=prepare, then export its ARN:
-AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU sandbox Runtime #2 ARN}"
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -170,9 +187,12 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-# Give ray ALL 8 physical GPUs. slime's placement reserves (ACTOR_GPUS + ROLLOUT_GPUS)=8; the
-# KernelBench checker's GPU is on the REMOTE sandbox Runtime #2, so no local GPUs are held back.
-ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 \
+# Ray gets SLIME_NUM_GPUS (8 remote-mode; 6 in LOCAL_GPU mode). In LOCAL_GPU mode we also pin
+# CUDA_VISIBLE_DEVICES to 0-5 BEFORE `ray start` so ray only ever discovers/schedules on those 6 —
+# GPUs 6,7 stay free for the local sandbox Runtime container. (Do NOT put CUDA_VISIBLE_DEVICES in the
+# ray job runtime-env: ray sets it per-actor from the GPUs it assigns.)
+[ -n "$SLIME_CUDA_VISIBLE" ] && export CUDA_VISIBLE_DEVICES="$SLIME_CUDA_VISIBLE"
+ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "$SLIME_NUM_GPUS" \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 RUNTIME_ENV_JSON="{
@@ -183,7 +203,8 @@ RUNTIME_ENV_JSON="{
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AGENTCORE_REGION\": \"${AGENTCORE_REGION:-${AWS_REGION:-us-west-2}}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
-    \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\"
+    \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\",
+    \"AGENTCORE_LOCAL_ENDPOINT\": \"${AGENTCORE_LOCAL_ENDPOINT}\"
   }
 }"
 

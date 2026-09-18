@@ -23,17 +23,37 @@ builds the Runtime images from it and `code/tests/` imports it.
 
 ## The demos
 
-Two sandbox substrates, plus two resilience demos:
+**16 demos**: two sandbox substrates (with a per-task CPU set + a GPU set), two resilience demos, a
+harness-scaling demo, and a mixed-task demo.
+
+**Sandbox mode by substrate.** The **CPU** demos are **remote-only** — they run only on remote
+managed serverless AgentCore sandbox sessions (`SANDBOX=agentcore-runtime` default, or `agentcore`
+Code-Interpreter); their `run.sh` **rejects `SANDBOX=local`**, so a CPU training run can never
+silently fall off the AgentCore substrate (the serverless CPU sandbox is always available). The
+**GPU** demos keep a `local` fallback, because a remote g6 instance may be unavailable.
 
 | Substrate | Demo | Task / point |
 |---|---|---|
-| **CPU serverless microVM** (Code Interpreter) | [`demo_cpu_single/`](demo_cpu_single/) | the reference — MBPP on a CPU microVM, 4 train + 4 infer + 0 env |
-| | [`demo_cpu_math/`](demo_cpu_math/) | math word problems (generation-bound: long reasoning, trivial check) |
+| **CPU serverless microVM** (Code Interpreter) | [`demo_cpu_single/`](demo_cpu_single/) | the reference — MBPP coding on a CPU microVM, 4 train + 4 infer + 0 env; task-family zoo via `FAMILY` |
+| | [`demo_cpu_math/`](demo_cpu_math/) | math word problems (multi-task: `gsm8k`/`math500`/`deepscaler` via `FAMILY`) |
+| | [`demo_cpu_mixtask/`](demo_cpu_mixtask/) | **mixed-task** — every rollout step's batch spans several families at once (math+sql+ctf+tool_use); remote-only |
+| _per-task, real HF datasets_ | [`demo_cpu_gsm8k/`](demo_cpu_gsm8k/) | GSM8K grade-school math (`openai/gsm8k`) |
+| | [`demo_cpu_math500/`](demo_cpu_math500/) | MATH-500 competition math (`HuggingFaceH4/MATH-500`) |
+| | [`demo_cpu_deepscaler/`](demo_cpu_deepscaler/) | DeepScaleR olympiad math (`agentica-org/DeepScaleR-Preview-Dataset`) |
+| | [`demo_cpu_humaneval/`](demo_cpu_humaneval/) | HumanEval Python completion (`openai/openai_humaneval`) |
+| | [`demo_cpu_gretelsql/`](demo_cpu_gretelsql/) | text-to-SQL (`gretelai/synthetic_text_to_sql`) |
+| | [`demo_cpu_hotpotqa/`](demo_cpu_hotpotqa/) | multi-hop retrieval QA (`hotpotqa/hotpot_qa`) |
+| | [`demo_cpu_xlam/`](demo_cpu_xlam/) | function calling (`minpeter/xlam-function-calling-60k-parsed`) |
+| | [`demo_cpu_mcp/`](demo_cpu_mcp/) | MCP-style tool calling (`Team-ACE/ToolACE`) |
 | | [`demo_cpu_quiesce/`](demo_cpu_quiesce/) | **resilience** — heartbeat that keeps the microVM warm across the weight-sync barrier |
 | **GPU Runtime instance** (g6 capacity provider) | [`demo_gpu_single/`](demo_gpu_single/) | KernelBench (level_1 CUDA); checker's GPU is the remote g6 sandbox Runtime, so the trainer box stays 4 train + 4 infer + 0 env |
 | | [`demo_gpu_shared/`](demo_gpu_shared/) | KernelBench + a Ray GPU-sharing farm — many envs share one GPU on the remote g6 sandbox Runtime |
 | | [`demo_gpu_snapshot/`](demo_gpu_snapshot/) | **resilience** — application-level snapshot & resume across a GPU instance recycle |
 | **harness-scaling** (varies the *harness* tier, not the sandbox) | [`demo_cpu_harness_scale/`](demo_cpu_harness_scale/) | one task (DeepScaleR), a pool of **W warm mini-Claude harness workers** → the async-RL scaling law `throughput = min(inference, sandbox, harness)` |
+
+The 8 per-task CPU demos (`gsm8k` … `mcp`) are the same in-process-harness loop as `demo_cpu_single`,
+each pinned to one real HF dataset + its hidden RLVR checker (see the task/dataset table in each
+README); `demo_cpu_single` reaches the same tasks via its `FAMILY` selector.
 
 The demos above vary the **sandbox**; `demo_cpu_harness_scale` is the exception — it fixes the task
 and sandbox and makes the **harness the scalable tier** (a warm in-process worker pool), to show the
@@ -63,5 +83,13 @@ in-process is the recommended path.
 The training demos share the training path: slime async/decoupled (`train_async.py`), Qwen3-4B,
 GRPO, the checkpoint-deadlock fix (`--async-save` + `--custom-megatron-init-path …enable_persistent_async_ckpt`),
 and save-only-at-end. They differ only in the **task** and the **sandbox**.
+
+**`run.sh` vs `train.sh`.** Every training demo has two entry points: `run.sh` is the full runner
+(all env knobs, defaults to a short smoke), and **`train.sh`** is a thin train-to-convergence wrapper
+over it that exposes just the three top-level knobs a client tunes — training **steps** (`STEPS` →
+`NR`), eval **cadence** (`EVAL_EVERY` → `EVAL_INTERVAL`), and the **sandbox** counts (`SANDBOX_CONC` →
+`CONC`, and on CPU `SANDBOX_RUNTIMES` → the # of distinct sandbox Runtimes `K`) — passing everything
+else through. Example: `STEPS=50 EVAL_EVERY=10 SANDBOX_CONC=4 ./train.sh`. See each README's
+"Train to convergence" section.
 
 Each directory has its own `README.md` with exact build/run commands and knobs.

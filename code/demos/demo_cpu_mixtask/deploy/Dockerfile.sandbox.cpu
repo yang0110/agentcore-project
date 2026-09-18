@@ -1,0 +1,19 @@
+# Sandbox AgentCore Runtime #2 — CPU (A3: MBPP). Code-Interpreter-class microVM.
+# Build context MUST be code/:
+#   docker build -f code/deploy/Dockerfile.sandbox.cpu -t <ecr>/acs-sandbox-cpu:latest code/
+#
+# The A3 checker is pure Python (run the candidate against MBPP asserts), so this image needs
+# nothing beyond bedrock-agentcore + a stdlib Python. SANDBOX_PYLIB is deliberately UNSET, so the
+# GPU/torch prepare path in sandbox_server_agent.py stays dormant.
+FROM public.ecr.aws/docker/library/python:3.12-slim
+
+WORKDIR /app
+RUN pip install --no-cache-dir bedrock-agentcore
+
+# sandbox_server_agent.py is self-contained (stdlib + bedrock_agentcore, no relative imports), so
+# copy it flat — no package, no __init__, nothing heavy.
+COPY agentcore_slime_demo/sandbox_server_agent.py /app/sandbox_server_agent.py
+
+ENV SANDBOX_WORKDIR=/workspace
+EXPOSE 8080
+CMD ["python", "-m", "sandbox_server_agent"]

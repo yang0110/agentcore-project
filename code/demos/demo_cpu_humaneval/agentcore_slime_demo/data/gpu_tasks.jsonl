@@ -1,0 +1,9 @@
+# GPU code-repair task for the GPU_SANDBOX demo case. It only passes if a real CUDA GPU is
+# visible INSIDE the sandbox — that is the whole point: it proves the AgentCore Runtime was
+# provisioned on a GPU capacity provider, not a CPU microVM.
+#
+# checks: (1) the sandbox has a CUDA GPU at all, (2) the elementwise-add result is correct,
+#         (3) the op actually ran on a 'cuda' device (not silently on CPU).
+# mock_attempts (offline MockPolicy only): attempt 0 computes on CPU -> fails check (3);
+#         attempt 1 moves tensors to .cuda() -> passes. Same write->run->read->fix loop.
+{"task_id": "gpu_vector_add", "prompt": "Implement `add_on_gpu(a, b)` that elementwise-adds two numeric lists using torch on the CUDA GPU and returns the result as a Python list. Also implement `last_device()` returning the torch device string the most recent add ran on (e.g. 'cuda:0'). The computation MUST run on the GPU.", "checks": ["__import__('torch').cuda.is_available()", "solution.add_on_gpu([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]) == [5.0, 7.0, 9.0]", "solution.last_device().startswith('cuda')"], "max_turns": 4, "mock_attempts": ["import torch\n\n_LAST = 'cpu'\n\ndef add_on_gpu(a, b):\n    global _LAST\n    # buggy: computes on CPU, never touches the GPU\n    ta, tb = torch.tensor(a), torch.tensor(b)\n    out = ta + tb\n    _LAST = str(out.device)\n    return out.tolist()\n\ndef last_device():\n    return _LAST\n", "import torch\n\n_LAST = 'cpu'\n\ndef add_on_gpu(a, b):\n    global _LAST\n    # fixed: move inputs to the CUDA device and compute there\n    ta = torch.tensor(a).cuda()\n    tb = torch.tensor(b).cuda()\n    out = ta + tb\n    _LAST = str(out.device)\n    return out.cpu().tolist()\n\ndef last_device():\n    return _LAST\n"]}

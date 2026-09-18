@@ -77,6 +77,14 @@ docker exec agentcore_p4 bash /work/code/demos/demo_cpu_harness_scale/prepare_da
 # 2. See the scaling law offline (no AWS, no GPU): sweep W and watch the knee + plateau
 docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_harness_scale/harness_scaling_demo.py
 
+# 2b. (optional) REAL-remote sandbox tier: the sandbox service time is now a genuine measured
+#     round-trip against a live remote AgentCore CPU sandbox (the --tsbx sleep is dropped, the
+#     --csbx ceiling still applies). Keep EPISODES small — each episode is a real network call.
+docker exec agentcore_p4 env REAL_SANDBOX=1 SANDBOX=agentcore-runtime \
+    AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu-1gzBVp675S \
+    EPISODES=8 WORKERS=1,2,4 \
+    python3 /work/code/demos/demo_cpu_harness_scale/harness_scaling_demo.py
+
 # 3. Real RL train + eval (async/decoupled slime) through the WARM worker pool.
 #    Smoke uses NR=3; converge with a larger NR. HARNESS_WORKERS sweeps the harness tier.
 docker exec -e NR=3 -e EVAL_INTERVAL=2 -e HARNESS_WORKERS=4 agentcore_p4 \
@@ -88,8 +96,12 @@ through `W` warm asyncio workers behind modelled inference/sandbox ceilings, mea
 throughput, and prints which tier binds at each `W` (throughput rises ~linearly while the harness
 binds, then plateaus at `min(inference, sandbox)`).
 
-Real remote runs (step 3) need `AGENTCORE_SANDBOX_RUNTIME_ARN(S)` + AWS creds in the container
-(`run.sh` ships a pinned CPU-sandbox ARNS default). `SANDBOX=local` runs fully offline.
+Real remote runs (steps 2b and 3) need `AGENTCORE_SANDBOX_RUNTIME_ARN(S)` + AWS creds in the
+container (`run.sh` ships a pinned CPU-sandbox ARNS default). `SANDBOX=local` runs fully offline.
+Step 2b's `REAL_SANDBOX=1` opens one live remote sandbox **per warm worker** (reused across that
+worker's episodes; a session is a full start round-trip, too heavy to reopen per episode) and
+round-robins the workers across the configured ARNs, so the `sandbox` ceiling it reports is now
+measured from real remote latency rather than the modelled `--tsbx`.
 
 > **Adapter/tool-parser requirement (the A3/B3 dead-reward fix):** `run.sh` bakes in
 > `--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3`. Without them the adapter cannot

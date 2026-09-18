@@ -32,7 +32,7 @@
 #
 # Sandbox backend (SANDBOX): agentcore-runtime -> the SINGLE remote AgentCore Runtime sandbox
 # (default; requires AGENTCORE_SANDBOX_RUNTIME_ARN); agentcore -> AWS Code Interpreter microVM;
-# local -> in-container LocalSandbox (offline, no AWS — CI/unit tests only). Tunables: MODE (A|B
+# SANDBOX=local is DISABLED for CPU demos (remote-only; see the guard below). Tunables: MODE (A|B
 # async mode), RB (rollout-batch-size), NS (n-samples-per-prompt), NR (num-rollout), TEMP
 # (sampling temp), CONC (sglang-server-concurrency), EVAL_INTERVAL/EVAL_NS.
 #
@@ -57,7 +57,15 @@
 set -euo pipefail
 
 SANDBOX="${SANDBOX:-agentcore-runtime}"   # agentcore-runtime -> SINGLE remote AgentCore Runtime sandbox (default);
-                                          # agentcore -> AWS Code Interpreter microVM; local -> in-container LocalSandbox (offline)
+                                          # agentcore -> AWS Code Interpreter microVM. CPU demo => REMOTE-ONLY (no local).
+# CPU demos run ONLY on remote managed serverless AgentCore sandbox sessions — never local. The local
+# (in-container LocalSandbox) path is rejected here so a CPU training run can never silently fall back
+# off the AgentCore substrate the demo is meant to exercise. (GPU demos keep a local fallback because
+# a remote g6 instance may be unavailable.)
+if [ "$SANDBOX" = "local" ]; then
+   echo "SANDBOX=local is not supported for CPU demos (remote-only) — use agentcore-runtime (default) or agentcore." >&2
+   exit 1
+fi
 # The remote sandbox Runtime ARN (sandbox_server_agent.py). REQUIRED for SANDBOX=agentcore-runtime.
 # demo_cpu_single's MBPP checker is pure Python => a CPU-backed sandbox Runtime (e.g. acs_sandbox_a2 on acs_cpu_cp).
 # AGENTCORE_SANDBOX_RUNTIME_ARNS (plural, comma-separated) fans episodes out round-robin across
@@ -105,14 +113,17 @@ case "$MODE" in B|b) MODE=B;; A|a) MODE=A;; *) echo "MODE must be A or B (got '$
 # well above the re-warm time (default 10 is fine for the smoke; use a larger value for long runs).
 EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
 EVAL_NS="${EVAL_NS:-2}"               # samples per eval prompt
-# Checkpoint policy (disk-saving): we do NOT snapshot mid-training. slime ALWAYS force-saves at
-# the final rollout AND at every epoch boundary (step % (dataset_size/RB) == 0) regardless of
-# save-interval. So a huge save-interval + a train set with dataset_size >= NR*RB (one epoch spans
-# the whole run) => the ONLY checkpoint written is the one at the end of training.
+# Checkpoint policy (disk-saving): we do NOT snapshot mid-training — the ONLY checkpoint written is
+# the final one. slime saves whenever should_run_periodic_action() fires; here that is ONLY the last
+# rollout (rollout_id == num_rollout-1, always forced). Its two other triggers are both inactive:
+# (a) step % save-interval == 0 is disabled by the huge SAVE_INTERVAL below, and (b) the
+# epoch-boundary trigger (step % num_rollout_per_epoch) is OFF because we pass an explicit
+# --num-rollout (NR) => slime leaves num_rollout_per_epoch = None (it is computed only under
+# --num-epoch). Net: exactly one checkpoint, at the end of training, regardless of dataset size.
 SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"
 
 SLIME=/root/slime
-DEMO_DIR=/work/code/demos/demo_cpu_single
+DEMO_DIR=/work/code/demos/demo_cpu_math
 CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"  # SHARED base Megatron ckpt
 HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
 

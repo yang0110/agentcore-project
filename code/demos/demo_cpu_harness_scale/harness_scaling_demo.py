@@ -26,6 +26,14 @@ whole argument for scaling the three tiers *jointly*.
 Offline: no AWS, no GPU, no network. Runs in a few seconds. See README.md for the architecture and
 load-balance diagram, and ../../agentcore_slime_demo/harness_pool.py for the real slime integration
 (a warm worker pool behind the `--custom-generate-function-path` hook) this demo abstracts.
+
+REAL-remote mode (opt-in): set REAL_SANDBOX=1 (or SANDBOX=<real backend>, e.g. agentcore-runtime)
+to make the SANDBOX tier's service time a genuine measured round-trip against a live remote
+AgentCore sandbox instead of the simulated `--tsbx` sleep. In that mode CappedSandbox wraps a real
+`make_sandbox(...)` backend and drops the injected sleep, so the Meter records the true remote
+latency; the `--csbx` semaphore still caps concurrent ops, and inference stays mocked (`--tinf`).
+Each episode is then a real network round-trip, so keep --episodes/EPISODES modest. The default
+(REAL_SANDBOX unset / SANDBOX=local) remains the fully offline analytical sweep, unchanged.
 """
 from __future__ import annotations
 
@@ -39,7 +47,7 @@ from pathlib import Path
 
 from agentcore_slime_demo.harness import run_episode
 from agentcore_slime_demo.policy import MockPolicy
-from agentcore_slime_demo.sandbox import LocalSandbox
+from agentcore_slime_demo.sandbox import LocalSandbox, make_sandbox
 from agentcore_slime_demo.task import task_from_dict
 
 # DeepScaleR rows carry the reward as a numeric assert on the bare name `answer`, e.g.
@@ -49,6 +57,16 @@ from agentcore_slime_demo.task import task_from_dict
 _GOLD = re.compile(r"abs\(answer\s*-\s*([-\d.eE+]+)\)")
 
 HERE = Path(__file__).resolve().parent
+
+
+def _real_sandbox_selected() -> bool:
+    """True in REAL-remote mode: measure the sandbox tier against a live remote AgentCore sandbox
+    instead of the simulated --tsbx sleep. Opt in with REAL_SANDBOX=1, or by setting SANDBOX to any
+    real backend (anything other than 'local'). Default (both unset / SANDBOX=local) is offline."""
+    if os.environ.get("REAL_SANDBOX", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    sb = os.environ.get("SANDBOX", "").strip().lower()
+    return bool(sb) and sb != "local"
 
 
 # --------------------------------------------------------------------------------------------
@@ -94,16 +112,25 @@ class CappedPolicy:
 
 
 class CappedSandbox:
-    """Wrap a real LocalSandbox: gate `exec` (the checker run — the representative sandbox op)
-    behind a shared `sem` (CSBX concurrent) + injected `latency` (~TSBX). write_file/read_file
-    pass straight through (cheap local ops); the real subprocess cost of `exec` rides inside the
-    measured sandbox service time, so this stays a genuine end-to-end episode."""
+    """Wrap a sandbox: gate `exec` (the checker run — the representative sandbox op) behind a
+    shared `sem` (CSBX concurrent) + injected `latency` (~TSBX). write_file/read_file pass straight
+    through; the real subprocess cost of `exec` rides inside the measured sandbox service time, so
+    this stays a genuine end-to-end episode.
 
-    def __init__(self, inner: LocalSandbox, sem: asyncio.Semaphore, latency: float, meter: Meter) -> None:
+    Two modes for the inner sandbox:
+      * OFFLINE (default, `real=False`) — inner is a LocalSandbox subprocess; `exec` sleeps
+        `latency` (~TSBX) to model the remote sandbox's service time before the local checker runs.
+      * REAL   (`real=True`)            — inner is a live remote backend from make_sandbox(); the
+        injected sleep is DROPPED so the metered window is the genuine remote round-trip (no
+        double-counting). The `sem` (CSBX) ceiling still applies; the Meter records real latency."""
+
+    def __init__(self, inner, sem: asyncio.Semaphore, latency: float, meter: Meter,
+                 real: bool = False) -> None:
         self._inner = inner
         self._sem = sem
         self._latency = latency
         self._meter = meter
+        self._real = real
 
     async def __aenter__(self) -> "CappedSandbox":
         await self._inner.__aenter__()
@@ -121,7 +148,8 @@ class CappedSandbox:
     async def exec(self, command, timeout: int = 60):
         async with self._sem:
             t = time.perf_counter()
-            await asyncio.sleep(self._latency)
+            if not self._real:               # OFFLINE: inject the modelled ~TSBX service time.
+                await asyncio.sleep(self._latency)   # REAL: measure the genuine round-trip instead.
             out = await self._inner.exec(command, timeout=timeout)
             dt = time.perf_counter() - t
         self._meter.sbx_time += dt
@@ -155,19 +183,39 @@ def load_tasks(path: Path, n: int):
 # --------------------------------------------------------------------------------------------
 # The W-worker pool over one task at a time.
 # --------------------------------------------------------------------------------------------
-async def _worker(queue, inf_sem, sbx_sem, lat_inf, lat_sbx, meter, solved):
-    while True:
-        item = await queue.get()
-        try:
-            if item is None:
-                return
-            task, gold = item
-            policy = CappedPolicy(MockPolicy([f"answer = {gold}"]), inf_sem, lat_inf, meter)
-            async with CappedSandbox(LocalSandbox(workdir="/workspace"), sbx_sem, lat_sbx, meter) as sb:
-                traj = await run_episode(policy, sb, task, {"max_new_tokens": 64, "temperature": 0.0})
-            solved.append(bool(traj.solved))
-        finally:
-            queue.task_done()
+async def _worker(queue, inf_sem, sbx_sem, lat_inf, lat_sbx, meter, solved, cfg):
+    # REAL mode opens ONE live remote sandbox per worker and reuses it across every episode that
+    # worker pulls, closing it in a finally. A real session is a full start round-trip (far too
+    # heavy to reopen per episode), so per-worker is the clean choice; make_sandbox() hands each
+    # worker the next Runtime ARN round-robin, so W workers fan out across the configured ARNs.
+    # The --csbx semaphore still caps concurrent exec ops across all workers. OFFLINE mode is
+    # unchanged: a fresh cheap LocalSandbox per episode with the injected ~TSBX sleep.
+    worker_sbx = None
+    if cfg["real_sbx"]:
+        inner = make_sandbox(cfg["sbx_kind"], workdir="/workspace")
+        worker_sbx = CappedSandbox(inner, sbx_sem, lat_sbx, meter, real=True)
+        await worker_sbx.__aenter__()
+    try:
+        while True:
+            item = await queue.get()
+            try:
+                if item is None:
+                    return
+                task, gold = item
+                policy = CappedPolicy(MockPolicy([f"answer = {gold}"]), inf_sem, lat_inf, meter)
+                sampling = {"max_new_tokens": 64, "temperature": 0.0}
+                if worker_sbx is not None:                    # REAL: reuse this worker's remote sandbox
+                    traj = await run_episode(policy, worker_sbx, task, sampling)
+                    solved.append(bool(traj.solved))
+                else:                                         # OFFLINE: fresh LocalSandbox per episode
+                    async with CappedSandbox(LocalSandbox(workdir="/workspace"), sbx_sem, lat_sbx, meter) as sb:
+                        traj = await run_episode(policy, sb, task, sampling)
+                    solved.append(bool(traj.solved))
+            finally:
+                queue.task_done()
+    finally:
+        if worker_sbx is not None:
+            await worker_sbx.__aexit__(None, None, None)
 
 
 async def run_one(w: int, tasks, cfg) -> dict:
@@ -185,7 +233,7 @@ async def run_one(w: int, tasks, cfg) -> dict:
     t0 = time.perf_counter()
     workers = [
         asyncio.create_task(
-            _worker(queue, inf_sem, sbx_sem, cfg["tinf"], cfg["tsbx"], meter, solved)
+            _worker(queue, inf_sem, sbx_sem, cfg["tinf"], cfg["tsbx"], meter, solved, cfg)
         )
         for _ in range(w)
     ]
@@ -219,13 +267,24 @@ async def main_async(args) -> int:
     if not tasks:
         print(f"no parseable numeric tasks in {args.data}", flush=True)
         return 1
-    cfg = {"cinf": args.cinf, "csbx": args.csbx, "tinf": args.tinf, "tsbx": args.tsbx}
+    # REAL mode: the sandbox tier's service time is a live remote round-trip (measured), not the
+    # simulated --tsbx sleep. Selected by REAL_SANDBOX=1, or by SANDBOX set to any real backend
+    # (anything other than 'local'). sbx_kind defaults to 'agentcore-runtime' when only REAL_SANDBOX
+    # is set. Default (both unset / SANDBOX=local) stays the fully offline analytical sweep.
+    real_sbx = _real_sandbox_selected()
+    sbx_kind = os.environ.get("SANDBOX", "agentcore-runtime")
+    cfg = {"cinf": args.cinf, "csbx": args.csbx, "tinf": args.tinf, "tsbx": args.tsbx,
+           "real_sbx": real_sbx, "sbx_kind": sbx_kind}
     ws = [int(x) for x in args.workers.split(",") if x.strip()]
 
+    sbx_line = (
+        f"sandbox: CSBX={cfg['csbx']} REAL remote={sbx_kind} (measured round-trip, --tsbx ignored)"
+        if real_sbx else
+        f"sandbox: CSBX={cfg['csbx']} @ ~{cfg['tsbx']*1000:.0f}ms + real subprocess"
+    )
     print(
         f"harness-scaling demo | task=DeepScaleR(math, coding-shape) episodes={len(tasks)}\n"
-        f"inference: CINF={cfg['cinf']} @ ~{cfg['tinf']*1000:.0f}ms   "
-        f"sandbox: CSBX={cfg['csbx']} @ ~{cfg['tsbx']*1000:.0f}ms + real subprocess\n"
+        f"inference: CINF={cfg['cinf']} @ ~{cfg['tinf']*1000:.0f}ms   {sbx_line}\n"
         f"sweeping harness workers W over {ws}\n"
     )
     hdr = f"{'W':>3} {'ep/s':>8} {'solved':>8} {'bind':>10}   ceilings ep/s [inf | sbx | harness]"
