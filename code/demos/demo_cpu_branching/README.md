@@ -1,0 +1,146 @@
+# demo_cpu_branching — one episode → many training samples ("fan-out")
+
+Every other demo treats one episode as one training sample. This one does not. It runs the **real
+Claude Code CLI** as the harness and deliberately provokes the two CLI behaviors that split a single
+episode into several trainable branches — **sub-agents** (the `Task` tool) and **context
+summarization / compaction** — so a single rollout fans out into a **list of `Sample`s** (one per
+leaf of the trajectory tree). The interesting variable here is the *fan-out*, not the task; the
+dataset is a single family (SWE bug-fix).
+
+The policy is Qwen3-4B trained by slime. Unlike the other CPU demos, the harness is **not** the
+in-process mini-agent — it is the genuine Claude Code CLI, co-located with slime and wired to slime's
+`AnthropicAdapter`, whose **tools execute in a remote CPU AgentCore Runtime microVM**. Because the
+sandbox has to host the CLI itself, its image is **not** the plain CPU checker image the other CPU
+demos use — it **bakes node 22 + the `claude` CLI** (`deploy/Dockerfile.sandbox.cli`).
+
+This demo is **REMOTE-ONLY** (see [Remote-only](#remote-only-no-local-sandbox)) and this folder is
+**self-contained**: it owns its `data/`, `ckpt/`, `run.sh`, a vendored `agentcore_slime_demo/`, and
+its own `deploy/` Dockerfiles. The only outside prerequisites are those already in the `agentcore_p4`
+container: the slime install (`/root/slime`), the base Qwen3-4B Megatron checkpoint (`CKPT_BASE`,
+default `/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist`), and AWS credentials.
+
+---
+
+## How the fan-out is wired end-to-end
+
+One rollout is one episode of the real CLI. Two things make an episode produce **more than one**
+`Sample`:
+
+- **Sub-agents.** When the CLI spawns a sub-agent (`Task` tool), that sub-agent runs its own call
+  chain with its own token context. That chain is a separate branch of the trajectory tree.
+- **Summarization / compaction.** When the context is summarized, the token prefix is reset: the
+  calls before the summary close as one branch and the calls after it open a new one.
+
+Two source files turn that tree into correct training data:
+
+- **`agentcore_slime_demo/claude_code_generate.py`** — the custom generate hook
+  (`--custom-generate-function-path`). It runs the CLI in the sandbox against the slime-served
+  Anthropic endpoint, then `finish_session` **linearizes the per-session trajectory tree into one
+  `Sample` per leaf**, every leaf sharing the same `rollout_id` and the episode's single **outcome
+  reward**. It returns `list[Sample]`.
+- **`agentcore_slime_demo/rollout_advantage.py`** — the custom advantage
+  (`rollout_level_grpo_advantage`). It computes the GRPO baseline over **distinct rollouts**
+  (episodes), never over the fanned-out leaves, then broadcasts each episode's advantage to all of
+  its leaves.
+
+### Three flags make the reconciliation correct
+
+An incidental fan-out must not silently reweight the update. Three settings in `run.sh` guarantee
+each **episode** counts once, regardless of how many leaves it produced:
+
+1. **`--custom-advantage-function-path …rollout_advantage.rollout_level_grpo_advantage`** — the
+   built-in GRPO path baselines over *samples*; under fan-out its `_post_process_rewards` guard
+   (`rewards.shape[-1] == n_samples_per_prompt * rollout_batch_size`) fails and it mis-groups the
+   inflated sample count. So the baseline is computed here, per episode.
+2. **`--disable-rewards-normalization`** — keep **raw** rewards flowing to the actor; the custom
+   advantage does the only normalization.
+3. **No `--calculate-per-token-loss`** (left OFF on purpose) — the default `sum_of_sample_mean`
+   reducer plus the shared `rollout_id` makes slime key the loss denominator on `rollout_mask_sums`
+   (a per-**episode** token-weighted mean), so each episode counts once in the loss too. Passing the
+   flag would switch to a global per-token mean and let prolific (many-leaf) episodes dominate.
+
+This is the concrete implementation of the report's §"When one episode becomes many samples".
+
+---
+
+## Constraints (why MODE=A, dp=1, and sync save)
+
+- **MODE=A only** (enforced in `run.sh`). Returning `list[Sample]` puts slime on the nested
+  `list[list[Sample]]` shape. `train_async.py`'s stock 1-step-async driver tolerates it
+  (`isinstance(group[0], list)` guards everywhere); the **fully-async** driver
+  (`generate_rollout_fully_async`) crashes on it (its `_key` sort). `MODE=B` is rejected.
+- **`dp_size == 1` required.** The custom advantage runs in the Megatron actor on each rank's
+  partition and assumes a whole prompt-group (all its rollouts + their leaves) is co-resident on the
+  rank — true only at data-parallel size 1. With 4 actor GPUs that is `TP=2 × PP=2 = 4`.
+- **Sync checkpoint save.** `PP=2` breaks **both** of Megatron's async-checkpoint backends (the
+  `pidfd_getfd` `EPERM` also seen in the earlier real-CLI runs), so this demo saves synchronously
+  (no `--async-save`, no persistent-async-ckpt init hook).
+
+## Remote-only (no local sandbox)
+
+`SANDBOX=local` is **rejected**: the sandbox must host the real Claude Code CLI, so it needs the
+CLI-capable image, and a CPU training run must never silently fall off the AgentCore substrate it is
+meant to exercise. Use `SANDBOX=agentcore-runtime` (default). It **requires**:
+
+- **`AGENTCORE_SANDBOX_RUNTIME_ARN`** — a Runtime built from `deploy/Dockerfile.sandbox.cli` (node 22
+  + `claude` baked in; the plain CPU checker image will not work — streaming those binaries through
+  `write_file` corrupts them).
+- **`ADAPTER_PUBLIC_HOST`** — a private VPC IP of this training box that the sandbox microVM can dial;
+  the CLI inside the microVM reaches slime's `AnthropicAdapter` there.
+- **`ADAPTER_PORT`** (default `18021`) — a pinned port so one security-group ingress rule stays
+  stable across the whole run.
+
+---
+
+## Reproduce (run one by one, inside the `agentcore_p4` container)
+
+```bash
+# 1. Build the SINGLE-family SWE bug-fix dataset (offline). REPEAT (default 8) replicates the pool.
+docker exec agentcore_p4 bash /work/code/demos/demo_cpu_branching/prepare_data.sh
+#    -> data/swe_train.jsonl + data/swe_eval.jsonl   (built by build_swe_dataset.py)
+
+# 2. REAL RL train + eval through the REMOTE CLI sandbox (MODE=A). Smoke = NR=3.
+#    Requires AGENTCORE_SANDBOX_RUNTIME_ARN (CLI-capable image) + ADAPTER_PUBLIC_HOST + AWS creds.
+docker exec \
+    -e AGENTCORE_SANDBOX_RUNTIME_ARN=<cli-capable-arn> \
+    -e ADAPTER_PUBLIC_HOST=<private-vpc-ip-of-this-box> \
+    -e NR=3 -e EVAL_INTERVAL=2 agentcore_p4 \
+    bash -lc 'cd /work && bash code/demos/demo_cpu_branching/run.sh 2>&1 | tee code/demos/demo_cpu_branching/smoke_run.log'
+```
+
+The reward is the episode's SWE outcome (bug-fix accepted or not); every leaf of the fanned-out
+episode inherits it.
+
+## Knobs (env vars; defaults in `run.sh`)
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `SANDBOX` | `agentcore-runtime` | remote CLI sandbox. **`local` is rejected.** |
+| `AGENTCORE_SANDBOX_RUNTIME_ARN` | — (required) | CLI-capable sandbox Runtime (node 22 + `claude`) |
+| `ADAPTER_PUBLIC_HOST` | — (required) | private VPC IP the microVM dials for slime's adapter |
+| `ADAPTER_PORT` | `18021` | pinned adapter port (stable security-group ingress) |
+| `RB` / `NS` | 4 / 8 | prompts-per-step / **distinct rollouts** per prompt (leaves inflate the sample count) |
+| `NR` | 11 | num-rollout ⇒ real steps `NR-1` |
+| `CONC` | 4 | episode concurrency; episodes in flight `S = CONC × num_engines` |
+| `MODE` | `A` | **A only** — fully-async (B) crashes on the nested fan-out shape |
+| `TEMP` | 1.0 | rollout sampling temperature |
+| `BRANCHING_FORK_THRESHOLD` | 512 | lower ⇒ record more compactions as forks (more fan-out) |
+| `AGENT_TIME_BUDGET_SEC` | 900 | per-episode wall-clock budget for the CLI |
+| `EVAL_INTERVAL` / `EVAL_NS` | 10 / 2 | held-out eval cadence / samples |
+| `SAVE_INTERVAL` | 1000000 | save-only-at-end (final rollout is force-saved) |
+
+## What to watch
+`rollout/raw_reward` (per-episode learning signal), `eval/swe` (held-out solve rate), and the
+per-episode leaf count (how much each episode actually fanned out). The point of the demo is that the
+advantage and loss stay **per-episode** no matter how the leaf count moves.
+
+## Folder layout (self-contained)
+
+- `agentcore_slime_demo/` — vendored library: `claude_code_generate.py` (the CLI generate hook +
+  `finish_session` tree→leaf linearization), `rollout_advantage.py` (rollout-level GRPO advantage),
+  the remote sandbox client, and the task registry. Imported only from here.
+- `build_swe_dataset.py` — builds the single-family SWE bug-fix dataset (offline).
+- `prepare_data.sh` — step 1 wrapper · `run.sh` — the remote RL run (step 2).
+- `deploy/Dockerfile.sandbox.cli` — the CLI-capable CPU sandbox image (node 22 + `claude`).
+  `deploy/Dockerfile.sandbox.cpu` — the plain checker image (reference).
+- `data/` — `swe_train.jsonl` / `swe_eval.jsonl` (built by step 1; currently empty until you run it).

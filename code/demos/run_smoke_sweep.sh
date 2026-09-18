@@ -1,5 +1,8 @@
 #!/bin/bash
-# Smoke-sweep driver — Phases 0 (offline sims) + 1 (CPU RL trainers). See SMOKE_SWEEP.md.
+# Smoke-sweep driver — Phase 0 (offline PROBES) + Phase 1 (CPU RL trainers). See SMOKE_SWEEP.md.
+# NOTE: the five property demos are now REAL trainers (their run.sh launches slime). Phase 0 runs
+# each one's RETAINED offline probe SCRIPT directly (quiesce_demo.py / snapshot_demo.py /
+# harness_scaling_demo.py) — NOT run.sh — and the three CPU property trainers join Phase 1.
 # Runs INSIDE the agentcore_p4 container (as root => can delete its own root-owned checkpoints).
 # Serial by necessity (each trainer claims the GPUs). Deletes each trainer's checkpoint right after
 # verifying it, so disk never accumulates. Appends a live results row per demo.
@@ -12,7 +15,18 @@ TRAIN_TIMEOUT="${TRAIN_TIMEOUT:-1800}"
 
 # Phase lists (override via env to resume a subset).
 OFFLINE_DEMOS="${OFFLINE_DEMOS:-demo_cpu_quiesce demo_gpu_snapshot demo_cpu_harness_scale}"
-CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_single demo_cpu_math demo_cpu_mixtask demo_cpu_gsm8k demo_cpu_math500 demo_cpu_deepscaler demo_cpu_humaneval demo_cpu_gretelsql demo_cpu_hotpotqa demo_cpu_xlam demo_cpu_mcp}"
+CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_single demo_cpu_math demo_cpu_mixtask demo_cpu_gsm8k demo_cpu_math500 demo_cpu_deepscaler demo_cpu_humaneval demo_cpu_gretelsql demo_cpu_hotpotqa demo_cpu_xlam demo_cpu_mcp demo_cpu_quiesce demo_cpu_harness_scale demo_cpu_customruntime}"
+
+# Each offline demo's RETAINED probe script (run directly; run.sh is now the trainer). Args match the
+# pre-conversion run.sh so the behavior markers below still appear.
+offline_cmd() {
+  case "$1" in
+    demo_cpu_quiesce)       echo "python3 quiesce_demo.py" ;;
+    demo_gpu_snapshot)      echo "python3 snapshot_demo.py" ;;
+    demo_cpu_harness_scale) echo "python3 harness_scaling_demo.py --episodes 48 --workers 1,2,4,6,8,12 --cinf 4 --csbx 8 --tinf 0.10 --tsbx 0.05" ;;
+    *) echo "" ;;
+  esac
+}
 
 printf 'demo\tstatus\tsecs\tnote\n' > "$RESULTS"
 echo "[sweep] start $(date -u +%FT%TZ)"
@@ -61,22 +75,25 @@ free_gpus() {
   pkill -9 sglang 2>/dev/null; ray stop --force >/dev/null 2>&1; pkill -9 ray 2>/dev/null; sleep 4
 }
 
-# ---- Phase 0: offline sims (exit 0 == pass) -----------------------------------------------------
+# ---- Phase 0: offline PROBES (probe script + behavior markers) ----------------------------------
+# Runs the demo's retained offline probe SCRIPT directly (NOT run.sh — that's now the trainer). Logs
+# to offline_probe.log so it never clobbers the trainer's smoke_run.log written in Phase 1.
 for d in $OFFLINE_DEMOS; do
-  echo "[sweep] OFFLINE $d"
+  echo "[sweep] OFFLINE-PROBE $d"
   t0=$SECONDS
-  log="$BASE/$d/smoke_run.log"
-  timeout "$OFFLINE_TIMEOUT" bash "$BASE/$d/run.sh" > "$log" 2>&1
+  log="$BASE/$d/offline_probe.log"
+  ( cd "$BASE/$d" && PYTHONPATH="$BASE/$d:${PYTHONPATH:-}" \
+      timeout "$OFFLINE_TIMEOUT" $(offline_cmd "$d") ) > "$log" 2>&1
   rc=$?
   if [ "$rc" != "0" ]; then
     [ "$rc" = "124" ] && row "$d" TIMEOUT $((SECONDS-t0)) "exceeded ${OFFLINE_TIMEOUT}s" \
-                       || row "$d" FAIL $((SECONDS-t0)) "exit $rc (see $d/smoke_run.log)"
+                       || row "$d" FAIL $((SECONDS-t0)) "exit $rc (see $d/offline_probe.log)"
   elif miss=$(check_markers "$d" "$log" 2>&1 >/dev/null); then
     # exit 0 AND all behavior markers present
     row "$d" PASS $((SECONDS-t0)) "behavior verified (all markers)"
   else
     # exited 0 but the expected stepwise behavior is absent (e.g. truncated / half-run log)
-    row "$d" FAIL $((SECONDS-t0)) "exit 0 but $miss (see $d/smoke_run.log)"
+    row "$d" FAIL $((SECONDS-t0)) "exit 0 but $miss (see $d/offline_probe.log)"
   fi
 done
 

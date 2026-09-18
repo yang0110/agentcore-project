@@ -1,0 +1,24 @@
+# Sandbox AgentCore Runtime — CUSTOM "scipy" image (demo_cpu_imagepool capability-routing).
+# Build context MUST be this demo dir:
+#   docker build -f code/demos/demo_cpu_imagepool/deploy/Dockerfile.sandbox.scipy \
+#       -t <ecr>/acs-sandbox-scipy:latest code/demos/demo_cpu_imagepool/
+#
+# Identical to Dockerfile.sandbox.cpu (the same self-contained sandbox_server_agent.py exposing
+# /invocations write_file/exec/read_file) EXCEPT it bakes in scipy + numpy. The imagepool `scipy`
+# family's solution.py does `import scipy`, which the plain CPU image cannot satisfy — so its
+# episodes are routed here by task.image="scipy" (see agentcore_slime_demo/sandbox.py
+# _runtime_arn_for_image + AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE). One of THREE custom images in
+# this demo's pool (pandas / scipy / scikit-learn) — one image per task family.
+FROM public.ecr.aws/docker/library/python:3.12-slim
+
+WORKDIR /app
+# bedrock-agentcore (the /invocations server) + the extra toolchain THIS image exists to provide.
+RUN pip install --no-cache-dir bedrock-agentcore scipy numpy
+
+# sandbox_server_agent.py is self-contained (stdlib + bedrock_agentcore, no relative imports), so
+# copy it flat — no package, no __init__, nothing heavy.
+COPY agentcore_slime_demo/sandbox_server_agent.py /app/sandbox_server_agent.py
+
+ENV SANDBOX_WORKDIR=/workspace
+EXPOSE 8080
+CMD ["python", "-m", "sandbox_server_agent"]

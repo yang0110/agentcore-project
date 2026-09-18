@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 
+from .app_snapshot import maybe_restore, maybe_snapshot
 from .harness import Trajectory, run_episode
 from .policy import SGLangPolicy
 from .sandbox import make_sandbox
@@ -132,8 +133,15 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     sandbox = make_sandbox(os.environ.get("SANDBOX", "agentcore"),
                            region=os.environ.get("AGENTCORE_REGION"))
 
+    # App-level snapshot/resume (demo_gpu_snapshot): every episode opens a FRESH sandbox session, so
+    # each boundary is effectively a GPU-instance recycle. Restore this task's workspace from the
+    # store we own at ENTER (resume), snapshot it back at EXIT (quiescent, before the weight-sync
+    # barrier). SNAPSHOT_EVERY=0 disables both => identical to demo_gpu_single. See app_snapshot.py.
+    snap_key = f"ep-{task.task_id}"
     async with sandbox as sb:
+        await maybe_restore(sb, snap_key)
         traj = await run_episode(policy, sb, task, sampling_params)
+        await maybe_snapshot(sb, snap_key)
 
     tokens, response_length, loss_mask, rollout_log_probs = build_token_stream(
         traj, policy.tokenizer

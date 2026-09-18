@@ -67,6 +67,33 @@ def _next_runtime_arn() -> str | None:
         return next(_ARN_CYCLE)
 
 
+def _runtime_arn_for_image(image: str | None) -> str | None:
+    """Capability-routing by container image (the mixtask custom-image case).
+
+    A heterogeneous batch may contain a family whose sandbox needs a DIFFERENT image than the
+    generic CPU one — e.g. the `datasci` family needs pandas, which is absent from the plain CPU
+    sandbox image. Each task carries an `image` tag (task.image); this maps that tag to a Runtime
+    ARN via AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE, a JSON object like:
+
+        {"cpu": "arn:aws:bedrock-agentcore:...:runtime/acs_sandbox_cpu-...",
+         "datasci": "arn:aws:bedrock-agentcore:...:runtime/acs_sandbox_datasci-..."}
+
+    If the tag has a mapped ARN, route there; otherwise fall back to the round-robin default pool
+    (_next_runtime_arn). Backward compatible: with the env unset every image falls through to the
+    round-robin, i.e. today's single-image behavior — so demos with one image need change nothing."""
+    if image:
+        raw = os.environ.get("AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE", "").strip()
+        if raw:
+            try:
+                mapping = json.loads(raw)
+            except Exception:  # noqa: BLE001 — malformed map => fall back to the round-robin pool
+                mapping = {}
+            arn = mapping.get(image)
+            if arn and str(arn).strip():
+                return str(arn).strip()
+    return _next_runtime_arn()
+
+
 @runtime_checkable
 class Sandbox(Protocol):
     """Provider-agnostic sandbox contract — signature-compatible with slime's
@@ -305,6 +332,9 @@ def make_sandbox(kind: str | None = None, **kwargs) -> Sandbox:
     # for offline unit tests / CI and must be requested explicitly (SANDBOX=local); it is never
     # the default path any longer.
     kind = (kind or os.environ.get("SANDBOX", "agentcore")).lower()
+    # `image` is a capability tag (task.image) consumed ONLY by the runtime backend for
+    # image-aware ARN routing; pop it here so the other backends never see the extra kwarg.
+    image = kwargs.pop("image", None)
     if kind == "local":
         return LocalSandbox(**{k: v for k, v in kwargs.items() if k == "workdir"})
     if kind in ("agentcore", "aws"):
@@ -313,10 +343,11 @@ def make_sandbox(kind: str | None = None, **kwargs) -> Sandbox:
         # Imported here so the offline/Code-Interpreter paths never load the new backend.
         from .agentcore_runtime_sandbox import AgentCoreRuntimeSandbox
 
-        # Spread episodes across the configured Runtime ARNs round-robin (throughput fan-out).
-        # If a caller passed an explicit runtime_arn we honor it; otherwise pick the next ARN.
+        # Pick the Runtime ARN. If a caller passed an explicit runtime_arn we honor it; otherwise
+        # route by the task's `image` tag (capability-routing — the custom-image family lands on
+        # its own pandas Runtime) with a round-robin fallback across the default pool.
         if "runtime_arn" not in kwargs:
-            arn = _next_runtime_arn()
+            arn = _runtime_arn_for_image(image)
             if arn is not None:
                 kwargs["runtime_arn"] = arn
         return AgentCoreRuntimeSandbox(**kwargs)

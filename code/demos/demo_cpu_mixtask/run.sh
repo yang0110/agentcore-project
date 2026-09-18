@@ -75,11 +75,9 @@ if [ "$SANDBOX" = "local" ]; then
    exit 1
 fi
 # The remote sandbox Runtime ARN (sandbox_server_agent.py). REQUIRED for SANDBOX=agentcore-runtime.
-# All the mixed families here are pure-CPU / stdlib checkers => a CPU-backed sandbox Runtime; ONE
-# generic CPU image serves every family (the task specificity is in the per-episode files, not the
-# image). AGENTCORE_SANDBOX_RUNTIME_ARNS (plural, comma-separated) fans episodes out round-robin
-# across SEVERAL sandbox Runtimes; a heterogeneous batch just spreads its mixed sessions across them.
-# Either the plural list OR the single ARN satisfies the requirement below.
+# MOST families here are pure-CPU / stdlib checkers => the generic CPU sandbox image serves them all
+# (the task specificity is in the per-episode files, not the image). AGENTCORE_SANDBOX_RUNTIME_ARNS
+# (plural, comma-separated) fans those episodes out round-robin across SEVERAL CPU Runtimes.
 # PINNED to K=2: runtime count is NOT tied to num_engines; it only spreads S=CONC*num_engines
 # concurrent sessions across K endpoints. Override by exporting AGENTCORE_SANDBOX_RUNTIME_ARNS
 # (or ..._ARN) to point at your own CPU sandbox Runtimes.
@@ -87,6 +85,17 @@ AGENTCORE_SANDBOX_RUNTIME_ARNS="${AGENTCORE_SANDBOX_RUNTIME_ARNS:-arn:aws:bedroc
 if [ "$SANDBOX" = "agentcore-runtime" ] && [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
    AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN (or ..._ARNS for the multi-Runtime sweep) to the CPU sandbox Runtime ARN (sandbox_server_agent.py; e.g. acs_sandbox_cpu from deploy_two_runtime.py)}"
 fi
+# CAPABILITY-ROUTING BY FAMILY (the custom-image mix). The default mix includes the `datasci`
+# family, whose sandbox needs pandas — absent from the generic CPU image. Each task carries an
+# `image` tag (task.image: "cpu" for the stdlib families, "datasci" for the pandas one), and
+# make_sandbox routes an episode to the Runtime whose image matches, via this JSON map:
+#     {"cpu": <CPU sandbox ARN>, "datasci": <pandas sandbox ARN>}
+# Build the pandas image from deploy/Dockerfile.sandbox.datasci and deploy it (deploy_two_runtime.py
+# --sandbox-only --dockerfile deploy/Dockerfile.sandbox.datasci), then set the ARN below. If unset
+# (or a tag is missing from the map), that image falls back to the round-robin CPU pool above — so
+# leaving this empty reproduces the old single-image behavior (datasci episodes then fail to import
+# pandas and score 0, which is exactly the miss the routing fixes).
+AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE="${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}"
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
 NR="${NR:-11}"        # num-rollout; real training steps = NR-1 (see NOTE) => 10 train + 1 eval (SMOKE; no more needed).
@@ -300,6 +309,7 @@ RUNTIME_ENV_JSON="{
     \"SANDBOX\": \"${SANDBOX}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARNS\": \"${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}\",
+    \"AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE\": \"$(printf '%s' "${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}" | sed 's/\"/\\\\\"/g')\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"INFER_CONC\": \"${INFER_CONC:-0}\"

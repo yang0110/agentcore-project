@@ -16,12 +16,41 @@ loads without slime installed.
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 from .harness import Trajectory, run_episode
 from .policy import SGLangPolicy
 from .sandbox import make_sandbox
+from .session_keeper import KeptSandbox, SessionKeeper
 from .task import CodingTask
+
+
+def _truthy(v: str | None) -> bool:
+    return (v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Process-wide keep-warm singleton (demo_cpu_quiesce's headline). One SessionKeeper per worker
+# process heartbeats any sandbox session that goes idle past ping_fraction*idle_timeout — i.e.
+# during the weight-sync stall (and rollout tails) — so AgentCore never idle-reclaims an in-flight
+# session mid-run. Started lazily on whatever event loop first runs an episode; re-armed if the loop
+# changes (Mode B fully-async worker loop vs the eval loop). Gated by QUIESCE_KEEP_WARM (default on).
+_KEEPER: SessionKeeper | None = None
+_KEEPER_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+async def _get_keeper() -> SessionKeeper:
+    global _KEEPER, _KEEPER_LOOP
+    idle = float(os.environ.get("QUIESCE_IDLE", "600"))
+    frac = float(os.environ.get("QUIESCE_PING_FRACTION", "0.5"))
+    if _KEEPER is None:
+        _KEEPER = SessionKeeper(ping_fraction=frac, tick=min(5.0, idle * frac / 2 or 5.0))
+        _KEEPER.keep_warm_begin()
+    loop = asyncio.get_running_loop()
+    if _KEEPER_LOOP is not loop:      # first use, or a new loop (worker vs eval): (re)arm the loop task
+        await _KEEPER.start()
+        _KEEPER_LOOP = loop
+    return _KEEPER
 
 
 def build_token_stream(
@@ -131,6 +160,14 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     )
     sandbox = make_sandbox(os.environ.get("SANDBOX", "agentcore"),
                            region=os.environ.get("AGENTCORE_REGION"))
+
+    # Keep-warm: wrap the sandbox so it registers with the process-wide SessionKeeper, which
+    # heartbeats it if it goes idle across the weight-sync barrier. Falsy QUIESCE_KEEP_WARM =>
+    # behave exactly like demo_cpu_single (no wrap, no keeper). See _get_keeper above.
+    if _truthy(os.environ.get("QUIESCE_KEEP_WARM", "1")):
+        keeper = await _get_keeper()
+        sandbox = KeptSandbox(sandbox, keeper,
+                              idle_timeout=float(os.environ.get("QUIESCE_IDLE", "600")))
 
     async with sandbox as sb:
         traj = await run_episode(policy, sb, task, sampling_params)

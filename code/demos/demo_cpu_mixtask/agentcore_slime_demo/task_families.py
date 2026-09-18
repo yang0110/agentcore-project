@@ -68,6 +68,11 @@ class EpisodicTask:
 
     # Subclasses override these.
     family: ClassVar[str] = "base"
+    # Capability tag: which sandbox container image this family needs. Almost every family runs on
+    # the generic CPU image ("cpu"); a family that needs extra toolchain in the sandbox (e.g.
+    # `datasci` needs pandas) overrides this, and make_sandbox routes its episodes to the Runtime
+    # built from the matching image (capability-routing by family). See sandbox._runtime_arn_for_image.
+    image: ClassVar[str] = "cpu"
     artifact_filename: ClassVar[str] = "solution.py"
     check_command: ClassVar[str] = "python3 run_checks.py"
     fence_lang: ClassVar[str] = "python"
@@ -891,8 +896,72 @@ class ToolCallTask(EpisodicTask):
         )
 
 
+# ==============================================================================
+# 12. DataSci (CUSTOM IMAGE) — pandas aggregation; needs a sandbox image with pandas baked in
+# ==============================================================================
+@register_family
+class DataSciTask(EpisodicTask):
+    """The one family in the mix whose sandbox needs a DIFFERENT container image.
+
+    The agent must use **pandas** to aggregate a small CSV — and pandas is NOT in the generic CPU
+    sandbox image (python:3.12-slim + bedrock-agentcore only). So `image = "datasci"` tags this
+    family, and make_sandbox routes its episodes to a pandas-equipped Runtime (built from
+    deploy/Dockerfile.sandbox.datasci) while the pure-stdlib families keep the plain CPU image.
+    This is capability-routing *by family* — the point of the custom-image mix: on the plain CPU
+    image solution.py's `import pandas` raises ModuleNotFoundError, the checker fails, reward = 0;
+    only the correctly-routed episode can pass. The reward stays RLVR (a numeric assert on `answer`).
+    """
+
+    family = "datasci"
+    image = "datasci"            # capability tag: needs the pandas sandbox image, not the "cpu" one
+    SYSTEM = (
+        "You are a data-analysis agent. A CSV file data.csv is present in the sandbox. Write "
+        "solution.py that uses pandas to compute the requested statistic and stores it in a "
+        "module-level variable `answer` (a float). Reply with ONE fenced ```python block."
+    )
+    submission_hint = (
+        "Reply with solution.py that reads data.csv with pandas and sets `answer` in one ```python block."
+    )
+
+    def setup_files(self) -> dict[str, str]:
+        return {"data.csv": self.spec["csv"]}
+
+    @classmethod
+    def _t(cls, i, csv, desc, expected, right_body):
+        prompt = (
+            f"data.csv contains:\n```\n{csv}```\n\n{desc}\n\n"
+            "Write solution.py that reads ./data.csv with pandas and sets a module-level float `answer`."
+        )
+        return cls(task_id=f"datasci_{i}", prompt=prompt, max_turns=3,
+                   spec={"csv": csv,
+                         "checks": [f"assert abs(answer - {expected!r}) <= 1e-6, "
+                                    f"f'answer={{answer}} expected {expected!r}'"],
+                         "setup": ""},
+                   mock_attempts=["answer = 0.0\n", right_body])
+
+    @classmethod
+    def seeds(cls) -> list["DataSciTask"]:
+        _read = "import pandas as pd\ndf = pd.read_csv('data.csv')\n"
+        ab = "group,value\nA,10\nB,20\nA,30\nB,40\n"
+        return [
+            cls._t(0, ab, "Set `answer` to the mean of `value` over rows where group == 'A'.",
+                   20.0, _read + "answer = float(df[df['group'] == 'A']['value'].mean())\n"),
+            cls._t(1, ab, "Set `answer` to the sum of the `value` column.",
+                   100.0, _read + "answer = float(df['value'].sum())\n"),
+            cls._t(2, ab, "Set `answer` to the maximum of the `value` column.",
+                   40.0, _read + "answer = float(df['value'].max())\n"),
+            cls._t(3, ab, "Set `answer` to the number of rows where group == 'B'.",
+                   2.0, _read + "answer = float((df['group'] == 'B').sum())\n"),
+            cls._t(4, ab, "Set `answer` to the median of the `value` column.",
+                   25.0, _read + "answer = float(df['value'].median())\n"),
+            cls._t(5, "n\n1\n2\n3\n4\n5\n6\n",
+                   "Set `answer` to the mean of column `n`.",
+                   3.5, _read + "answer = float(df['n'].mean())\n"),
+        ]
+
+
 # Every family class self-registers via @register_family on import; nothing else to do.
 FAMILY_CLASSES = [
     SweTask, ToolUseTask, SqlTask, MathTask, CtfTask, RagTask,
-    RegexTask, PlanningTask, ConfigTask, DataTask,
+    RegexTask, PlanningTask, ConfigTask, DataTask, DataSciTask,
 ]

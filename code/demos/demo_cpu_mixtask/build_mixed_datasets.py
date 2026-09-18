@@ -3,7 +3,10 @@
 
 The other CPU demos pin one task family per run. This demo does the opposite: it interleaves
 SEVERAL families into ONE `mixed_train.jsonl` / `mixed_eval.jsonl`, so that every GRPO rollout
-step draws a batch of prompts that spans multiple tasks (math + sql + ctf + tool_use by default).
+step draws a batch of prompts that spans multiple tasks (math + sql + ctf + datasci by default).
+The default mix deliberately includes ONE custom-image family (`datasci`, which needs pandas in
+its sandbox), so the batch is heterogeneous in the *container image* it needs, not just the task —
+capability-routing by family (see agentcore_slime_demo.sandbox._runtime_arn_for_image).
 
 Nothing in the harness or the sandbox has to change for this — the reason it works:
 
@@ -27,7 +30,7 @@ identical to the other demos' builders:
 
 Run inside the container:
     python3 /work/code/demos/demo_cpu_mixtask/build_mixed_datasets.py \
-        --families math,sql,ctf,tool_use --out-dir /work/code/demos/demo_cpu_mixtask/data
+        --families math,sql,ctf,datasci --out-dir /work/code/demos/demo_cpu_mixtask/data
 """
 from __future__ import annotations
 
@@ -72,8 +75,9 @@ def _interleave(per_family: dict[str, list[dict]]) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build the mixed-task dataset for demo_cpu_mixtask.")
-    ap.add_argument("--families", default="math,sql,ctf,tool_use",
-                    help="comma-separated family labels to mix (default: math,sql,ctf,tool_use). "
+    ap.add_argument("--families", default="math,sql,ctf,datasci",
+                    help="comma-separated family labels to mix (default: math,sql,ctf,datasci; "
+                         "datasci is the custom-image family — needs the pandas sandbox image). "
                          f"available: {','.join(sorted(_BY_FAMILY))}")
     ap.add_argument("--out-dir", default=str(Path(__file__).resolve().parent / "data"))
     ap.add_argument("--max-turns", type=int, default=None,

@@ -10,12 +10,15 @@
 # the remote AgentCore sandbox session is written with that episode's task-specific files. Fully
 # self-contained: imports only this dir's vendored agentcore_slime_demo/. Idempotent (overwrites).
 #
-# Default mix: math + sql + ctf + tool_use (capability-diverse: numeric tolerance, SQL result-set,
-# reverse-engineering, tool-call assertion — all pure-CPU). Override with FAMILIES / BALANCED / REPEAT.
+# Default mix: math + sql + ctf + datasci (capability-diverse: numeric tolerance, SQL result-set,
+# reverse-engineering, and a pandas data-analysis family). `datasci` is the CUSTOM-IMAGE family —
+# its sandbox needs pandas (absent from the generic CPU image), so its episodes route to a
+# pandas-equipped Runtime via AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE (capability-routing by family;
+# see run.sh + agentcore_slime_demo/sandbox.py). Override with FAMILIES / BALANCED / REPEAT.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-FAMILIES="${FAMILIES:-math,sql,ctf,tool_use}"
+FAMILIES="${FAMILIES:-math,sql,ctf,datasci}"
 REPEAT="${REPEAT:-6}"
 BAL=(); [ "${BALANCED:-1}" = "1" ] && BAL=(--balanced)   # default: balanced (every step spans families)
 

@@ -239,8 +239,42 @@ class AgentCoreRuntimeSandbox:
         return self
 
     async def __aexit__(self, *exc) -> None:
-        # Session state is reclaimed by AgentCore when the session goes idle; nothing to stop
-        # explicitly. (Instance teardown is a fleet concern — gpu_deploy.py cleanup.)
+        # End the session EXPLICITLY at episode end. Each episode mints a fresh session id
+        # (`sbx-<uuid>`), so there is no warm-session reuse to preserve: left alone, the
+        # session (and its microVM) would sit idle holding a concurrent-session quota slot
+        # until AgentCore reclaims it (15-min microVM / 600s GPU-instance idle timeout).
+        # StopRuntimeSession [D12] reclaims it immediately, which matters when a batch runs
+        # many episodes concurrently against a bounded session quota.
+        #
+        # Best-effort: this is teardown, so a failure here must never kill a training run
+        # (idle reclaim is the fallback). Opt out with AGENTCORE_STOP_SESSION=0 for a fleet
+        # that deliberately keeps GPU-instance sessions warm for the next episode.
+        # (Instance teardown itself remains a fleet concern — gpu_deploy.py cleanup.)
+        client = self._client
+        if (
+            client is not None
+            and self._arn
+            and os.environ.get("AGENTCORE_STOP_SESSION", "1") not in ("0", "false", "no")
+        ):
+            try:
+                await asyncio.to_thread(
+                    lambda: client.stop_runtime_session(
+                        runtimeSessionId=self._session_id,
+                        agentRuntimeArn=self._arn,
+                    )
+                )
+                sys.stdout.write(
+                    f"[sbx-op] ts={time.time():.3f} op=stop_session ms=0.0 "
+                    f"arn={_arn_tail(self._arn)} session={self._session_id} status=ok\n"
+                )
+                sys.stdout.flush()
+            except Exception as exc_stop:  # noqa: BLE001 — teardown: log + fall back to idle reclaim
+                sys.stdout.write(
+                    f"[sbx-op] ts={time.time():.3f} op=stop_session ms=0.0 "
+                    f"arn={_arn_tail(self._arn)} session={self._session_id} "
+                    f"status={type(exc_stop).__name__} (idle-reclaim fallback)\n"
+                )
+                sys.stdout.flush()
         self._client = None
 
     def _invoke_sync(self, payload: dict) -> dict:

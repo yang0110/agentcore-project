@@ -16,9 +16,9 @@ This report is a **hands-on guide for AWS customers doing agentic RL**. It is gr
 - **What tasks to train, and how the reward works** — the verifiable task families frontier labs run in a sandbox, each scored by a programmatic **RLVR** checker, not an LLM judge (§"Tasks frontier labs run in a sandbox").
 - **What AgentCore can and cannot do** as an RL sandbox (and, optionally, harness), and **how to build and customize** your own Runtime — CPU (Code Interpreter) and GPU (Instances) (§"Foundations of AgentCore Runtime").
 - **What AgentCore *is*, precisely** — the three concepts you must not conflate (**Runtime**, **session**, **microVM**), their **1 : N : 1** cardinality, the two compute types (serverless CPU microVM vs GPU **Instances**), and how the **lifecycle** works — implicit launch on first invoke, the **~15-minute idle timer**, and implicit termination on idle / max-lifetime / failed health check (§"Foundations of AgentCore Runtime").
-- **How to run a real task on it** — datasets, Dockerfiles, deploy commands, and the single slime hook that wires AgentCore in without a fork (§"Using AgentCore as the sandbox in an agentic RL workflow"). The project ships a **sixteen-demo set**, presented at two levels: a brief one-row-per-demo catalogue (§"Demos — the demo set at a glance") and a full per-demo walkthrough of architecture, pipeline, lifecycle, and **measured results** (§"Demos in depth").
+- **How to run a real task on it** — datasets, Dockerfiles, deploy commands, and the single slime hook that wires AgentCore in without a fork (§"Using AgentCore as the sandbox in an agentic RL workflow"). The project ships a **twenty-one-demo set**, presented at two levels: a brief one-row-per-demo catalogue (§"Demos — the demo set at a glance") and a full per-demo walkthrough of architecture, pipeline, lifecycle, and **measured results** (§"Demos in depth").
 - **How to train agentic RL on a GPU Runtime** — an AgentCore Runtime **Instance backed by GPU-based EC2** (g6 / L4), where untrusted CUDA builds and runs against a checker on a disposable GPU (`demo_gpu_single`, `demo_gpu_shared`; §"Demos in depth").
-- **How to scale the loop** — measure the per-step bottleneck, then scale the three tiers **jointly**: inference, the sandbox, **and the harness itself**, because rollout throughput is `min(inference, sandbox, harness)`; and **balance load correctly per side** — a cache-aware SGLang router for inference, sticky round-robin by session id for the sandbox pool (§"Scaling the sandbox", §"Scaling the harness too").
+- **How to scale the loop** — measure the per-step bottleneck, then scale the three tiers **jointly**: inference, the sandbox, **and the harness itself**, because rollout throughput is `min(inference, sandbox, harness)`; and **balance load correctly per side** — a cache-aware SGLang router for inference, sticky round-robin by session id for the sandbox pool (§"Scaling the loop").
 - **How to keep a sandbox live across a weight sync** — a **heartbeat ping (health check)** holds the session warm while the trainer and inference engine sync weights, resetting the idle timer so the *same* sandbox is reused with no cold start per round (`demo_cpu_quiesce`).
 - **How to snapshot and resume at the application level** on a GPU-EC2 Runtime Instance — a **Dockerfile + a custom script, triggered by the weight-sync event**, checkpoints application state to a store you own, so training resumes after a recycle from the saved snapshot (`demo_gpu_snapshot`).
 - **Where the open problems are** — the infrastructure and algorithmic questions production agentic RL still faces (§"Open problems in production agentic RL").
@@ -52,7 +52,7 @@ Training that loop end-to-end uses a **disaggregated** design (following Agent L
 \node[gpu] (trainer) at (0,0)    {\textbf{Training Engine}\\[1pt]\scriptsize Megatron};
 \node[gpu] (infer)   at (5.0,0)  {\textbf{Inference Engine}\\[1pt]\scriptsize SGLang};
 \node[cpu] (buffer)  at (0,-3.4) {\textbf{Buffer}\\[1pt]\scriptsize training samples};
-\node[cpu] (adapter) at (5.0,-3.4){\textbf{Sample Adapter}\\[1pt]\scriptsize retokenize + reward};
+\node[cpu] (adapter) at (5.0,-3.4){\textbf{Sample Adapter}\\[1pt]\scriptsize assemble + reward};
 % --- API gateway (middle) ---
 \node[cpu] (proxy)   at (10.0,0)   {\textbf{LLM API Proxy}\\[1pt]\scriptsize policy under training};
 \node[cpu] (rollout) at (10.0,-3.4){\textbf{Rollout API}\\[1pt]\scriptsize collect trajectory};
@@ -82,7 +82,7 @@ Training that loop end-to-end uses a **disaggregated** design (following Agent L
 \node[ptitle, anchor=south west] at ([yshift=2pt]pagent.north west) {Agent runtime (CPU + sandbox)};
 \end{tikzpicture}%
 }
-\caption{Reference architecture for (harnessed) agentic RL, following the disaggregated design of Agent Lightning [1] with slime [9] as the training server. Three domains: a \textbf{training server} (GPU), an \textbf{API gateway}, and an \textbf{agent runtime}. \textbf{Generation lane (top, $\rightarrow$):} the training engine syncs weights to the inference engine; the LLM API proxy fronts inference so every turn is served by the policy under training; the harness drives the agent loop; the sandbox (AgentCore) runs each tool call and the checker. \textbf{Training-data lane (bottom, $\leftarrow$):} the rollout is collected via the Rollout API, the Sample Adapter retokenizes it and attaches the reward to form training samples, which accumulate in the Buffer; the trainer draws a sample batch and updates --- closing the loop.}
+\caption{Reference architecture for (harnessed) agentic RL, following the disaggregated design of Agent Lightning [1] with slime [9] as the training server. Three domains: a \textbf{training server} (GPU), an \textbf{API gateway}, and an \textbf{agent runtime}. \textbf{Generation lane (top, $\rightarrow$):} the training engine syncs weights to the inference engine; the LLM API proxy fronts inference so every turn is served by the policy under training; the harness drives the agent loop; the sandbox (AgentCore) runs each tool call and the checker. \textbf{Training-data lane (bottom, $\leftarrow$):} the rollout is collected via the Rollout API, the Sample Adapter assembles it from the recorded token IDs (no re-tokenization --- the TITO property) and attaches the reward to form training samples, which accumulate in the Buffer; the trainer draws a sample batch and updates --- closing the loop.}
 \end{figure}
 ```
 
@@ -94,7 +94,7 @@ Training that loop end-to-end uses a **disaggregated** design (following Agent L
 - **Harness** — the **agent loop** (CPU): it holds the conversation, calls the proxy for each turn, extracts the model's proposed action (a code block, a tool call), submits it to the sandbox, and feeds the result back as the next observation until the episode ends.
 - **Sandbox** — the **isolated execution environment** (CPU, or GPU for CUDA work) where the model's untrusted output actually runs (write → run → read) and where the **checker scores the reward**. It must be ad-hoc and isolated per episode.
 
-**The training-data path.** The bottom of Figure 1 shows how a finished episode becomes a gradient step. The **Rollout API** collects the trajectory (the sequence of LLM request–response pairs the harness made); the **Sample Adapter** retokenizes those calls and attaches the episode's reward and advantage, turning one rollout into one or more **training samples**; those land in the **Buffer**; and the trainer draws a **sample batch** from the buffer for each update. In *harnessed* agentic RL the training engine never sees the environment directly — only this stream of samples reconstructed from the proxy's request/response log [1].
+**The training-data path.** The bottom of Figure 1 shows how a finished episode becomes a gradient step. The **Rollout API** collects the trajectory (the sequence of LLM request–response pairs the harness made); the **Sample Adapter** assembles those calls from their recorded token IDs (no re-tokenization — §"Token-in-token-out") and attaches the episode's reward and advantage, turning one rollout into one or more **training samples**; those land in the **Buffer**; and the trainer draws a **sample batch** from the buffer for each update. In *harnessed* agentic RL the training engine never sees the environment directly — only this stream of samples reconstructed from the proxy's request/response log [1].
 
 ### Where agentic RL is used
 
@@ -273,17 +273,111 @@ The key point: **without the proxy, the trainer could not observe — or take cr
 
 ### Token-in-token-out (TITO) — the proxy's core responsibility
 
-**What it is.** *Token-in-token-out* (TITO) is the contract that the rollout path carries **token IDs**, not just text: the inference engine returns the **exact token IDs it sampled** (plus their log-probs), and the trainer consumes **those same token IDs** for the policy-gradient update — never a sequence re-derived by tokenizing decoded text. In a disaggregated design the training engine never touches the environment; it only ever sees the request/response stream the proxy logged [1]. TITO is the guarantee that this stream is *token-exact*.
+**What it is, and where it comes from.** *Token-in-token-out* (TITO) is the contract that the rollout path carries **token IDs**, not just text: the inference engine returns the **exact token IDs it sampled** (plus their log-probs), and the trainer consumes **those same token IDs** for the policy-gradient update — never a sequence re-derived by tokenizing decoded text. The need for it is intrinsic to *harnessed* agentic RL [1]. In the traditional setup the training engine owns the environment loop and keeps one continuously extended token history, so a rollout is a single linear token sequence by construction. In the harnessed setup the **harness** owns context construction, control flow, and tool execution; it builds each prompt independently and talks to the model over an ordinary, **text** LLM API. The trainer never touches the environment — it only observes a sequence of request/response pairs $(p_1,a_1),(p_2,a_2),\dots$ crossing the LLM endpoint. TITO is the guarantee that what crosses that seam is captured *token-exact*: the $a_i$ the trainer learns from are the very tokens the policy sampled.
 
-**Why it matters — retokenization drift.** A harness works in **text**: it sends messages and reads a string back. But a tokenizer is not a clean round-trip — decoding the sampled token IDs to a string and then **re-encoding** that string can yield a *different* token sequence than the one the model actually sampled (whitespace merges, byte-pair boundary shifts, special-token handling). If training re-tokenizes, three things silently misalign:
+**The problem — token-prefix continuity breaks (retokenization drift).** Harnesses chain calls in **text**: the previous call is a clean text-level prefix of the next prompt. RL, however, needs continuity at the **token** level, and the two do not coincide — a tokenizer is not a clean round-trip, so re-encoding the decoded history can yield a *different* token sequence than the one sampled. The paper isolates three mechanisms:
+
+- **Chat-template non-compositionality.** Rendering a whole message history is not the same as concatenating the renderings of its parts ($\mathrm{Template}(A \Vert B) \neq \mathrm{Template}(A)\Vert\mathrm{Template}(B)$): templates insert or drop delimiters at message boundaries. E.g. Qwen's chat template can strip an earlier `<think>` marker.
+- **Decode–retokenize drift.** Decoding is not injective, so re-tokenizing the decoded text need not recover the original IDs: the word *having*, sampled as `h`+`aving`, can re-tokenize to `hav`+`ing` inside a later prompt — identical text, different token boundaries.
+- **Inference-time output transformation.** Tool-call and structured-output handlers parse, normalize, repair, and reserialize a response before returning it, changing whitespace, delimiters, or JSON — so even the *text* folded into the next prompt can differ from what the sampled IDs represent.
+
+If training reconstructs tokens from this text rather than using the recorded IDs, three things silently misalign:
 
 - **The action.** The token the loss is computed on is no longer the token the policy emitted.
 - **The log-prob / importance ratio.** On-policy RL weights each token by the ratio of new to old policy probability; if the "old" tokens are reconstructed rather than recorded, the ratio is computed against tokens that were never sampled, biasing the gradient.
 - **The loss mask.** The mask that marks *policy* tokens (train) vs. *prompt/observation* tokens (ignore) is defined per token; a shifted boundary leaks environment tokens into the loss, or drops the model's own.
 
-For RLVR — where the reward is a precise 1.0/0.0 from a checker — this token-level slop quietly corrupts the very signal the method depends on. TITO removes it by construction.
+The same drift also breaks *sample merging*: two consecutive calls can be stitched into one training sequence only when their token IDs actually satisfy prefix continuity, so drift turns one rollout into a *dynamic* number of samples. For RLVR — where the reward is a precise 1.0/0.0 from a checker — this token-level slop quietly corrupts the very signal the method depends on.
 
-**Why the proxy owns it.** The proxy is the **only** component that straddles both sides of the seam: it speaks the **text** LLM API to the harness and the **token** API to the inference engine (SGLang returns `response_ids` + log-probs). So it is the natural — and only correct — place to *capture the sampled token IDs at the moment of generation* and forward them intact, rather than letting a downstream step guess them from text. Concretely, the proxy records `{prompt_ids, response_ids, logprobs}` per turn (Figure above); the **Sample Adapter** then builds the training `Sample` directly from those IDs and the loss mask, and attaches the reward. The harness stays blissfully text-only, yet the trainer still gets token-exact, on-policy data. In short: **the proxy is where an off-the-shelf, text-based agent loop is reconciled with the token-exact requirement of RL — that reconciliation is TITO.**
+**The solution space.** The paper frames four strategies, trading correctness against prefix-computation reuse:
+
+- **Independent per-call training.** Treat each $(p_i,a_i)$ as its own sample; compute loss without assuming any relation to neighbors. Token-exact by construction, but recomputes the long shared prefixes across calls — wasteful.
+- **Buffered token replacement** (AReaL, verl Uni-Agent). The proxy buffers each call's text and tokens; when a new request's text matches, it splices the *recorded* response IDs back in so token-prefix continuity always holds. This recovers reuse, but when the buffered IDs differ from those in the actual next request it evaluates the response under a *stitched* prompt the policy never saw — an off-policy discrepancy.
+- **Prefix-shared / tree-structured training.** Store common prefixes once and use a branch-aware attention mask so each token attends only to its ancestors. Recovers the reuse of independent training, but demands heavy backend support (tree packing, custom masks/kernels, distributed-gradient handling).
+- **Best-effort sequence merging** (Agent Lightning v1.0's choice). Merge two calls only when their observed token IDs satisfy prefix continuity; otherwise close the sequence and start a new one. This preserves the prompt actually consumed during rollout, works with standard dense causal kernels, and lets drift merely lower the merge ratio rather than corrupt the gradient.
+
+**Why the proxy owns it.** Every one of these strategies rests on the same primitive: *capturing the sampled token IDs at the moment of generation* instead of guessing them from text later. The proxy is the only component that straddles both sides of the seam — it speaks the **text** LLM API to the harness and the **token** API to the inference engine (SGLang returns `response_ids` + log-probs) — so it is the natural, and only correct, place to do it. Concretely the proxy records `{prompt_ids, response_ids, logprobs}` per turn (Figure above), keyed by `session_id` (Agent Lightning's per-call `model_request` event); the **Sample Adapter** then assembles the training `Sample` directly from those recorded IDs and the loss mask and attaches the reward — so the trainer learns from the exact tokens sampled and the whole drift class is sidestepped before any merging decision. The harness stays blissfully text-only, yet the trainer still gets token-exact, on-policy data. In short: **the proxy is where an off-the-shelf, text-based agent loop is reconciled with the token-exact requirement of RL — that reconciliation is TITO.**
+
+### When one episode becomes many samples — subagents, summarization, and advantage assignment
+
+**This is a different problem from TITO — its sibling.** TITO asks *"are the tokens I train on exactly the ones the policy sampled?"* — a question about a single call chain crossing the text↔token seam. The problem in this subsection asks *"one episode produced how many training samples, and how do I attach reward, advantage, and loss across them?"* — a question about the **shape of a whole rollout**. Both descend from the same root — in *harnessed* agentic RL the harness (not the trainer) owns context construction and control flow, so a rollout is a set of separately-constructed call chains rather than one linear history [1] — but they are handled in different places. Get TITO right and each individual sample is token-exact; get *this* wrong and you train on token-exact samples with **biased rewards and mis-normalized gradients**.
+
+**The problem.** In traditional agentic RL one rollout is one Markov trajectory and maps to exactly one training sample. In harnessed agentic RL a single episode can fan out into a **dynamic number of training samples** $N_\rho$, known only *after* the harness has run and samples have been constructed. This is not a corner case: in Agent Lightning's coding-agent runs only **36% of rollouts on average stay a single training sample, and the mean rollout yields 2.4 samples** [1]. Three harness behaviours drive the fan-out — and all three are exactly the ones you called out:
+
+- **Context summarization / compaction.** To stay under the context window the harness periodically replaces the running message history with a summary. That *rewrites the token prefix* the next call is built on, so the new call no longer has the previous call as a token-level prefix — the chain must be cut and a new sample started.
+- **Response rewriting / expansion before acting.** The harness may parse, repair, reserialize, or expand a model response (tool-call normalization, JSON repair, template surgery) before it acts on it or folds it into the next prompt — so what re-enters the history differs from the sampled tokens, again breaking the merge condition.
+- **Subagents.** The harness spawns a sub-agent that runs its **own** chain of model calls with its **own** prompt history. These branches do not share one linear history with the parent at all; each is its own sample (or its own little tree).
+
+**The cause — the harness is the only component that sees a whole episode.** The proxy sees a stream of independent per-call `(prompt_ids, response_ids)` pairs; the sandbox sees a stream of independent tool ops and one terminal reward. **Neither sees the episode as a whole** — only the harness, sitting between them, knows that these calls, that summary, and those subagent branches all belong to *one* rollout $\rho$ with *one* outcome. So the harness is the only place that can stamp every fragment with a shared `rollout_id` (and `prompt_group_id`), and the training side must honour that grouping — otherwise it silently treats an incidental fan-out as if it were more independent data. The distinction from TITO matters here: retokenization drift (§"Token-in-token-out") is *incidental* and merely lowers the sample-merge ratio, whereas summarization and subagent spawning are *structural* — they are deliberate harness operations that split a rollout by design.
+
+```{=latex}
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=1.05cm, minimum width=2.2cm, align=center, thick, fill=white},
+  cpu/.style={box, fill=black!4},
+  focus/.style={box, fill=orange!18},
+  call/.style={draw, rounded corners, thick, fill=blue!8, minimum height=0.72cm, minimum width=1.15cm, align=center, font=\scriptsize},
+  smp/.style={draw, rounded corners, thick, fill=green!10, minimum height=0.9cm, minimum width=2.1cm, align=center, font=\scriptsize},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
+  op/.style={font=\scriptsize\itshape, text=black!60, align=center},
+  panel/.style={draw, rounded corners, dashed, thick, inner sep=0.32cm},
+  >={Stealth[]},
+]
+% left proxy, right sandbox
+\node[cpu]   (proxy)   at (-3.6,0.1) {\textbf{LLM Proxy}\\[1pt]\scriptsize records\\per-call tokens};
+\node[focus] (sandbox) at (15.6,0.1) {\textbf{Sandbox}\\[1pt]\scriptsize tools + checker\\$\Rightarrow$ reward $R$};
+
+% harness episode = tree of call chains
+\node[call] (c1) at (2.2,1.8) {call 1};
+\node[call] (c2) at (4.5,1.8) {call 2};
+\node[call] (c3) at (8.2,1.8) {call 4};
+\node[call] (s1) at (5.6,-1.5) {sub 1};
+\node[call] (s2) at (7.8,-1.5) {sub 2};
+\draw[->,thick] (c1)--(c2);
+\draw[->,thick,dashed] (c2) -- node[op,above]{summarize:\\prefix reset} (c3);
+\draw[->,thick,dashed] (c2.south) -- node[op,fill=white,inner sep=2pt,pos=0.5]{spawn\\subagent} (s1.north);
+\draw[->,thick] (s1)--(s2);
+\begin{scope}[on background layer]
+  \node[panel, fill=orange!4, fit=(c1)(c2)(c3)(s1)(s2)] (harness) {};
+\end{scope}
+\node[op, anchor=south west, font=\scriptsize\bfseries] at ([yshift=2pt]harness.north west) {Harness --- ONE episode (rollout $\rho$): the only whole-episode view};
+
+\draw[<->,thick] (proxy) -- node[lbl,pos=0.6]{turn + tokens} (harness.west);
+\draw[<->,thick] (harness.east) -- node[lbl]{tool / reward} (sandbox);
+
+% bottom: the fan-out into samples (ordered left->right = S1,S2,S3, each under its source)
+\node[smp] (S1) at (2.6,-4.2) {$S_1$: calls 1--2\\reward $R$,\ id $\rho$};
+\node[smp] (S2) at (6.7,-4.2) {$S_2$: sub 1--2\\reward $R$,\ id $\rho$};
+\node[smp] (S3) at (10.6,-4.2) {$S_3$: call 4\\reward $R$,\ id $\rho$};
+\node[cpu] (adv) at (15.6,-4.2) {\textbf{Advantage + loss}\\[1pt]\scriptsize grouped over\\\emph{rollouts}, not samples};
+\draw[->,thick] (c2) -- (S1);
+\draw[->,thick] (s2) -- (S2);
+\draw[->,thick] (c3) -- (S3);
+\draw[->,thick] (S3) -- node[lbl,above]{group by id $\rho$} (adv);
+\end{tikzpicture}%
+}
+\caption{How it works with the other components. The harness sits between the proxy and the sandbox and is the \textbf{only} component that sees a whole episode. One rollout $\rho$ fans out into several training samples: a spawned \emph{subagent} runs its own call chain ($S_2$), and a \emph{summarize} step resets the token prefix so calls 1--2 close as $S_1$ while the post-summary call 4 opens $S_3$. Every sample inherits the episode's terminal reward $R$ and carries the same \texttt{rollout\_id} $\rho$; advantage baselines and loss normalization must then be computed \textbf{per rollout}, not per sample, so an incidental fan-out cannot reweight the update.}
+\end{figure}
+```
+
+**Why the naive handling corrupts training.** Once one rollout $\rho$ owns $N_\rho$ samples that all inherit its outcome reward $R_\rho$, two group-level computations become ambiguous:
+
+- **Advantage baseline (GRPO).** GRPO's advantage subtracts a group baseline $\bar r$ over the samples generated from one prompt. If the baseline is taken at the **sample** level, a rollout that happened to split into more samples silently gets more weight in the baseline. Concretely: in one group Rollout 1 succeeds ($R=1$) and Rollout 2 fails ($R=0$). If Rollout 1 fanned out into 3 samples and Rollout 2 stayed 1, the *rollout-level* baseline is the intended $\bar r=(1+0)/2=\tfrac12$, but the *sample-level* baseline is $\bar r=(1+1+1+0)/4=\tfrac34$ — a biased baseline that no one chose, driven purely by how the harness happened to fragment. (Frameworks disagree today: verl Uni-Agent and Polar compute advantage at the rollout level; slime and AReaL at the sample level [1].)
+- **Loss normalization.** With a dynamic per-rollout sample count, sample-level *seq-mean-token-mean* normalization (GRPO's default) gives disproportionately more gradient weight to rollouts that produced more samples. Since the sample count is an incidental artifact of summarization/subagents, that reweighting is unprincipled.
+
+**The solutions — reconcile at the rollout level.** The fix is a small, coherent set of choices that make the incidental fan-out invisible to the gradient:
+
+1. **Sample construction: best-effort merging, honest splits.** Merge consecutive calls into one sample only when their token IDs satisfy prefix continuity (the TITO merge condition); when summarization, response rewriting, or a subagent breaks that prefix, **close the current sample and open a new one** rather than force a stitch. Represent the episode as the resulting *set/tree* of samples, all tagged with the shared `rollout_id`.
+2. **Reward: outcome-inherited.** The reward is terminal and per-episode (the sandbox checker's $1.0/0.0$); **every sample in the rollout inherits $R_\rho$.** A subagent's samples carry the parent episode's outcome.
+3. **Advantage at the rollout level.** Compute the GRPO group baseline over **rollouts**, not samples, so — as in the worked example — a rollout that fragmented into more samples cannot move the baseline. Agent Lightning argues this is the principled default; retokenization and harness internals "should not be allowed to change the baseline of the entire group" [1].
+4. **Loss normalization at the rollout level.** Use a **rollout-level token-mean** loss: pool all response tokens of a rollout, then average uniformly over rollouts (slime's choice). This is insensitive to how many samples a rollout produced. Plain token-mean is theoretically clean too but empirically unstable when a batch has many long negative samples; sample-level seq-mean is the one to avoid here.
+5. **Preserve provenance to the backend.** When samples are flattened into a physical tensor batch, every sequence must retain its `rollout_id` and `prompt_group_id` so steps 3–4 can still be computed after packing onto fixed GPU workers.
+6. **Open problem: intra-rollout credit assignment.** Outcome-inheritance is a placeholder — it does not say *which* branch, subagent, or turn earned the reward. Finer credit assignment across the samples within a rollout (turn-level grouping such as GiGPO [26], process rewards) is active research; see §"Credit assignment over long horizons".
+
+**Where this project sits.** The training demos in this report deliberately use **short, single-chain episodes**: a binary end-of-episode reward with `EPISODE_MAX_TURNS=3`, no context summarization and no subagents, so every rollout collapses to exactly one sample and the fan-out above never bites — which is why `build_token_stream` can safely return a *bare* `Sample` (§"Key code — three pieces"). That is a modelling convenience, not a limitation of the stack. The moment the harness is a real, full-featured agent — one that compacts context and spawns subagents — this subsection's machinery becomes mandatory; §"demo\_cpu\_branching" below is a standalone demo that switches the in-process harness for the **Claude Code CLI**, deliberately provokes summarization and subagent branching, and shows one rollout producing several samples that are then reconciled with rollout-level advantage and rollout-level token-mean loss.
 
 ### slime — the trainer, and its asynchronous rollout
 
@@ -343,7 +437,9 @@ The trainer in this report is **slime** (THUDM) — an RL post-training framewor
 
 *Sources: slime repository <https://github.com/THUDM/slime> and documentation <https://thudm.github.io/slime/> [9].*
 
-### Scaling the sandbox — and why inference can become the bottleneck
+### Scaling the loop — inference, harness, and sandbox in balance
+
+The rollout loop has **three** components, and they scale as one system because they are interconnected. The **inference engine** (SGLang) produces every model turn; the **sandbox** (AgentCore) runs every tool call and the checker; and the **harness** — the agent-loop driver that opens each episode, calls the policy turn by turn, runs the checker, and packs the result into a `Sample` — sits between them and paces both. Rollout throughput is bounded by the slowest of the three: **buffer-fill rate = `min(inference, sandbox, harness)`.** Scale two and leave the third and the bottleneck merely moves onto the third. So the job has three parts, in order: **diagnose** which tier is slow, **scale** it, and **balance load correctly on each tier** — the three balance by *different* rules, and applying one tier's rule to another is a mistake. This subsection treats all three together; the diagram below is the map.
 
 **Why scale the sandbox at all?** A policy only *generalizes* if it is trained across many **diverse tasks** — SWE repos, SQL, math, tool-use, RAG, CTF, GPU kernels — and across **many episodes of each** so the reward signal is not dominated by one family. That means running a large number of **concurrent episodes** per training step, and every concurrent episode needs its own isolated sandbox. So scaling *up the number of concurrent sandboxes* (the harness concurrency knob, `CONC`) is the direct lever on task diversity and throughput.
 
@@ -401,42 +497,50 @@ Hashing the session id (rather than a shared counter) gives an even, **sticky** 
 \resizebox{0.95\textwidth}{!}{%
 \begin{tikzpicture}[
   font=\small,
-  box/.style={draw, rounded corners, minimum height=1.05cm, minimum width=2.5cm, align=center, thick, fill=white},
+  box/.style={draw, rounded corners, minimum height=1.0cm, minimum width=2.5cm, align=center, thick, fill=white},
   gpu/.style={box, fill=blue!8},
   cpu/.style={box, fill=black!4},
   focus/.style={box, fill=orange!18},
+  wrk/.style={draw, rounded corners, thick, fill=green!10, minimum height=0.72cm, minimum width=2.3cm, align=center, font=\scriptsize},
   lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
-  ptitle/.style={font=\scriptsize\bfseries, text=black!55},
+  ptitle/.style={font=\scriptsize\bfseries, text=black!55, align=center},
   panel/.style={draw, rounded corners, dashed, thick, inner sep=0.34cm},
   >={Stealth[]},
 ]
-% source
-\node[cpu] (eps) at (0,0) {\textbf{Concurrent}\\\textbf{episodes}\\[1pt]\scriptsize harness $\times$ CONC};
+% harness tier (left): N warm worker processes
+\node[wrk] (w1) at (0,0.95) {worker 1 $\times$ CONC};
+\node[wrk] (w2) at (0,0.05) {worker 2 $\times$ CONC};
+\node[font=\scriptsize] (wd) at (0,-0.7) {$\vdots$};
+\node[wrk] (wN) at (0,-1.4) {worker $N$ $\times$ CONC};
+\begin{scope}[on background layer]
+  \node[panel, fill=green!4, fit=(w1)(w2)(wN)] (harness) {};
+\end{scope}
+\node[ptitle, anchor=south] at ([yshift=2pt]harness.north) {Harness --- replicate\\warm workers (pull / shard, no LB)};
 
 % inference branch (top)
-\node[cpu] (router) at (4.8,2.3) {\textbf{SGLang router}\\[1pt]\scriptsize cache-aware};
-\node[gpu, minimum width=2.2cm] (sgA) at (9.4,3.5) {\scriptsize replica A};
-\node[gpu, minimum width=2.2cm] (sgB) at (9.4,2.3) {\scriptsize replica B};
-\node[gpu, minimum width=2.2cm] (sgC) at (9.4,1.1) {\scriptsize replica C};
+\node[cpu] (router) at (5.4,2.7) {\textbf{SGLang router}\\[1pt]\scriptsize cache-aware};
+\node[gpu, minimum width=2.1cm] (sgA) at (10.0,3.8) {\scriptsize replica A};
+\node[gpu, minimum width=2.1cm] (sgB) at (10.0,2.7) {\scriptsize replica B};
+\node[gpu, minimum width=2.1cm] (sgC) at (10.0,1.6) {\scriptsize replica C};
 
 % sandbox branch (bottom)
-\node[cpu] (disp) at (4.8,-2.3) {\textbf{Sandbox dispatcher}\\[1pt]\scriptsize round-robin, sticky};
-\node[focus, minimum width=2.2cm] (sbA) at (9.4,-1.1) {\scriptsize sandbox A};
-\node[focus, minimum width=2.2cm] (sbB) at (9.4,-2.3) {\scriptsize sandbox B};
-\node[focus, minimum width=2.2cm] (sbC) at (9.4,-3.5) {\scriptsize sandbox C};
+\node[cpu] (disp) at (5.4,-2.7) {\textbf{Sandbox dispatcher}\\[1pt]\scriptsize round-robin, sticky};
+\node[focus, minimum width=2.1cm] (sbA) at (10.0,-1.6) {\scriptsize sandbox A};
+\node[focus, minimum width=2.1cm] (sbB) at (10.0,-2.7) {\scriptsize sandbox B};
+\node[focus, minimum width=2.1cm] (sbC) at (10.0,-3.8) {\scriptsize sandbox C};
 
-% source -> branches
-\draw[->, thick] (eps.east) -- node[lbl,above,pos=0.55]{model turns} (router.west);
-\draw[->, thick] (eps.east) -- node[lbl,below,pos=0.55]{tool ops} (disp.west);
+% harness -> branches
+\draw[->, thick] (harness.east) -- node[lbl,above,pos=0.6]{model turns} (router.west);
+\draw[->, thick] (harness.east) -- node[lbl,below,pos=0.6]{tool ops} (disp.west);
 
 % router -> replicas (cache-aware)
 \draw[->, thick] (router) -- (sgA);
-\draw[->, thick] (router) -- node[lbl,pos=0.42]{by prompt prefix} (sgB);
+\draw[->, thick] (router) -- node[lbl,pos=0.45]{by prompt prefix} (sgB);
 \draw[->, thick] (router) -- (sgC);
 
 % dispatcher -> sandboxes (round-robin)
 \draw[->, thick] (disp) -- (sbA);
-\draw[->, thick] (disp) -- node[lbl,pos=0.42]{by session id} (sbB);
+\draw[->, thick] (disp) -- node[lbl,pos=0.45]{by session id} (sbB);
 \draw[->, thick] (disp) -- (sbC);
 
 % panels
@@ -444,17 +548,15 @@ Hashing the session id (rather than a shared counter) gives an even, **sticky** 
   \node[panel, fill=blue!3,   fit=(router)(sgA)(sgC)] (pinf) {};
   \node[panel, fill=orange!4, fit=(disp)(sbA)(sbC)]   (psbx) {};
 \end{scope}
-\node[ptitle, anchor=south west] at ([yshift=2pt]pinf.north west) {Inference --- cache-aware (prefix affinity), no client round-robin};
+\node[ptitle, anchor=south west] at ([yshift=2pt]pinf.north west) {Inference --- one cache-aware router (prefix affinity), no client round-robin};
 \node[ptitle, anchor=north west] at ([yshift=-2pt]psbx.south west) {Sandbox --- round-robin by session id, sticky per episode};
 \end{tikzpicture}%
 }
-\caption{Load balancing differs by side. \textbf{Inference (top):} every episode's model turns go to \emph{one} SGLang router, which does \textbf{cache-aware} balancing --- it steers a request to the replica most likely to already hold its \emph{prompt prefix} in the KV cache (shortest-queue fallback), so a shared system/few-shot prefix is not scattered. The client never round-robins; it just targets the router URL, and scaling is ``add replicas.'' \textbf{Sandbox (bottom):} one \texttt{runtimeSessionId} $=$ one isolated microVM/instance. Within a single Runtime the capacity provider spreads sessions for you; across a \emph{pool} of sandbox Runtimes you \textbf{round-robin by session id}, kept \textbf{sticky} so every op of an episode (seed $\rightarrow$ exec $\rightarrow$ read) returns to the same warm microVM that holds its files.}
+\caption{The three interconnected tiers scale together, and \textbf{each balances load by a different rule} --- buffer-fill rate is \texttt{min(inference, harness, sandbox)}. \textbf{Harness (left):} the driver is a persistent, warm process; you scale it by \textbf{replicating worker processes} ($N$ workers $\times$ \texttt{CONC} episodes each $= N\times S$ in flight), and they need \emph{no} load balancer --- a free worker \emph{pulls} the next episode (work-stealing) or prompts are sharded across workers. \textbf{Inference (top):} every worker's model turns target \emph{one} SGLang router, which does \textbf{cache-aware} balancing --- it steers a request to the replica most likely to already hold its \emph{prompt prefix} in the KV cache (shortest-queue fallback), so a shared system/few-shot prefix is not scattered; the client never round-robins, and scaling is ``add replicas.'' \textbf{Sandbox (bottom):} one \texttt{runtimeSessionId} $=$ one isolated microVM/instance. Within a single Runtime the capacity provider spreads sessions for you; across a \emph{pool} of sandbox Runtimes you \textbf{round-robin by session id}, kept \textbf{sticky} so every op of an episode (seed $\rightarrow$ exec $\rightarrow$ read) returns to the same warm microVM that holds its files.}
 \end{figure}
 ```
 
-### Scaling the harness too — the persistent driver behind both dials
-
-The previous subsection balanced the two *remote* dials, inference and sandbox. But both are **driven** by a third component that is easy to forget because it is neither on a GPU nor remote: the **harness** — the agent loop that opens each episode's sandbox, calls the policy turn by turn, runs the checker, and packs the result into a `Sample`. It has its own throughput ceiling, and if you scale inference and sandbox to fill a deep async buffer while leaving the harness alone, the bottleneck simply **moves onto the driver**: the buffer-fill rate is `min(inference, sandbox, harness)`, and adding replicas to two of the three buys nothing once the third saturates.
+**The third tier — the harness, the driver behind both dials.** The two dials above, inference and sandbox, are both *remote*; both are **driven** by a third component that is easy to forget because it is neither on a GPU nor remote: the **harness** — the agent loop that opens each episode's sandbox, calls the policy turn by turn, runs the checker, and packs the result into a `Sample`. It has its own throughput ceiling, and if you scale inference and sandbox to fill a deep async buffer while leaving the harness alone, the bottleneck simply **moves onto the driver**: the buffer-fill rate is `min(inference, sandbox, harness)`, and adding replicas to two of the three buys nothing once the third saturates.
 
 **Today the harness is a single process.** slime runs **one** `RolloutManager` Ray actor whose single event loop drives *every* `generate` coroutine (`slime/ray/rollout.py`); the number of concurrent episodes is bounded by one `asyncio.Semaphore` sized `S = CONC × num_engines` — with the demos' `CONC=4` and two SGLang engines, `S = 8` in flight (`slime/rollout/sglang_rollout.py`). There is **no slime knob for "number of rollout worker processes"**: `CONC` raises concurrency *within* the one process, not the number of processes. A second, finer semaphore (`INFER_CONC`, default `0` = off; `policy.py`) can independently cap concurrent SGLang POSTs, but it too lives inside that single process.
 
@@ -474,18 +576,11 @@ The previous subsection balanced the two *remote* dials, inference and sandbox. 
 - **Scaled out to a CPU rollout fleet (disaggregated).** Because slime drives generation from a single actor, going past one process is an *architecture* change, not a flag flip: run several rollout drivers (shard prompts across CPU nodes, each executing the same `generate` hook) that dial the **shared** SGLang router and the **pooled** sandbox ARNs. This decouples harness CPU/FDs/RAM from the GPU box and lets you scale drivers independently — the disaggregated-placement lever of §"Open problems" applied to the harness rather than to the trainer/inference split.
 - **Hosted on an AgentCore Runtime.** AgentCore *can* run the agent loop as a persistent CPU Runtime (this project keeps that path as untested scaffolding, `agentcore_runtime_generate.py`). A pool of long-lived harness Runtimes is an elastic option, but it adds a network hop between the harness and slime's buffer and spends isolation the harness does not need — which is why the report defaults to in-process.
 
-**The joint recipe.** First diagnose the harness the way §"Scaling the sandbox" diagnoses the other two: raise `CONC` and watch whether **samples-per-second / buffer depth** (both instrumented, §"The shared skeleton") keep climbing — if they flatten while the harness host's CPU is pegged (or you hit "too many open files"), the driver, not the GPUs, is the limit. Then grow the three in balance: inference replicas behind the cache-aware router, sandbox Runtimes round-robined sticky-per-episode, **and** harness workers (`N` processes × `S`). A Little's-law sizing keeps them matched: the in-flight episodes needed to saturate inference ≈ `inference throughput × mean episode latency`; provision `N × S` to hit that number, then raise all three together until GPU **goodput** — not any single dial — stops improving.
+**The joint recipe.** First diagnose the harness the way §"Scaling the loop" diagnoses the other two: raise `CONC` and watch whether **samples-per-second / buffer depth** (both instrumented, §"The shared skeleton") keep climbing — if they flatten while the harness host's CPU is pegged (or you hit "too many open files"), the driver, not the GPUs, is the limit. Then grow the three in balance: inference replicas behind the cache-aware router, sandbox Runtimes round-robined sticky-per-episode, **and** harness workers (`N` processes × `S`). A Little's-law sizing keeps them matched: the in-flight episodes needed to saturate inference ≈ `inference throughput × mean episode latency`; provision `N × S` to hit that number, then raise all three together until GPU **goodput** — not any single dial — stops improving.
 
 ## Tasks frontier labs run in a sandbox
 
 Frontier models are post-trained with **reinforcement learning against executable, verifiable environments** (RLVR). The common denominator is a **sandbox seam**: the model's untrusted output runs in an isolated environment, and a **programmatic verifier** — not a human, and increasingly not an LLM judge — turns the outcome into a scalar reward.
-
-### Two verifier styles — verifiable and reference-based
-
-Two verifier styles recur across the open reports:
-
-- **Verifiable / rule-based** — a deterministic check: run generated code against hidden unit tests, verify a math answer by symbolic equivalence, compare a SQL result-set, or validate a captured flag. The reward is typically **binary** (all tests pass → 1, else 0) and cannot be gamed by an eloquent-but-wrong answer.
-- **Reference-based model judge** — an LLM (or reward model) scores the response against a ground-truth reference. Used where outputs are open-ended (science explanations, instruction following, chat), often alongside rule-based rewards.
 
 ### What the frontier reports describe
 
@@ -535,14 +630,6 @@ Tens to hundreds of turns; the accumulated transcript is the largest of all, and
 - **Software engineering (SWE)** — *Dataset:* SWE-bench / SWE-bench Verified [6]; Kimi K2 additionally mines **executable unit tests from real GitHub pull requests and issues** [5]. *Reward:* the repo's **test suite turns green** (`FAIL_TO_PASS` + `PASS_TO_PASS`), binary. *Metric:* % issues resolved (Kimi K2 reports **65.8%** single-attempt on SWE-bench Verified [5]). *Env:* a per-repository toolchain — usually a **prebuilt Docker image** carrying the exact dependencies, run in isolation per task. *Episode shape:* **long-horizon and multi-turn** — real SWE agents take **~15–50+ turns** (locate → edit → run tests → read failure → re-edit); each turn's response is a command or a **diff/patch of ~100–1,000 tokens**, but the observations (file contents, test logs) are large, so the **episode context routinely reaches tens of thousands of tokens (16k–128k+)** — the most demanding family for context length.
 - **Web / computer use** — *Dataset:* WebArena-style browser tasks. *Reward:* **goal state reached** (a DOM / state checker). *Metric:* task success. *Env:* a real **browser / rendering engine** and network. *Episode shape:* **long-horizon — ~10–50+ turns**, one UI action (click/type/scroll) per turn. Each response is tiny (**~20–150 tokens**), but every observation (a DOM dump or accessibility tree, sometimes a screenshot) is very large, making this — with SWE — the **heaviest family for episode context (tens of thousands of tokens, growing per turn)**.
 - **Multi-agent / long-horizon** — *Dataset:* cooperative or long-workflow tasks. *Reward:* a **verifiable end state**. *Metric:* task success. *Env:* many turns / long wall-clock, with state persisted across a long session. *Episode shape:* **the longest horizon — tens to hundreds of turns**, per-turn responses short-to-moderate, but the accumulated transcript makes the **episode the largest of all (often 32k–128k+ tokens)** and demands a session that stays alive for the whole workflow.
-
-### Reading the episode shape into a config
-
-Two axes drive every knob. **Turns per episode** sets `EPISODE_MAX_TURNS` and, multiplied by the per-turn response, the *sequence length* the trainer and inference engine must hold: single-turn families (math, instruction following) need only a long `--rollout-max-response-len`; long-horizon ones (SWE, web/computer use, multi-agent) need a large **context window** and a **session that stays warm for the whole episode**. **Where the tokens are** sets which side you scale (§ Scaling the sandbox): generation-heavy families (math, reasoning code) are *inference-bound* — long responses, trivial checker; observation-heavy families (SWE, RAG, web, tool use) push cost into *context growth and the sandbox*. Rule of thumb: budget context ≈ `max_turns × (response_per_turn + observation_per_turn)`, size `--rollout-max-response-len` to the per-turn response at the high end (reasoning traces), and set rollout-buffer memory from the total episode length so long-horizon samples do not overflow it.
-
-### What every family shares
-
-Regardless of domain, each needs the same two things: an **isolated environment** to execute untrusted model output, and a **programmatic checker** to score it — the sandbox seam. Where the reports differ is only in *what runs inside* (a Python interpreter, a CUDA toolchain, a browser, a tool simulator, a full repo image) and *how the checker scores* (tests pass, symbolic match, result-set equality, flag validation, or — for open-ended work — a reference-based judge). The rest of this report turns to running these workloads on a concrete sandbox platform.
 
 ### Language and environment per family — and how one microVM serves them all
 
@@ -604,6 +691,15 @@ SWE-bench raises a sharper version of the same problem: **each task instance shi
 
 Amazon Bedrock AgentCore [D1] is a family of managed services for running and securing agents and tools — any framework, any model, fully serverless. This report uses one of them, **AgentCore Runtime**, as the execution **sandbox** for RL. This section defines its three core concepts, its two compute types, how AgentCore manages their lifecycle, and how you build and deploy a customized Runtime — cross-checking the official documentation [D1–D13, D17] against AWS's own SDK and sample code [D14–D16].
 
+### The microVM at a glance — what it is, what runs in it, what it supports, how you customize it
+
+Before the precise definitions, a compact answer to the four questions a practitioner asks first. Each is expanded in the subsection named after it.
+
+- **What is the microVM?** The default AgentCore Runtime substrate is a **Firecracker-class, hardware-virtualized microVM** — a lightweight VM with its **own guest kernel, CPU, memory, and filesystem**, one per session, that still boots **your OCI container image** inside it and is **sanitized on termination**. It gives VM-strength isolation for untrusted, model-generated code while keeping container packaging. It is **CPU-only** (no GPU [D5]), runs an **ARM64** image serving `POST /invocations` + `GET /ping` on `0.0.0.0:8080`, and lasts up to **8 hours** with a 15-minute idle timeout. When a task needs a GPU, Runtime switches to the **Instances** (EC2) substrate instead (§"Two compute types"). *Details:* §"Runtime, session, and microVM" and §"microVM vs a Docker container vs E2B".
+- **What environment / dependencies does it have?** Only what **your image** provides — there is no fixed "AgentCore OS" you inherit. A minimal sandbox is a slim Python base plus the `bedrock-agentcore` SDK; the built image must stay **ARM64 and under ~2 GB**. You add dependencies three ways, in increasing weight: bake them into the image; **install at `CMD`** when the container boots (how the GPU image adds the large CUDA torch wheel without blowing the 2 GB cap); or **install at seed time** into the per-session ephemeral workspace (`git clone`/`pip`/`apt` on turn 0, needing egress). Each session's installs are isolated and wiped on termination. *Details:* §"Language and environment per family" and §"Building a customized Runtime".
+- **What tasks can it support?** Effectively every **CPU** sandbox family frontier labs train against: code + unit tests, math/SQL checkers, instruction following, tool-use simulators, RAG, and light CTF all fit one **generic** image (task specificity is just *files* seeded per session). **SWE-bench**-style per-repo images fit with workarounds (arm64 cross-build, seed-time clone, or moving to the amd64 Instances substrate). The one family the microVM **cannot** serve is **GPU kernels** (`nvcc`/`allclose`) — that needs the GPU Instances substrate. *Details:* §"Language and environment per family" and §"Can AgentCore host every frontier sandbox?".
+- **How do you customize it as a Runtime?** Author a container that satisfies the contract (ARM64; `0.0.0.0:8080`; `/invocations` + `/ping`), cross-build it with `docker buildx --platform linux/arm64`, push to ECR, and register it with `CreateAgentRuntime`'s `containerConfiguration.containerUri`. AWS also offers a lower-effort **`agentcore` CLI** (CodeZip or Container build) and a **`bedrock-agentcore` Python SDK** whose `@app.entrypoint` implements the HTTP contract for you. *Details:* §"Building a customized Runtime".
+
 ### Runtime, session, and microVM — three concepts, precisely
 
 These three words are used loosely elsewhere; the integration depends on keeping them distinct.
@@ -612,9 +708,24 @@ These three words are used loosely elsewhere; the integration depends on keeping
 - **Session.** One logical task or conversation, addressed by a **`runtimeSessionId`** you pass on `InvokeAgentRuntime` [D8] (client-supplied or Runtime-generated; **minimum 33 characters**, max 256, carried in the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` header). The **first** invoke for a new id **cold-starts** dedicated compute; every **subsequent** invoke with the same id **re-routes to that same warm compute**, so files, memory, and processes persist *across turns within an episode*. Different ids are fully isolated.
 - **microVM.** The *unit of isolation* backing a session on the default compute: a lightweight virtual machine with its **own CPU, memory, and filesystem**, sanitized on termination. One session maps to one microVM; a microVM is never shared across sessions. Its container contract [D17]: an **ARM64** image listening on **`0.0.0.0:8080`** that serves **`POST /invocations`** (the work) and **`GET /ping`** (health, returning `{"status": "Healthy"}` or `"HealthyBusy"`) — the same contract AWS's SDK scaffolds for you [D15].
 
-**The cardinality.** These three nest **one-to-many-to-one**: **one Runtime serves many concurrent sessions, and each session maps to exactly one microVM (1 : N : 1)**. The Runtime is a stateless *template* (one image, one ARN); every distinct `runtimeSessionId` you invoke against it mints its own isolated microVM, and AgentCore's capacity provider places each one for you — so the session id, not a second Runtime, is how you get a second sandbox. You create *additional* Runtimes only when the **image**, the per-region **session cap**, or the **AZ/account** must differ (§"Scaling the sandbox"); otherwise a single Runtime backs all your concurrent sessions. Put another way: **the number of Runtimes tracks the number of distinct sandbox *images* (capabilities), not the number of tasks** — because the sandbox is task-agnostic (`write_file` / `exec` / `read_file`), one generic image serves every task family that runs on the same substrate, so even a mixed-family training run stays on **one Runtime, many sessions** (§`demo_cpu_mixtask`).
+**The cardinality.** These three nest **one-to-many-to-one**: **one Runtime serves many concurrent sessions, and each session maps to exactly one microVM (1 : N : 1)**. The Runtime is a stateless *template* (one image, one ARN); every distinct `runtimeSessionId` you invoke against it mints its own isolated microVM, and AgentCore's capacity provider places each one for you — so the session id, not a second Runtime, is how you get a second sandbox. You create *additional* Runtimes only when the **image**, the per-region **session cap**, or the **AZ/account** must differ (§"Scaling the loop"); otherwise a single Runtime backs all your concurrent sessions. Put another way: **the number of Runtimes tracks the number of distinct sandbox *images* (capabilities), not the number of tasks** — because the sandbox is task-agnostic (`write_file` / `exec` / `read_file`), one generic image serves every task family that runs on the same substrate, so even a mixed-family training run stays on **one Runtime, many sessions** (§`demo_cpu_mixtask`).
 
 In RL terms: **the Runtime is the deployable sandbox image, the session is one episode, and the microVM is the isolated box that episode executes in.** So *N* concurrent episodes = *N* session ids on one Runtime — not *N* Runtimes.
+
+#### A mixed-family batch — how many Runtimes, sessions, and microVMs, and who picks the image?
+
+The sharpest way to feel the distinction is a **heterogeneous rollout step**: `demo_cpu_mixtask` draws a batch whose rows span several families — say a math problem, a text-to-SQL query, a CTF challenge, and a tool-use task — with `n-samples-per-prompt` episodes each. A natural worry is that four task types need four sandbox images, so four Runtimes. They do not. Count each concept:
+
+- **Runtimes: one** (a small pool of *K* only for throughput, not for variety). Every one of these families is a **pure-CPU / stdlib checker** — `sympy`, `unittest`, `sqlite3`, an isolated shell, tool stubs — so a **single generic CPU image** runs and checks all of them. The Runtime count tracks distinct *images* (capabilities), and here there is exactly one capability. You would add a second Runtime only for a genuinely different image — the **GPU-kernel** family (`nvcc`, a different substrate) — not for a different CPU family.
+- **Sessions: one per in-flight episode, recycled.** If the batch is `RB` prompts × `NS` samples, that is `RB×NS` *episodes*, but they do **not** all run at once: only `S = CONC × num_engines` are concurrent, and those few sessions **stream through all `RB×NS` episodes** over the step. A math episode and a SQL episode are just two different session ids against the same Runtime.
+- **microVMs: one per session, 1:1.** Each `runtimeSessionId` mints its own isolated microVM (booting that same generic image), sanitized when the session ends. So at any instant there are `S` live microVMs, whatever mix of families they happen to be running.
+
+**So how do slime and AgentCore know which image a given data row needs? They don't — and by design, they don't have to.** No per-row image selection happens anywhere, because the image is *task-agnostic*. The routing that *does* happen is a division of labor:
+
+- **slime / the harness picks the *task*, not the image.** Each dataset row carries `metadata.task.family`; the generate hook (`_task_from_sample`) rebuilds the matching **Task subclass** — its prompt, seed files, and hidden checker — and the harness **writes those task-specific files into that episode's session** at seed time (`write_file`). The family discriminator chooses *what gets written into the box*, never *which box*.
+- **AgentCore never sees a task at all.** An `invoke_agent_runtime` call carries only a **`runtimeSessionId` + payload — never an image** [D8]; the image was fixed once, at `CreateAgentRuntime`. AgentCore's only job is to route the session id to its microVM. It is oblivious to whether the payload is a math check or a SQL query.
+
+In other words, "a different environment per row" is realized as **a different set of *files* per session inside one shared image**, not a different image per row. The one time a row truly needs a different *image* — a CPU family vs. the GPU-kernel family — that is a **substrate** choice made per run by an env var, not per row by a router; genuine per-row *capability routing* (pick the ARN by family) is a described design, not something the shipped demos do (§"One image per Runtime, but a different env per row"). This is exactly why a mixed-family run stays on **one Runtime, `S` sessions, `S` microVMs**.
 
 ### microVM vs a Docker container vs E2B
 
@@ -641,96 +752,149 @@ AgentCore Runtime offers two substrates, chosen at create time; the loop code is
 - **Serverless microVM (default).** No servers to manage: AgentCore provisions a per-session microVM on demand. **CPU only** — a microVM has *no GPU* [D5]. Sessions last up to **8 hours** with a **15-minute idle timeout** (reset on each invoke). This fits the large majority of RL sandboxes: code execution + unit tests, math/SQL checkers, tool simulators.
 - **Instances (GPU).** When a task needs a GPU, Runtime runs on the **Instances** compute type — real **EC2 instances in your own account**, provisioned through a **capacity provider** (`capacityProviderConfiguration` → `ec2Configuration`) [D5, D9]. Supported GPU families include **g4dn, g5, g6, g6e, gr6, g6f, gr6f, g7e** (plus `inf2`); AgentCore provisions the NVIDIA drivers, so a standard CUDA image works unmodified. Sessions can run up to **14 days**, a **persistent EBS volume** survives a session stop and re-attaches on resume, and — unlike the microVM — one instance/session can host **many agents** (1:N). Crucially, one `runtimeSessionId` still maps to exactly **one instance = one GPU**, so there is **no cross-session GPU time-slicing**: you scale GPUs by adding sessions/instances, not by fractioning one.
 
+> **What about a multi-GPU instance — two sessions, one GPU each?** No, not natively: **one AgentCore session = one whole instance** (session→instance is 1:1; the capacity provider hands you the *instance*, not a GPU). So you **cannot** point two distinct `runtimeSessionId`s at the *same* 2-GPU box and expect one GPU each — two session ids try to acquire two *separate* instances, and you never get to pin a session to a particular GPU on a shared box. To put several episodes on the GPUs of *one* multi-GPU instance you must instead use **one shared session** plus a **self-managed in-instance farm** (a Ray farm keyed by per-episode `sub_session`), which is exactly what `demo_gpu_shared` / `demo_gpu_local` do — set `B4_GPU_FRACTION=1.0` with `B4_FARM_GPUS=N` to lease **one whole GPU per sub-session** (N GPUs ⇒ N concurrent whole-GPU episodes), no MIG and no cross-session time-slicing required.
+
 > **Can you pick a CPU-only EC2 instance for an Instance?** Not as a documented path. The `ec2Configuration` families AWS lists [D5, D9] are all **accelerated** (g4dn/g5/g6/g6e/gr6/g6f/gr6f/g7e + `inf2`) — there is **no general-purpose (m/c/t) CPU family**. The split is deliberate: **CPU-only work belongs on the serverless microVM**, and the Instances substrate exists to add a **GPU**. So if you want a larger/x86/longer-lived *CPU* box (e.g. to escape the microVM's arm64 + 2 GB image limits, §3), today's only route is to launch a GPU-family Instance and leave the GPU idle — you pay for an accelerator you don't use. (The supported list is per the docs as of this work; re-check `ec2Configuration` if a plain-CPU Instance later appears.)
 
 | Property | Serverless microVM | Instances (GPU) |
 |---|---|---|
 | Compute | managed, per session | EC2 in your account (capacity provider) |
 | GPU | none [D5] | g4dn/g5/g6/g6e/g7e… + inf2 |
+| vCPU / RAM | **allocated per session; not a customer-set knob** — metered by vCPU-hour + GB-hour [D2, D13] | the chosen EC2 type's spec (e.g. `g6.xlarge` = 4 vCPU / 16 GB RAM / 1× L4) |
+| Disk | **ephemeral only — no persistent volume**; in-VM state lost at session end [D3] | ephemeral **plus a sized, persistent EBS volume** (survives stop/resume) |
+| Container image | **arm64**, built image **≤ ~2 GB** (project-measured, §"Building a customized Runtime") | **amd64**, far larger images allowed |
 | Max session | 8 h | 14 d |
 | Isolation unit | 1 microVM / session | 1 instance / session (1 GPU) |
 | Filesystem | ephemeral | persistent EBS across stop/resume |
 | Agents / session | 1 | many (1:N) |
 
-### How AgentCore manages the lifecycle
+**On the microVM's resource envelope.** Two limits bite in practice and are worth stating plainly. First, **the filesystem is ephemeral**: "any data stored in memory or written to disk persists only for the compute lifecycle" [D3], so there is *no* persistent disk on the serverless substrate — a repo you `git clone` or a wheel you install lives only for that session (up to 8 h) and is wiped on termination; durable state needs **session storage / Memory**, or the Instances substrate's EBS volume. Second, the **built container image must stay small** — this project measured a **~2 GB** ceiling (§"Building a customized Runtime"), which is why the GPU image installs its multi-GB CUDA wheel at `CMD` rather than baking it in. AWS does **not** publish a fixed per-session vCPU/RAM *number* for the microVM — capacity is provisioned per session and billed by **vCPU-hour and GB-hour** (the `agent.runtime.vcpu.hours.used` / `agent.runtime.memory.gb_hours.used` usage metrics [D13]), so treat CPU/RAM as *metered, not sized*, and confirm the current hard caps on the **Service Quotas** page for your account before sizing a heavy checker. When a task genuinely needs a large, fixed RAM/disk footprint (a big SWE repo image, a data-heavy checker), that is a reason to move it to **Instances**, where the resources are simply the EC2 instance type's and the EBS volume you attach (§3, §"Two compute types").
 
-**Runtime lifecycle (versions & endpoints).** `CreateAgentRuntime` builds version V1 and the DEFAULT endpoint; updates publish new versions; you route traffic by endpoint. Deleting the Runtime removes the deployable — sessions are not part of the Runtime's own state.
+### How AgentCore manages the lifecycle — Runtime, session, microVM, and GPU instance, end to end
 
-**Session lifecycle (the part that matters for RL).** A session moves through **Active → Idle → Terminated** [D3, D4]:
+An RL workload touches **four** AgentCore objects, with **nested lifetimes**. Keeping them straight is what makes cost and capacity predictable; conflating them is what makes a run's instance count surprising. The whole section below is one answer to a single question — *from the moment you deploy to the moment the run ends, what is created, how long does it live, and what ends it?*
 
-- **Launch / cold start.** The first invoke with a fresh `runtimeSessionId` provisions the microVM (or, on Instances, may cold-launch an EC2 instance — *minutes* for a GPU box). Same-id invokes thereafter hit warm compute.
-- **Active / Idle.** Each invoke resets the **15-minute idle timer**; between invokes the session sits Idle but warm.
-- **Termination.** Automatic on **idle expiry (15 min)**, **max lifetime** (microVM **8 h** / Instances **14 d**), or a failed health check → the microVM is **terminated and its memory sanitized**. You can also end a session explicitly with **`StopRuntimeSession`** [D12]. On Instances, the EBS volume persists across a stop.
+| Object | Created by | Lives for | Ended by | How many in a run |
+|---|---|---|---|---|
+| **Runtime** (the deployable + endpoint) | `CreateAgentRuntime`, at **deploy time** | the **whole run** (and beyond) | `DeleteAgentRuntime` | **K** — 1 by default; a small pool only to raise invoke throughput |
+| **Session** (`runtimeSessionId`) | first invoke with a **fresh id** | **one episode** | `StopRuntimeSession` / idle (15 min) / max-life | **≈ CONC** live at once, **recycled** through every row |
+| **microVM** (serverless / CPU substrate) | provisioned on session launch | its **session** | session end → **memory sanitized** | 1 per live CPU session |
+| **GPU instance** (EC2, on Instances) | **cold-launched** on session launch | its session (the instance may stay **warm** in the capacity provider) | session end / capacity-provider scale-in | 1 instance = **one GPU**, ≈ CONC live |
 
-**Latency — measure, don't assume.** The docs promise "fast cold starts" but publish no number [D2]; a GPU first-invoke can take **minutes** to launch the EC2. This project therefore instruments every sandbox round-trip (`[sbx-op]` → `perf/sandbox_ms_{p50,p95}`) and every generation (`[sglang-gen]` → `perf/sglang_gen_ms_*`) — the same signals the scaling analysis in §"Scaling the sandbox" depends on.
+**The Runtime is a deploy-time artifact — it spans the whole run.** `CreateAgentRuntime` builds version V1 and the DEFAULT endpoint; updates publish new versions; you route traffic by endpoint. Deleting the Runtime removes the deployable — **sessions are not part of the Runtime's own state.** slime is simply handed the ARN and never creates or deletes it (§"Who controls the AgentCore lifecycle"). A run normally has **one** Runtime; pooling **K** of them raises invoke throughput but changes neither how many tasks nor how many images you can serve (§"A mixed-family batch").
 
-### Session lifecycle in the RL loop — per-episode sessions, and why row count ≠ instance count
+**The session is the RL unit — one per episode, Active → Idle → Terminated** [D3, D4]. The generate hook mints a fresh `runtimeSessionId` per episode — *"one session id == one isolated sandbox for the whole episode"* — so the session id is the isolation unit.
 
-Two consequences of the lifecycle above drive how a rollout consumes sessions, and both surprise people sizing a run.
+- **Launch / cold start.** There is no "create session" API. The first `invoke_agent_runtime` under a fresh id (the hook's `__aenter__` sends a `ping`) provisions the compute: a microVM on the serverless substrate, or a **cold-launched EC2 instance** on Instances (*minutes* for a GPU box). Same-id invokes thereafter hit warm compute.
+- **Active / Idle.** Each op (`write_file` / `exec` / `read_file`) is one more invoke under the *same* id and resets the **15-minute idle timer**; between invokes the session sits Idle but warm.
+- **Termination.** Explicit via **`StopRuntimeSession`** [D12] (this project now calls it at episode end — see below), or automatic on **idle expiry (15 min)**, **max lifetime** (microVM **8 h** / Instances **14 d**), or a failed health check → the microVM is **terminated and its memory sanitized**.
 
-**One episode = one session (= one instance on GPU).** The generate hook mints a fresh `runtimeSessionId` per episode — *"one session id == one isolated sandbox for the whole episode"* — so the session id is the isolation unit. On the serverless substrate that is one microVM; on Instances it is one EC2 instance = **one GPU**, a strict 1:1 with **no cross-session GPU time-slicing** (§"Two compute types").
+**The microVM and the GPU instance are the compute a session rides on.** One live session == one microVM (CPU) or **one EC2 instance = one GPU** (Instances), a strict 1:1 with **no cross-session GPU time-slicing** (§"Two compute types"). The microVM is **ephemeral** — its filesystem and memory vanish at session end. A GPU instance's **EBS volume persists across a stop**, and the capacity provider may keep the *instance* warm for the next session even after the *session* ends. So the session's lifetime and the instance's lifetime are related but not identical: the session is what your episode owns; the instance is what the fleet manages.
 
-**Terminate: explicit vs idle-reclaim — and this project's choice per backend.** A session can be ended explicitly (**`StopRuntimeSession`** [D12], or the Code-Interpreter client's `stop`) or simply abandoned and left to the idle timer. The three sandbox backends deliberately differ at episode end (`__aexit__`):
+**Terminate at episode end — this project now stops sessions explicitly (per backend).** A session can be ended explicitly or abandoned to the idle timer. The three sandbox backends differ at episode end (`__aexit__`):
 
 | Backend (`SANDBOX=`) | At episode end | Session ends by |
 |---|---|---|
 | `agentcore` (Code Interpreter microVM) | calls the client `stop()` | **explicit**, immediately |
-| `agentcore-runtime` (sandbox-as-Runtime) | nothing — just drops the client | **idle reclaim** (15-min microVM / 600 s GPU-instance timeout) or max lifetime |
+| `agentcore-runtime` (sandbox-as-Runtime) | calls **`StopRuntimeSession`** (best-effort; `AGENTCORE_STOP_SESSION=0` to opt out) | **explicit**, immediately — idle reclaim is only the fallback if the stop call fails |
 | `agentcore-ray-farm` (B4) | sends `op=close` for the sub_session | frees the **fractional-GPU actor** immediately; the shared g6 session persists |
 
-The plain-runtime choice to rely on idle reclaim is intentional: a warm instance is reused by the next episode's session (round-robin across the K-Runtime pool), so churning short-lived episodes benefits from **not** tearing the instance down between them. `StopRuntimeSession` is there if a deployment needs to reclaim capacity sooner.
+Because each episode mints a **fresh** `runtimeSessionId`, there is no warm session to preserve across episodes: stopping at `__aexit__` returns the microVM (and its concurrent-session quota slot) **immediately** instead of holding it idle for up to 15 minutes — which matters when a batch runs many episodes concurrently against a bounded session quota. Set `AGENTCORE_STOP_SESSION=0` for a GPU fleet that deliberately keeps instances warm for the next session, letting idle reclaim apply instead.
 
-**Row count ≠ instance count.** A 100-row dataset (KernelBench level_1) does **not** launch 100 instances. Rows stream through episodes across training steps; at any instant only `--sglang-server-concurrency` (default **4**) episodes are in flight, so the live-instance count = concurrent sessions ≈ CONC, and those few instances **recycle through all rows** over time. What multiplies instances is *concurrency*, not data:
+**A batch of prompts — row count ≠ instance count.** A 100-row dataset (KernelBench level_1) does **not** launch 100 instances. Rows stream through episodes across training steps; at any instant only `--sglang-server-concurrency` (default **4**) episodes are in flight, so the live-instance count = concurrent sessions ≈ CONC, and those few instances **recycle through all rows** over time. What multiplies instances is *concurrency*, not data:
 
 - **Demo B (`agentcore-runtime`, `demo_gpu_single`):** one session per episode × 1:1 ⇒ **N concurrent episodes = N concurrent g6 instances** (bounded by CONC and the capacity provider's max-instance cap).
 - **Demo B4 (`agentcore-ray-farm`, `demo_gpu_shared`):** all concurrent episodes share **one** `runtimeSessionId` → **one** g6 instance; each episode's sub_session leases a fractional-GPU Ray actor, so N concurrent episodes still = one instance.
 
 This is the concrete cost lever: to raise sandbox concurrency on a GPU task **without** paying for N instances, pack episodes onto one instance (B4) rather than fanning out sessions (B).
 
-### Building a customized Runtime
+**A mixed-task batch — same session budget, different task per row.** When a batch spans task families (the `demo_cpu_mixtask` case), the lifecycle above is **unchanged**: one Runtime image serves every family, and the harness writes each row's task files into its session and picks the *task*, not the image (§"A mixed-family batch"). A mixed-family batch therefore consumes exactly the same Runtime / session / microVM / instance budget as a single-family batch of the same size — the family mix changes what runs *inside* each session, not how many sessions exist. Capability routing (a different image per family) would change that, but it is a described design, not something this project ships.
 
-There are three ways to put your code on a Runtime, in increasing order of control:
+**Latency — measure, don't assume.** The docs promise "fast cold starts" but publish no number [D2]; a GPU first-invoke can take **minutes** to launch the EC2. This project therefore instruments every sandbox round-trip (`[sbx-op]` → `perf/sandbox_ms_{p50,p95}`) and every generation (`[sglang-gen]` → `perf/sglang_gen_ms_*`) — the same signals the scaling analysis in §"Scaling the loop" depends on.
 
-1. **The `agentcore` CLI (fastest).** AWS ships an official CLI; the newer, **recommended** one is the **`@aws/agentcore`** npm package [D16] (the earlier Python `bedrock-agentcore-starter-toolkit` is the legacy path). It offers `agentcore create`, `agentcore dev` (local loop), `agentcore deploy`, and `agentcore invoke`. Its default **CodeZip** build packages your Python without Docker; the **Container** build builds an image from **your own Dockerfile** (Docker required).
-2. **Bring your own container (what this project does).** Author a container satisfying the contract (ARM64; `0.0.0.0:8080`; `/invocations` + `/ping` [D17]) and register it with `CreateAgentRuntime`'s **`containerConfiguration.containerUri`** (an ECR image). This is the maximum-control path — you own the base image, system packages, and toolchain, exactly what a task-specific sandbox (a CUDA stack, a full repo image) needs. `CreateAgentRuntime` takes a **union**: `containerConfiguration` (ECR image) **or** `codeConfiguration` (zip) — pick one [D9].
-3. **The Python SDK.** The **`bedrock-agentcore`** SDK [D15] provides `BedrockAgentCoreApp` and the **`@app.entrypoint`** decorator, which implements the `/invocations` + `/ping` contract for you: you write one function, the SDK serves it. This project's sandbox server is exactly that (see §5).
+### Building a customized Runtime — bring your own container, end to end
 
-**The container contract, concretely.** A minimal CPU sandbox image:
+AWS offers three ways to put code on a Runtime — the `agentcore` CLI's zero-Docker **CodeZip** build [D16], the **`bedrock-agentcore`** Python SDK's `@app.entrypoint` [D15], and **bring your own container**. This project uses the **bring-your-own-container** path, because it is the only one that gives you the whole image: base OS, system packages, CUDA toolchain, a cloned repo — exactly what a task-specific sandbox needs. `CreateAgentRuntime` takes a **union** — `containerConfiguration` (an ECR image) **or** `codeConfiguration` (a zip); BYO container is the former [D9]. This section walks the full path from a Dockerfile to a training run that uses it.
+
+**Step 1 — write a container that satisfies the contract.** AgentCore only requires that your image serve HTTP on `0.0.0.0:8080` with two routes — **`/invocations`** (one request = one op) and **`/ping`** (health) [D17] — and, for the managed microVM fleet, that it be built for **arm64**. The `bedrock-agentcore` SDK's `BedrockAgentCoreApp` + `@app.entrypoint` implement both routes, so the image stays tiny. This project's actual CPU sandbox image (`deploy/Dockerfile.sandbox.cpu`, build context `code/`):
 
 ```dockerfile
 FROM public.ecr.aws/docker/library/python:3.12-slim
+WORKDIR /app
 RUN pip install --no-cache-dir bedrock-agentcore
-COPY agentcore_slime_demo/sandbox_server_agent.py /app/
+# sandbox_server_agent.py is self-contained (stdlib + bedrock_agentcore, no relative
+# imports), so copy it flat — no package, nothing heavy.
+COPY agentcore_slime_demo/sandbox_server_agent.py /app/sandbox_server_agent.py
 ENV SANDBOX_WORKDIR=/workspace
-CMD ["python", "-m", "agentcore_slime_demo.sandbox_server_agent"]   # BedrockAgentCoreApp serves :8080
+EXPOSE 8080
+CMD ["python", "-m", "sandbox_server_agent"]      # BedrockAgentCoreApp serves :8080
 ```
 
-A **GPU** sandbox changes two things: AgentCore injects `libcuda.so.1` (point `LD_LIBRARY_PATH` at it), and the CUDA torch wheel is large — so install it **at `CMD`, not baked into the image**, keeping the built image under AgentCore's **2048 MB** cap:
+A **GPU** sandbox (`Dockerfile.sandbox.gpu`) changes two things: AgentCore injects `libcuda.so.1` (point `LD_LIBRARY_PATH` at it), and the CUDA torch wheel is large — so install it **at `CMD`, not baked into the image**, to stay under AgentCore's **~2 GB** image cap (§"Two compute types"):
 
 ```dockerfile
 ENV LD_LIBRARY_PATH=/usr/lib64          # AgentCore injects libcuda.so.1 here
 CMD ["sh","-c","pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124 \
-                && exec python -m agentcore_slime_demo.sandbox_server_agent"]
+                && exec python -m sandbox_server_agent"]
 ```
 
-**Deploy.** Managed microVM images must be **arm64**; a GPU capacity provider runs **amd64** — so cross-build. This project's one driver does the whole sequence:
+**Step 2 — create the ECR repo and log Docker in.**
 
 ```bash
 export AWS_REGION=us-west-2
-python3 deploy/deploy_two_runtime.py all   # ECR create → docker buildx --platform → push
-                                           # → CreateAgentRuntime (containerConfiguration)
-                                           # → (GPU) CreateCapacityProvider + attach
+ACCT=$(aws sts get-caller-identity --query Account --output text)
+REG=$ACCT.dkr.ecr.$AWS_REGION.amazonaws.com
+aws ecr create-repository --repository-name acs-sandbox-cpu --region $AWS_REGION  # idempotent
+aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REG
 ```
 
-For GPU it additionally calls **`CreateCapacityProvider`** (`ec2Configuration`: `g6.xlarge`, VPC subnets/SGs, EBS, `idleInstanceTimeout=600`, `maxLifetime=86400`) and attaches it via `capacityProviderConfiguration` [D5, D9]. **IAM:** an execution role (ECR pull, logs, `InvokeAgentRuntime`) plus, for Instances, the operator policy `BedrockAgentCoreRuntimeInstancesOperatorRolePolicy`.
+**Step 3 — cross-build for arm64 and push straight to ECR.** The managed microVM fleet is **arm64** (`CreateAgentRuntime` rejects amd64 with *"Supported platforms: [arm64]"*), while a GPU capacity provider is **amd64** — so a build host of the other arch must cross-build. Use a `docker-container` buildx builder (with QEMU) and emit a **plain** single-arch image — `--provenance=false --sbom=false` keeps it out of the attestation-manifest-list shape that `containerUri` rejects:
 
-### Example AWS repositories (use cases)
+```bash
+docker buildx create --name xbuild --driver docker-container --bootstrap   # once
+docker buildx build --builder xbuild --platform linux/arm64 \
+  --provenance=false --sbom=false \
+  -f deploy/Dockerfile.sandbox.cpu -t $REG/acs-sandbox-cpu:latest --push code/
+```
 
-To ground all of the above against AWS's own code, three official repositories are worth reading:
+**Step 4 — register the image as a Runtime.** An **execution role** (trusts `bedrock-agentcore.amazonaws.com`; grants ECR pull + CloudWatch logs; for a harness Runtime that calls the sandbox, also `InvokeAgentRuntime`) is passed to `create_agent_runtime`, whose `agentRuntimeArtifact` carries the `containerUri`:
 
-- **AgentCore samples** [D14] — `awslabs/agentcore-samples`, the official example catalog, organized as `00-getting-started`, `01-features` (per-service examples, including the Runtime feature), `02-use-cases` (e.g. coding assistants, workflow-automation agents, a data-analyst assistant), and `04-infrastructure-as-code` (CloudFormation/CDK/Terraform). Read `01-features` and `04-infrastructure-as-code` for an end-to-end `CreateAgentRuntime` deploy in full.
-- **AgentCore Python SDK** [D15] — `aws/bedrock-agentcore-sdk-python` (PyPI `bedrock-agentcore`): `BedrockAgentCoreApp` + `@app.entrypoint`, and the runtime service contract this project's sandbox server implements.
-- **AgentCore CLI** [D16] — the newer `@aws/agentcore` (npm) `agentcore` command (create/dev/deploy/invoke), recommended over the legacy `bedrock-agentcore-starter-toolkit` for the zero-Docker path.
+```python
+control = boto3.client("bedrock-agentcore-control", region_name=REGION)
+resp = control.create_agent_runtime(
+    agentRuntimeName="acs-sandbox-cpu",
+    roleArn=exec_role_arn,
+    agentRuntimeArtifact={"containerConfiguration": {"containerUri": f"{REG}/acs-sandbox-cpu:latest"}},
+    protocolConfiguration={"serverProtocol": "HTTP"},
+    networkConfiguration={"networkMode": "PUBLIC"},   # or VPC + networkModeConfig
+    environmentVariables={"SANDBOX_WORKDIR": "/workspace"},
+)
+# poll DescribeAgentRuntime until status == READY, then keep the ARN:
+sandbox_arn = resp["agentRuntimeArn"]
+```
+
+For a **GPU** sandbox this step is preceded by **`CreateCapacityProvider`** (`ec2Configuration`: instance type e.g. `g6.xlarge`, VPC subnets/SGs, EBS, `idleInstanceTimeout=600`, `maxLifetime=86400`), attached via `capacityProviderConfiguration` [D5, D9]; the execution setup then also needs the operator policy `BedrockAgentCoreRuntimeInstancesOperatorRolePolicy`.
+
+This project bundles all four steps into one idempotent driver — it creates the ECR repos, cross-builds each image for its required arch, pushes, mints the roles, and calls `CreateAgentRuntime` (plus the capacity provider for GPU), printing the resulting ARN:
+
+```bash
+export AWS_REGION=us-west-2
+python3 deploy/deploy_two_runtime.py all
+#   ECR create → buildx --platform (arm64 managed / amd64 GPU) → push
+#   → exec/operator roles → CreateAgentRuntime (containerConfiguration)
+#   → (GPU) CreateCapacityProvider + attach → prints agentRuntimeArn
+```
+
+**Step 5 — use it in a training run.** Nothing in slime references the image or the ARN at build time; the sandbox client reads the ARN from the environment at rollout time (and raises if unset). So "using" a custom Runtime in training is one export — the ARN that Step 4 printed — before launching `run.sh`:
+
+```bash
+export AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:us-west-2:<acct>:runtime/acs-sandbox-cpu-…
+export AGENTCORE_REGION=us-west-2
+export SANDBOX=agentcore-runtime          # select the sandbox-as-Runtime backend
+bash run.sh                               # slime's generate hook now invokes YOUR Runtime per op
+```
+
+From here the lifecycle in §"How AgentCore manages the lifecycle" takes over: the first `invoke_agent_runtime` under each episode's fresh session id cold-starts a microVM (or GPU instance) from **your** image, every tool call is one more invoke, and `__aexit__` stops the session at episode end.
 
 ## Using AgentCore as the sandbox in an agentic RL workflow
 
@@ -793,7 +957,7 @@ The key design choice: **AgentCore is the sandbox, not the harness.** The harnes
 
 ### Key code — three pieces
 
-**1. The generate hook (in-process rollout).** slime calls this once per prompt. It builds the policy pointed at the SGLang **router** (so inference stays cache-aware-balanced, §"Scaling the sandbox"), opens **one sandbox per episode**, runs the episode, and returns a single loss-masked `Sample`:
+**1. The generate hook (in-process rollout).** slime calls this once per prompt. It builds the policy pointed at the SGLang **router** (so inference stays cache-aware-balanced, §"Scaling the loop"), opens **one sandbox per episode**, runs the episode, and returns a single loss-masked `Sample`:
 
 ```python
 # agentcore_slime_demo/generate.py  (wired via --custom-generate-function-path)
@@ -863,7 +1027,7 @@ A precise point that the code above implies but is worth stating outright: **sli
 - **Session lifecycle (launch/terminate per episode) — the custom `generate` hook and its sandbox client.** All session control lives *below* slime's seam, inside `agentcore_slime_demo.generate.generate`, which opens one sandbox per prompt (`async with make_sandbox(...) as sb:`). The client (`AgentCoreRuntimeSandbox`) mints **one `runtimeSessionId` per episode**, and:
   - **Launch is implicit** — there is no "create session" API. `__aenter__` sends the **first `invoke_agent_runtime`** (a `ping`) under the fresh session id, and that first invoke is what **cold-starts the microVM** (and, on GPU, warms the g6).
   - **Each op** (`write_file` / `exec` / `read_file`) is one more `invoke_agent_runtime` under the *same* session id.
-  - **Termination is also implicit** — `__aexit__` does **not** call `StopRuntimeSession`; it just drops the client and lets AgentCore reclaim the session on its **~15-minute idle timeout**. slime never explicitly terminates a session on the happy path.
+  - **Termination is explicit** — `__aexit__` calls **`StopRuntimeSession`** (best-effort; `AGENTCORE_STOP_SESSION=0` opts out) so the microVM and its concurrent-session quota slot are released **immediately** at episode end. AgentCore's **~15-minute idle timeout** remains the fallback if the stop call fails. slime's kernel still never terminates a session itself — the control lives in the hook's sandbox client.
 
 | Action | API | Controlled by | When |
 |---|---|---|---|
@@ -871,10 +1035,10 @@ A precise point that the code above implies but is worth stating outright: **sli
 | Drive rollout | — | slime `RolloutManager` / Data Buffer — **AgentCore-unaware** | per prompt |
 | **Launch** session (cold-start microVM) | first `invoke_agent_runtime` (`ping`) | the hook's sandbox client `__aenter__` | per episode |
 | Run ops | `invoke_agent_runtime` (write/exec/read) | sandbox client, same session id | each turn |
-| **Terminate** session | *(implicit)* idle timeout; `StopRuntimeSession` exists but is unused | AgentCore reclaims it; `__aexit__` only drops the client | on ~15-min idle |
+| **Terminate** session | **`StopRuntimeSession`** (best-effort; idle timeout is the fallback) | the hook's sandbox client `__aexit__` | per episode, at end |
 | Defer termination across weight-sync (optional) | repeated `ping` | `SessionKeeper`, *outside* the harness | during the sync barrier |
 
-Because termination is **passive** (idle reclamation, not a slime call), the weight-sync pause can trip the idle clock and lose a warm session — which is exactly the failure mode `demo_cpu_quiesce`'s `SessionKeeper` heartbeat addresses (§`demo_cpu_quiesce`). **One-sentence version:** the deploy driver owns the Runtime, the `generate` hook + its sandbox client own the session (launch on first invoke, terminate by idle timeout), and slime's training kernel owns neither.
+Explicit `StopRuntimeSession` at episode end is the happy-path teardown, but a session can still be lost **mid-episode**: a long weight-sync pause between two turns can trip the 15-minute idle clock while the episode is still running and reclaim the session out from under it — exactly the failure mode `demo_cpu_quiesce`'s `SessionKeeper` heartbeat addresses (§`demo_cpu_quiesce`). **One-sentence version:** the deploy driver owns the Runtime, the `generate` hook + its sandbox client own the session (launch on first invoke, terminate with `StopRuntimeSession` at episode end), and slime's training kernel owns neither.
 
 ### One harness, many task families
 
@@ -895,6 +1059,10 @@ reward = task.reward(0 if solved else 1)                   # binary 1.0 / 0.0, f
 
 Datasets are built once and seeded per episode: each row carries `metadata.task` (family + spec), reference answers are dropped so they cannot leak into prompts, and `generate.py` rebuilds the `Task` from that metadata. The same code runs the checker for MBPP, SWE, SQL, math, tool-use, RAG, CTF, and the rest — the sandbox is the only thing that changes.
 
+### Reading the episode shape into a config
+
+The families of §"Tasks frontier labs run in a sandbox" differ mostly in their **episode shape** — turns per episode, response length per turn, total episode length — and that shape is what you size the training config against. Two axes drive every knob. **Turns per episode** sets `EPISODE_MAX_TURNS` and, multiplied by the per-turn response, the *sequence length* the trainer and inference engine must hold: single-turn families (math, instruction following) need only a long `--rollout-max-response-len`; long-horizon ones (SWE, web/computer use, multi-agent) need a large **context window** and a **session that stays warm for the whole episode**. **Where the tokens are** sets which side you scale (§"Scaling the loop"): generation-heavy families (math, reasoning code) are *inference-bound* — long responses, trivial checker; observation-heavy families (SWE, RAG, web, tool use) push cost into *context growth and the sandbox*. Rule of thumb: budget context ≈ `max_turns × (response_per_turn + observation_per_turn)`, size `--rollout-max-response-len` to the per-turn response at the high end (reasoning traces), and set rollout-buffer memory from the total episode length so long-horizon samples do not overflow it.
+
 ### The episode, end to end
 
 Taking one MBPP episode:
@@ -910,7 +1078,7 @@ Taking one MBPP episode:
 
 ### Scaling, sharing, and network isolation
 
-- **Scaling** follows §"Scaling the sandbox": grow the side that dominates the per-op latencies, and balance by letting the SGLang router handle inference (cache-aware) while round-robining a pool of sandbox Runtimes (sticky per episode).
+- **Scaling** follows §"Scaling the loop": grow the side that dominates the per-op latencies, and balance by letting the SGLang router handle inference (cache-aware) while round-robining a pool of sandbox Runtimes (sticky per episode).
 - **Sharing a GPU.** One session = one GPU, with no cross-session time-slicing [D5]. To pack several episodes onto one physical GPU you either run **many agents in one session** (they share the instance — no isolation) or run **your own fractional scheduler** (this project's `RayGpuFarm`, `num_gpus=0.5` actors, with an `nvcc` `flock` because a non-MIG L4 wedges under compile storms). Isolated scaling means *more instances*; there is **no MIG on L4**.
 - **Network isolation — pull, don't expose.** Every Runtime is *reached* by an outbound SigV4 `invoke_agent_runtime`; **no Runtime has an inbound port**. IAM/SigV4 is the auth; the `session_id` is routing, not auth. For `networkMode=VPC` the Runtime has no internet route, so it needs interface endpoints (`ecr.api`, `ecr.dkr`, `s3`, `logs`, `sts`, `bedrock-agentcore`), and the ENI must land in an AZ that serves `bedrock-agentcore` — miss one and create fails with a null reason [D10, D11].
 
@@ -928,13 +1096,13 @@ Mapping the task families of §"Tasks frontier labs run in a sandbox" onto Agent
 | Networked RAG / web read | ◑ | egress — public, or VPC + endpoints [D11] |
 | GPU kernel / CUDA (KernelBench) [7] | ◑ | Instances only; 1 session = 1 GPU; **no MIG on L4** |
 
-In this project the policy is always **Qwen3-4B**, trained by slime, with the harness in-process and AgentCore as the sandbox; what varies from demo to demo is only the **sandbox substrate** (CPU microVM vs GPU Runtime instance) and the **task**. The set (detailed in §"Demos") is **sixteen** demos: six canonical anchors — two CPU-sandbox references (`demo_cpu_single`/MBPP, `demo_cpu_math`), two GPU-sandbox demos (`demo_gpu_single`/`demo_gpu_shared`, KernelBench CUDA), and two resilience demos (`demo_cpu_quiesce` heartbeat keep-alive, `demo_gpu_snapshot` app-level snapshot/resume) — plus an **eight-way per-task CPU fan-out**, and two more that scale the **harness** (`demo_cpu_harness_scale`) and **mix task families into one stream** (`demo_cpu_mixtask`).
+In this project the policy is always **Qwen3-4B**, trained by slime, with the harness in-process and AgentCore as the sandbox; what varies from demo to demo is only the **sandbox substrate** (CPU microVM vs GPU Runtime instance) and the **task**. The project ships a **twenty-one-demo set** on this one design, catalogued next (§"Demos — the demo set at a glance") and then deep-dived with measured results in §"Demos in depth".
 
 ## Demos — the demo set at a glance
 
-The project ships a set of runnable demos in `code/demos/`, all built to one design (`docs/demos-program.md`): the policy is always **Qwen3-4B** trained by **slime**, the **harness is in-process**, and **AgentCore is the sandbox** — so what varies from demo to demo is only the *sandbox substrate* (a CPU AgentCore Runtime / Code-Interpreter microVM vs a GPU `g6` Runtime instance) and the *task*. The set has two layers. **Six canonical demos** anchor it: two CPU-sandbox references (`demo_cpu_single`, `demo_cpu_math`), two GPU-sandbox demos (`demo_gpu_single`, `demo_gpu_shared`), and two offline **resilience** demos (`demo_cpu_quiesce`, `demo_gpu_snapshot`). On top of them a generator (`gen_task_demos.py`) fans `demo_cpu_single` into **eight per-task CPU demos** (`demo_cpu_<task>`), each a self-contained recipe wired to one real Hugging Face dataset (covered in §"The per-task CPU fan-out" below). Two further demos sit outside both layers. `demo_cpu_harness_scale` fixes the task and sandbox and instead scales the **harness** itself, making the §"Scaling the harness too" law `throughput = min(inference, sandbox, harness)` concrete. `demo_cpu_mixtask` does the opposite of the fan-out: instead of one family per run it **interleaves several families into one training stream**, so every GRPO step draws a *multi-family* batch (both have their own subsection below). That makes **sixteen demos in all**. Each entry names the frontier task family from §"Tasks frontier labs run in a sandbox" it exercises and a real-world scenario it stands in for; the *Run status* column states honestly what has been **trained on hardware** versus what is a ready-to-run recipe.
+The project ships a set of runnable demos in `code/demos/`, all built to one design (`docs/demos-program.md`): the policy is always **Qwen3-4B** trained by **slime**, the **harness is in-process**, and **AgentCore is the sandbox** — so what varies from demo to demo is only the *sandbox substrate* (a CPU AgentCore Runtime / Code-Interpreter microVM vs a GPU `g6` Runtime instance) and the *task*. The set has two layers. **Six canonical demos** anchor it: two CPU-sandbox references (`demo_cpu_single`, `demo_cpu_math`), two GPU-sandbox demos (`demo_gpu_single`, `demo_gpu_shared`), and two offline **resilience** demos (`demo_cpu_quiesce`, `demo_gpu_snapshot`). On top of them a generator (`gen_task_demos.py`) fans `demo_cpu_single` into **eight per-task CPU demos** (`demo_cpu_<task>`), each a self-contained recipe wired to one real Hugging Face dataset (listed in the overview table above; deep-dived in §"The eight per-task CPU fan-out demos in depth"). Two further demos sit outside both layers. `demo_cpu_harness_scale` fixes the task and sandbox and instead scales the **harness** itself, making the §"Scaling the loop" law `throughput = min(inference, sandbox, harness)` concrete. `demo_cpu_mixtask` does the opposite of the fan-out: instead of one family per run it **interleaves several families into one training stream**, so every GRPO step draws a *multi-family* batch (both have their own subsection below). Finally, **five substrate-and-design variants** exercise the AgentCore mechanics the rest of the set holds fixed: `demo_cpu_branching` (the real Claude Code CLI as harness, where one episode fans out into many training samples), `demo_cpu_customruntime` and `demo_gpu_customruntime` (managed Code Interpreter vs. your own custom Runtime, on CPU and on a GPU respectively), `demo_cpu_imagepool` (a capability-routed pool of prebuilt images, one per task family), and `demo_gpu_local` (a whole-GPU-per-session Ray farm run locally on the box's reserved GPUs). That makes **twenty-one demos in all**. Each entry names the frontier task family from §"Tasks frontier labs run in a sandbox" it exercises and a real-world scenario it stands in for; the *Run status* column states honestly what has been **trained on hardware** versus what is a ready-to-run recipe.
 
-The table below lists **all sixteen** demos, one brief row each, grouped by the three layers described above (six canonical, then the eight per-task CPU fan-out, then the two that scale a new dimension). Section 7 then deep-dives every one of them.
+The table below lists **all twenty-one** demos, one brief row each, grouped by the four layers described above (six canonical, then the eight per-task CPU fan-out, then the two that scale a new dimension, then the five substrate-and-design variants). Section 7 then deep-dives the training demos and catalogues the rest.
 
 | Demo | Substrate | Task | Frontier family (§3) | Run status |
 |:------------------|:----------|:-----------|:------------|:-----------------|
@@ -957,8 +1125,14 @@ The table below lists **all sixteen** demos, one brief row each, grouped by the 
 | *— scale a new dimension (2) —* | | | | |
 | `demo_cpu_harness_scale` | CPU microVM | DeepScaleR math (fixed) | infra — scale the harness (§2) | offline sweep; no training run |
 | `demo_cpu_mixtask` | CPU microVM | mixed: math + SQL + CTF + tool-use | cross-family regime (§2) | recipe only; no committed run |
+| *— substrate & design variants (5) —* | | | | |
+| `demo_cpu_branching` | CPU microVM (CLI-capable) | SWE bug-fix, **real Claude Code CLI** | one episode → many samples (§2) | recipe only; no committed run |
+| `demo_cpu_customruntime` | CPU microVM | trivial episode, both backends | managed CI vs. custom Runtime (§4) | backend comparison; no training run |
+| `demo_cpu_imagepool` | CPU microVM (image pool) | mixed: datasci + scipy + sklearn | capability-routed image pool (§4) | recipe only; dataset built, no committed run |
+| `demo_gpu_customruntime` | GPU instance (g6) | torch-on-CUDA probe | GPU only via custom Runtime (§4) | capability probe; no training run |
+| `demo_gpu_local` | GPU instance (local whole-GPU Ray farm) | KernelBench CUDA | GPU kernels [7] | recipe only; no committed run |
 
-Only `demo_cpu_single` and `demo_gpu_single` carry committed training curves; `demo_cpu_math` has hardware *smoke* logs (not convergence); `demo_gpu_shared`'s remote-g6 run never passed its health check; the two resilience demos train no policy; the eight per-task fan-out demos each now carry a short `NR=3` smoke run (`rerun.log`) against the real CPU sandbox — enough to verify the loop, the checker, and a baseline held-out solve rate, but well short of convergence; `demo_cpu_harness_scale` has a *measured offline* throughput sweep but no committed training run; and `demo_cpu_mixtask` is the newest — its mixed-dataset builder is in place but the dataset is not yet built and it carries **no committed run at all** (a ready-to-run recipe only). This is stated plainly here so the measured results in §7 are read for what they are.
+Only `demo_cpu_single` and `demo_gpu_single` carry committed training curves; `demo_cpu_math` has hardware *smoke* logs (not convergence); `demo_gpu_shared` now passes end-to-end on hardware as an `NR=3` smoke (`Job succeeded` + checkpoint) via the `LOCAL_GPU` fallback — its two committed *remote*-g6 runs both wedged on repeated Runtime health-check timeouts (the non-MIG L4 under sustained `nvcc`), not on convergence — so it has no convergence curve yet; the two resilience demos train no policy; the eight per-task fan-out demos each now carry a short `NR=3` smoke run (`rerun.log`) against the real CPU sandbox — enough to verify the loop, the checker, and a baseline held-out solve rate, but well short of convergence; `demo_cpu_harness_scale` has a *measured offline* throughput sweep but no committed training run; and `demo_cpu_mixtask` is the newest — its mixed-dataset builder is in place but the dataset is not yet built and it carries **no committed run at all** (a ready-to-run recipe only). The five substrate-and-design variants likewise carry no committed training curves: `demo_cpu_customruntime` and `demo_gpu_customruntime` are **capability comparisons** (they run one trivial episode against each backend and print the result — the reward, or `torch.cuda.is_available()` — side by side, not a training run), while `demo_cpu_branching`, `demo_cpu_imagepool`, and `demo_gpu_local` are **ready-to-run recipes** (`demo_cpu_imagepool` and `demo_gpu_local` have their data staged; none has a committed run yet). This is stated plainly here so the measured results in §7 are read for what they are.
 
 ### `demo_cpu_single` — MBPP code repair on a CPU microVM
 
@@ -998,48 +1172,46 @@ The sibling resilience demo: a GPU Runtime instance can be *recycled* and come b
 
 ### `demo_cpu_harness_scale` — scaling the harness tier
 
-The one demo that varies **neither** the task nor the sandbox. It fixes both (DeepScaleR math, coding-shape, on a CPU microVM) and instead makes the **harness** the scalable dimension, to demonstrate the §"Scaling the harness too" law: rollout throughput is `min(inference, sandbox, harness)`, so once a deep async buffer and scaled inference/sandbox are in place, a single-process harness becomes the ceiling. The scaling unit is a pool of **`W` warm in-process harness workers** (`HARNESS_WORKERS`, default 4) fed by one shared `asyncio.Queue`; the three tiers load-balance *differently*, which is the point — inference is stateless per **request** (slime's cache-aware SGLang router across `E` engines), the sandbox is sticky per **episode** (round-robin a fresh session across `K` Runtime ARNs), and the harness balances by **pull** (whichever warm worker is free takes the next episode — work-stealing, robust to wide per-episode latency). It ships two ways to see it: a fully **offline** scaling-law sweep (`harness_scaling_demo.py` — real `run_episode` on `LocalSandbox`, no AWS, runs in seconds) and the real slime integration behind the generate hook (`harness_pool.py` / `harness_pool_generate.py`, the warm-worker pool driving the `MiniClaudeHarness`).
+The one demo that varies **neither** the task nor the sandbox. It fixes both (DeepScaleR math, coding-shape, on a CPU microVM) and instead makes the **harness** the scalable dimension, to demonstrate the §"Scaling the loop" law: rollout throughput is `min(inference, sandbox, harness)`, so once a deep async buffer and scaled inference/sandbox are in place, a single-process harness becomes the ceiling. The scaling unit is a pool of **`W` warm in-process harness workers** (`HARNESS_WORKERS`, default 4) fed by one shared `asyncio.Queue`; the three tiers load-balance *differently*, which is the point — inference is stateless per **request** (slime's cache-aware SGLang router across `E` engines), the sandbox is sticky per **episode** (round-robin a fresh session across `K` Runtime ARNs), and the harness balances by **pull** (whichever warm worker is free takes the next episode — work-stealing, robust to wide per-episode latency). It ships two ways to see it: a fully **offline** scaling-law sweep (`harness_scaling_demo.py` — real `run_episode` on `LocalSandbox`, no AWS, runs in seconds) and the real slime integration behind the generate hook (`harness_pool.py` / `harness_pool_generate.py`, the warm-worker pool driving the `MiniClaudeHarness`).
 *Exercises (§3):* not a new task — the **infrastructure** lever of §2, using math reasoning [2] as the fixed workload.
 *Scenario:* a rollout fleet where you have already scaled inference and the sandbox and need to lift the third, easily-forgotten dial — the driver — without making it ad-hoc.
 
-### The per-task CPU fan-out — one recipe per real dataset
-
-`demo_cpu_single` is a *task-agnostic* recipe: the same in-process harness and CPU sandbox train any family by setting `FAMILY` and pointing at a dataset. To make each real dataset a first-class, self-contained demo, `code/demos/gen_task_demos.py` **generates eight `demo_cpu_<task>` folders** from `demo_cpu_single` — each with its own vendored `agentcore_slime_demo/` library, `deploy/` Dockerfile, `data/` (that task's train/eval JSONL), a `run.sh` with `FAMILY` baked in, and a `verify_data.py` that proves the checker offline (the reference solution passes, a wrong one fails). Re-running the generator re-syncs all eight after a library change. They exercise the math, coding, SQL, RAG, and tool-use families of §3 on exactly the CPU-sandbox path of `demo_cpu_single`; the reward is RLVR (a programmatic checker), no LLM judge.
-
-Each demo below is `demo_cpu_<name>`; the *Dataset* column gives a short label, with the full Hugging Face repo ID in the note that follows.
-
-| Demo (`demo_cpu_*`) | Family (§3) | Dataset | Reward | Train / eval |
-|:------------|:---------|:--------------|:-----------------|:------|
-| `gsm8k` | math | GSM8K | exact integer match | 200 / 40 |
-| `math500` | math | MATH-500 | numeric match (tol 1e-4) | 160 / 40 |
-| `deepscaler` | math | DeepScaleR | numeric match (tol 1e-4) | 400 / 40 |
-| `humaneval` | coding | HumanEval | the row's own `check()` unit test | 140 / 24 |
-| `gretelsql` | sql | Gretel text-to-SQL | result-set equality (`sqlite3`) | 300 / 40 |
-| `hotpotqa` | rag | HotpotQA | SQuAD-normalized exact match | 300 / 40 |
-| `xlam` | tool use | xLAM-60k | arg-normalized gold-call match | 300 / 40 |
-| `mcp` | tool use | ToolACE (MCP) | arg-normalized gold-call match | 300 / 40 |
-
-Full repo IDs: `openai/gsm8k`, `HuggingFaceH4/MATH-500`, `agentica-org/DeepScaleR-Preview-Dataset`, `openai/openai_humaneval`, `gretelai/synthetic_text_to_sql`, `hotpotqa/hotpot_qa` (distractor; 10-passage corpus), `minpeter/xlam-function-calling-60k-parsed`, `Team-ACE/ToolACE` (MCP-style schemas). Rewards are RLVR (arg-normalized matches are order-insensitive).
-
-These eight are **fully scaffolded, data-prepared, and each now carries a short `NR=3` smoke run** (`rerun.log`) against the real CPU AgentCore sandbox — enough to verify the loop and checker end-to-end and to record a *baseline* held-out solve rate through the harness (from the two-rollout smoke: `eval/xlam` 1.00, `eval/gsm8k` 0.91, `eval/math500` 0.83, `eval/humaneval` 0.81, `eval/deepscaler` 0.70, `eval/gretelsql` 0.65, `eval/hotpotqa` 0.21, `eval/mcp` 1.00). These are **smoke baselines, not convergence** — a two-rollout run reflects the base policy's solve rate more than any learning — so the eight remain honest *ready-to-run recipes*, one per real dataset, whose convergence is still open work (§"Experiment plan"). Because each is an architectural clone of `demo_cpu_single`, the deep-dive in §7 covers them by covering `demo_cpu_single`; only `FAMILY` and the dataset differ.
-
 ### `demo_cpu_mixtask` — one interleaved stream across task families
 
-The fan-out pins **one** family per run; `demo_cpu_mixtask` does the opposite. It builds a single `mixed_train.jsonl` / `mixed_eval.jsonl` that **interleaves several families** (default **math + SQL + CTF + tool-use**, all pure-CPU) so that every GRPO rollout step draws a batch of prompts spanning multiple tasks — the setting a generalist policy is actually trained in, rather than a sequence of single-task runs. It is a CPU-microVM demo on the same skeleton as `demo_cpu_single`; only the *data composition* changes.
-
-**Why nothing in the harness or sandbox has to change.** The mix works because each row is already **self-describing**: it carries `metadata.task = {family, task_id, prompt, spec, …}`, and `generate._task_from_sample` reads `metadata.task.family` and rebuilds the right `EpisodicTask` subclass **per prompt** — so `run_episode` already dispatches the prompt, seed files, hidden checker, and reward *per row* (§"One harness, many task families"). The sandbox is likewise **task-agnostic** (`write_file` / `exec` / `read_file`): a math episode, a SQL episode, and a CTF episode are just different files written into three identical, isolated sandbox sessions. A step being multi-family is therefore transparent to both.
-
-**So mixtask needs no extra Runtimes — just more sessions.** Because a Runtime is bound to one *image* and the sandbox is task-agnostic, the number of Runtimes tracks **distinct sandbox images, not distinct tasks**. The default mix here (math + SQL + CTF + tool-use) is **all pure-CPU**, so one generic CPU image serves every family: a mixed-family run is **one Runtime, many sessions** (one `runtimeSessionId` per episode) — exactly like a single-task run. You would add a *second* Runtime only if a family in the mix needed a **different image or substrate** — e.g. adding KernelBench (CUDA) pulls in the GPU Instances image, so you would register one ARN per image and route by `family` (the capability-routed dispatch of §"One image per Runtime, but a different env per row"). Task diversity alone never multiplies Runtimes; only image diversity does.
-
-**Why the reward scales do not clash.** GRPO normalizes advantage **within a group** of `n_samples_per_prompt` repeats of the *same* prompt — hence the same family. Mixing happens **across groups within a step**, so the different families' reward scales never need reconciling: within-group normalization handles it, and only the prompt *sampler* mixes. The builder (`build_mixed_datasets.py`) offers a **balanced round-robin interleave** (every step-window spans the families evenly) or a plain proportional shuffle, holds out a per-family eval slice *and* writes an interleaved `mixed_eval.jsonl`, and replicates the pool so one epoch spans the whole run (keeping save-only-at-end intact). Note the seeds here are the **hand-authored, templated `task_families.py` families**, not the real Hugging Face datasets of the fan-out — so the mix demonstrates the multi-family *training mechanics*, not dataset-scale coverage.
+The fan-out pins **one** family per run; `demo_cpu_mixtask` does the opposite. Its builder (`build_mixed_datasets.py`) produces a single `mixed_train.jsonl` / `mixed_eval.jsonl` that **interleaves several families** (default **math + SQL + CTF + tool-use**, all pure-CPU) so every GRPO rollout step draws a batch of prompts spanning multiple tasks — the setting a generalist policy is actually trained in, rather than a sequence of single-task runs. It is a CPU-microVM demo on the same skeleton as `demo_cpu_single`; only the *data composition* changes, and nothing in the harness or sandbox has to change — each row is self-describing and the sandbox is task-agnostic, so a mixed-family run stays **one Runtime, many sessions**, exactly like a single-task run. The mechanics (why no architectural change is needed, why the families' reward scales do not clash, and why the mix needs no extra Runtimes) are worked through in §"`demo_cpu_mixtask` in depth".
 
 *Exercises (§3):* not a new family — the **cross-family training regime** itself, the closest of the demos to how a generalist policy is post-trained (§"Where agentic RL is used"). *Scenario:* training one policy across a diverse task portfolio in a single run, where each step's batch spans capabilities. *Run status:* newest demo — builder in place, dataset not yet built, **no committed run** (§"Experiment plan" carries its open convergence work).
+
+### `demo_cpu_branching` — one episode becomes many training samples
+
+The one demo whose harness is the **real Claude Code CLI**, not the in-process mini-agent: the CLI is co-located with slime and wired to its `AnthropicAdapter`, while its **tools run in a remote CPU AgentCore Runtime** whose image bakes node 22 + `claude` (`deploy/Dockerfile.sandbox.cli`). It deliberately provokes the two CLI behaviors that split one episode into several branches — **sub-agents** (the `Task` tool) and **context summarization / compaction** — so a single rollout fans out into a `list[Sample]`, one per leaf of the trajectory tree. A custom generate hook (`claude_code_generate.py`) linearizes that tree, and a custom advantage (`rollout_advantage.py`) baselines over **distinct episodes, not leaves**, with a matching rollout-level token-mean loss — the concrete implementation of §"When one episode becomes many samples". The dataset is a single family (SWE bug-fix); the interesting variable is the fan-out. REMOTE-ONLY, `MODE=A` and `dp_size=1` (`TP=2×PP=2`) with sync checkpoint save.
+*Exercises (§3):* **software engineering** (SWE bug-fix [6]) as a vehicle for the fan-out reconciliation, not as the object of study. *Scenario:* training a real coding-agent CLI whose episodes spawn sub-agents and compact context, so the sample count is an incidental artifact the update must not reward. *Run status:* recipe only — dataset not yet built, no committed run.
+
+### `demo_cpu_customruntime` — managed Code Interpreter vs. your own custom Runtime
+
+A capability comparison, not a training run. AgentCore gives two ways to get a CPU sandbox — the **managed Code Interpreter** (`SANDBOX=agentcore`, zero-ops, but you take the environment AWS gives you) and **your own custom Runtime** (`SANDBOX=agentcore-runtime`, your OCI image, so you own every dependency, user, filesystem, and the VPC/IAM posture) — and both expose the *identical* `write_file` / `exec` / `read_file` contract. The demo runs the **same trivial episode** against both and prints the reward side by side to make the punchline concrete: **the reward is identical; only the operational trade-offs differ**.
+*Exercises (§3):* not a task — the **backend-choice decision** of §4, made concrete. *Scenario:* deciding whether a rollout needs a custom image at all, or whether the managed microVM suffices.
+
+### `demo_cpu_imagepool` — a capability-routed pool of prebuilt images
+
+Where `demo_cpu_mixtask` mixes families that all share one generic image, this demo is the step the report calls a *described design, not something the shipped demos do* — realized: a genuine **capability-routed pool** where each family needs its **own** prebuilt image (`datasci`→pandas, `scipy`→scipy, `sklearn`→scikit-learn), and the harness **routes every episode to the image its family needs**. Routing is not cosmetic — send a `scipy` episode to the pandas image and its `import scipy` fails, the checker errors, and reward is 0, so correct routing is what makes the mixed-image batch learnable. REMOTE-ONLY, **one Runtime per image** in the pool.
+*Exercises (§3):* the **capability-routing** variant of the cross-family regime — the case §"`demo_cpu_mixtask` in depth" flags as *when you would route by family instead*. *Scenario:* a mixed portfolio where families need genuinely different sandbox substrates, not just different task files. *Run status:* recipe only — data staged, no committed run.
+
+### `demo_gpu_customruntime` — a GPU under the sandbox, which only a custom Runtime can give you
+
+The GPU sibling of `demo_cpu_customruntime`, and a capability probe rather than a training run. The managed Code Interpreter has **no GPU**; if a task's checker needs CUDA, the sandbox must be **your own custom Runtime deployed on an AgentCore capacity-provider Instance** (a `g6` box). The demo makes the contrast physical — it `write_file`s a torch-on-CUDA probe, `exec`s it, and `read_file`s the result (the whole contract in three calls) — and prints that `torch.cuda.is_available()` is **False** on the managed CI but **True** on the custom Runtime. It also states the rule the GPU demos rest on: one AgentCore session = one whole Instance, with no cross-session GPU time-slicing.
+*Exercises (§3):* the substrate prerequisite for every **GPU-kernel** family [7] — why the GPU demos must use a custom Runtime. *Scenario:* confirming a CUDA-dependent reward can only be scored on the Instances substrate, before building a GPU training run on it.
+
+### `demo_gpu_local` — KernelBench on a local whole-GPU Ray farm
+
+The whole-GPU-per-session counterpart to `demo_gpu_shared`. It serves the **same** Ray-farm sandbox Runtime, but **locally** on the box's reserved GPUs 6,7 and with the farm fraction set to **1.0**, so each concurrent episode gets a **whole dedicated GPU** rather than a fractional slice (`floor(2/1.0)=2` warm-CUDA actors, one per GPU); slime keeps the other six. Running whole-GPU sidesteps the fractional-memory guard and the non-MIG `nvcc`-wedge that `demo_gpu_shared` can hit under sustained compile load. Like the shared farm it uses one shared `runtimeSessionId` with a per-episode `sub_session`, since AgentCore maps one session to one instance.
+*Exercises (§3):* **GPU kernels / systems** (KernelBench [7]) — the whole-GPU packing point of the same farm the shared demo runs fractionally. *Scenario:* GPU-sandbox packing when a whole GPU per concurrent episode *is* available on the box and fractional sharing's compile-wedge risk is not worth taking. *Run status:* recipe only — no committed run.
 
 ---
 
 ## Demos in depth — architecture, pipeline, lifecycle, and measured results
 
-This section is the deep dive. Because the four canonical training demos share one architecture — in-process harness, AgentCore sandbox, slime trainer — the first subsection establishes the **shared skeleton** once (the pipeline, the step-by-step, the lifecycle, the scaling method, and the metric glossary); the second covers how to **size the two config knobs** every demo exposes; and the per-demo subsections then give only what differs — task, dataset, runtime, reward — and the **measured** results. The eight per-task CPU demos of §6 are architectural clones of `demo_cpu_single` (same skeleton, differing only in `FAMILY` and dataset), so rather than re-analyze each in full they are covered **together** in one consolidated subsection ("The eight per-task CPU fan-out demos in depth") that gives their measured smoke baselines and their shared bottleneck/plan; `demo_cpu_mixtask` is the same skeleton too but differs in a dimension worth its own short subsection — its dataset *interleaves* families rather than pinning one — so it gets one ("`demo_cpu_mixtask` in depth"). The Ray-farm, the two resilience demos, and the harness-scaling demo have a genuinely different topology and each carries its own diagram. Between them the per-demo subsections below now touch **all sixteen** demos.
+This section is the deep dive. Because the four canonical training demos share one architecture — in-process harness, AgentCore sandbox, slime trainer — the first subsection establishes the **shared skeleton** once (the pipeline, the step-by-step, the lifecycle, the scaling method, and the metric glossary); the second covers how to **size the two config knobs** every demo exposes; and the per-demo subsections then give only what differs — task, dataset, runtime, reward — and the **measured** results. The eight per-task CPU demos of §6 are architectural clones of `demo_cpu_single` (same skeleton, differing only in `FAMILY` and dataset), so rather than re-analyze each in full they are covered **together** in one consolidated subsection ("The eight per-task CPU fan-out demos in depth") that gives their measured smoke baselines and their shared bottleneck/plan; `demo_cpu_mixtask` is the same skeleton too but differs in a dimension worth its own short subsection — its dataset *interleaves* families rather than pinning one — so it gets one ("`demo_cpu_mixtask` in depth"). The Ray-farm, the two resilience demos, and the harness-scaling demo have a genuinely different topology and each carries its own diagram. The **five substrate-and-design variants** of §6 (`demo_cpu_branching`, `demo_cpu_customruntime`, `demo_cpu_imagepool`, `demo_gpu_customruntime`, `demo_gpu_local`) exercise AgentCore mechanics rather than adding a training curve, and — being capability comparisons or ready-to-run recipes with no committed results yet — are covered in the at-a-glance catalogue above rather than re-analyzed here; the fan-out mechanics of `demo_cpu_branching` in particular are worked through in §"When one episode becomes many samples". Between them the per-demo subsections below cover the training demos, and the glance catalogue and that section together account for **all twenty-one** demos.
 
 A note on grounding: the numbers below are read from this project's own committed run artifacts (`train.csv`, the ablation CSVs under `demo_cpu_single/logs/`, and the `[sbx-op]`/`[sglang-gen]` records in the smoke and GPU logs). They come from **short runs** (≈10 training steps, or smoke runs), so treat them as *shape and order-of-magnitude*, not as converged science. Where a metric is only *instrumented* — emitted by the code but not yet populated in a committed run — this is said explicitly rather than filled with an invented value.
 
@@ -1088,7 +1260,7 @@ A note on grounding: the numbers below are read from this project's own committe
 \node[ptitle, anchor=north] at ([yshift=-2pt]ptr.south) {Training --- per step};
 \end{tikzpicture}%
 }
-\caption{The demo pipeline, shared by all four training demos. An episode cold-starts its sandbox session, seeds the workspace, then runs the \textbf{turn loop} --- each turn a generation through the proxy (\texttt{[sglang-gen]}) followed by a checker \texttt{exec} in the sandbox (\texttt{[sbx-op]}). The checker's exit code is the reward; \texttt{build\_token\_stream} emits a loss-masked \texttt{Sample} into the rollout buffer; Megatron takes a GRPO step and \textbf{weight-syncs} the new policy back to SGLang --- the point at which rollouts generated on an older policy version become \emph{stale}. The two labeled latencies are the two things the scaling decision (§"Scaling the sandbox") is made from.}
+\caption{The demo pipeline, shared by all four training demos. An episode cold-starts its sandbox session, seeds the workspace, then runs the \textbf{turn loop} --- each turn a generation through the proxy (\texttt{[sglang-gen]}) followed by a checker \texttt{exec} in the sandbox (\texttt{[sbx-op]}). The checker's exit code is the reward; \texttt{build\_token\_stream} emits a loss-masked \texttt{Sample} into the rollout buffer; Megatron takes a GRPO step and \textbf{weight-syncs} the new policy back to SGLang --- the point at which rollouts generated on an older policy version become \emph{stale}. The two labeled latencies are the two things the scaling decision (§"Scaling the loop") is made from.}
 \end{figure}
 ```
 
@@ -1109,7 +1281,7 @@ Each per-demo subsection states that demo's **sandbox** row; the trainer, infere
 
 **Lifecycle.** One session = one episode: the first invoke cold-starts the microVM (or launches the g6), the same `runtimeSessionId` re-routes to the warm VM, and the session is reclaimed on idle (~15 min CPU / 600 s GPU) or on max lifetime (8 h microVM / up to 14 d instance). Under asynchronous training, the pause during weight sync can trip the idle clock — which is what the resilience demos address.
 
-**Scaling method.** Following §"Scaling the sandbox": read `perf/sandbox_ms_*` against `perf/sglang_gen_ms_*`, then grow the dominant side — inference (more SGLang replicas behind the **cache-aware** router) when generation dominates, or the sandbox (more microVM sessions, or a pool of Runtime ARNs round-robined **sticky per episode**; on GPU, the Ray farm) when the checker dominates. The demos are chosen so both cases actually occur: MBPP/math are generation-bound, KernelBench is sandbox-bound.
+**Scaling method.** Following §"Scaling the loop": read `perf/sandbox_ms_*` against `perf/sglang_gen_ms_*`, then grow the dominant side — inference (more SGLang replicas behind the **cache-aware** router) when generation dominates, or the sandbox (more microVM sessions, or a pool of Runtime ARNs round-robined **sticky per episode**; on GPU, the Ray farm) when the checker dominates. The demos are chosen so both cases actually occur: MBPP/math are generation-bound, KernelBench is sandbox-bound.
 
 **What is measured — and what is only instrumented.** The metric glossary the deep-dives use:
 
@@ -1138,9 +1310,9 @@ Every demo exposes two knobs that follow directly from the episode shapes of §"
 
 ### Experiment plan — training each demo to convergence
 
-A demo is "done" only when it shows **learning to convergence**, not a smoke run (`docs/demos-program.md`). What is committed today is deliberately short: `demo_cpu_single` and `demo_gpu_single` have ~10-step runs (enough to read the bottleneck, not to converge), `demo_cpu_math` and each of the eight per-task fan-out demos have `NR=3` smoke logs (a two-rollout end-to-end sanity check with a baseline held-out solve rate, not a learning curve), and `demo_gpu_shared`'s run failed. The plan to convergence has the same shape for every training demo and differs only in the step budget and which side gets scaled once the bottleneck is measured.
+A demo is "done" only when it shows **learning to convergence**, not a smoke run (`docs/demos-program.md`). What is committed today is deliberately short: `demo_cpu_single` and `demo_gpu_single` have ~10-step runs (enough to read the bottleneck, not to converge), `demo_cpu_math` and each of the eight per-task fan-out demos have `NR=3` smoke logs (a two-rollout end-to-end sanity check with a baseline held-out solve rate, not a learning curve), and `demo_gpu_shared` now passes an `NR=3` end-to-end smoke on hardware (`Job succeeded` + checkpoint, via the `LOCAL_GPU` fallback) but has not yet been run to convergence. The plan to convergence has the same shape for every training demo and differs only in the step budget and which side gets scaled once the bottleneck is measured.
 
-**The convergence bar (all training demos).** (1) Train enough steps that the **held-out eval solve rate rises then plateaus** — log `eval/<task>` every `EVAL_INTERVAL` steps, not the default ~10-step run. (2) `rollout/raw_reward` and `eval/<task>` trend up then flat on the folder's `train.png`. (3) `train/grad_norm` and `train/kl_loss` stay sane (the policy is moving, not diverging). (4) Only then apply the §"Scaling the sandbox" decision: scale the *measured* bottleneck and show the `perf/step_time` improvement — confirming the other side would not have helped.
+**The convergence bar (all training demos).** (1) Train enough steps that the **held-out eval solve rate rises then plateaus** — log `eval/<task>` every `EVAL_INTERVAL` steps, not the default ~10-step run. (2) `rollout/raw_reward` and `eval/<task>` trend up then flat on the folder's `train.png`. (3) `train/grad_norm` and `train/kl_loss` stay sane (the policy is moving, not diverging). (4) Only then apply the §"Scaling the loop" decision: scale the *measured* bottleneck and show the `perf/step_time` improvement — confirming the other side would not have helped.
 
 Because the metric that decides scaling (`perf/sandbox_ms_*` vs `perf/sglang_gen_ms_*`) is measured *per demo*, the experiment plan is per demo too — the bottleneck column below is what each demo's own latencies (in its subsection) already show:
 
@@ -1162,7 +1334,7 @@ That table says *what* to scale; the protocol below says *how far to run* each d
 
 \* *Wall-clock is each demo's measured `perf/step_time` (§ metric glossary) times the step budget — a planning extrapolation, not a measured convergence time. The step budgets (chosen so MBPP's 500-row / KernelBench's 100-row splits see ~10 epochs at `GBS=32`) and the target plateaus are likewise **targets**: no demo has yet been run to plateau — the committed runs are the ~10-step `demo_cpu_single` / `demo_gpu_single`, the `NR=3` `demo_cpu_math` smoke, and the failed `demo_gpu_shared`. The GPU range is wide because `perf/step_time` spans 110–804 s: the remote-g6 cold start (~90 s torch install + ~123 s first ping) and per-episode checker variance dominate it.*
 
-The **eight per-task CPU demos** (§"The per-task CPU fan-out") inherit `demo_cpu_single`'s plan unchanged — they are generation-bound (cheap checker, `math`/`coding`/`sql`/`rag`/`tool use`), so each converges by running past the smoke budget while tracking its own `eval/<task>` every 10 steps and, if generation dominates, adding SGLang replicas. Concretely: `NR ≈ 100–200` (scaled to each 140–400-row split, so ~10 epochs at `GBS=32`), `EVAL_INTERVAL=10`, ~1–3 h each on CPU — the same 23–78 s/step envelope as `demo_cpu_single`. Running these eight to convergence is the fan-out's open work item.
+The **eight per-task CPU demos** (§"The eight per-task CPU fan-out demos in depth") inherit `demo_cpu_single`'s plan unchanged — they are generation-bound (cheap checker, `math`/`coding`/`sql`/`rag`/`tool use`), so each converges by running past the smoke budget while tracking its own `eval/<task>` every 10 steps and, if generation dominates, adding SGLang replicas. Concretely: `NR ≈ 100–200` (scaled to each 140–400-row split, so ~10 epochs at `GBS=32`), `EVAL_INTERVAL=10`, ~1–3 h each on CPU — the same 23–78 s/step envelope as `demo_cpu_single`. Running these eight to convergence is the fan-out's open work item.
 
 ### `demo_cpu_single` in depth — MBPP on a CPU microVM
 
@@ -1280,7 +1452,7 @@ Neither demo trains a policy, so neither reports RL metrics; both run offline in
 
 ### `demo_cpu_harness_scale` in depth — scaling the harness worker pool
 
-This demo makes the §"Scaling the harness too" law operational. It holds the task and sandbox fixed and sweeps the harness's own scaling unit — a pool of `W` warm in-process workers — to show that once inference and the sandbox are provisioned, rollout throughput is `min(inference, sandbox, harness)` and the driver is the third dial. Its topology differs from the training demos (a work-stealing worker pool over three independently-balanced tiers), so it carries its own diagram.
+This demo makes the §"Scaling the loop" law operational. It holds the task and sandbox fixed and sweeps the harness's own scaling unit — a pool of `W` warm in-process workers — to show that once inference and the sandbox are provisioned, rollout throughput is `min(inference, sandbox, harness)` and the driver is the third dial. Its topology differs from the training demos (a work-stealing worker pool over three independently-balanced tiers), so it carries its own diagram.
 
 ```{=latex}
 \begin{figure}[htbp]
@@ -1331,7 +1503,7 @@ This demo makes the §"Scaling the harness too" law operational. It holds the ta
 
 ### The eight per-task CPU fan-out demos in depth — one recipe per real dataset
 
-The eight `demo_cpu_<task>` folders (§"The per-task CPU fan-out") are **architectural clones of `demo_cpu_single`** — the same in-process harness, the same CPU AgentCore microVM sandbox, the same slime trainer and shared skeleton (§"The shared skeleton"). Only two things differ per folder: **`FAMILY`** and the **real Hugging Face dataset**. So everything the `demo_cpu_single` deep-dive establishes — pipeline, the four configs, lifecycle, metric glossary — applies to each unchanged, and three properties are **shared by all eight**, stated here once so each subsection below need only give its own dataset, checker, and measured number:
+The eight `demo_cpu_<task>` folders are **architectural clones of `demo_cpu_single`** — the same in-process harness, the same CPU AgentCore microVM sandbox, the same slime trainer and shared skeleton (§"The shared skeleton"). Only two things differ per folder: **`FAMILY`** and the **real Hugging Face dataset**. So everything the `demo_cpu_single` deep-dive establishes — pipeline, the four configs, lifecycle, metric glossary — applies to each unchanged, and three properties are **shared by all eight**, stated here once so each subsection below need only give its own dataset, checker, and measured number:
 
 - **What was run (shared).** Each is fully scaffolded and data-prepared, and each carries a short **`NR=3` smoke run** (`rerun.log`) against the *real* CPU sandbox — a two-rollout end-to-end pass that exercises the loop and checker and records a **baseline held-out solve rate**, well short of convergence. The `eval/<task>` numbers below therefore reflect the **base Qwen3-4B policy** through the harness, *not* learning: they are **smoke baselines, not curves.**
 - **Bottleneck (shared).** All eight are **generation-bound** (§3, cheap-checker CPU families): the checker is milliseconds, the policy's response is the wall-clock, so `[sglang-gen]` — not `[sbx-op]` — sets step time. **Scale inference (SGLang replicas behind the cache-aware router), never sandboxes.**
@@ -1410,7 +1582,7 @@ The workflow in this report is deliberately small — one policy, an in-process 
 
 **Scaling execution sandboxes to tens of thousands.** Every step runs untrusted code in an isolated sandbox, so the sandbox layer — not the GPU — often becomes the bottleneck: constant create/destroy, strong isolation, real startup cost. Kimi K2 runs more than 10,000 concurrent Kubernetes sandboxes for its coding / SWE RL [5]. Mitigations: *microVM isolation* (Firecracker-class, sub-second boot) and *managed remote code-exec backends* (E2B, Modal). *This is precisely AgentCore Runtime's per-session microVM — the seam this whole report builds on; the project scales it by round-robining a pool of Runtime ARNs (sticky per episode) and, on GPU, the Ray fractional farm (§`demo_gpu_shared`).*
 
-**Cache-aware routing.** Rollout throughput lives on prefix KV-cache reuse; a round-robin balancer scatters prefix-sharing requests and collapses the hit rate — acute in agentic RL, where a group of trajectories shares one task prefix and multi-turn rollouts grow a long shared prefix. Mitigations: RadixAttention plus SGLang's cache-aware router (~1.9× throughput; hit rate ~20 %→~75 %) [27], and session-affinity routing for multi-turn (slime `consistent_hashing` [9]). *This is the reasoning behind §"Scaling the sandbox": one cache-aware SGLang router for inference, round-robin only on the sandbox side.*
+**Cache-aware routing.** Rollout throughput lives on prefix KV-cache reuse; a round-robin balancer scatters prefix-sharing requests and collapses the hit rate — acute in agentic RL, where a group of trajectories shares one task prefix and multi-turn rollouts grow a long shared prefix. Mitigations: RadixAttention plus SGLang's cache-aware router (~1.9× throughput; hit rate ~20 %→~75 %) [27], and session-affinity routing for multi-turn (slime `consistent_hashing` [9]). *This is the reasoning behind §"Scaling the loop": one cache-aware SGLang router for inference, round-robin only on the sandbox side.*
 
 **Fault tolerance.** One step couples training + inference + reward + thousands of live sandboxes, so the blast radius is large. Mitigations: *async checkpointing*; *worker heartbeats* (slime's `/health_generate` with restart-and-re-sync, `--use-fault-tolerance` [9]); and *sandbox recycling* with timeouts and rate limits so one bad tool call does not abort a rollout. *The project's two resilience demos (§`demo_cpu_quiesce`, §`demo_gpu_snapshot`) address the sandbox-side failure modes — idle reclamation and instance recycle.*
 

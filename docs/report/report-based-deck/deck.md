@@ -129,6 +129,8 @@ Running **untrusted, model-generated code** — isolation is the whole point: on
 | Filesystem | ephemeral | persistent EBS |
 | Agents / session | 1 | many |
 
+**One session = one whole instance** (session→instance is 1:1 — AgentCore hands you the *instance*, not a GPU). So on a **2-GPU box you can't** point two `runtimeSessionId`s at it and get one GPU each — two ids acquire two *separate* instances, and you can't pin a session to a GPU. To use every GPU of one multi-GPU instance: **one shared session + a self-managed in-instance Ray farm** keyed by per-episode `sub_session` (`demo_gpu_shared` / `demo_gpu_local`). Set `B4_GPU_FRACTION=1.0`, `B4_FARM_GPUS=N` → **one whole GPU per sub-session** (N concurrent whole-GPU episodes), no MIG needed.
+
 ## Building & deploying a Runtime — three ways, one contract
 
 **Contract:** ARM64 image, serve `0.0.0.0:8080` with `/invocations` + `/ping`. Three ways to put your code on a Runtime (increasing control): the **`@aws/agentcore` CLI** (zero-Docker zip) → the **`bedrock-agentcore` SDK** (`@app.entrypoint` implements the contract) → **bring-your-own container** (max control — this project).
@@ -478,9 +480,9 @@ Policy always **Qwen3-4B**, harness **in-process**, AgentCore the **sandbox**; o
 | `cpu_single` | CPU µVM | MBPP repair | test-driven coding | **trained** (10-step) |
 | `cpu_math` | CPU µVM | math words | math post-training | smoke |
 | `gpu_single` | GPU g6 | KernelBench | CUDA kernel agent | **trained** (10-step) |
-| `gpu_shared` | GPU g6 farm | KernelBench | GPU packing (scarce GPUs) | failed (`rc=1`) |
+| `gpu_shared` | GPU g6 farm | KernelBench | GPU packing (scarce GPUs) | smoke passes e2e (local GPU) |
 | `cpu_quiesce` | CPU µVM | heartbeat | keep sandbox warm over sync | offline |
-| `gpu_snapshot` | GPU inst. | snapshot | survive instance recycle | offline |
+| `gpu_snapshot` | GPU inst. | snapshot | survive instance recycle | offline + real recycle |
 | `cpu_gsm8k` | CPU µVM | GSM8K | grade-school math | smoke, `eval` 0.91 |
 | `cpu_math500` | CPU µVM | MATH-500 | competition math | smoke, `eval` 0.83 |
 
@@ -518,7 +520,7 @@ KernelBench is sandbox-bound, and the isolated path needs *`N` whole g6 instance
 - All episodes invoke **one** GPU Runtime under a **shared `runtimeSessionId`**; inside, `_handle_farm` leases **one fractional-GPU Ray actor per episode** (keyed by a per-episode `sub_session`).
 - `num_gpus=0.5` → two warm-CUDA actors share the L4; `0.25` → four. **No MIG on L4**, so isolation is software-only (per-process memory caps + an `nvcc` `flock` — a non-MIG L4 wedges under sustained compile storms).
 - **The trade:** isolated = `N` clean instances (`N`× cost, unobtainable when the fleet is starved) vs shared = one instance, weaker isolation. **Primary motivation is capacity, not just cost.**
-- **Status:** fractional packing verified on hardware; the end-to-end training run exited `rc=1` — no convergence curve yet.
+- **Status:** now runs **end-to-end on hardware** (`NR=3` smoke, `Job succeeded` + ckpt) via the local-GPU fallback; two fixes got it there — a **client-side open-concurrency gate** (cap opens at farm slots) + **synchronous checkpoint save** (seccomp blocks the async-ckpt `pidfd_getfd`). Fractional packing verified — no convergence curve yet.
 
 ## What's measured — and what's only instrumented
 
@@ -537,7 +539,7 @@ Honest metric status across the demos — the last row is the gap: those keys ex
 ## Surviving stalls — the two resilience levers
 
 - **Heartbeat (`cpu_quiesce`)** — during weight sync, generation stalls and idle sessions would be reclaimed. A `SessionKeeper` ping resets the idle clock, keeping the *same* warm session — **no cold start per round.** Lives *outside* the harness.
-- **Snapshot (`gpu_snapshot`)** — a GPU instance can be recycled and come back blank (no VM/EBS snapshot on AgentCore). Serialize the workspace to a store you own (S3) and restore onto a fresh session — **application-level** snapshot.
+- **Snapshot (`gpu_snapshot`)** — a GPU instance can be recycled and come back blank (no VM/EBS snapshot on AgentCore). Serialize the workspace to a store you own (S3) and restore onto a fresh session — **application-level** snapshot. The A/B recycle was verified against a live local Runtime (`REAL_SNAPSHOT` mode), not only simulated.
 
 Heartbeat prevents loss; snapshot recovers from it.
 

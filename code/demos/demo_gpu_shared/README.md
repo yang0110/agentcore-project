@@ -124,7 +124,7 @@ Knobs (defaults in run.sh): `RB` (4), `NS` (8), `NR` (11 ⇒ real steps = NR−1
 shared GPU is the remote g6's.
 
 **One-command train-to-convergence.** `train.sh` wraps this with top-level knobs — training
-**steps**, eval **cadence**, sandbox **concurrency** — passing `LOCAL_GPU`/`AGENTCORE_SANDBOX_RUNTIME_ARN`
+**steps**, eval **cadence**, sandbox **concurrency** — passing `AGENTCORE_SANDBOX_RUNTIME_ARN`
 through: `STEPS` → `NR=STEPS+1` (default 20; **keep `STEPS × RB ≤ 100`**), `EVAL_EVERY` →
 `EVAL_INTERVAL`, `SANDBOX_CONC` → `CONC` (keep `SANDBOX_CONC ≤ B4_MAX_SANDBOXES`). (No `K` knob: the
 farm packs many envs onto the single g6's GPU, not across multiple Runtimes.)

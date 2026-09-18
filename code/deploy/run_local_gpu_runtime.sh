@@ -1,6 +1,5 @@
 #!/bin/bash
-# Serve the AgentCore GPU sandbox Runtime LOCALLY on this host's reserved GPUs (6,7), for the GPU
-# demos' LOCAL_GPU=1 fallback when a remote g6 AgentCore Runtime is unavailable.
+# Serve the AgentCore GPU sandbox Runtime LOCALLY on this host's reserved GPUs (6,7).
 #
 # This is STILL an AgentCore runtime session: it runs the SAME sandbox_server_agent image
 # (BedrockAgentCoreApp) that a remote g6 would, just via `docker run` on the host, and the demo's
@@ -8,20 +7,24 @@
 # (agentcore_p4 is --network host, so localhost inside the training container == this host).
 #
 # RUN THIS ON THE HOST (needs docker + the nvidia container runtime), NOT inside agentcore_p4
-# (that container has no docker socket). GPUs 6,7 are reserved here; the demo run.sh (LOCAL_GPU=1)
-# keeps slime on GPUs 0-5.
+# (that container has no docker socket). GPUs 6,7 are reserved here; the demo run.sh keeps slime on
+# GPUs 0-5.
 #
 # Usage (from repo root or anywhere):
-#   bash code/deploy/run_local_gpu_runtime.sh single      # Demo B  (one checker; no farm)
-#   bash code/deploy/run_local_gpu_runtime.sh shared      # Demo B4 (Ray fractional-GPU farm on 6,7)
+#   bash code/deploy/run_local_gpu_runtime.sh local       # demo_gpu_local: WHOLE-GPU Ray farm on 6,7
+#                                                          #   (B4_FARM_GPUS=2, B4_GPU_FRACTION=1.0 ->
+#                                                          #   2 whole-GPU slots, one GPU per episode)
 #   bash code/deploy/run_local_gpu_runtime.sh stop        # tear the local runtime container down
-#   SKIP_BUILD=1 bash code/deploy/run_local_gpu_runtime.sh shared   # reuse the already-built image
+#   SKIP_BUILD=1 bash code/deploy/run_local_gpu_runtime.sh local    # reuse the already-built image
 #
 # Then, inside agentcore_p4:
-#   LOCAL_GPU=1 bash code/demos/demo_gpu_single/run.sh     # (or demo_gpu_shared)
+#   bash code/demos/demo_gpu_local/run.sh                  # standalone, no LOCAL_GPU flag
+#
+# (demo_gpu_single / demo_gpu_shared are remote-only — they require a real g6 sandbox Runtime ARN and
+# have no on-box path; this launcher serves only the standalone demo_gpu_local whole-GPU farm.)
 set -euo pipefail
 
-MODE="${1:-shared}"
+MODE="${1:-local}"
 NAME="${LOCAL_RT_NAME:-acs_local_gpu_sbx}"
 PORT="${LOCAL_RT_PORT:-8080}"
 GPUS="${LOCAL_RT_GPUS:-6,7}"                 # host GPUs reserved for the local runtime
@@ -32,10 +35,13 @@ stop() { docker rm -f "$NAME" >/dev/null 2>&1 && echo "stopped $NAME" || echo "$
 if [ "$MODE" = "stop" ]; then stop; exit 0; fi
 
 case "$MODE" in
-  single) DEMO_DIR="$REPO_ROOT/code/demos/demo_gpu_single"; DOCKERFILE="deploy/Dockerfile.sandbox.gpu";        TAG="acs-local-gpu-sbx:single"; FARM=0 ;;
-  shared) DEMO_DIR="$REPO_ROOT/code/demos/demo_gpu_shared"; DOCKERFILE="deploy/Dockerfile.sandbox.gpu.shared"; TAG="acs-local-gpu-sbx:shared"; FARM=1 ;;
-  *) echo "usage: $0 {single|shared|stop}"; exit 2 ;;
+  local)  DEMO_DIR="$REPO_ROOT/code/demos/demo_gpu_local";  DOCKERFILE="deploy/Dockerfile.sandbox.gpu.shared"; TAG="acs-local-gpu-sbx:local";  FARM=1 ;;
+  *) echo "usage: $0 {local|stop}"; exit 2 ;;
 esac
+
+# Farm-knob defaults (all still overridable by env) — WHOLE-GPU: 2 reserved GPUs, fraction 1.0 =>
+# 2 whole-GPU slots (one GPU per episode).
+FARM_GPUS_DEFAULT="2"; GPU_FRACTION_DEFAULT="1.0"; MEM_FRACTION_DEFAULT="0.95"
 
 # Build the SAME image the remote deploy uses (native amd64), context = the demo dir so the
 # Dockerfile's `COPY agentcore_slime_demo/...` resolves against the vendored copy.
@@ -52,15 +58,15 @@ stop  # remove any prior instance before re-launching
 # episode workers, and Ray's object store lives in /dev/shm. Docker's default /dev/shm is 64 MB, so
 # Ray falls back to /tmp and its GCS server gets starved and killed ("Failed to connect to GCS within
 # 60 seconds ... The program will terminate"), which crashes the whole sandbox container mid-run. Give
-# the farm real shared memory. (single mode runs no internal Ray, so it doesn't need this.)
+# the farm real shared memory.
 FARM_ENV=()
 SHM_ARGS=()
 if [ "$FARM" = "1" ]; then
   SHM_ARGS=(--shm-size="${LOCAL_RT_SHM:-10g}")
   FARM_ENV=(
-    -e "B4_FARM_GPUS=${B4_FARM_GPUS:-2}"
-    -e "B4_GPU_FRACTION=${B4_GPU_FRACTION:-0.5}"
-    -e "B4_PER_SANDBOX_MEM_FRACTION=${B4_PER_SANDBOX_MEM_FRACTION:-0.5}"
+    -e "B4_FARM_GPUS=${B4_FARM_GPUS:-$FARM_GPUS_DEFAULT}"
+    -e "B4_GPU_FRACTION=${B4_GPU_FRACTION:-$GPU_FRACTION_DEFAULT}"
+    -e "B4_PER_SANDBOX_MEM_FRACTION=${B4_PER_SANDBOX_MEM_FRACTION:-$MEM_FRACTION_DEFAULT}"
     -e "B4_WARM_CUDA=${B4_WARM_CUDA:-1}"
   )
   [ -n "${B4_MAX_SANDBOXES:-}" ] && FARM_ENV+=(-e "B4_MAX_SANDBOXES=${B4_MAX_SANDBOXES}")
@@ -87,5 +93,5 @@ until curl -fsS "http://127.0.0.1:${PORT}/ping" >/dev/null 2>&1; do
 done
 
 echo "OK local AgentCore runtime up: http://127.0.0.1:${PORT}  (name=$NAME, GPUs=$GPUS, mode=$MODE)"
-echo "Now inside agentcore_p4:  LOCAL_GPU=1 bash code/demos/demo_gpu_${MODE/shared/shared}/run.sh"
+echo "Now inside agentcore_p4:  bash code/demos/demo_gpu_local/run.sh   (standalone; no LOCAL_GPU flag)"
 echo "Tear down when done:      bash code/deploy/run_local_gpu_runtime.sh stop"

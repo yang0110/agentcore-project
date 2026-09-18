@@ -105,6 +105,9 @@ class CodingTask:
     # CodingTask is the "coding" family (MBPP/HumanEval-style); the other families in
     # task_families.py subclass EpisodicTask and override these same hooks.
     family: ClassVar[str] = "coding"
+    # Which sandbox container image this family needs (capability-routing tag). The MBPP/coding
+    # checker is pure stdlib, so it runs on the generic "cpu" image; see task_families.EpisodicTask.
+    image: ClassVar[str] = "cpu"
     artifact_filename: ClassVar[str] = "solution.py"
     check_command: ClassVar[str] = "python3 run_checks.py"
     fence_lang: ClassVar[str] = "python"

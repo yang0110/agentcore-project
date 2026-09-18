@@ -53,31 +53,15 @@ CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"
 HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
 
 # ---- GPU split + where the sandbox Runtime lives -------------------------------------------------
-# DEFAULT (remote): ALL 8 GPUs to slime (4 train + 4 infer); the KernelBench checker's GPU is REMOTE
-# (the sandbox Runtime #2 g6), reached over invoke_agent_runtime.
-# LOCAL_GPU=1 fallback (when remote g6 capacity is unavailable): serve the SAME AgentCore sandbox
-# Runtime LOCALLY on THIS 8xL40S box. We reserve GPUs 6,7 for the local runtime container and give
-# slime 6 GPUs (4 train + 2 infer). The container is a `docker run` of sandbox_server_agent
-# (BedrockAgentCoreApp) — start it on the HOST first with `code/deploy/run_local_gpu_runtime.sh
-# single` — and the client reaches it over http://127.0.0.1:8080 (agentcore_p4 is --network host).
-# It is STILL an AgentCore runtime session (same /invocations contract + session id); only the
-# transport is localhost instead of a remote ARN.
-LOCAL_GPU="${LOCAL_GPU:-0}"
-if [ "$LOCAL_GPU" = "1" ]; then
-   ACTOR_GPUS="${ACTOR_GPUS:-4}"
-   ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"                       # 4 train + 2 infer = 6; GPUs 6,7 reserved
-   SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-6}"
-   SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-0,1,2,3,4,5}" # keep slime OFF the reserved checker GPUs
-   AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-http://127.0.0.1:8080}"
-   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:-}"   # no remote ARN needed
-else
-   ACTOR_GPUS="${ACTOR_GPUS:-4}"
-   ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"                       # 4 train + 4 infer = 8; checker GPU is remote
-   SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-8}"
-   SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-}"
-   AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-}"
-   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU sandbox Runtime #2 ARN, or set LOCAL_GPU=1 to serve it locally on GPUs 6,7}"
-fi
+# ALL 8 GPUs to slime (4 train + 4 infer); the KernelBench checker's GPU is REMOTE (the sandbox
+# Runtime #2 g6), reached over invoke_agent_runtime. For an on-box GPU run with no remote g6, use
+# demo_gpu_local (a LOCAL whole-GPU Ray farm on this box's reserved GPUs 6,7) instead.
+ACTOR_GPUS="${ACTOR_GPUS:-4}"
+ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"                       # 4 train + 4 infer = 8; checker GPU is remote
+SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-8}"
+SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-}"
+AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-}"
+AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU sandbox Runtime #2 ARN — for an on-box GPU run with no remote g6, use demo_gpu_local instead}"
 DATA="${DATA:-$DEMO_DIR/data/kernelbench_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-kernelbench}"
@@ -187,10 +171,9 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-# Ray gets SLIME_NUM_GPUS (8 remote-mode; 6 in LOCAL_GPU mode). In LOCAL_GPU mode we also pin
-# CUDA_VISIBLE_DEVICES to 0-5 BEFORE `ray start` so ray only ever discovers/schedules on those 6 —
-# GPUs 6,7 stay free for the local sandbox Runtime container. (Do NOT put CUDA_VISIBLE_DEVICES in the
-# ray job runtime-env: ray sets it per-actor from the GPUs it assigns.)
+# Ray gets SLIME_NUM_GPUS (8; the checker GPU is the remote g6's). SLIME_CUDA_VISIBLE is empty here,
+# so ray discovers all 8 local GPUs. (Do NOT put CUDA_VISIBLE_DEVICES in the ray job runtime-env: ray
+# sets it per-actor from the GPUs it assigns.)
 [ -n "$SLIME_CUDA_VISIBLE" ] && export CUDA_VISIBLE_DEVICES="$SLIME_CUDA_VISIBLE"
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "$SLIME_NUM_GPUS" \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265

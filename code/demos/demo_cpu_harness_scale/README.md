@@ -13,8 +13,11 @@ A rollout is produced by three replicated tiers. If you deepen the async buffer 
 ceiling (its concurrency, the asyncio loop, file descriptors, RAM for in-flight trajectories). So the
 harness has to scale too — and because a harness is **persistent/warm** while a sandbox is **ad-hoc
 per episode**, "scale the harness" does **not** mean "make it ad-hoc": it means run a fixed set of
-**W warm workers** and route episodes to them. Here `W = HARNESS_WORKERS` (default **4**, symmetric
-with the demo's 4 SGLang inference engines and 4 sandbox Runtimes).
+**W warm workers** and route episodes to them. Here `W = HARNESS_WORKERS` (default **4**). The
+trainer's other two tiers default to **2** SGLang inference engines (`ROLLOUT_GPUS/2`) and **2**
+sandbox Runtimes (the pinned `K=2` ARNs), so a default `W=4` slightly over-provisions the harness
+tier — the balanced start point from which you raise `W` and watch throughput plateau at
+`min(inference, sandbox)`.
 
 The harness driven here is the **"mimic Claude Code" `MiniClaudeHarness`** (the A3/B3 agent): 3 tools
 (`write_file` / `bash` / `read_file`), speaking the **Anthropic Messages API** to slime's in-process
@@ -24,7 +27,7 @@ trajectory), with the tools running in the remote CPU sandbox Runtime. Reward is
 
 - **Task:** DeepScaleR math, coding-shape (`solution.py` sets a module-level `answer`) · one task, end-to-end
 - **Dataset:** `agentica-org/DeepScaleR-Preview-Dataset` — `data/deepscaler_train.jsonl` (400) + `data/deepscaler_eval.jsonl` (40)
-- **The knob:** `HARNESS_WORKERS=W` (default 4) — the harness tier of `min(inference, sandbox, harness)`
+- **The knob:** `HARNESS_WORKERS=W` (default 4) — the harness tier of `min(inference, sandbox, harness)`. The offline simulator also exposes a **balanced joint sweep** (`TIERS=N,…`) that scales **inference = sandbox = harness = N** in lockstep (the **4+4+4** case) — the complement to the harness-only sweep: because every tier rises together, no single one binds, so throughput scales ~linearly with `N` instead of plateauing.
 - **Placement:** in-process asyncio worker pool (see the honest GIL caveat below)
 
 ---
@@ -35,7 +38,7 @@ The three replicated tiers scale **and load-balance differently** — the asymme
 
 | Tier | Replicas | State | Who load-balances | Granularity |
 |---|---|---|---|---|
-| **inference** | `E` SGLang engines (= `ROLLOUT_GPUS / GPUS_PER_ENGINE`, default 4) | **stateless** per request | slime's **SGLang router** (cache-aware) across the `E` engines | per **request** — a single episode's turns may land on different engines |
+| **inference** | `E` SGLang engines (= `ROLLOUT_GPUS / GPUS_PER_ENGINE` = `4/2`, default 2) | **stateless** per request | slime's **SGLang router** (cache-aware) across the `E` engines | per **request** — a single episode's turns may land on different engines |
 | **sandbox** | `K` sandbox Runtimes (ARN list) | **stateful** per episode — holds `solution.py`, `run_checks.py` | `make_sandbox` **round-robins** a *fresh session* per episode across the `K` ARNs (`_next_runtime_arn`) | per **episode**, **sticky** for its whole life |
 | **harness** | `W` warm workers (`HARNESS_WORKERS`) | stateless but **warm** (owns a reused `aiohttp` session) | a shared `asyncio.Queue`; whichever worker is **free pulls** the next episode (work-stealing) | per **episode**, by **availability** |
 
@@ -85,9 +88,17 @@ docker exec agentcore_p4 env REAL_SANDBOX=1 SANDBOX=agentcore-runtime \
     EPISODES=8 WORKERS=1,2,4 \
     python3 /work/code/demos/demo_cpu_harness_scale/harness_scaling_demo.py
 
+# 2c. (optional) BALANCED joint sweep: scale inference=sandbox=harness=N together (the 4+4+4 case).
+#     Unlike step 2 (harness-only, which plateaus at min(inf,sbx)), every tier rises with N, so
+#     throughput scales ~linearly — this is the argument for scaling the three tiers jointly.
+docker exec agentcore_p4 env TIERS=1,2,4,8 EPISODES=24 \
+    python3 /work/code/demos/demo_cpu_harness_scale/harness_scaling_demo.py
+
 # 3. Real RL train + eval (async/decoupled slime) through the WARM worker pool.
-#    Smoke uses NR=3; converge with a larger NR. HARNESS_WORKERS sweeps the harness tier.
-docker exec -e NR=3 -e EVAL_INTERVAL=2 -e HARNESS_WORKERS=4 agentcore_p4 \
+#    Smoke = NR=11 (10 train + 1 eval, single final checkpoint); converge with a larger NR.
+#    HARNESS_WORKERS sweeps the harness tier. STOCK driver only (MODE=A, pinned — the pool's fan-out
+#    LIST of Samples is incompatible with the fully-async Mode B sort key; run.sh rejects MODE=B).
+docker exec -e NR=11 -e EVAL_INTERVAL=10 -e EVAL_NS=2 -e HARNESS_WORKERS=4 agentcore_p4 \
     bash -lc 'cd /work && bash code/demos/demo_cpu_harness_scale/run.sh'
 ```
 
@@ -113,15 +124,16 @@ measured from real remote latency rather than the modelled `--tsbx`.
 | Knob | Default | Tier / meaning |
 |---|---|---|
 | `HARNESS_WORKERS` | 4 | **W** — warm harness workers (the tier this demo scales) |
-| `ROLLOUT_GPUS` / `GPUS_PER_ENGINE` | 4 / 1 | ⇒ **E** SGLang inference engines (4) |
+| `ROLLOUT_GPUS` / (per-engine) | 4 / 2 | ⇒ **E** SGLang inference engines (2) |
 | `AGENTCORE_SANDBOX_RUNTIME_ARNS` | 2 pinned CPU ARNs | **K** sandbox Runtimes (round-robined per episode) |
-| `CONC` | `ceil(W/E)` | episode-admission concurrency; `S = CONC × E` |
-| `NR` | 11 | num-rollout ⇒ real steps `NR-1`; keep `NR×RB ≤ 400` |
+| `CONC` | `ceil(W/E)` | episode-admission concurrency; `S = CONC × E` (default ≈ `W`) |
+| `MODE` | `A` (pinned) | stock async driver only; `B` (fully-async) is **rejected** — the pool returns a fan-out LIST of Samples the Mode-B sort key can't order |
+| `NR` | 11 | num-rollout ⇒ real steps `NR-1` (10 train + 1 eval); keep `NR×RB ≤ 400` |
 | `RB` / `NS` | 4 / 8 | GRPO prompts-per-step / group size (`GBS = RB×NS`) |
 | `EVAL_INTERVAL` / `EVAL_NS` | 10 / 2 | held-out eval cadence / samples |
 | `EPISODE_MAX_TURNS` | 4 | mini-harness turn budget per episode |
 | `TEMP` | 1.0 | rollout sampling temperature |
-| `SANDBOX` | `agentcore-runtime` | `agentcore-runtime` \| `agentcore` (Code-Interpreter) \| `local` (offline) |
+| `SANDBOX` | `agentcore-runtime` | `agentcore-runtime` \| `agentcore` (Code-Interpreter). **`local` is rejected** (remote-only) |
 
 ## Customize the sandbox runtime build (Dockerfile)
 

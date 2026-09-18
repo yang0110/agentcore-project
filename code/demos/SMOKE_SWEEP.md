@@ -1,4 +1,4 @@
-# Smoke-sweep experiment plan — all 16 demos, end-to-end
+# Smoke-sweep experiment plan — all 17 demos, end-to-end
 
 Goal: run a short **smoke** of every demo to catch bugs end-to-end (dataset → harness →
 sandbox → slime train step → final checkpoint), and record a per-demo PASS/FAIL with a captured
@@ -13,10 +13,13 @@ sandbox → slime train step → final checkpoint), and record a per-demo PASS/F
   one checkpoint (~56 G) at a time, never the sum.
 - **CPU demos are remote-only.** They run on the pinned CPU AgentCore sandbox ARNs
   (`acs_sandbox_cpu*`), round-robin (K=2). Needs live AWS creds in the container (present).
-- **GPU demos.** No remote g6 required for the smoke: we serve the KernelBench GPU sandbox
-  **locally** on GPUs 6,7 via `deploy/run_local_gpu_runtime.sh {single|shared}` and run the trainer
-  with `LOCAL_GPU=1` (slime then uses GPUs 0–5). This exercises the same AgentCore `/invocations`
-  contract over localhost.
+- **GPU demos.** No remote g6 required for the smoke: we run the standalone on-box demo
+  **`demo_gpu_local`**, which serves the KernelBench GPU sandbox **locally** on GPUs 6,7 via
+  `deploy/run_local_gpu_runtime.sh local` (a whole-GPU Ray farm: `B4_FARM_GPUS=2`,
+  `B4_GPU_FRACTION=1.0` ⇒ 2 whole-GPU slots) while slime uses GPUs 0–5. Its `run.sh` needs **no
+  `LOCAL_GPU` flag** — it is always local. This exercises the same AgentCore `/invocations` contract
+  over localhost. (The remote-only `demo_gpu_single` / `demo_gpu_shared` need a real g6 and are not
+  part of the on-box smoke.)
 - **Shared code.** All CPU trainers use the identical `run.sh` / in-process-harness shape and differ
   only in dataset + hidden checker, so a per-demo failure is almost always dataset/checker-specific.
 
@@ -28,23 +31,28 @@ Defaults otherwise (`RB=4`, `NS=8`, `MODE=B` fully-async, `EVAL_INTERVAL=10`, `S
 
 ## Phases (executed in this order)
 
-**Phase 0 — offline sims (seconds each, no GPU/AWS).** Driver: `run_smoke_sweep.sh` inside `agentcore_p4`.
+**Phase 0 — offline PROBES (seconds each, no GPU/AWS).** Driver: `run_smoke_sweep.sh` inside `agentcore_p4`.
+Runs each property demo's **retained probe script directly** (NOT `run.sh`, which is now the trainer);
+logs to `offline_probe.log`. Behavior markers (not just exit 0) must appear.
 - `demo_cpu_quiesce`      — `python3 quiesce_demo.py` (naive→heartbeat→recover arc)
 - `demo_gpu_snapshot`     — `python3 snapshot_demo.py` (app-level snapshot/resume across recycle)
-- `demo_cpu_harness_scale`— offline `throughput = min(inference, sandbox, harness)` sweep
+- `demo_cpu_harness_scale`— `python3 harness_scaling_demo.py …` (`throughput = min(inference, sandbox, harness)` sweep)
 
 **Phase 1 — CPU RL trainers (remote AgentCore CPU sandbox, ~10 min each, ckpt deleted after).** Same driver.
 `demo_cpu_single`, `demo_cpu_math`, `demo_cpu_mixtask`, `demo_cpu_gsm8k`, `demo_cpu_math500`,
 `demo_cpu_deepscaler`, `demo_cpu_humaneval`, `demo_cpu_gretelsql`, `demo_cpu_hotpotqa`,
-`demo_cpu_xlam`, `demo_cpu_mcp`.
+`demo_cpu_xlam`, `demo_cpu_mcp`, plus the three CPU property trainers `demo_cpu_quiesce`,
+`demo_cpu_harness_scale`, `demo_cpu_customruntime` (each now wraps a real slime run). The two GPU
+property trainers (`demo_gpu_snapshot`, `demo_gpu_customruntime`) need a live g6 ARN → run with the
+GPU trainers, not in this on-box sweep.
 
-**Phase 2 — GPU RL trainers (local GPU sandbox on 6,7).** Driven from the host (helper) + container (trainer).
-- `demo_gpu_single`  — `run_local_gpu_runtime.sh single`  then `LOCAL_GPU=1 NR=3 run.sh`
-- `demo_gpu_shared`  — `run_local_gpu_runtime.sh shared`  then `LOCAL_GPU=1 NR=3 run.sh` (Ray farm on the one local GPU)
+**Phase 2 — GPU RL trainer (local whole-GPU farm on 6,7).** Driven from the host (helper) + container (trainer).
+- `demo_gpu_local`  — `run_local_gpu_runtime.sh local`  then `NR=3 run.sh` (whole-GPU Ray farm on the 2 local GPUs; no `LOCAL_GPU` flag)
 
 ## Success criteria
 
-- **Offline demos:** process exits 0.
+- **Offline probes:** probe script exits 0 **and** all per-demo behavior markers appear in
+  `offline_probe.log` (e.g. quiesce's `>> RECOVERED`, snapshot's `2 rework step(s) saved`).
 - **RL trainers:** the ray job log line `Job '...' succeeded` is present, AND the log has **no**
   `No space` / `CheckpointException` / `unexpected pos`, AND a final `iter_*` checkpoint dir was
   written (`latest_checkpointed_iteration.txt` present) before cleanup.
@@ -62,9 +70,9 @@ Defaults otherwise (`RB=4`, `NS=8`, `MODE=B` fully-async, `EVAL_INTERVAL=10`, `S
 # Phase 0+1 (offline + CPU trainers), inside the container, in the background:
 docker exec agentcore_p4 bash -lc 'nohup bash /work/code/demos/run_smoke_sweep.sh > /work/code/demos/smoke_sweep.driver.log 2>&1 & echo $!'
 
-# Phase 2 (GPU), after Phase 1 finishes — for each of single|shared:
-bash code/deploy/run_local_gpu_runtime.sh single      # host: start local GPU sandbox on 6,7
-docker exec agentcore_p4 bash -lc 'cd /work/code/demos/demo_gpu_single && LOCAL_GPU=1 NR=3 bash run.sh > smoke_run.log 2>&1'
+# Phase 2 (GPU), after Phase 1 finishes — the standalone on-box demo:
+bash code/deploy/run_local_gpu_runtime.sh local       # host: start local whole-GPU farm on 6,7
+docker exec agentcore_p4 bash -lc 'cd /work/code/demos/demo_gpu_local && NR=3 bash run.sh > smoke_run.log 2>&1'
 bash code/deploy/run_local_gpu_runtime.sh stop        # host: tear down
 ```
 

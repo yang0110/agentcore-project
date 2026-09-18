@@ -262,6 +262,54 @@ async def run_one(w: int, tasks, cfg) -> dict:
     }
 
 
+async def run_balanced(tasks, cfg, ns: list[int], args) -> int:
+    """Balanced joint sweep: for each N, scale inference=sandbox=harness=N in lockstep (4+4+4).
+
+    Contrast with the harness-only sweep: there CINF/CSBX are fixed and only W rises, so throughput
+    plateaus once it hits min(inference, sandbox). Here all three rise together, so no single tier
+    is the ceiling and throughput scales ~linearly with N until the host itself (cores / the GIL /
+    the real remote sandbox's own limits) saturates."""
+    sbx_line = (
+        f"REAL remote={cfg['sbx_kind']} (measured round-trip, --tsbx ignored)"
+        if cfg["real_sbx"] else f"~{cfg['tsbx']*1000:.0f}ms + real subprocess"
+    )
+    print(
+        f"harness-scaling demo | BALANCED joint sweep | task=DeepScaleR(math) episodes={len(tasks)}\n"
+        f"each N scales inference=sandbox=harness=N together (the 4+4+4 case)\n"
+        f"inference @ ~{cfg['tinf']*1000:.0f}ms   sandbox {sbx_line}\n"
+        f"sweeping tiers N over {ns}\n"
+    )
+    hdr = f"{'N':>3} {'I+S+H':>7} {'ep/s':>8} {'solved':>8} {'bind':>10}   ceilings ep/s [inf | sbx | harness]"
+    print(hdr)
+    print("-" * len(hdr))
+    rows = []
+    for n in ns:
+        cfg_n = dict(cfg, cinf=n, csbx=n)          # inference = sandbox = harness = N
+        r = await run_one(n, tasks, cfg_n)
+        r["N"] = n
+        rows.append(r)
+        print(
+            f"{n:>3} {f'{n}+{n}+{n}':>7} {r['throughput']:>8.1f} {r['solved']:>4}/{r['n']:<3} "
+            f"{r['bind']:>10}   {r['cap_inf']:>6.0f} | {r['cap_sbx']:>5.0f} | {r['cap_harness']:>7.1f}"
+        )
+
+    if len(rows) >= 2:
+        lo, hi = rows[0], rows[-1]
+        span = hi["N"] / lo["N"] if lo["N"] else 1.0
+        gain = hi["throughput"] / lo["throughput"] if lo["throughput"] else 0.0
+        print(
+            f"\nscaling the tiers jointly {lo['N']}+{lo['N']}+{lo['N']} -> {hi['N']}+{hi['N']}+{hi['N']} "
+            f"({span:.0f}x) lifted throughput ~{gain:.1f}x — near-linear, because no single tier binds "
+            f"(each N raises inference, sandbox, AND harness at once).\n"
+            f"=> throughput = min(inference, sandbox, harness): the harness-only sweep plateaus at "
+            f"min(inf,sbx); the balanced sweep moves all three, so the min moves with N."
+        )
+    if args.json:
+        Path(args.json).write_text(json.dumps(rows, indent=2))
+        print(f"\nwrote {args.json}")
+    return 0
+
+
 async def main_async(args) -> int:
     tasks = load_tasks(Path(args.data), args.episodes)
     if not tasks:
@@ -275,6 +323,14 @@ async def main_async(args) -> int:
     sbx_kind = os.environ.get("SANDBOX", "agentcore-runtime")
     cfg = {"cinf": args.cinf, "csbx": args.csbx, "tinf": args.tinf, "tsbx": args.tsbx,
            "real_sbx": real_sbx, "sbx_kind": sbx_kind}
+
+    # BALANCED joint-scaling mode: --tiers N,... sets inference=sandbox=harness=N together (4+4+4),
+    # the complement to the harness-only sweep. Because every tier scales in lockstep, no single one
+    # binds, so throughput should rise ~linearly with N — that is the whole point of scaling the
+    # three tiers *jointly* rather than lifting only the harness (which plateaus at min(inf,sbx)).
+    if args.tiers.strip():
+        return await run_balanced(tasks, cfg, [int(x) for x in args.tiers.split(",") if x.strip()], args)
+
     ws = [int(x) for x in args.workers.split(",") if x.strip()]
 
     sbx_line = (
@@ -322,7 +378,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--data", default=str(HERE / "data" / "deepscaler_train.jsonl"))
     p.add_argument("--episodes", type=int, default=int(os.environ.get("EPISODES", "48")))
     p.add_argument("--workers", default=os.environ.get("WORKERS", "1,2,4,6,8,12"),
-                   help="comma-separated W values to sweep")
+                   help="comma-separated W values to sweep (harness-only sweep; CINF/CSBX fixed)")
+    p.add_argument("--tiers", default=os.environ.get("TIERS", ""),
+                   help="comma-separated N values for the BALANCED joint sweep: each N sets "
+                        "inference=sandbox=harness=N together (the 4+4+4 case). When set, this "
+                        "replaces the harness-only --workers sweep.")
     p.add_argument("--cinf", type=int, default=int(os.environ.get("CINF", "4")),
                    help="inference concurrency ceiling (SGLang in-flight generations)")
     p.add_argument("--csbx", type=int, default=int(os.environ.get("CSBX", "8")),

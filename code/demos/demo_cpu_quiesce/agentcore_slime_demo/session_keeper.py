@@ -86,6 +86,14 @@ class SessionKeeper:
         self._gate = asyncio.Event()
         self._gate.set()
         self._quiesced = False
+        # Continuous keep-warm (used by the REAL trainer, demo_cpu_quiesce/run.sh): heartbeat any
+        # session that goes idle past ping_fraction*idle_timeout REGARDLESS of an explicit sync
+        # window, WITHOUT closing the gate. A decoupled slime run gives the harness no callback at
+        # its internal weight-sync barrier, but generation naturally goes silent during that barrier
+        # (and rollout tails) — so an always-on idle heartbeat is what actually holds sessions warm
+        # across the live sync stall. `sync_begin/sync_end` (the gate) stay available and unchanged
+        # for the offline quiesce_demo.py which drives the barrier explicitly.
+        self._keep_warm = False
         self._task: asyncio.Task | None = None
         # Observability for the demo / metrics.
         self.total_pings = 0
@@ -155,11 +163,21 @@ class SessionKeeper:
         self._gate.set()
         logger.info("[keeper] sync_end — gate open (fired %d heartbeat(s) this run)", self.total_pings)
 
+    # --- continuous keep-warm (the REAL trainer path) ----------------------------------------
+    def keep_warm_begin(self) -> None:
+        """Turn on always-on idle heartbeating WITHOUT closing the gate. Real ops flow normally;
+        any session idle past ping_fraction*idle_timeout (e.g. during the weight-sync stall) is
+        heartbeated so AgentCore's idle clock never trips. Idempotent."""
+        self._keep_warm = True
+
+    def keep_warm_end(self) -> None:
+        self._keep_warm = False
+
     # --- the heartbeat loop ------------------------------------------------------------------
     async def _run(self) -> None:
         try:
             while True:
-                if self._quiesced:
+                if self._quiesced or self._keep_warm:
                     now = self._clock()
                     for s in list(self._sessions.values()):
                         if now - s.last >= s.idle_timeout * self._ping_fraction:

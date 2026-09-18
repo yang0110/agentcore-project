@@ -129,8 +129,12 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
         # trainable span stays the actual solution, not a long reasoning trace.
         chat_template_kwargs={"enable_thinking": False},
     )
+    # `image=task.image` is the capability tag: a heterogeneous batch may hold a family whose
+    # sandbox needs a different container image (the `datasci` family needs pandas). make_sandbox
+    # routes each episode to the Runtime built from the matching image (round-robin fallback).
     sandbox = make_sandbox(os.environ.get("SANDBOX", "agentcore"),
-                           region=os.environ.get("AGENTCORE_REGION"))
+                           region=os.environ.get("AGENTCORE_REGION"),
+                           image=getattr(task, "image", "cpu"))
 
     async with sandbox as sb:
         traj = await run_episode(policy, sb, task, sampling_params)

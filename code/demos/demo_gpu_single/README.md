@@ -89,7 +89,7 @@ docker exec agentcore_p4 bash -lc \
 Key knobs (defaults): `RB=4` (prompts/step), `NS=8` (GRPO group size), `NR=11` (real steps = `NR-1` = 10; **keep `NR × RB ≤ 100`** so one epoch spans the run and the only checkpoint is the final one), `TEMP=1.0`, `CONC=4` (sglang concurrency), `EVAL_INTERVAL=10`, `EVAL_NS=2`, `SAVE`, `CKPT_BASE`. `SAVE_INTERVAL` is huge (1000000): no mid-training snapshots; slime force-saves the final rollout under `--save`. The end-of-training save deadlock is fixed via `--async-save` + `--custom-megatron-init-path agentcore_slime_demo.megatron_init.enable_persistent_async_ckpt`.
 
 **One-command train-to-convergence.** `train.sh` wraps this with top-level knobs — training
-**steps**, eval **cadence**, sandbox **concurrency** — and passes `LOCAL_GPU`/`AGENTCORE_SANDBOX_RUNTIME_ARN`
+**steps**, eval **cadence**, sandbox **concurrency** — and passes `AGENTCORE_SANDBOX_RUNTIME_ARN`
 through: `STEPS` → `NR=STEPS+1` (default 20; **keep `STEPS × RB ≤ 100`** for a single-epoch run),
 `EVAL_EVERY` → `EVAL_INTERVAL`, `SANDBOX_CONC` → `CONC`. (There's no `K` knob here: the GPU sandbox is
 a single g6 Runtime.)

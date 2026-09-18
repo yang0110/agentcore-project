@@ -408,6 +408,17 @@ Filesystem & ephemeral & persistent EBS \\
 Agents / session & 1 & many \\
 \bottomrule\noalign{}
 \end{longtable}
+
+\textbf{One session = one whole instance} (session$\to$instance is 1:1 ---
+AgentCore hands you the \emph{instance}, not a GPU). So on a \textbf{2-GPU
+box you cannot} point two \texttt{runtimeSessionId}s at it for one GPU each
+--- two ids acquire two \emph{separate} instances, and you cannot pin a
+session to a particular GPU. To use every GPU of one multi-GPU instance:
+\textbf{one shared session + a self-managed in-instance Ray farm} keyed by
+per-episode \texttt{sub\_session} (\texttt{demo\_gpu\_shared} /
+\texttt{demo\_gpu\_local}). Set \texttt{B4\_GPU\_FRACTION=1.0},
+\texttt{B4\_FARM\_GPUS=N} $\to$ \textbf{one whole GPU per sub-session}
+(N concurrent whole-GPU episodes), no MIG needed.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{Building \& deploying a Runtime --- three ways,
@@ -1096,11 +1107,11 @@ smoke \\
 \texttt{gpu\_single} & GPU g6 & KernelBench & CUDA kernel agent &
 \textbf{trained} (10-step) \\
 \texttt{gpu\_shared} & GPU g6 farm & KernelBench & GPU packing (scarce
-GPUs) & failed (\texttt{rc=1}) \\
+GPUs) & smoke passes e2e (local GPU) \\
 \texttt{cpu\_quiesce} & CPU µVM & heartbeat & keep sandbox warm over
 sync & offline \\
 \texttt{gpu\_snapshot} & GPU inst. & snapshot & survive instance recycle
-& offline \\
+& offline + real recycle \\
 \texttt{cpu\_gsm8k} & CPU µVM & GSM8K & grade-school math & smoke,
 \texttt{eval} 0.91 \\
 \texttt{cpu\_math500} & CPU µVM & MATH-500 & competition math & smoke,
@@ -1227,9 +1238,13 @@ episodes onto \textbf{one} g6 instead
   instance, weaker isolation. \textbf{Primary motivation is capacity,
   not just cost.}
 \item
-  \textbf{Status:} fractional packing verified on hardware; the
-  end-to-end training run exited \texttt{rc=1} --- no convergence curve
-  yet.
+  \textbf{Status:} now runs \textbf{end-to-end on hardware}
+  (\texttt{NR=3} smoke, \texttt{Job\ succeeded} + ckpt) via the
+  local-GPU fallback; two fixes got it there --- a \textbf{client-side
+  open-concurrency gate} (cap opens at farm slots) + \textbf{synchronous
+  checkpoint save} (seccomp blocks the async-ckpt
+  \texttt{pidfd\_getfd}). Fractional packing verified --- no convergence
+  curve yet.
 \end{itemize}
 \end{frame}
 
@@ -1287,7 +1302,9 @@ staleness, discard ratio, IS ratio (TIS) & off-policy \& horizon signals
   \textbf{Snapshot (\texttt{gpu\_snapshot})} --- a GPU instance can be
   recycled and come back blank (no VM/EBS snapshot on AgentCore).
   Serialize the workspace to a store you own (S3) and restore onto a
-  fresh session --- \textbf{application-level} snapshot.
+  fresh session --- \textbf{application-level} snapshot. The A/B recycle
+  was verified against a live local Runtime (\texttt{REAL\_SNAPSHOT}
+  mode), not only simulated.
 \end{itemize}
 
 Heartbeat prevents loss; snapshot recovers from it.
