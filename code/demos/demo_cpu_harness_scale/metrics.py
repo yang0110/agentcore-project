@@ -49,6 +49,10 @@ _LINE = re.compile(r"-\s+(step|rollout|perf|eval)\s+(\d+):\s+(\{.*\})\s*$")
 # out of slime's aggregate perf/rollout_time, which lumps decode + sandbox + harness together.
 _SBX_OP = re.compile(r"\[sbx-op\]\s+(.*)$")
 _SGLANG_GEN = re.compile(r"\[sglang-gen\]\s+(.*)$")
+# One per episode, emitted by agentcore_slime_demo.router_trace.emit — the per-episode routing path
+# (harness worker / pinned SGLang engine / sandbox session / runtime ARN). Parsed into
+# <log>.router.csv and checked for per-episode stickiness (see check_stickiness).
+_ROUTER = re.compile(r"\[router\]\s+(.*)$")
 
 
 def _kv(s: str) -> dict[str, str]:
@@ -170,8 +174,8 @@ PLOT_COLUMNS = [
 ]
 
 
-def parse_log(path: Path) -> tuple[dict[int, dict], dict[int, dict], list[dict], list[dict]]:
-    """Parse the log into (train_rows, eval_rows, op_records, gen_records).
+def parse_log(path: Path) -> tuple[dict[int, dict], dict[int, dict], list[dict], list[dict], list[dict]]:
+    """Parse the log into (train_rows, eval_rows, op_records, gen_records, router_records).
 
     train_rows: {rollout_id: {metric: value}} merged across step/rollout/perf, PLUS the per-step
                 sandbox/decode aggregates (perf/sandbox_*, perf/sglang_gen_*) derived below.
@@ -190,8 +194,10 @@ def parse_log(path: Path) -> tuple[dict[int, dict], dict[int, dict], list[dict],
     eval_rows: dict[int, dict] = {}
     op_records: list[dict] = []
     gen_records: list[dict] = []
+    router_records: list[dict] = []
     pending_ops: list[dict] = []   # raw records awaiting the next marker (their attributed step)
     pending_gens: list[dict] = []
+    pending_router: list[dict] = []
     op_buckets: dict[int, list[float]] = {}
     gen_buckets: dict[int, list[float]] = {}
 
@@ -219,8 +225,11 @@ def parse_log(path: Path) -> tuple[dict[int, dict], dict[int, dict], list[dict],
                 for r in pending_gens:
                     r["step"] = sid
                     gen_buckets.setdefault(sid, []).append(r["ms"])
+                for r in pending_router:
+                    r["step"] = sid
                 pending_ops = []
                 pending_gens = []
+                pending_router = []
             continue
         mo = _SBX_OP.search(line)
         if mo:
@@ -245,12 +254,29 @@ def parse_log(path: Path) -> tuple[dict[int, dict], dict[int, dict], list[dict],
                 continue
             gen_records.append(rec)
             pending_gens.append(rec)
+            continue
+        mr = _ROUTER.search(line)
+        if mr:
+            kv = _kv(mr.group(1))
+            rec = {"ts": float(kv.get("ts") or 0), "step": None,
+                   "task_id": kv.get("task_id", "?"),
+                   "rollout_id": kv.get("rollout_id", "?"),
+                   "harness_worker": kv.get("harness_worker", "?"),
+                   "engine": kv.get("engine", "?"),
+                   "engine_pinned": kv.get("engine_pinned", "?"),
+                   "adapter_session": kv.get("adapter_session", "?"),
+                   "sandbox_session": kv.get("sandbox_session", "?"),
+                   "runtime_arn": kv.get("runtime_arn", "?"),
+                   "sandbox_image": kv.get("sandbox_image", ""),
+                   "family": kv.get("family", "")}
+            router_records.append(rec)
+            pending_router.append(rec)
 
     for sid, ms_list in op_buckets.items():
         train_rows.setdefault(sid, {"rollout_id": sid}).update(_agg(ms_list, "perf/sandbox"))
     for sid, ms_list in gen_buckets.items():
         train_rows.setdefault(sid, {"rollout_id": sid}).update(_agg(ms_list, "perf/sglang_gen"))
-    return train_rows, eval_rows, op_records, gen_records
+    return train_rows, eval_rows, op_records, gen_records, router_records
 
 
 def write_csv(rows: dict[int, dict], out: Path, key_columns: list[str]) -> list[str]:
@@ -300,6 +326,55 @@ def summarize_latency(op_records: list[dict], gen_records: list[dict]) -> None:
         print(agg_line("decode", [r["ms"] for r in gen_records]))
 
 
+def check_stickiness(router_records: list[dict], op_records: list[dict]) -> bool:
+    """Verify each episode stayed on ONE path through the replicated tiers, and print a report.
+
+    Per-episode stickiness we assert (episode key = the sandbox session, also on every [sbx-op]):
+      * harness  — the [router] line names the one worker that drove the episode.
+      * inference— that worker is pinned to ONE engine; we check no worker used >1 engine.
+      * sandbox/runtime — EVERY [sbx-op] for the episode's sandbox session shares ONE runtime ARN
+        (the sandbox is stateful/sticky for the episode's life). This is the real cross-check: it
+        joins the raw per-op records to the episode via `session`.
+
+    Returns True if all invariants hold (or there is nothing to check)."""
+    if not router_records:
+        return True
+    # sandbox_session -> set of runtime ARNs seen across its raw ops (from [sbx-op] session=/arn=).
+    arns_by_session: dict[str, set[str]] = {}
+    for r in op_records:
+        arns_by_session.setdefault(r.get("session", "?"), set()).add(r.get("arn", "?"))
+
+    engines_by_worker: dict[str, set[str]] = {}
+    violations: list[str] = []
+    for rec in router_records:
+        w = rec["harness_worker"]
+        engines_by_worker.setdefault(w, set()).add(rec["engine"])
+        sess = rec["sandbox_session"]
+        seen = arns_by_session.get(sess)
+        if seen and len(seen) > 1:
+            violations.append(
+                f"episode {rec['adapter_session']} (task {rec['task_id']}): sandbox session "
+                f"{sess} spanned {len(seen)} runtimes {sorted(seen)} — NOT sticky"
+            )
+    for w, engs in engines_by_worker.items():
+        if len(engs) > 1:
+            violations.append(f"worker {w} used {len(engs)} engines {sorted(engs)} — inference NOT pinned")
+
+    workers = sorted({r["harness_worker"] for r in router_records})
+    engines = sorted({r["engine"] for r in router_records})
+    print("\nrouter stickiness ([router] episodes joined to [sbx-op] by sandbox session):")
+    print(f"  episodes={len(router_records)}  workers={len(workers)}  engines={len(engines)}")
+    for w in workers:
+        print(f"    worker {w} -> engine(s) {sorted(engines_by_worker.get(w, set()))}")
+    if violations:
+        print("  STICKINESS VIOLATIONS:")
+        for v in violations:
+            print(f"    ✗ {v}")
+    else:
+        print("  ✓ every episode sticky to one worker + one engine + one runtime")
+    return not violations
+
+
 def plot(rows: dict[int, dict], eval_rows: dict[int, dict], out: Path) -> None:
     import matplotlib
     matplotlib.use("Agg")  # headless
@@ -347,10 +422,13 @@ def main() -> int:
     ap.add_argument("--gen-csv", default=None,
                     help="raw per-decode SGLang-latency CSV (default: <log>.sglang_gen.csv); "
                          "written only if [sglang-gen] records are present")
+    ap.add_argument("--router-csv", default=None,
+                    help="per-episode router CSV (default: <log>.router.csv); written only if "
+                         "[router] records are present")
     args = ap.parse_args()
 
     log = Path(args.log)
-    rows, eval_rows, op_records, gen_records = parse_log(log)
+    rows, eval_rows, op_records, gen_records, router_records = parse_log(log)
     derive_perf_metrics(rows)
     if not rows and not eval_rows:
         print(f"no metric rows found in {log} — is the run past step 1?")
@@ -372,6 +450,15 @@ def main() -> int:
         print(f"wrote {len(gen_records)} raw SGLang decodes -> {gen_out}")
     if op_records or gen_records:
         summarize_latency(op_records, gen_records)
+
+    if router_records:
+        router_out = Path(args.router_csv) if args.router_csv else log.with_suffix(".router.csv")
+        write_raw_csv(router_records, router_out,
+                      ["ts", "step", "rollout_id", "task_id", "harness_worker", "engine",
+                       "engine_pinned", "adapter_session", "sandbox_session", "runtime_arn",
+                       "sandbox_image", "family"])
+        print(f"wrote {len(router_records)} per-episode router records -> {router_out}")
+        check_stickiness(router_records, op_records)
 
     if eval_rows:
         eval_out = Path(args.eval_csv) if args.eval_csv else log.with_suffix(".eval.csv")

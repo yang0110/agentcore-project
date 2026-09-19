@@ -86,8 +86,12 @@ class HarnessPool:
         self._queue: asyncio.Queue | None = None
         self._workers: list[asyncio.Task] = []
         self._sessions: list = []          # per-worker warm aiohttp sessions
-        self._adapter = None
-        self._adapter_url: str | None = None
+        # PER-WORKER adapters, one each, so a worker's episodes are PINNED to one SGLang engine
+        # (see _ensure_started). Was one shared adapter; per-worker pinning makes inference sticky
+        # per episode (an episode is sticky to its worker => sticky to that worker's engine).
+        self._adapters: list = []          # AnthropicAdapter per worker
+        self._adapter_urls: list[str] = [] # its in-thread endpoint URL, per worker
+        self._engine_urls: list[str] = []  # the SGLang engine each worker is pinned to, per worker
         self._harness = None
         self._started = False
         self._start_lock = asyncio.Lock()
@@ -106,21 +110,37 @@ class HarnessPool:
             from slime.agent.aiohttp_threaded import run_app_in_thread
             from slime.utils.processing_utils import load_tokenizer
 
+            from . import router_trace
             from .mini_agent import MiniClaudeHarness
 
-            # ONE shared in-process adapter (localhost, ephemeral port). Workers dial 127.0.0.1,
-            # so no security group / public port is needed (unlike the harness-Runtime variant).
+            router_url = f"http://{self.args.sglang_router_ip}:{self.args.sglang_router_port}"
+            # Discover the E SGLang engines behind the router ONCE, then PIN worker w to engine
+            # w % E. slime's router normally load-balances /generate per request across engines;
+            # by giving each worker its OWN adapter whose sglang_url is a single engine, every turn
+            # of every episode that worker drives hits that one engine — inference becomes sticky
+            # per episode (episode is sticky to its worker). Falls back to the router if discovery
+            # fails (unpinned, still recorded). Uses only the adapter's PUBLIC sglang_url arg — no
+            # slime patch.
+            engines = router_trace.engine_urls(router_url)
             tokenizer = load_tokenizer(self.args.hf_checkpoint, trust_remote_code=True)
-            self._adapter = AnthropicAdapter(
-                tokenizer=tokenizer,
-                sglang_url=f"http://{self.args.sglang_router_ip}:{self.args.sglang_router_port}",
-                tool_parser=getattr(self.args, "sglang_tool_call_parser", None) or None,
-                reasoning_parser=getattr(self.args, "sglang_reasoning_parser", None) or None,
-            )
-            handle = run_app_in_thread(
-                self._adapter.app, host="127.0.0.1", port=0, thread_name="anthropic-adapter-inproc",
-            )
-            self._adapter_url = f"http://127.0.0.1:{handle.port}"
+
+            # PER-WORKER adapter, each on its own localhost thread/port. Workers dial 127.0.0.1, so
+            # no security group / public port is needed (unlike the harness-Runtime variant).
+            for wid in range(self.num_workers):
+                engine = engines[wid % len(engines)]
+                adapter = AnthropicAdapter(
+                    tokenizer=tokenizer,
+                    sglang_url=engine,
+                    tool_parser=getattr(self.args, "sglang_tool_call_parser", None) or None,
+                    reasoning_parser=getattr(self.args, "sglang_reasoning_parser", None) or None,
+                )
+                handle = run_app_in_thread(
+                    adapter.app, host="127.0.0.1", port=0,
+                    thread_name=f"anthropic-adapter-w{wid}",
+                )
+                self._adapters.append(adapter)
+                self._adapter_urls.append(f"http://127.0.0.1:{handle.port}")
+                self._engine_urls.append(engine)
 
             self._harness = MiniClaudeHarness(max_turns=self.max_turns)
             self._queue = asyncio.Queue()
@@ -130,8 +150,8 @@ class HarnessPool:
                 self._workers.append(asyncio.create_task(self._worker_loop(wid, sess)))
             self._started = True
             logger.info(
-                "[harness_pool] started W=%d warm workers, adapter=%s, sandbox=%s",
-                self.num_workers, self._adapter_url, self.sandbox_kind,
+                "[harness_pool] started W=%d warm workers over E=%d engines (pinned w->w%%E), sandbox=%s",
+                self.num_workers, len(engines), self.sandbox_kind,
             )
 
     async def _worker_loop(self, wid: int, http) -> None:
@@ -168,20 +188,40 @@ class HarnessPool:
     )
 
     async def _run_episode(self, wid: int, http, task, sampling_params, base_sample):
+        from . import router_trace
         from .sandbox import make_sandbox
+
+        adapter = self._adapters[wid]
+        adapter_url = self._adapter_urls[wid]
+        engine = self._engine_urls[wid]
 
         # Adapter Bearer session id == the trajectory key; AgentCore runtimeSessionId needs len>=33.
         sid = getattr(base_sample, "session_id", None)
         if not sid or len(sid) < 33:
             sid = f"hs-{task.task_id}-{secrets.token_hex(16)}"
         base_sample.session_id = sid
-        self._adapter.open_session(sid, sampling_defaults=sampling_params)
+        adapter.open_session(sid, sampling_defaults=sampling_params)
 
         # Fresh sandbox session per episode; make_sandbox round-robins across the K ARNs (sticky
         # for this episode's life — it holds the episode's files).
         sandbox = make_sandbox(self.sandbox_kind, region=self.region)
         try:
             async with sandbox as sb:
+                # ONE [router] record per episode: the join that ties this episode's sandbox
+                # session (also stamped on every [sbx-op]) to the worker that drove it and the
+                # engine it was pinned to. metrics.py checks these are all sticky per episode.
+                router_trace.emit(
+                    task_id=task.task_id,
+                    rollout_id=getattr(base_sample, "index", "?"),
+                    harness_worker=wid,
+                    engine=engine,
+                    engine_pinned=int(len(self._engine_urls) > 0 and engine != ""),
+                    adapter_session=sid,
+                    sandbox_id=getattr(sb, "sandbox_id", "?"),
+                    sandbox_session=getattr(sb, "_session_id", getattr(sb, "_sub", "?")),
+                    runtime_arn=router_trace.arn_tail(getattr(sb, "_arn", None)),
+                )
+
                 # Seed the workspace exactly like run_episode: family files, then the checker,
                 # then PROBLEM.md — all RELATIVE paths (resolved against the sandbox workdir).
                 for name, content in getattr(task, "setup_files", lambda: {})().items():
@@ -193,7 +233,7 @@ class HarnessPool:
                 await self._harness.run(
                     sb,
                     session_id=sid,
-                    adapter_url=self._adapter_url,
+                    adapter_url=adapter_url,
                     prompt=self._AGENT_PROMPT,
                     max_tokens=self.max_tokens,
                     http=http,
@@ -206,12 +246,12 @@ class HarnessPool:
                 reward = task.reward(int(exit_code))
 
             # Drain the adapter-captured trajectory into loss-masked GRPO samples (a LIST).
-            return await self._adapter.finish_session(
+            return await adapter.finish_session(
                 sid, base_sample=base_sample, reward=float(reward),
                 extra_metadata={"task_id": task.task_id, "solved": reward == 1.0, "harness_worker": wid},
             )
         finally:
-            await self._adapter.drop_session(sid, wait_timeout=30)
+            await adapter.drop_session(sid, wait_timeout=30)
 
     # ---- public entry point -------------------------------------------------
     async def submit(self, task, sampling_params, base_sample):
