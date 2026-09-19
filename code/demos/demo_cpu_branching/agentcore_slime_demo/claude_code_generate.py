@@ -173,6 +173,40 @@ async def _score(sb, task) -> float:
     return task.reward(exit_code)
 
 
+def _fallback_sample(base_sample, reward: float, task, agent_exit_code: int):
+    """One placeholder Sample for an episode that fanned out into ZERO branches.
+
+    A CLI episode can crash before it makes a single model call (sandbox hiccup, CLI OOM,
+    non-zero exit within seconds) — the adapter then records no turns and finish_session
+    returns []. Returning [] puts an EMPTY group on slime's rollout path, and its grouping
+    code does `group[0]` unconditionally (sglang_rollout.py:419) → IndexError, killing the
+    whole training job. So we synthesize a single zero-length-response Sample: it carries the
+    episode's reward into the GRPO group baseline but has no trainable tokens (response_length=0,
+    empty loss_mask), so it contributes no gradient. COMPLETED is the only Status the demos rely
+    on across slime versions."""
+    from slime.utils.types import Sample  # lazy
+
+    tokens = list(getattr(base_sample, "tokens", None) or [])
+    out = Sample(
+        index=getattr(base_sample, "index", 0),
+        prompt=getattr(base_sample, "prompt", getattr(task, "prompt", "")),
+        tokens=tokens,
+        response_length=0,
+        reward=float(reward),
+        status=Sample.Status.COMPLETED,
+    )
+    out.loss_mask = []
+    out.rollout_log_probs = []
+    out.session_id = getattr(base_sample, "session_id", None)
+    out.metadata = {
+        "task_id": task.task_id,
+        "solved": reward == 1.0,
+        "agent_exit_code": agent_exit_code,
+        "fan_out_empty": True,
+    }
+    return out
+
+
 async def generate(args, base_sample, sampling_params, evaluation: bool = False):
     """Per-sample rollout using the real Claude Code harness. Returns list[Sample] (the fan-out).
 
@@ -234,6 +268,14 @@ async def generate(args, base_sample, sampling_params, evaluation: bool = False)
             "[branching] %s reward=%.1f exit=%d fan_out=%d elapsed=%.1fs",
             task.task_id, reward, agent_exit_code, len(samples), time.time() - t0,
         )
+        if not samples:
+            # Zero branches (agent crashed before any model call) — never hand slime an empty
+            # group; see _fallback_sample. Keeps the training job alive across flaky episodes.
+            logger.warning(
+                "[branching] %s produced 0 branches (exit=%d); emitting a fallback Sample",
+                task.task_id, agent_exit_code,
+            )
+            return [_fallback_sample(base_sample, reward, task, agent_exit_code)]
         return samples
     finally:
         await adapter.drop_session(session_id, wait_timeout=30)
