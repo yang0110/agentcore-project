@@ -180,23 +180,29 @@ def _fallback_sample(base_sample, reward: float, task, agent_exit_code: int):
     non-zero exit within seconds) — the adapter then records no turns and finish_session
     returns []. Returning [] puts an EMPTY group on slime's rollout path, and its grouping
     code does `group[0]` unconditionally (sglang_rollout.py:419) → IndexError, killing the
-    whole training job. So we synthesize a single zero-length-response Sample: it carries the
-    episode's reward into the GRPO group baseline but has no trainable tokens (response_length=0,
-    empty loss_mask), so it contributes no gradient. COMPLETED is the only Status the demos rely
-    on across slime versions."""
+    whole training job. So we synthesize a single placeholder Sample.
+
+    The response is ONE masked token, NOT zero-length: a response_length=0 sample underflows
+    Megatron's per-sample length math (`narrow(): length must be non-negative`) once it reaches
+    the trainer. One token with loss_mask=[0] keeps every length non-negative while contributing
+    NO gradient (the token is masked out); the reward still feeds the GRPO group baseline.
+    COMPLETED is the only Status the demos rely on across slime versions."""
     from slime.utils.types import Sample  # lazy
 
-    tokens = list(getattr(base_sample, "tokens", None) or [])
+    prompt_tokens = list(getattr(base_sample, "tokens", None) or [])
+    # A single pad/eos-ish response token so response_length==1 (never 0). Reuse the last prompt
+    # token if we have nothing better; it is masked out of the loss either way.
+    pad_tok = prompt_tokens[-1] if prompt_tokens else 0
     out = Sample(
         index=getattr(base_sample, "index", 0),
         prompt=getattr(base_sample, "prompt", getattr(task, "prompt", "")),
-        tokens=tokens,
-        response_length=0,
+        tokens=prompt_tokens + [pad_tok],
+        response_length=1,
         reward=float(reward),
         status=Sample.Status.COMPLETED,
     )
-    out.loss_mask = []
-    out.rollout_log_probs = []
+    out.loss_mask = [0]            # the one response token is masked → no gradient
+    out.rollout_log_probs = [0.0]  # len must == response_length
     out.session_id = getattr(base_sample, "session_id", None)
     out.metadata = {
         "task_id": task.task_id,
