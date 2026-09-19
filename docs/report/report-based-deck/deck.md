@@ -20,11 +20,11 @@ AgentCore Runtime as the execution sandbox for agentic RL, integrated with slime
 **Roadmap (6 sections):**
 
 1. **Why sandboxes** — what frontier labs run in sandboxes, and how they score it.
-2. **Architecture & pipeline** — reference architecture, the five components, TITO, slime + its async rollout.
+2. **Architecture & pipeline** — reference architecture, the five components, slime + its async rollout.
 3. **Foundations of AgentCore** — Runtime / session / microVM, CPU vs GPU compute, session lifecycle & launch/terminate.
 4. **Integrating into slime** — the call path, one hook, the episode loop, and the key code.
 5. **The demos** — all 21 at a glance, each with its real use case.
-6. **Special demos** — scaling (harness × inference × sandbox), mixed-task, GPU sharing, image pool, real-CLI branching, heartbeat.
+6. **Special demos** — the TITO mechanism, scaling (harness × inference × sandbox), mixed-task, GPU sharing, image pool, real-CLI branching, heartbeat.
 
 *Scope: AgentCore = the execution **sandbox**; **slime** = the trainer; the **harness stays in-process**.*
 
@@ -105,43 +105,6 @@ Untrusted output runs in an isolated sandbox; a **programmatic verifier** produc
 - **Training-data lane (←):** trajectory → reward attached → loss-masked sample → buffer → trainer step → weight sync.
 
 **AgentCore fills the sandbox seam** — ad-hoc + isolated per episode. The harness needs *warmth*, not isolation, so it stays **in-process**.
-
-## TITO — why the proxy exists
-
-A harness works in **text**; RL trains on **token IDs**. Re-tokenizing decoded text can drift from what the model actually sampled — corrupting the action, the importance ratio, and the loss mask.
-
-```{=latex}
-\begin{center}
-\resizebox{0.82\textwidth}{!}{%
-\begin{tikzpicture}[
-  font=\small,
-  box/.style={draw, rounded corners, minimum height=1.15cm, minimum width=2.8cm, align=center, thick, fill=white},
-  svc/.style={box, fill=blue!8},
-  focus/.style={box, fill=orange!18},
-  cpu/.style={box, fill=black!4},
-  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
-  >={Stealth[]},
-]
-\node[cpu]   (harness) at (0,0)     {\textbf{Harness}\\[1pt]\scriptsize agent loop (text)};
-\node[focus] (proxy)   at (5.5,0)   {\textbf{Proxy}\\[1pt]\scriptsize LLM API $\rightarrow$ policy};
-\node[svc]   (infer)   at (11.0,0)  {\textbf{Inference engine}\\[1pt]\scriptsize SGLang (GPU)};
-\node[cpu]   (store)   at (5.5,-2.7) {\textbf{Rollout store}\\[1pt]\scriptsize per \texttt{session\_id}};
-\node[cpu]   (adapter) at (11.0,-2.7){\textbf{Sample Adapter}\\[1pt]\scriptsize + reward $\rightarrow$ trainer};
-\draw[->, thick] ([yshift=4pt]harness.east) -- node[lbl,above]{POST /v1/messages (text)} ([yshift=4pt]proxy.west);
-\draw[->, thick] ([yshift=-4pt]proxy.west)  -- node[lbl,below]{Anthropic-style reply} ([yshift=-4pt]harness.east);
-\draw[->, thick] ([yshift=4pt]proxy.east) -- node[lbl,above]{prompt\_ids} ([yshift=4pt]infer.west);
-\draw[->, thick] ([yshift=-4pt]infer.west) -- node[lbl,below]{response\_ids, logprobs} ([yshift=-4pt]proxy.east);
-\draw[->, thick] (proxy) -- node[lbl,right]{record exact tokens} (store);
-\draw[->, thick] (store) -- node[lbl,above]{on episode end} (adapter);
-\end{tikzpicture}%
-}
-\end{center}
-```
-
-**Token-in-token-out (TITO):** the proxy records the **exact sampled `token_ids` + logprobs** at generation time and forwards them intact, so the trainer learns from the tokens that were really sampled.
-
-- The proxy is the only component straddling both sides (text ↔ tokens), so it is the only correct place to capture them.
-- For binary RLVR rewards this token-level exactness is not optional — slop silently corrupts the signal.
 
 ## slime — the trainer, and its asynchronous rollout
 
@@ -524,6 +487,43 @@ The task's shape — not the domain — sets the config. **One microVM serves ma
 
 - **`--rollout-max-response-len`** — per-turn generation budget; set from the family's p95 per-turn response (math 1k–32k; code 100–800; CUDA kernel 200–1k; tool call 50–300).
 - **`EPISODE_MAX_TURNS`** (default 3) — the single biggest lever on episode cost: single-turn → 1; iterative code/SQL → 3–5; long-horizon SWE/web → 15–50+.
+
+## Mechanism spotlight — TITO & why the proxy exists
+
+A harness works in **text**; RL trains on **token IDs**. Re-tokenizing decoded text can drift from what the model actually sampled — corrupting the action, the importance ratio, and the loss mask.
+
+```{=latex}
+\begin{center}
+\resizebox{0.82\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners, minimum height=1.15cm, minimum width=2.8cm, align=center, thick, fill=white},
+  svc/.style={box, fill=blue!8},
+  focus/.style={box, fill=orange!18},
+  cpu/.style={box, fill=black!4},
+  lbl/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt},
+  >={Stealth[]},
+]
+\node[cpu]   (harness) at (0,0)     {\textbf{Harness}\\[1pt]\scriptsize agent loop (text)};
+\node[focus] (proxy)   at (5.5,0)   {\textbf{Proxy}\\[1pt]\scriptsize LLM API $\rightarrow$ policy};
+\node[svc]   (infer)   at (11.0,0)  {\textbf{Inference engine}\\[1pt]\scriptsize SGLang (GPU)};
+\node[cpu]   (store)   at (5.5,-2.7) {\textbf{Rollout store}\\[1pt]\scriptsize per \texttt{session\_id}};
+\node[cpu]   (adapter) at (11.0,-2.7){\textbf{Sample Adapter}\\[1pt]\scriptsize + reward $\rightarrow$ trainer};
+\draw[->, thick] ([yshift=4pt]harness.east) -- node[lbl,above]{POST /v1/messages (text)} ([yshift=4pt]proxy.west);
+\draw[->, thick] ([yshift=-4pt]proxy.west)  -- node[lbl,below]{Anthropic-style reply} ([yshift=-4pt]harness.east);
+\draw[->, thick] ([yshift=4pt]proxy.east) -- node[lbl,above]{prompt\_ids} ([yshift=4pt]infer.west);
+\draw[->, thick] ([yshift=-4pt]infer.west) -- node[lbl,below]{response\_ids, logprobs} ([yshift=-4pt]proxy.east);
+\draw[->, thick] (proxy) -- node[lbl,right]{record exact tokens} (store);
+\draw[->, thick] (store) -- node[lbl,above]{on episode end} (adapter);
+\end{tikzpicture}%
+}
+\end{center}
+```
+
+**Token-in-token-out (TITO):** the proxy records the **exact sampled `token_ids` + logprobs** at generation time and forwards them intact, so the trainer learns from the tokens that were really sampled.
+
+- The proxy is the only component straddling both sides (text ↔ tokens), so it is the only correct place to capture them.
+- For binary RLVR rewards this token-level exactness is not optional — slop silently corrupts the signal.
 
 ## The scaling demo (1/2) — the concrete setup & the three tiers
 
