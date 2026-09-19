@@ -122,9 +122,20 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     is identical for the stock demos (one flattened sample per episode either way)."""
     from slime.utils.types import Sample  # lazy
 
+    from . import router_trace
+
     task = _task_from_sample(sample)
+    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+    # PIN INFERENCE per episode. slime's SGLang router load-balances every /generate across the E
+    # engines (cache-aware), so one episode's turns could scatter across engines. We pick ONE engine
+    # deterministically from the episode key and point THIS episode's policy straight at it, so every
+    # turn of the episode is served by the same engine — inference becomes sticky per episode, like
+    # the sandbox. Degrades gracefully to the router URL if engine discovery fails (unpinned, still
+    # recorded). Uses only SGLangPolicy's public router_url arg — no slime patch. See router_trace.
+    episode_key = f"{task.task_id}#{getattr(sample, 'index', 0)}"
+    engine, _engine_idx, num_engines = router_trace.pin_engine(episode_key, router_url)
     policy = SGLangPolicy(
-        router_url=f"http://{args.sglang_router_ip}:{args.sglang_router_port}",
+        router_url=engine,
         model_path=args.hf_checkpoint,
         # Qwen3 emits <think> blocks by default; suppress for codegen rollouts so the
         # trainable span stays the actual solution, not a long reasoning trace.
@@ -139,6 +150,21 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     # barrier). SNAPSHOT_EVERY=0 disables both => identical to demo_gpu_single. See app_snapshot.py.
     snap_key = f"ep-{task.task_id}"
     async with sandbox as sb:
+        # ONE [router] record per episode: the join that ties this episode's sandbox session (also
+        # stamped on every [sbx-op]) to the engine its turns were pinned to and the Runtime it used.
+        # metrics.py parses these into <log>.router.csv and check_stickiness asserts each episode is
+        # sticky to one engine / sandbox session / runtime ARN.
+        router_trace.emit(
+            task_id=task.task_id,
+            rollout_id=getattr(sample, "index", "?"),
+            engine=engine,
+            engine_pinned=int(num_engines > 1),
+            sandbox_id=router_trace.sandbox_id_of(sb),
+            sandbox_session=router_trace.session_of(sb),
+            runtime_arn=router_trace.arn_of(sb),
+            sandbox_image=getattr(task, "image", "cpu"),
+            family=getattr(task, "family", "?"),
+        )
         await maybe_restore(sb, snap_key)
         traj = await run_episode(policy, sb, task, sampling_params)
         await maybe_snapshot(sb, snap_key)

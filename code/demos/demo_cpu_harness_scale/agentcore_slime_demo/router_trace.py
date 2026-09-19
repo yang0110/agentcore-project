@@ -126,3 +126,40 @@ def arn_tail(arn: str | None) -> str:
     if not arn:
         return "?"
     return arn.rsplit("/", 1)[-1]
+
+
+def _unwrap(sb):
+    """Reach the real sandbox under a wrapper (demo_cpu_quiesce's KeptSandbox, etc.), so the
+    join fields below come from the object that actually owns the AgentCore session/ARN."""
+    for attr in ("_sandbox", "sandbox", "inner", "_inner", "_wrapped"):
+        inner = getattr(sb, attr, None)
+        if inner is not None and inner is not sb:
+            return inner
+    return sb
+
+
+def session_of(sb) -> str:
+    """The sandbox SESSION id stamped on every [sbx-op] (session=…) — the episode join key.
+    Digs through a wrapper if the outer object doesn't carry it."""
+    for obj in (sb, _unwrap(sb)):
+        v = getattr(obj, "_session_id", None) or getattr(obj, "_sub", None)
+        if v:
+            return str(v)
+    return "?"
+
+
+def arn_of(sb) -> str:
+    """The episode's Runtime ARN tail (matches [sbx-op] arn=), through a wrapper if needed."""
+    for obj in (sb, _unwrap(sb)):
+        v = getattr(obj, "_arn", None)
+        if v:
+            return arn_tail(v)
+    return "?"
+
+
+def sandbox_id_of(sb) -> str:
+    for obj in (sb, _unwrap(sb)):
+        v = getattr(obj, "sandbox_id", None)
+        if v:
+            return str(v)
+    return "?"

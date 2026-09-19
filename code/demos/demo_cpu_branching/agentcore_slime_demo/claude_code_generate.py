@@ -221,9 +221,16 @@ async def generate(args, base_sample, sampling_params, evaluation: bool = False)
     reward. See the module docstring for how the branches arise and how they are reconciled."""
     from slime.agent.harness import ClaudeCodeHarness
 
+    from . import router_trace
     from .generate import _task_from_sample
 
     task = _task_from_sample(base_sample)
+    # UNPINNED by design: the branching fan-out routes EVERY /messages turn through ONE shared
+    # AnthropicAdapter (a fixed VPC port so the sandbox's security-group rule stays stable), and the
+    # adapter forwards to slime's router — so this demo's inference is router-load-balanced, not
+    # pinned to one engine (engine=router, engine_pinned=0). We still emit ONE [router] record per
+    # episode so its sandbox session / runtime ARN join the [sbx-op] stream like every other demo.
+    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     harness = ClaudeCodeHarness()
 
     adapter_public_host = os.environ.get("ADAPTER_PUBLIC_HOST")
@@ -248,6 +255,18 @@ async def generate(args, base_sample, sampling_params, evaluation: bool = False)
     try:
         async with _boot_sandbox() as (sb, prebaked):
             await _prepare_workspace(sb, task)
+            router_trace.emit(
+                task_id=task.task_id,
+                rollout_id=getattr(base_sample, "index", "?"),
+                engine=router_url,
+                engine_pinned=0,  # shared adapter → router LB (see above)
+                adapter_session=session_id,
+                sandbox_id=router_trace.sandbox_id_of(sb),
+                sandbox_session=router_trace.session_of(sb),
+                runtime_arn=router_trace.arn_of(sb),
+                sandbox_image=getattr(task, "image", "cpu"),
+                family=getattr(task, "family", "?"),
+            )
             if not prebaked:
                 await harness.install_cli(sb)  # dev-only Code-Interpreter path
             agent_exit_code = await harness.run(

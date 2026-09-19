@@ -49,8 +49,9 @@ _LINE = re.compile(r"-\s+(step|rollout|perf|eval)\s+(\d+):\s+(\{.*\})\s*$")
 # out of slime's aggregate perf/rollout_time, which lumps decode + sandbox + harness together.
 _SBX_OP = re.compile(r"\[sbx-op\]\s+(.*)$")
 _SGLANG_GEN = re.compile(r"\[sglang-gen\]\s+(.*)$")
+
 # One per episode, emitted by agentcore_slime_demo.router_trace.emit — the per-episode routing path
-# (harness worker / pinned SGLang engine / sandbox session / runtime ARN). Parsed into
+# (pinned SGLang engine / sandbox session / runtime ARN / image / family). Parsed into
 # <log>.router.csv and checked for per-episode stickiness (see check_stickiness).
 _ROUTER = re.compile(r"\[router\]\s+(.*)$")
 
@@ -302,6 +303,74 @@ def write_raw_csv(records: list[dict], out: Path, columns: list[str]) -> None:
             w.writerow(r)
 
 
+def check_stickiness(router_records: list[dict], op_records: list[dict]) -> bool:
+    """Verify each episode stayed on ONE path through the replicated tiers, and print a report.
+
+    Episode key = the sandbox session (also stamped on every [sbx-op]). The invariants:
+      * inference — each episode's turns were served by ONE SGLang engine. This demo makes a fresh
+        policy per episode PINNED to a single engine (router_trace.pin_engine), so there is one
+        [router] line — hence one engine — per episode by construction; we surface the spread and
+        flag any episode recorded unpinned (engine_pinned=0, discovery fell back to the router).
+      * sandbox/runtime — EVERY [sbx-op] for the episode's sandbox session shares ONE runtime ARN
+        (the sandbox is stateful/sticky for the episode's life). This is the real cross-check: it
+        JOINS the raw per-op records to the episode via `session`.
+
+    A harness-scale-style run (WARM workers each pinned to one engine) is also handled: when the
+    [router] records carry a harness_worker, we additionally assert no worker used >1 engine.
+
+    Returns True if all invariants hold (or there is nothing to check)."""
+    if not router_records:
+        return True
+    from collections import Counter
+
+    # sandbox_session -> set of runtime ARNs seen across its raw ops (from [sbx-op] session=/arn=).
+    arns_by_session: dict[str, set[str]] = {}
+    for r in op_records:
+        arns_by_session.setdefault(r.get("session", "?"), set()).add(r.get("arn", "?"))
+
+    violations: list[str] = []
+    for rec in router_records:
+        sess = rec["sandbox_session"]
+        seen = arns_by_session.get(sess)
+        if seen and len(seen) > 1:
+            violations.append(
+                f"episode {rec['rollout_id']} (task {rec['task_id']}): sandbox session {sess} "
+                f"spanned {len(seen)} runtimes {sorted(seen)} — NOT sticky"
+            )
+
+    has_workers = any(str(r.get("harness_worker", "?")) not in ("?", "") for r in router_records)
+    engines = sorted({r["engine"] for r in router_records})
+    unpinned = sum(1 for r in router_records if str(r.get("engine_pinned")) in ("0", "?", ""))
+    print("\nrouter stickiness ([router] episodes joined to [sbx-op] by sandbox session):")
+
+    if has_workers:
+        engines_by_worker: dict[str, set[str]] = {}
+        for rec in router_records:
+            engines_by_worker.setdefault(rec["harness_worker"], set()).add(rec["engine"])
+        for w, engs in engines_by_worker.items():
+            if len(engs) > 1:
+                violations.append(f"worker {w} used {len(engs)} engines {sorted(engs)} — inference NOT pinned")
+        workers = sorted(engines_by_worker)
+        print(f"  episodes={len(router_records)}  workers={len(workers)}  engines={len(engines)}")
+        for w in workers:
+            print(f"    worker {w} -> engine(s) {sorted(engines_by_worker.get(w, set()))}")
+        ok_msg = "  ✓ every episode sticky to one worker + one engine + one runtime"
+    else:
+        dist = Counter(r["engine"] for r in router_records)
+        print(f"  episodes={len(router_records)}  engines={len(engines)}  unpinned={unpinned}")
+        for e in engines:
+            print(f"    engine {e} <- {dist[e]} episode(s)")
+        ok_msg = "  ✓ every episode pinned to one engine + one sandbox session + one runtime"
+
+    if violations:
+        print("  STICKINESS VIOLATIONS:")
+        for v in violations:
+            print(f"    ✗ {v}")
+    else:
+        print(ok_msg)
+    return not violations
+
+
 def summarize_latency(op_records: list[dict], gen_records: list[dict]) -> None:
     """Print the RUN-LEVEL sandbox/decode latency aggregate (the ground truth across the whole run,
     independent of the approximate per-step attribution). Sandbox is broken out per op type."""
@@ -324,55 +393,6 @@ def summarize_latency(op_records: list[dict], gen_records: list[dict]) -> None:
     if gen_records:
         print("SGLang decode time ([sglang-gen], pure /generate round-trips):")
         print(agg_line("decode", [r["ms"] for r in gen_records]))
-
-
-def check_stickiness(router_records: list[dict], op_records: list[dict]) -> bool:
-    """Verify each episode stayed on ONE path through the replicated tiers, and print a report.
-
-    Per-episode stickiness we assert (episode key = the sandbox session, also on every [sbx-op]):
-      * harness  — the [router] line names the one worker that drove the episode.
-      * inference— that worker is pinned to ONE engine; we check no worker used >1 engine.
-      * sandbox/runtime — EVERY [sbx-op] for the episode's sandbox session shares ONE runtime ARN
-        (the sandbox is stateful/sticky for the episode's life). This is the real cross-check: it
-        joins the raw per-op records to the episode via `session`.
-
-    Returns True if all invariants hold (or there is nothing to check)."""
-    if not router_records:
-        return True
-    # sandbox_session -> set of runtime ARNs seen across its raw ops (from [sbx-op] session=/arn=).
-    arns_by_session: dict[str, set[str]] = {}
-    for r in op_records:
-        arns_by_session.setdefault(r.get("session", "?"), set()).add(r.get("arn", "?"))
-
-    engines_by_worker: dict[str, set[str]] = {}
-    violations: list[str] = []
-    for rec in router_records:
-        w = rec["harness_worker"]
-        engines_by_worker.setdefault(w, set()).add(rec["engine"])
-        sess = rec["sandbox_session"]
-        seen = arns_by_session.get(sess)
-        if seen and len(seen) > 1:
-            violations.append(
-                f"episode {rec['adapter_session']} (task {rec['task_id']}): sandbox session "
-                f"{sess} spanned {len(seen)} runtimes {sorted(seen)} — NOT sticky"
-            )
-    for w, engs in engines_by_worker.items():
-        if len(engs) > 1:
-            violations.append(f"worker {w} used {len(engs)} engines {sorted(engs)} — inference NOT pinned")
-
-    workers = sorted({r["harness_worker"] for r in router_records})
-    engines = sorted({r["engine"] for r in router_records})
-    print("\nrouter stickiness ([router] episodes joined to [sbx-op] by sandbox session):")
-    print(f"  episodes={len(router_records)}  workers={len(workers)}  engines={len(engines)}")
-    for w in workers:
-        print(f"    worker {w} -> engine(s) {sorted(engines_by_worker.get(w, set()))}")
-    if violations:
-        print("  STICKINESS VIOLATIONS:")
-        for v in violations:
-            print(f"    ✗ {v}")
-    else:
-        print("  ✓ every episode sticky to one worker + one engine + one runtime")
-    return not violations
 
 
 def plot(rows: dict[int, dict], eval_rows: dict[int, dict], out: Path) -> None:
