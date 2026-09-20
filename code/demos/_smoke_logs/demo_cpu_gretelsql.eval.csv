@@ -1,0 +1,2 @@
+eval/step,eval/gretelsql,eval/gretelsql-truncated_ratio,eval/gretelsql/avg_cached_tokens_per_sample,eval/gretelsql/prefix_cache_hit_rate,eval/gretelsql/repetition_frac,eval/gretelsql/response_len/max,eval/gretelsql/response_len/mean,eval/gretelsql/response_len/median,eval/gretelsql/response_len/min,eval/gretelsql/truncated_ratio
+9,0.6,0.0,0.0,0.0,0.0,306,69.3625,56.5,17,0.0

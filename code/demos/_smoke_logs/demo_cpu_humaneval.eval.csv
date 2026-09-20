@@ -1,0 +1,2 @@
+eval/step,eval/humaneval,eval/humaneval-truncated_ratio,eval/humaneval/avg_cached_tokens_per_sample,eval/humaneval/prefix_cache_hit_rate,eval/humaneval/repetition_frac,eval/humaneval/response_len/max,eval/humaneval/response_len/mean,eval/humaneval/response_len/median,eval/humaneval/response_len/min,eval/humaneval/truncated_ratio
+9,0.8541666666666666,0.0,0.0,0.0,0.0,1129,321.4166666666667,246.0,107,0.0

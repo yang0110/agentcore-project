@@ -1,0 +1,2 @@
+eval/step,eval/math,eval/math-truncated_ratio,eval/math/avg_cached_tokens_per_sample,eval/math/prefix_cache_hit_rate,eval/math/repetition_frac,eval/math/response_len/max,eval/math/response_len/mean,eval/math/response_len/median,eval/math/response_len/min,eval/math/truncated_ratio,eval/math/zero_std/count_1.0
+9,1.0,0.0,0.0,0.0,0.0,20,19.333333333333332,19.0,19,0.0,1

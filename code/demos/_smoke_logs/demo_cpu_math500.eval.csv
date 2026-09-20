@@ -1,0 +1,2 @@
+eval/step,eval/math500,eval/math500-truncated_ratio,eval/math500/avg_cached_tokens_per_sample,eval/math500/prefix_cache_hit_rate,eval/math500/repetition_frac,eval/math500/response_len/max,eval/math500/response_len/mean,eval/math500/response_len/median,eval/math500/response_len/min,eval/math500/truncated_ratio
+9,0.8875,0.0,0.0,0.0,0.0,2237,303.6875,176.0,10,0.0

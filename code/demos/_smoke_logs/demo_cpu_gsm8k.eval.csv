@@ -1,0 +1,2 @@
+eval/step,eval/gsm8k,eval/gsm8k-truncated_ratio,eval/gsm8k/avg_cached_tokens_per_sample,eval/gsm8k/prefix_cache_hit_rate,eval/gsm8k/repetition_frac,eval/gsm8k/response_len/max,eval/gsm8k/response_len/mean,eval/gsm8k/response_len/median,eval/gsm8k/response_len/min,eval/gsm8k/truncated_ratio
+9,0.9,0.0,0.0,0.0,0.0,432,114.35,99.0,10,0.0

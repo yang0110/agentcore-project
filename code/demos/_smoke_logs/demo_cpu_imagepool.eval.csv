@@ -1,0 +1,2 @@
+eval/step,eval/mixed,eval/mixed-truncated_ratio,eval/mixed/avg_cached_tokens_per_sample,eval/mixed/prefix_cache_hit_rate,eval/mixed/repetition_frac,eval/mixed/response_len/max,eval/mixed/response_len/mean,eval/mixed/response_len/median,eval/mixed/response_len/min,eval/mixed/truncated_ratio,eval/mixed/zero_std/count_1.0
+9,1.0,0.0,0.0,0.0,0.0,85,57.333333333333336,61.0,23,0.0,1

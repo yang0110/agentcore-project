@@ -1,0 +1,2 @@
+eval/step,eval/mcp,eval/mcp-truncated_ratio,eval/mcp/avg_cached_tokens_per_sample,eval/mcp/prefix_cache_hit_rate,eval/mcp/repetition_frac,eval/mcp/response_len/max,eval/mcp/response_len/mean,eval/mcp/response_len/median,eval/mcp/response_len/min,eval/mcp/truncated_ratio,eval/mcp/zero_std/count_1.0
+9,1.0,0.0,0.0,0.0,0.0,178,59.1,37.0,20,0.0,1

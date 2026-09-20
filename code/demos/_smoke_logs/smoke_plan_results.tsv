@@ -1,0 +1,17 @@
+demo	status	secs	note
+demo_cpu_single	PASS	1070	succeeded; final ckpt 10
+demo_cpu_math	PASS	995	succeeded; final ckpt 10
+demo_cpu_mixtask	FAIL	18	rc=1 no-final-ckpt no-success-marker (see _smoke_logs/demo_cpu_mixtask.log)
+demo_cpu_gsm8k	PASS	1067	succeeded; final ckpt 10
+demo_cpu_math500	PASS	1149	succeeded; final ckpt 10
+demo_cpu_deepscaler	PASS	1161	succeeded; final ckpt 10
+demo_cpu_humaneval	PASS	1134	succeeded; final ckpt 10
+demo_cpu_gretelsql	PASS	1064	succeeded; final ckpt 10
+demo_cpu_hotpotqa	PASS	1235	succeeded; final ckpt 10
+demo_cpu_xlam	PASS	1097	succeeded; final ckpt 10
+demo_cpu_mcp	PASS	1072	succeeded; final ckpt 10
+demo_cpu_quiesce	PASS	1200	succeeded; final ckpt 10
+demo_cpu_harness_scale	PASS	1433	succeeded; final ckpt 10
+demo_cpu_customruntime	PASS	1199	succeeded; final ckpt 10
+demo_cpu_imagepool	PASS	1026	succeeded; final ckpt 10
+demo_cpu_mixtask	PASS	1025	succeeded; final ckpt 10
