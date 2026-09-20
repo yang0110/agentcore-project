@@ -12,8 +12,8 @@
 #
 # Launch INSIDE the agentcore_p4 container:
 #   sudo -n docker exec agentcore_p4 bash -lc \
-#     'cd /work/code/demos/demo_cpu_single && ALL_ARNS=<arn1,arn2,arn3,arn4> bash run_runtime_ablation.sh \
-#        > /work/code/demos/demo_cpu_single/logs/ablation.out 2>&1'
+#     'cd /work/code/demos/demo_cpu_mbpp && ALL_ARNS=<arn1,arn2,arn3,arn4> bash run_runtime_ablation.sh \
+#        > /work/code/demos/demo_cpu_mbpp/logs/ablation.out 2>&1'
 set -uo pipefail
 
 # Master comma-separated list of DEPLOYED CPU sandbox Runtime ARNs (>= max(RUNTIMES)). The sweep
@@ -31,7 +31,7 @@ export MODE="${MODE:-B}"            # fully-async (deep buffer) — the goodput 
 export AWS_REGION="${AWS_REGION:-us-west-2}"
 export AGENTCORE_REGION="${AGENTCORE_REGION:-us-west-2}"
 
-cd /work/code/demos/demo_cpu_single
+cd /work/code/demos/demo_cpu_mbpp
 mkdir -p logs
 SUMMARY=logs/ablation_summary.csv
 echo "runtime_count,family,rc,mean_goodput_tok_per_s,mean_mfu,mean_step_time,mean_rollout_time,mean_effective_tok_per_gpu_s,mean_sandbox_ms_p50,mean_sglang_gen_ms_p50,eval_reward" > "$SUMMARY"

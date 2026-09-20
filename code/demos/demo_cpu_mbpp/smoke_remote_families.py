@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remote-sandbox smoke for the demo_cpu_single task-family zoo.
+"""Remote-sandbox smoke for the demo_cpu_mbpp task-family zoo.
 
 Runs ONE episode per family through the REAL in-process `run_episode` harness against the REMOTE
 AgentCore Runtime CPU sandbox (SANDBOX=agentcore-runtime), driven by MockPolicy (no GPU/model).
@@ -7,7 +7,7 @@ This proves the remote runtime executes each family's setup_files + artifact + c
 the discriminating RLVR reward — the same path a real slime rollout takes, minus the policy.
 
     AGENTCORE_SANDBOX_RUNTIME_ARN=<cpu arn> AWS_REGION=us-west-2 SANDBOX=agentcore-runtime \
-        python3 demos/demo_cpu_single/smoke_remote_families.py [family ...]
+        python3 demos/demo_cpu_mbpp/smoke_remote_families.py [family ...]
 """
 from __future__ import annotations
 

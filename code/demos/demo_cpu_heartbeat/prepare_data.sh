@@ -1,7 +1,7 @@
 #!/bin/bash
-# Build demo_cpu_quiesce's CPU training dataset into data/ (deepscaler numeric-answer math, RLVR:
+# Build demo_cpu_heartbeat's CPU training dataset into data/ (deepscaler numeric-answer math, RLVR:
 # numeric match tol 1e-4 — no LLM judge). Run INSIDE the persistent container agentcore_p4:
-#     docker exec agentcore_p4 bash /work/code/demos/demo_cpu_quiesce/prepare_data.sh
+#     docker exec agentcore_p4 bash /work/code/demos/demo_cpu_heartbeat/prepare_data.sh
 #
 # The builder is vendored (agentcore_slime_demo/build_real_datasets.py) so this folder is
 # self-contained. The HF pull needs one-time network; if it is unavailable (fully offline), fall

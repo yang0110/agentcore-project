@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# CONVERGENCE RUN 01 — demo_cpu_single  (FAMILY=coding / MBPP)
+# CONVERGENCE RUN 01 — demo_cpu_mbpp  (FAMILY=coding / MBPP)
 # ============================================================================
 # TASK / DATASET : MBPP-style Python programming. The policy writes a function,
 #                  runs it against hidden unit tests in the sandbox, and repairs
@@ -21,14 +21,14 @@
 # TEARDOWN       : remote sandbox sessions close per-episode; nothing host-side.
 # ----------------------------------------------------------------------------
 # All knobs below are overridable from the environment, e.g.:
-#   NR=401 RB=16 SAVE_INTERVAL=1000000 bash 01_cpu_single.sh
+#   NR=401 RB=16 SAVE_INTERVAL=1000000 bash 01_cpu_mbpp.sh
 # SAVE_INTERVAL=100 keeps periodic ckpts (~56 GB each!). Set it to 1000000 to
 # save only at the end if you only care about the eval curve. See README.
 # ============================================================================
 set -euo pipefail
 
 CONV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_single"
+DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_mbpp"
 
 : "${NR:=201}"            # real train steps = NR-1 = 200
 : "${RB:=8}"             # prompts per step
@@ -42,5 +42,5 @@ DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_single"
 export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC
 
 LOG="$DEMO/train.convergence_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_cpu_single (coding/MBPP)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
+echo ">>> converging demo_cpu_mbpp (coding/MBPP)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

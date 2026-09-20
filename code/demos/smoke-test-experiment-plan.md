@@ -65,7 +65,7 @@ docker exec agentcore_p4 python3 /work/code/demos/$DEMO/metrics.py $LOG \
 
 ## Group A — standard CPU per-task trainers (baked K=2 ARNs; no extra env)
 
-Demos: `demo_cpu_single`, `demo_cpu_gsm8k`, `demo_cpu_math`, `demo_cpu_math500`,
+Demos: `demo_cpu_mbpp`, `demo_cpu_gsm8k`, `demo_cpu_math`, `demo_cpu_math500`,
 `demo_cpu_deepscaler`, `demo_cpu_humaneval`, `demo_cpu_gretelsql`, `demo_cpu_hotpotqa`,
 `demo_cpu_xlam`, `demo_cpu_mcp`.
 
@@ -200,8 +200,8 @@ These five were formerly offline sims / contract probes; they are now **real 10-
 (`NR=11` ⇒ 10 train + 1 eval + one final checkpoint) that layer their distinctive operational
 property on top of the standard trainer as **env-gated glue that stays live during the run**. Each
 demo's headline knob defaults **on**; setting it to its off value makes the run byte-identical to the
-plain single-substrate trainer (`demo_cpu_single` / `demo_gpu_single`). The old offline animation is
-retained in each folder as a seconds-long probe (`quiesce_demo.py`, `snapshot_demo.py`,
+plain single-substrate trainer (`demo_cpu_mbpp` / `demo_gpu_single`). The old offline animation is
+retained in each folder as a seconds-long probe (`heartbeat_demo.py`, `snapshot_demo.py`,
 `harness_scaling_demo.py`, `gpu_torch_smoke.py`), invoked directly — **not** via `run.sh`.
 
 The three **CPU** trainers carry the same baked CPU-sandbox ARNs as Group A, so they run in the
@@ -212,7 +212,7 @@ standard ones below.
 
 | Demo | Substrate | Property preserved (default-on knob) | Smoke command (data ships in `data/`) |
 |---|---|---|---|
-| `demo_cpu_quiesce` | CPU sandbox (baked ARNs) | keep sandbox warm across the weight-sync barrier via `SessionKeeper`/`KeptSandbox` heartbeat (`QUIESCE_KEEP_WARM=1`) | `docker exec -e NR=11 agentcore_p4 bash -lc 'cd /work && bash code/demos/demo_cpu_quiesce/run.sh 2>&1 \| tee /work/code/demos/_smoke_logs/demo_cpu_quiesce.log'` |
+| `demo_cpu_heartbeat` | CPU sandbox (baked ARNs) | keep sandbox warm across the weight-sync barrier via `SessionKeeper`/`KeptSandbox` heartbeat (`HEARTBEAT_KEEP_WARM=1`) | `docker exec -e NR=11 agentcore_p4 bash -lc 'cd /work && bash code/demos/demo_cpu_heartbeat/run.sh 2>&1 \| tee /work/code/demos/_smoke_logs/demo_cpu_heartbeat.log'` |
 | `demo_cpu_harness_scale` | CPU sandbox (baked ARNs) | warm in-process `run_episode` worker pool sized by `HARNESS_WORKERS` (`harness_pool_generate.generate`) | `... bash code/demos/demo_cpu_harness_scale/run.sh 2>&1 \| tee .../demo_cpu_harness_scale.log` |
 | `demo_cpu_customruntime` | **your custom CPU Runtime** (`SANDBOX=agentcore-runtime`) | training runs unchanged on a custom Runtime, not the managed Code Interpreter | `... bash code/demos/demo_cpu_customruntime/run.sh 2>&1 \| tee .../demo_cpu_customruntime.log` |
 | `demo_gpu_snapshot` | remote **g6** sandbox (needs ARN) | app-level snapshot/resume of the workspace at each episode boundary (`SNAPSHOT_EVERY=1`) | `docker exec -e NR=11 -e AGENTCORE_SANDBOX_RUNTIME_ARN="$G6_ARN" -e SNAPSHOT_EVERY=1 agentcore_p4 bash -lc 'cd /work && bash code/demos/demo_gpu_snapshot/run.sh 2>&1 \| tee .../demo_gpu_snapshot.log'` |
@@ -230,11 +230,11 @@ standard ones below.
 ## Run order (suggested)
 
 1. **Phase 0 — offline probes (seconds, no AWS/GPU):** run each property demo's retained animation
-   directly (`quiesce_demo.py`, `snapshot_demo.py`, `harness_scaling_demo.py`, `gpu_torch_smoke.py`)
+   directly (`heartbeat_demo.py`, `snapshot_demo.py`, `harness_scaling_demo.py`, `gpu_torch_smoke.py`)
    for fast confidence the harness/glue imports and the mechanism is legible — **not** the trainers,
    which now run in the phases below.
 2. **Phase 1 — CPU trainers (Group A + mixtask + the three CPU property demos):** run serially (each
-   holds the 8 GPUs). Baked ARNs, no extra env. Includes `demo_cpu_quiesce`,
+   holds the 8 GPUs). Baked ARNs, no extra env. Includes `demo_cpu_heartbeat`,
    `demo_cpu_harness_scale`, `demo_cpu_customruntime`.
 3. **Phase 2 — routed CPU trainers:** `demo_cpu_imagepool` (after deploying its 3 images),
    `demo_cpu_branching` (after a CLI image is ready + bring-up verified).

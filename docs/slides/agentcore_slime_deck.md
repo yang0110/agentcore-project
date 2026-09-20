@@ -102,7 +102,7 @@ Most families reuse `assert_runner` (a stdlib checker); only SQL uses a custom S
 
 ## Datasets — build once, seed per episode
 
-Builders (in `demos/demo_cpu_single/`): `build_dataset.py` (MBPP/KernelBench) and `build_family_datasets.py` (ten families, `--eval-frac 0.25`). Uniform row schema:
+Builders (in `demos/demo_cpu_mbpp/`): `build_dataset.py` (MBPP/KernelBench) and `build_family_datasets.py` (ten families, `--eval-frac 0.25`). Uniform row schema:
 
 ```json
 {"prompt": "…task text…", "label": "mbpp_601",
@@ -240,9 +240,9 @@ Policy is always **Qwen3-4B**, trained by slime. The harness is **in-process** �
 
 | | CPU sandbox — MBPP | GPU sandbox — KernelBench |
 |---|---|---|
-| in-process harness | `demo_cpu_single` | `demo_gpu_single` |
+| in-process harness | `demo_cpu_mbpp` | `demo_gpu_single` |
 
-Same substrates, more tasks/patterns: `demo_cpu_math`, `demo_cpu_quiesce` (heartbeat keepalive), `demo_gpu_shared` (Ray pack-many farm), `demo_gpu_snapshot` (app-level snapshot/resume).
+Same substrates, more tasks/patterns: `demo_cpu_math`, `demo_cpu_heartbeat` (heartbeat keepalive), `demo_gpu_shared` (Ray pack-many farm), `demo_gpu_snapshot` (app-level snapshot/resume).
 
 ## The GPU limit — and how you'd share one L4
 

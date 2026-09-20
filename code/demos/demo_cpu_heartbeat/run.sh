@@ -1,6 +1,6 @@
 #!/bin/bash
-# demo_cpu_quiesce — REAL slime CPU trainer (async/decoupled, Mode B) that holds its REMOTE AgentCore
-# sandbox sessions WARM across the live weight-sync barrier. Same trainer shape as demo_cpu_single
+# demo_cpu_heartbeat — REAL slime CPU trainer (async/decoupled, Mode B) that holds its REMOTE AgentCore
+# sandbox sessions WARM across the live weight-sync barrier. Same trainer shape as demo_cpu_mbpp
 # (train_async, NR=11 => 10 train + 1 eval, save-at-end) — the ONLY addition is the keep-warm lever:
 #
 #   During slime's trainer->inference weight sync, generation stalls, so every open sandbox session
@@ -13,10 +13,10 @@
 #   episode traffic refreshes the same clock, so outside a stall the keeper fires ZERO heartbeats.
 #
 # The heartbeat lives OUTSIDE the harness (that is the whole point): the run_episode loop and the
-# sandbox are oblivious; only KeptSandbox knows both exist. quiesce_demo.py is the seconds-long,
+# sandbox are oblivious; only KeptSandbox knows both exist. heartbeat_demo.py is the seconds-long,
 # offline animation of the same mechanism (naive -> heartbeat -> recover) — see README.md.
 #
-# Everything else matches demo_cpu_single verbatim (remote-only, Mode A/B async, GRPO). Runs INSIDE
+# Everything else matches demo_cpu_mbpp verbatim (remote-only, Mode A/B async, GRPO). Runs INSIDE
 # the persistent container agentcore_p4 (slimerl/slime).
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
@@ -29,16 +29,16 @@ if [ "$SANDBOX" = "local" ]; then
    echo "SANDBOX=local is not supported for CPU demos (remote-only) — use agentcore-runtime (default) or agentcore." >&2
    exit 1
 fi
-# The remote sandbox Runtime ARN(s). PINNED to the K=2 CPU pool default (same as demo_cpu_single).
+# The remote sandbox Runtime ARN(s). PINNED to the K=2 CPU pool default (same as demo_cpu_mbpp).
 AGENTCORE_SANDBOX_RUNTIME_ARNS="${AGENTCORE_SANDBOX_RUNTIME_ARNS:-arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu-1gzBVp675S,arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu_1-adRZyEHM6g}"
 if [ "$SANDBOX" = "agentcore-runtime" ] && [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
    AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN (or ..._ARNS) to the CPU sandbox Runtime ARN}"
 fi
 
-# ---- keep-warm knobs (demo_cpu_quiesce's headline; consumed in agentcore_slime_demo/generate.py) --
-QUIESCE_KEEP_WARM="${QUIESCE_KEEP_WARM:-1}"       # 1 => wrap every sandbox in KeptSandbox + SessionKeeper; 0 => plain (== demo_cpu_single)
-QUIESCE_IDLE="${QUIESCE_IDLE:-600}"               # session idle timeout to defend (s); heartbeat fires at ping_fraction*this
-QUIESCE_PING_FRACTION="${QUIESCE_PING_FRACTION:-0.5}"  # heartbeat once idle >= fraction*idle_timeout (0.5 => >=2 chances before expiry)
+# ---- keep-warm knobs (demo_cpu_heartbeat's headline; consumed in agentcore_slime_demo/generate.py) --
+HEARTBEAT_KEEP_WARM="${HEARTBEAT_KEEP_WARM:-1}"       # 1 => wrap every sandbox in KeptSandbox + SessionKeeper; 0 => plain (== demo_cpu_mbpp)
+HEARTBEAT_IDLE="${HEARTBEAT_IDLE:-600}"               # session idle timeout to defend (s); heartbeat fires at ping_fraction*this
+HEARTBEAT_PING_FRACTION="${HEARTBEAT_PING_FRACTION:-0.5}"  # heartbeat once idle >= fraction*idle_timeout (0.5 => >=2 chances before expiry)
 
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
@@ -49,10 +49,10 @@ MODE="${MODE:-B}"
 case "$MODE" in B|b) MODE=B;; A|a) MODE=A;; *) echo "MODE must be A or B (got '$MODE')" >&2; exit 1;; esac
 EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
 EVAL_NS="${EVAL_NS:-2}"               # samples per eval prompt
-SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"   # save-only-at-end (see demo_cpu_single note)
+SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"   # save-only-at-end (see demo_cpu_mbpp note)
 
 SLIME=/root/slime
-DEMO_DIR=/work/code/demos/demo_cpu_quiesce
+DEMO_DIR=/work/code/demos/demo_cpu_heartbeat
 CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"  # SHARED base Megatron ckpt
 HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
 
@@ -70,7 +70,7 @@ fi
 DATA="${DATA:-$DEMO_DIR/data/${_DS}_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/${_DS}_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-$_EVAL_NAME}"
-SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}_quiesce_async}"
+SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}_heartbeat_async}"
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -186,9 +186,9 @@ RUNTIME_ENV_JSON="{
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"INFER_CONC\": \"${INFER_CONC:-0}\",
-    \"QUIESCE_KEEP_WARM\": \"${QUIESCE_KEEP_WARM}\",
-    \"QUIESCE_IDLE\": \"${QUIESCE_IDLE}\",
-    \"QUIESCE_PING_FRACTION\": \"${QUIESCE_PING_FRACTION}\"
+    \"HEARTBEAT_KEEP_WARM\": \"${HEARTBEAT_KEEP_WARM}\",
+    \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",
+    \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\"
   }
 }"
 

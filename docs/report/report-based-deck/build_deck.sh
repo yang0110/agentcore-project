@@ -37,7 +37,7 @@ trap 'rm -f "$TMP" '"$BASE"'.{aux,log,nav,out,snm,toc,vrb}' EXIT
 
 # 2. pandoc -> Beamer (same style as the slides deck).
 pandoc "$TMP" -t beamer --slide-level=2 \
-  -V theme=Madrid -V aspectratio=169 -V fontsize=9pt -V classoption=t \
+  -V theme=Madrid -V aspectratio=169 -V fontsize=10pt -V classoption=t \
   -V mainfont="DejaVu Sans" -V monofont="DejaVu Sans Mono" \
   -V CJKmainfont="Noto Serif CJK SC" \
   -H <(cat <<'PREAMBLE'
@@ -51,8 +51,12 @@ pandoc "$TMP" -t beamer --slide-level=2 \
 \AtBeginSection[]{\frame{\sectionpage}}
 \setbeamertemplate{section in toc}[sections numbered]
 \setlength{\parskip}{3pt plus 1pt minus 1pt}
-\setbeamertemplate{itemize/enumerate body begin}{\small}
-\setbeamertemplate{itemize/enumerate subbody begin}{\footnotesize}
+% Base font is 10pt; keep list levels within one step of each other so nested
+% bullets don't shrink to an unreadable, inconsistent size (the old 9pt +
+% \small + \footnotesize stack bottomed out near 7pt).
+\setbeamertemplate{itemize/enumerate body begin}{\normalsize}
+\setbeamertemplate{itemize/enumerate subbody begin}{\small}
+\setbeamertemplate{itemize/enumerate subsubbody begin}{\small}
 \AtBeginEnvironment{itemize}{\setlength{\itemsep}{2pt}\setlength{\topsep}{2pt}}
 \AtBeginEnvironment{enumerate}{\setlength{\itemsep}{2pt}\setlength{\topsep}{2pt}}
 \AtBeginEnvironment{Highlighting}{\footnotesize}

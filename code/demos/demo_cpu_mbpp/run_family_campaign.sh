@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run the demo_cpu_single task-family expansions ONE BY ONE: for each family, a full real slime training
+# Run the demo_cpu_mbpp task-family expansions ONE BY ONE: for each family, a full real slime training
 # job (train_async.py, ~10 train steps + 1 eval) driven by our in-process run_episode harness with
 # the sandbox on the REMOTE CPU AgentCore Runtime (SANDBOX=agentcore-runtime). Each run grabs all 8
 # GPUs + its own ray head, so they are strictly sequential. Per-family logs land in logs/; a running
@@ -11,7 +11,7 @@ export AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:-arn:aws:b
 export AWS_REGION="${AWS_REGION:-us-west-2}"
 export AGENTCORE_REGION="${AGENTCORE_REGION:-us-west-2}"
 
-cd /work/code/demos/demo_cpu_single
+cd /work/code/demos/demo_cpu_mbpp
 mkdir -p logs
 CAMP=logs/campaign.log
 

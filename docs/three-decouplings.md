@@ -99,7 +99,7 @@ AL's three decouplings map 1:1 to ①/②/③ below.
 
 | Row | Harness | Sandbox on AgentCore | Status |
 |---|---|---|---|
-| A / B (`demo_cpu_single`, `demo_gpu_single`) | our `run_episode`, **in-process** | `AgentCoreSandbox` (A, Code Interpreter) / remote GPU Runtime (B) | **the path** |
+| A / B (`demo_cpu_mbpp`, `demo_gpu_single`) | our `run_episode`, **in-process** | `AgentCoreSandbox` (A, Code Interpreter) / remote GPU Runtime (B) | **the path** |
 
 The configuration is settled: **harness in-process, AgentCore = the sandbox only.** That is the
 proven, natural-fit topology and the one this project's story is built on. Every demo folder now

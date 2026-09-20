@@ -37,7 +37,7 @@ sections: **Done**, **In progress**, **Next steps (to run)**.
 
 ### 4. Checkpoint cleanup (disk) — DONE 2026-09-18
 - Deleted output checkpoints (~370G freed, 58% → 39% used):
-  - `code/demos/demo_cpu_single/ckpt/`: Qwen3-4B_{ctf,gretelsql,rag,sql,tool_use}_async
+  - `code/demos/demo_cpu_mbpp/ckpt/`: Qwen3-4B_{ctf,gretelsql,rag,sql,tool_use}_async
   - `code/p4_slime_train/ckpt/`: Qwen3-4B_mbpp_grpo, Qwen3-4B_mbpp_learn
 - **PRESERVED (do NOT delete):** `code/p4_slime_train/ckpt/Qwen3-4B_torch_dist` (7.5G) — the
   base Megatron checkpoint every run trains from (`CKPT_BASE`). Deleting it breaks all reruns.
@@ -72,7 +72,7 @@ Host launch dies on the `/root/slime` model-source permission error.
 CPU (`SANDBOX=agentcore-runtime`; need AWS creds + CPU sandbox ARN, defaulted in each `run.sh`):
 - demo_cpu_gsm8k, demo_cpu_math, demo_cpu_math500, demo_cpu_deepscaler, demo_cpu_humaneval,
   demo_cpu_gretelsql, demo_cpu_hotpotqa, demo_cpu_mcp, demo_cpu_xlam, demo_cpu_mixtask,
-  demo_cpu_single
+  demo_cpu_mbpp
 
 GPU:
 - demo_gpu_local  → start local farm first: `bash code/deploy/run_local_gpu_runtime.sh local`
@@ -82,7 +82,7 @@ GPU:
   `B4_GPU_FRACTION` toward 0.5 if it stalls.
 
 ### NOT part of the sweep (no standard training loop)
-- demo_cpu_customruntime, demo_cpu_harness_scale, demo_cpu_quiesce,
+- demo_cpu_customruntime, demo_cpu_harness_scale, demo_cpu_heartbeat,
   demo_gpu_customruntime, demo_gpu_snapshot
 
 ### Suggested driver

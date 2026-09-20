@@ -1,7 +1,7 @@
 #!/bin/bash
 # Smoke-sweep driver — Phase 0 (offline PROBES) + Phase 1 (CPU RL trainers). See SMOKE_SWEEP.md.
 # NOTE: the five property demos are now REAL trainers (their run.sh launches slime). Phase 0 runs
-# each one's RETAINED offline probe SCRIPT directly (quiesce_demo.py / snapshot_demo.py /
+# each one's RETAINED offline probe SCRIPT directly (heartbeat_demo.py / snapshot_demo.py /
 # harness_scaling_demo.py) — NOT run.sh — and the three CPU property trainers join Phase 1.
 # Runs INSIDE the agentcore_p4 container (as root => can delete its own root-owned checkpoints).
 # Serial by necessity (each trainer claims the GPUs). Deletes each trainer's checkpoint right after
@@ -14,14 +14,14 @@ OFFLINE_TIMEOUT="${OFFLINE_TIMEOUT:-420}"
 TRAIN_TIMEOUT="${TRAIN_TIMEOUT:-1800}"
 
 # Phase lists (override via env to resume a subset).
-OFFLINE_DEMOS="${OFFLINE_DEMOS:-demo_cpu_quiesce demo_gpu_snapshot demo_cpu_harness_scale}"
-CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_single demo_cpu_math demo_cpu_mixtask demo_cpu_gsm8k demo_cpu_math500 demo_cpu_deepscaler demo_cpu_humaneval demo_cpu_gretelsql demo_cpu_hotpotqa demo_cpu_xlam demo_cpu_mcp demo_cpu_quiesce demo_cpu_harness_scale demo_cpu_customruntime}"
+OFFLINE_DEMOS="${OFFLINE_DEMOS:-demo_cpu_heartbeat demo_gpu_snapshot demo_cpu_harness_scale}"
+CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_mbpp demo_cpu_math demo_cpu_mixtask demo_cpu_gsm8k demo_cpu_math500 demo_cpu_deepscaler demo_cpu_humaneval demo_cpu_gretelsql demo_cpu_hotpotqa demo_cpu_xlam demo_cpu_mcp demo_cpu_heartbeat demo_cpu_harness_scale demo_cpu_customruntime}"
 
 # Each offline demo's RETAINED probe script (run directly; run.sh is now the trainer). Args match the
 # pre-conversion run.sh so the behavior markers below still appear.
 offline_cmd() {
   case "$1" in
-    demo_cpu_quiesce)       echo "python3 quiesce_demo.py" ;;
+    demo_cpu_heartbeat)       echo "python3 heartbeat_demo.py" ;;
     demo_gpu_snapshot)      echo "python3 snapshot_demo.py" ;;
     demo_cpu_harness_scale) echo "python3 harness_scaling_demo.py --episodes 48 --workers 1,2,4,6,8,12 --cinf 4 --csbx 8 --tinf 0.10 --tsbx 0.05" ;;
     *) echo "" ;;
@@ -39,7 +39,7 @@ row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" | tee -a "$RESULTS"; }
 # one literal substring per line; ALL must appear in the log (grep -F, so brackets/parens are literal).
 offline_markers() {
   case "$1" in
-    demo_cpu_quiesce)      # 3-act arc: naive loss -> heartbeat survives (gate order) -> recover
+    demo_cpu_heartbeat)      # 3-act arc: naive loss -> heartbeat survives (gate order) -> recover
       printf '%s\n' \
         "LOST THE SESSION" \
         "SESSION SURVIVED" \
@@ -107,7 +107,7 @@ for d in $CPU_TRAINERS; do
   log="$BASE/$d/smoke_run.log"
   # This run's ACTUAL save dir, parsed from the launched --save arg (NOT a newest-mtime guess:
   # a demo dir can hold stale sibling ckpts, and an overwritten iter_* subdir does not bump the
-  # parent dir mtime, so "newest" is unreliable — that gave demo_cpu_single a false FAIL).
+  # parent dir mtime, so "newest" is unreliable — that gave demo_cpu_mbpp a false FAIL).
   save=$(grep -aoE -- "--save /[^ ]+" "$log" | head -1 | awk '{print $2}')
   has_final=0
   [ -n "$save" ] && [ -f "$save/latest_checkpointed_iteration.txt" ] && has_final=1

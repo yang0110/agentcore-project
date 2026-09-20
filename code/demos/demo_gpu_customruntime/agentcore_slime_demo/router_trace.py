@@ -129,7 +129,7 @@ def arn_tail(arn: str | None) -> str:
 
 
 def _unwrap(sb):
-    """Reach the real sandbox under a wrapper (demo_cpu_quiesce's KeptSandbox, etc.), so the
+    """Reach the real sandbox under a wrapper (demo_cpu_heartbeat's KeptSandbox, etc.), so the
     join fields below come from the object that actually owns the AgentCore session/ARN."""
     for attr in ("_sandbox", "sandbox", "inner", "_inner", "_wrapped"):
         inner = getattr(sb, attr, None)

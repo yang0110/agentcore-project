@@ -390,7 +390,7 @@ sandbox --- the microVM is the reward source.}
 
 \begin{frame}[fragile,allowframebreaks]{Datasets --- build once, seed per episode}
 \protect\hypertarget{datasets-build-once-seed-per-episode}{}
-Builders (in \texttt{demos/demo\_cpu\_single/}):
+Builders (in \texttt{demos/demo\_cpu\_mbpp/}):
 \texttt{build\_dataset.py} (MBPP/KernelBench) and
 \texttt{build\_family\_datasets.py} (ten families,
 \texttt{-\/-eval-frac\ 0.25}). Uniform row schema:
@@ -658,13 +658,13 @@ sandbox substrate (CPU microVM vs GPU Runtime instance) and the task.
 & CPU sandbox --- MBPP & GPU sandbox --- KernelBench \\
 \midrule\noalign{}
 \endhead
-in-process harness & \texttt{demo\_cpu\_single} &
+in-process harness & \texttt{demo\_cpu\_mbpp} &
 \texttt{demo\_gpu\_single} \\
 \bottomrule\noalign{}
 \end{longtable}
 
 Same substrates, more tasks/patterns: \texttt{demo\_cpu\_math},
-\texttt{demo\_cpu\_quiesce} (heartbeat keepalive),
+\texttt{demo\_cpu\_heartbeat} (heartbeat keepalive),
 \texttt{demo\_gpu\_shared} (Ray pack-many farm),
 \texttt{demo\_gpu\_snapshot} (app-level snapshot/resume).
 \end{frame}

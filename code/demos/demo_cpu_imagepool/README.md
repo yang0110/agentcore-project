@@ -188,7 +188,7 @@ Two ways to hold a session warm through the barrier:
 - **Heartbeat the health endpoint.** The sandbox server answers `GET /ping` (and the runtime client
   has a cheap `op: "ping"` no-op used at `__aenter__`); firing a `/ping` — or any no-op `exec` — at
   **half the idle timeout** resets the idle clock without doing real work. The canonical
-  implementation is **`demo_cpu_quiesce`**: a `SessionKeeper` (a process-wide registry + one
+  implementation is **`demo_cpu_heartbeat`**: a `SessionKeeper` (a process-wide registry + one
   background heartbeat loop that lives **outside** the harness) plus a `KeptSandbox` wrapper that
   gates new invokes for the sync window and pings any session going stale; outside the window it
   fires **zero** heartbeats (real traffic refreshes the same clock).

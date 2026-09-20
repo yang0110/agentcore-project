@@ -34,14 +34,14 @@ Defaults otherwise (`RB=4`, `NS=8`, `MODE=B` fully-async, `EVAL_INTERVAL=10`, `S
 **Phase 0 — offline PROBES (seconds each, no GPU/AWS).** Driver: `run_smoke_sweep.sh` inside `agentcore_p4`.
 Runs each property demo's **retained probe script directly** (NOT `run.sh`, which is now the trainer);
 logs to `offline_probe.log`. Behavior markers (not just exit 0) must appear.
-- `demo_cpu_quiesce`      — `python3 quiesce_demo.py` (naive→heartbeat→recover arc)
+- `demo_cpu_heartbeat`      — `python3 heartbeat_demo.py` (naive→heartbeat→recover arc)
 - `demo_gpu_snapshot`     — `python3 snapshot_demo.py` (app-level snapshot/resume across recycle)
 - `demo_cpu_harness_scale`— `python3 harness_scaling_demo.py …` (`throughput = min(inference, sandbox, harness)` sweep)
 
 **Phase 1 — CPU RL trainers (remote AgentCore CPU sandbox, ~10 min each, ckpt deleted after).** Same driver.
-`demo_cpu_single`, `demo_cpu_math`, `demo_cpu_mixtask`, `demo_cpu_gsm8k`, `demo_cpu_math500`,
+`demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_mixtask`, `demo_cpu_gsm8k`, `demo_cpu_math500`,
 `demo_cpu_deepscaler`, `demo_cpu_humaneval`, `demo_cpu_gretelsql`, `demo_cpu_hotpotqa`,
-`demo_cpu_xlam`, `demo_cpu_mcp`, plus the three CPU property trainers `demo_cpu_quiesce`,
+`demo_cpu_xlam`, `demo_cpu_mcp`, plus the three CPU property trainers `demo_cpu_heartbeat`,
 `demo_cpu_harness_scale`, `demo_cpu_customruntime` (each now wraps a real slime run). The two GPU
 property trainers (`demo_gpu_snapshot`, `demo_gpu_customruntime`) need a live g6 ARN → run with the
 GPU trainers, not in this on-box sweep.

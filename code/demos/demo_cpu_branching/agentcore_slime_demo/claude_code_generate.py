@@ -277,6 +277,23 @@ async def generate(args, base_sample, sampling_params, evaluation: bool = False)
                 time_budget_sec=int(os.environ.get("AGENT_TIME_BUDGET_SEC", "900")),
                 prompt=_AGENT_PROMPT,
             )
+            if agent_exit_code != 0:
+                # The CLI crashed. run_agent redirects the agent's stdout+stderr to
+                # {workdir}/.harness/trajectory.jsonl (sandbox.py: `> out_file 2>&1`) but discards it
+                # on a non-zero exit, so the crash reason never reaches our run log. Read it here,
+                # BEFORE the sandbox is torn down (StopRuntimeSession destroys the microVM on __aexit__),
+                # so an exit!=0 leaves a diagnosable trace instead of a bare `exit=1 fan_out=0`.
+                try:
+                    trace = await sb.read_file(f"{_WORKDIR}/.harness/trajectory.jsonl", user="agent")
+                    logger.warning(
+                        "[branching] %s CLI exit=%d — trajectory tail:\n%s",
+                        task.task_id, agent_exit_code, (trace or "<empty>")[-1500:],
+                    )
+                except Exception as exc:  # never let diagnostics break the episode
+                    logger.warning(
+                        "[branching] %s CLI exit=%d — could not read trajectory: %r",
+                        task.task_id, agent_exit_code, exc,
+                    )
             reward = await _score(sb, task)
 
         samples = await adapter.finish_session(

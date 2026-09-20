@@ -1,4 +1,4 @@
-# demo_cpu_single — MBPP coding task, one CPU AgentCore sandbox (in-process harness)
+# demo_cpu_mbpp — MBPP coding task, one CPU AgentCore sandbox (in-process harness)
 
 An agentic-RL loop that RL-trains Qwen3-4B to solve Python problems by **writing `solution.py` →
 running the hidden unit tests → reading the failure → fixing → repeat**. The AgentCore Runtime is
@@ -64,7 +64,7 @@ harness and the slime trainer stay on the training box.
 
 ### 0. Prereqs
 - Run everything INSIDE the persistent container `agentcore_p4` (slimerl/slime); the repo is at
-  `/work/code`, this demo at `/work/code/demos/demo_cpu_single`.
+  `/work/code`, this demo at `/work/code/demos/demo_cpu_mbpp`.
 - Region `us-west-2` (`AWS_REGION`), plus AWS creds (`AWS_BEARER_TOKEN_BEDROCK`) for the
   `invoke_agent_runtime` calls.
 - Shared, NOT vendored (reference by path): the deploy orchestrator under `code/deploy/`, and the

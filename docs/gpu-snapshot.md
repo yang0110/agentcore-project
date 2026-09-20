@@ -8,7 +8,7 @@ across a weight sync)?
 **application-level** snapshot inside your own container is feasible, and even that loses to a plain
 heartbeat for the one case we actually care about (weight-sync quiesce). Use the heartbeat +
 re-seed model instead — see [`demos-program.md`](demos-program.md) and
-[`code/demos/demo_cpu_quiesce/`](../code/demos/demo_cpu_quiesce/).
+[`code/demos/demo_cpu_heartbeat/`](../code/demos/demo_cpu_heartbeat/).
 
 ## Wall 1 — you don't own the instance
 An AgentCore Runtime on a capacity provider runs your container image on **AWS-managed** compute.
@@ -81,4 +81,4 @@ max-lifetime**, which weight sync never is. So the architecture is:
 - **Re-seed** (tier-a serialization) to recover from a genuine loss — `recovery.py`.
 - **Snapshot never needed.**
 
-Demonstrated end-to-end in [`code/demos/demo_cpu_quiesce/`](../code/demos/demo_cpu_quiesce/).
+Demonstrated end-to-end in [`code/demos/demo_cpu_heartbeat/`](../code/demos/demo_cpu_heartbeat/).

@@ -16,12 +16,41 @@ loads without slime installed.
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 from .harness import Trajectory, run_episode
 from .policy import SGLangPolicy
 from .sandbox import make_sandbox
+from .session_keeper import KeptSandbox, SessionKeeper
 from .task import CodingTask
+
+
+def _truthy(v: str | None) -> bool:
+    return (v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Process-wide keep-warm singleton (demo_cpu_heartbeat's headline). One SessionKeeper per worker
+# process heartbeats any sandbox session that goes idle past ping_fraction*idle_timeout — i.e.
+# during the weight-sync stall (and rollout tails) — so AgentCore never idle-reclaims an in-flight
+# session mid-run. Started lazily on whatever event loop first runs an episode; re-armed if the loop
+# changes (Mode B fully-async worker loop vs the eval loop). Gated by HEARTBEAT_KEEP_WARM (default on).
+_KEEPER: SessionKeeper | None = None
+_KEEPER_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+async def _get_keeper() -> SessionKeeper:
+    global _KEEPER, _KEEPER_LOOP
+    idle = float(os.environ.get("HEARTBEAT_IDLE", "600"))
+    frac = float(os.environ.get("HEARTBEAT_PING_FRACTION", "0.5"))
+    if _KEEPER is None:
+        _KEEPER = SessionKeeper(ping_fraction=frac, tick=min(5.0, idle * frac / 2 or 5.0))
+        _KEEPER.keep_warm_begin()
+    loop = asyncio.get_running_loop()
+    if _KEEPER_LOOP is not loop:      # first use, or a new loop (worker vs eval): (re)arm the loop task
+        await _KEEPER.start()
+        _KEEPER_LOOP = loop
+    return _KEEPER
 
 
 def build_token_stream(
@@ -115,7 +144,7 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     slime's dispatch (generate_and_rm) treats a LIST return as the "fan-out" case and hands
     back list[list[Sample]] from generate_and_rm_group. The stock rollout path tolerates that
     nesting everywhere via `isinstance(group[0], list)` guards, but the fully-async path
-    (slime.rollout.fully_async_rollout, used by demo_cpu_single's Mode B ablation) does NOT guard its
+    (slime.rollout.fully_async_rollout, used by demo_cpu_mbpp's Mode B ablation) does NOT guard its
     sort key and crashes on the nested shape. Returning a bare Sample keeps us on slime's
     primary (non-fan-out) shape, which BOTH the stock and fully-async paths handle. Behavior
     is identical for the stock demos (one flattened sample per episode either way)."""
@@ -143,11 +172,20 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     sandbox = make_sandbox(os.environ.get("SANDBOX", "agentcore"),
                            region=os.environ.get("AGENTCORE_REGION"))
 
+    # Keep-warm: wrap the sandbox so it registers with the process-wide SessionKeeper, which
+    # heartbeats it if it goes idle across the weight-sync barrier. Falsy HEARTBEAT_KEEP_WARM =>
+    # behave exactly like demo_cpu_mbpp (no wrap, no keeper). See _get_keeper above.
+    if _truthy(os.environ.get("HEARTBEAT_KEEP_WARM", "1")):
+        keeper = await _get_keeper()
+        sandbox = KeptSandbox(sandbox, keeper,
+                              idle_timeout=float(os.environ.get("HEARTBEAT_IDLE", "600")))
+
     async with sandbox as sb:
         # ONE [router] record per episode: the join that ties this episode's sandbox session (also
         # stamped on every [sbx-op]) to the engine its turns were pinned to and the Runtime it used.
-        # metrics.py parses these into <log>.router.csv and check_stickiness asserts each episode is
-        # sticky to one engine / sandbox session / runtime ARN.
+        # The *_of helpers dig through the KeptSandbox wrapper to the real session/ARN. metrics.py
+        # parses these into <log>.router.csv and check_stickiness asserts each episode is sticky to
+        # one engine / sandbox session / runtime ARN.
         router_trace.emit(
             task_id=task.task_id,
             rollout_id=getattr(sample, "index", "?"),

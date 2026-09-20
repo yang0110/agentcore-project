@@ -98,7 +98,7 @@ idle. Surviving that pause is **two patterns on two substrates** — one demo ea
 
 | Demo | Substrate | Lever | Survives |
 |---|---|---|---|
-| [`demo_cpu_quiesce`](../code/demos/demo_cpu_quiesce/) | serverless CPU **Code-Interpreter microVM** | **heartbeat** (+ quiesce gate) | the *idle timeout* — keep the warm session from being reclaimed during the pause |
+| [`demo_cpu_heartbeat`](../code/demos/demo_cpu_heartbeat/) | serverless CPU **Code-Interpreter microVM** | **heartbeat** (+ quiesce gate) | the *idle timeout* — keep the warm session from being reclaimed during the pause |
 | [`demo_gpu_snapshot`](../code/demos/demo_gpu_snapshot/) | **GPU Runtime instance** | **application-level snapshot & resume** | a genuine *recycle* — restore workspace state onto a fresh session (there is no VM snapshot; [gpu-snapshot.md](gpu-snapshot.md)) |
 
 **Heartbeat keeps a *live* session warm; snapshot restores a *lost* one.** Both are standalone,
@@ -106,7 +106,7 @@ offline (no AWS/GPU), runnable in seconds. Reusable mechanisms:
 `agentcore_slime_demo/session_keeper.py` (`SessionKeeper` + `KeptSandbox`) and
 `agentcore_slime_demo/snapshot_store.py` (`snapshot_workspace`/`restore_workspace`).
 
-#### Demo 1 — microVM heartbeat (`demo_cpu_quiesce`)
+#### Demo 1 — microVM heartbeat (`demo_cpu_heartbeat`)
 
 Chosen semantics: **lightweight quiesce (a gate)** — hold new sandbox invokes during sync, keep
 sessions warm via heartbeat, resume after. The heartbeat lives **outside the harness** by design:

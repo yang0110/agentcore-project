@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the 8 standalone per-task CPU demos (demo_cpu_<task>) from the demo_cpu_single lib.
+"""Generate the 8 standalone per-task CPU demos (demo_cpu_<task>) from the demo_cpu_mbpp lib.
 
 Each generated folder is a fully self-contained agentic-RL recipe: its own vendored
 agentcore_slime_demo/ + deploy/ + data/ (only that task's train/eval JSONL) + run.sh (FAMILY baked
@@ -8,14 +8,14 @@ re-sync all 8 (it removes and rebuilds each demo_cpu_<task> dir):
 
     python3 code/demos/gen_task_demos.py
 
-Source of truth for the vendored lib + run.sh + deploy + metrics is demo_cpu_single; the data files
-come from demo_cpu_single (coding/sql/rag/toolcall) or demo_cpu_math (math). Build the data first
+Source of truth for the vendored lib + run.sh + deploy + metrics is demo_cpu_mbpp; the data files
+come from demo_cpu_mbpp (coding/sql/rag/toolcall) or demo_cpu_math (math). Build the data first
 with each demo's prepare_data.sh (or the source demos' prepare_data.sh) so the JSONL exists to copy.
 """
 import os, shutil
 
 DEMOS = os.path.dirname(os.path.abspath(__file__))
-SRC_SINGLE = os.path.join(DEMOS, "demo_cpu_single")
+SRC_SINGLE = os.path.join(DEMOS, "demo_cpu_mbpp")
 SRC_MATH = os.path.join(DEMOS, "demo_cpu_math")
 LIB = os.path.join(SRC_SINGLE, "agentcore_slime_demo")
 DEPLOY = os.path.join(SRC_SINGLE, "deploy")
@@ -192,7 +192,7 @@ for t in TASKS:
         shutil.copy2(os.path.join(t["data_src"], "data", f"{t['prefix']}_{suf}.jsonl"),
                      os.path.join(dst, "data", f"{t['prefix']}_{suf}.jsonl"))
     # run.sh: retarget DEMO_DIR + bake in FAMILY default
-    run = RUN_BASE.replace("DEMO_DIR=/work/code/demos/demo_cpu_single",
+    run = RUN_BASE.replace("DEMO_DIR=/work/code/demos/demo_cpu_mbpp",
                            f"DEMO_DIR=/work/code/demos/demo_cpu_{t['prefix']}")
     run = run.replace('FAMILY="${FAMILY:-coding}"', f'FAMILY="${{FAMILY:-{t["prefix"]}}}"')
     assert f"demo_cpu_{t['prefix']}" in run and f"FAMILY:-{t['prefix']}" in run, t["prefix"]

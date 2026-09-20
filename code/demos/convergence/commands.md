@@ -7,7 +7,7 @@ next to each demo's `ckpt/` as `train.convergence_<timestamp>.log`. See `README.
 
 ```bash
 # ---- CPU demos (remote managed AgentCore sandbox, SANDBOX=agentcore-runtime) ----
-bash code/demos/convergence/01_cpu_single.sh      # MBPP coding
+bash code/demos/convergence/01_cpu_mbpp.sh      # MBPP coding
 bash code/demos/convergence/02_cpu_math.sh        # Hendrycks MATH
 bash code/demos/convergence/03_cpu_gsm8k.sh       # GSM8K (easiest — good first run)
 bash code/demos/convergence/04_cpu_math500.sh     # MATH-500
@@ -32,7 +32,7 @@ bash code/demos/convergence/14_gpu_local.sh        # whole-GPU farm on GPUs 6,7
 #   (host)      bash code/deploy/run_local_gpu_runtime.sh stop   # teardown
 
 # ---- Property demos, now real trainers (headline knob default-ON) ----
-bash code/demos/convergence/15_cpu_quiesce.sh        # keep-warm across the barrier (QUIESCE_KEEP_WARM=1)
+bash code/demos/convergence/15_cpu_heartbeat.sh        # keep-warm across the barrier (HEARTBEAT_KEEP_WARM=1)
 bash code/demos/convergence/16_cpu_harness_scale.sh  # warm run_episode worker pool (HARNESS_WORKERS=4, MODE=A)
 bash code/demos/convergence/17_cpu_customruntime.sh  # deepscaler on your custom CPU Runtime
 # 18 is REMOTE-ONLY (no LOCAL_GPU path): export a live g6 ARN.

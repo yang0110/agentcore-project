@@ -40,11 +40,11 @@ standalone recipe** — its own dir with a `README.md`, vendored `agentcore_slim
 
 | Demo | Task | Real use case |
 |---|---|---|
-| [cpu_single](../../../code/demos/demo_cpu_single/README.md) | MBPP repair | test-driven coding (the reference demo, **trained**) |
+| [cpu_mbpp](../../../code/demos/demo_cpu_mbpp/README.md) | MBPP repair | test-driven coding (the reference demo, **trained**) |
 | [cpu_math](../../../code/demos/demo_cpu_math/README.md) | math words | math post-training |
 | [gpu_single](../../../code/demos/demo_gpu_single/README.md) | KernelBench | CUDA-kernel agent on a real GPU (**trained**) |
 | [gpu_shared](../../../code/demos/demo_gpu_shared/README.md) | KernelBench (Ray farm) | GPU packing when the fleet is scarce/costly |
-| [cpu_quiesce](../../../code/demos/demo_cpu_quiesce/README.md) | heartbeat | keep a warm sandbox alive across the weight-sync pause |
+| [cpu_heartbeat](../../../code/demos/demo_cpu_heartbeat/README.md) | heartbeat | keep a warm sandbox alive across the weight-sync pause |
 | [gpu_snapshot](../../../code/demos/demo_gpu_snapshot/README.md) | snapshot | survive a GPU-instance recycle (app-level S3 snapshot) |
 
 ### Per-task CPU fan-out (8, real HF datasets)
@@ -77,5 +77,5 @@ standalone recipe** — its own dir with a `README.md`, vendored `agentcore_slim
 | [gpu_customruntime](../../../code/demos/demo_gpu_customruntime/README.md) | trivial | GPU available only via a custom Runtime (capability compare) |
 | [gpu_local](../../../code/demos/demo_gpu_local/README.md) | KernelBench | local whole-GPU-per-session Ray farm |
 
-**Status (honest):** only `cpu_single` and `gpu_single` carry ~10-step training curves; the
+**Status (honest):** only `cpu_mbpp` and `gpu_single` carry ~10-step training curves; the
 rest are `NR=3` smoke runs or ready-to-run recipes. See each demo's README for specifics.

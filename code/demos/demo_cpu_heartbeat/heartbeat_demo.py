@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""demo_cpu_quiesce — quiesce / resume the sandbox across the weight-sync barrier (standalone).
+"""demo_cpu_heartbeat — quiesce / resume the sandbox across the weight-sync barrier (standalone).
 
 Runs the exact arc from docs/demos-program.md "quiesce / resume the sandbox", end-to-end, in a few
 seconds, with NO AWS and NO GPU:
@@ -18,8 +18,8 @@ The heartbeat lives in SessionKeeper + KeptSandbox (agentcore_slime_demo/session
 the harness — the whole point of the design. By default the idle timeout is modelled locally by
 AgentCoreIdleSim (agentcore_idle_sim.py) so the demo runs offline.
 
-    python3 quiesce_demo.py                 # defaults: idle=4s, pause=10s, tick=0.5s
-    IDLE=6 PAUSE=20 python3 quiesce_demo.py  # a longer pause; still survives on the heartbeat
+    python3 heartbeat_demo.py                 # defaults: idle=4s, pause=10s, tick=0.5s
+    IDLE=6 PAUSE=20 python3 heartbeat_demo.py  # a longer pause; still survives on the heartbeat
 
 Run against real AgentCore
 --------------------------
@@ -31,7 +31,7 @@ Because Code Interpreter's idle timeout is 900s, IDLE defaults to 900 in real mo
 survives ACT 1 too — seeing a genuine reclamation requires PAUSE > idle_timeout. Keep PAUSE small so
 the smoke is fast:
 
-    REAL_AGENTCORE=1 SANDBOX=agentcore AGENTCORE_REGION=us-west-2 PAUSE=30 python3 quiesce_demo.py
+    REAL_AGENTCORE=1 SANDBOX=agentcore AGENTCORE_REGION=us-west-2 PAUSE=30 python3 heartbeat_demo.py
 """
 
 from __future__ import annotations
@@ -272,13 +272,13 @@ async def act3_recover_real() -> None:
 async def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     if REAL:
-        print(f"demo_cpu_quiesce — IDLE={IDLE}s PAUSE={PAUSE}s TICK={TICK}s "
+        print(f"demo_cpu_heartbeat — IDLE={IDLE}s PAUSE={PAUSE}s TICK={TICK}s "
               f"(REAL AgentCore sandbox: {_SANDBOX or 'agentcore'})")
         await act1_naive_real()
         await act2_heartbeat_real()
         await act3_recover_real()
     else:
-        print(f"demo_cpu_quiesce — IDLE={IDLE}s PAUSE={PAUSE}s TICK={TICK}s (offline LocalSandbox)")
+        print(f"demo_cpu_heartbeat — IDLE={IDLE}s PAUSE={PAUSE}s TICK={TICK}s (offline LocalSandbox)")
         await act1_naive()
         await act2_heartbeat()
         await act3_recover()

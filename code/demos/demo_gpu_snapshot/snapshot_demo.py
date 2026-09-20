@@ -231,7 +231,7 @@ async def main() -> int:
            f"({wasted} rework step(s) saved).\n"
            "This is application-level state (S3 in prod) — NOT a VM/EC2 snapshot, which AgentCore\n"
            "does not offer. See docs/gpu-snapshot.md. For a seconds-long weight-sync pause, prefer\n"
-           "the heartbeat (demo_cpu_quiesce); snapshot the workspace only to survive a real recycle.")
+           "the heartbeat (demo_cpu_heartbeat); snapshot the workspace only to survive a real recycle.")
     return 0
 
 

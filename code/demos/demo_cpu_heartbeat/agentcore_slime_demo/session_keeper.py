@@ -86,13 +86,13 @@ class SessionKeeper:
         self._gate = asyncio.Event()
         self._gate.set()
         self._quiesced = False
-        # Continuous keep-warm (used by the REAL trainer, demo_cpu_quiesce/run.sh): heartbeat any
+        # Continuous keep-warm (used by the REAL trainer, demo_cpu_heartbeat/run.sh): heartbeat any
         # session that goes idle past ping_fraction*idle_timeout REGARDLESS of an explicit sync
         # window, WITHOUT closing the gate. A decoupled slime run gives the harness no callback at
         # its internal weight-sync barrier, but generation naturally goes silent during that barrier
         # (and rollout tails) — so an always-on idle heartbeat is what actually holds sessions warm
         # across the live sync stall. `sync_begin/sync_end` (the gate) stay available and unchanged
-        # for the offline quiesce_demo.py which drives the barrier explicitly.
+        # for the offline heartbeat_demo.py which drives the barrier explicitly.
         self._keep_warm = False
         self._task: asyncio.Task | None = None
         # Observability for the demo / metrics.

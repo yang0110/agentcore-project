@@ -34,7 +34,7 @@ silently fall off the AgentCore substrate (the serverless CPU sandbox is always 
 
 | Substrate | Demo | Task / point |
 |---|---|---|
-| **CPU serverless microVM** (Code Interpreter) | [`demo_cpu_single/`](demo_cpu_single/) | the reference — MBPP coding on a CPU microVM, 4 train + 4 infer + 0 env; task-family zoo via `FAMILY` |
+| **CPU serverless microVM** (Code Interpreter) | [`demo_cpu_mbpp/`](demo_cpu_mbpp/) | the reference — MBPP coding on a CPU microVM, 4 train + 4 infer + 0 env; task-family zoo via `FAMILY` |
 | | [`demo_cpu_math/`](demo_cpu_math/) | math word problems (multi-task: `gsm8k`/`math500`/`deepscaler` via `FAMILY`) |
 | | [`demo_cpu_mixtask/`](demo_cpu_mixtask/) | **mixed-task** — every rollout step's batch spans several families at once (math+sql+ctf+tool_use); remote-only |
 | _per-task, real HF datasets_ | [`demo_cpu_gsm8k/`](demo_cpu_gsm8k/) | GSM8K grade-school math (`openai/gsm8k`) |
@@ -45,15 +45,15 @@ silently fall off the AgentCore substrate (the serverless CPU sandbox is always 
 | | [`demo_cpu_hotpotqa/`](demo_cpu_hotpotqa/) | multi-hop retrieval QA (`hotpotqa/hotpot_qa`) |
 | | [`demo_cpu_xlam/`](demo_cpu_xlam/) | function calling (`minpeter/xlam-function-calling-60k-parsed`) |
 | | [`demo_cpu_mcp/`](demo_cpu_mcp/) | MCP-style tool calling (`Team-ACE/ToolACE`) |
-| | [`demo_cpu_quiesce/`](demo_cpu_quiesce/) | **resilience** — heartbeat that keeps the microVM warm across the weight-sync barrier |
+| | [`demo_cpu_heartbeat/`](demo_cpu_heartbeat/) | **resilience** — heartbeat that keeps the microVM warm across the weight-sync barrier |
 | **GPU Runtime instance** (g6 capacity provider) | [`demo_gpu_single/`](demo_gpu_single/) | KernelBench (level_1 CUDA); checker's GPU is the remote g6 sandbox Runtime, so the trainer box stays 4 train + 4 infer + 0 env |
 | | [`demo_gpu_shared/`](demo_gpu_shared/) | KernelBench + a Ray GPU-sharing farm — many envs share one GPU on the remote g6 sandbox Runtime |
 | | [`demo_gpu_snapshot/`](demo_gpu_snapshot/) | **resilience** — application-level snapshot & resume across a GPU instance recycle |
 | **harness-scaling** (varies the *harness* tier, not the sandbox) | [`demo_cpu_harness_scale/`](demo_cpu_harness_scale/) | one task (DeepScaleR), a pool of **W warm mini-Claude harness workers** → the async-RL scaling law `throughput = min(inference, sandbox, harness)` |
 
-The 8 per-task CPU demos (`gsm8k` … `mcp`) are the same in-process-harness loop as `demo_cpu_single`,
+The 8 per-task CPU demos (`gsm8k` … `mcp`) are the same in-process-harness loop as `demo_cpu_mbpp`,
 each pinned to one real HF dataset + its hidden RLVR checker (see the task/dataset table in each
-README); `demo_cpu_single` reaches the same tasks via its `FAMILY` selector.
+README); `demo_cpu_mbpp` reaches the same tasks via its `FAMILY` selector.
 
 The demos above vary the **sandbox**; `demo_cpu_harness_scale` is the exception — it fixes the task
 and sandbox and makes the **harness the scalable tier** (a warm in-process worker pool), to show the
@@ -68,7 +68,7 @@ in-process is the recommended path.
 
 ## Which to run
 
-- **`demo_cpu_single`** — the reference. Runs offline-friendly (`SANDBOX=local`) or on real AWS Code
+- **`demo_cpu_mbpp`** — the reference. Runs offline-friendly (`SANDBOX=local`) or on real AWS Code
   Interpreter microVMs (`SANDBOX=agentcore`). Most battle-tested.
 - **`demo_gpu_single`** — GPU-sandbox path; the KernelBench checker's GPU is the remote g6 sandbox Runtime, so
   the trainer box stays 4 train + 4 infer + 0 env. Trains on
@@ -76,7 +76,7 @@ in-process is the recommended path.
   Defaults `RB=4/NS=8/NR=20`; keep `NR × RB ≤ 100` (see its README).
 - **`demo_gpu_shared`** — extends the GPU-sandbox path with a Ray GPU-sharing farm on the remote g6
   sandbox Runtime (many envs packed onto one GPU).
-- **`demo_cpu_quiesce` / `demo_gpu_snapshot`** — the two **resilience** demos (keeping a paused
+- **`demo_cpu_heartbeat` / `demo_gpu_snapshot`** — the two **resilience** demos (keeping a paused
   sandbox alive / recovering a lost one across the weight-sync barrier). Both run offline in seconds,
   no AWS or GPU. See [`../../docs/demos-program.md`](../../docs/demos-program.md).
 

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Download + prepare demo_cpu_single's REAL datasets into data/ (coding + the CPU task zoo).
+# Download + prepare demo_cpu_mbpp's REAL datasets into data/ (coding + the CPU task zoo).
 #
 # Run INSIDE the persistent container agentcore_p4 (has `datasets`; needs one-time network to pull
 # the HF rows). From the repo root on the host:
-#     docker exec agentcore_p4 bash /work/code/demos/demo_cpu_single/prepare_data.sh
+#     docker exec agentcore_p4 bash /work/code/demos/demo_cpu_mbpp/prepare_data.sh
 #
 # Every dataset is RLVR (verifiable reward): a hidden, exact offline checker that runs in the stdlib
 # CPU sandbox — no LLM judge. Two vendored builders keep this folder self-contained:
