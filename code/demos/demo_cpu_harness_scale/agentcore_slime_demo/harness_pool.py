@@ -221,6 +221,13 @@ class HarnessPool:
                     sandbox_session=getattr(sb, "_session_id", getattr(sb, "_sub", "?")),
                     runtime_arn=router_trace.arn_tail(getattr(sb, "_arn", None)),
                 )
+                # DEMO-SPECIFIC metric ([demo] channel): which warm worker drove this episode +
+                # the shared queue depth at pickup time. metrics.py value-counts `worker` (per-worker
+                # episode counts = utilization: the pull-queue balances by availability, no hot-spot)
+                # and aggregates `qdepth` (backlog waiting on harness capacity). This episode does not
+                # go through harness.run_episode, so this is its only [demo] record.
+                print(f"[demo] worker={wid} qdepth={self._queue.qsize() if self._queue else 0}",
+                      flush=True)
 
                 # Seed the workspace exactly like run_episode: family files, then the checker,
                 # then PROBLEM.md — all RELATIVE paths (resolved against the sandbox workdir).

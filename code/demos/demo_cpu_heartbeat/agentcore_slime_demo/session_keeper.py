@@ -188,6 +188,13 @@ class SessionKeeper:
                             s.last = self._clock()
                             s.pings += 1
                             self.total_pings += 1
+                            # DEMO-SPECIFIC metric ([demo] channel): one line per heartbeat fired.
+                            # This is the whole point of the demo — beats keep an idle sandbox session
+                            # alive across the weight-sync stall so it is NOT idle-reclaimed. Must be
+                            # >0 with HEARTBEAT_KEEP_WARM=1 and 0 in the A/B baseline; metrics.py
+                            # value-counts `heartbeat_session` and aggregates `total_pings`.
+                            print(f"[demo] heartbeat_session={s.session_id} session_pings={s.pings} "
+                                  f"total_pings={self.total_pings}", flush=True)
                 await asyncio.sleep(self._tick)
         except asyncio.CancelledError:
             raise

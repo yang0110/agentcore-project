@@ -28,9 +28,19 @@ RUN pip install --no-cache-dir \
         bedrock-agentcore
 
 # The AgentCore Runtime server: sandbox_server_agent.py answers /invocations (write_file/exec/read_file)
-# and /ping, identical to the small-image demos. Vendored under the demo's lib dir.
+# and /ping, identical to the small-image demos. Vendored under the demo's lib dir. We also ship the
+# CPU shared-instance FARM (sandbox_cpu_farm + its fresh-env helper): with SANDBOX_FARM=cpu, episodes
+# invoked under one shared runtimeSessionId (SANDBOX=agentcore-ray-farm on the client) all reuse this
+# ONE warm instance — paying the ~60-80 s cold-boot ONCE — while each per-episode sub_session still
+# gets a FRESH, fully-isolated environment (own workdir + HOME/TMPDIR/caches, wiped on close).
 WORKDIR /app
 COPY agentcore_slime_demo/sandbox_server_agent.py /app/sandbox_server_agent.py
+COPY agentcore_slime_demo/sandbox_cpu_farm.py /app/sandbox_cpu_farm.py
+COPY agentcore_slime_demo/sandbox_farm_env.py /app/sandbox_farm_env.py
+
+# Select the CPU shared-instance farm (fresh env per sub_session). Baked into the image so a plain
+# CreateAgentRuntime picks it up; still overridable via the runtime's environmentVariables.
+ENV SANDBOX_FARM=cpu
 
 EXPOSE 8080
 CMD ["python", "/app/sandbox_server_agent.py"]

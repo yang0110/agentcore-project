@@ -53,11 +53,21 @@ if [ "$LOCAL_GPU" = "1" ]; then
   INVOKE_MAX_RETRIES="${INVOKE_MAX_RETRIES:-20}"
 fi
 
-SANDBOX="${SANDBOX:-agentcore-runtime}"   # the sandbox is YOUR custom GPU-backed AgentCore Runtime on
+SANDBOX="${SANDBOX:-agentcore-ray-farm}"  # the sandbox is YOUR custom GPU-backed AgentCore Runtime on
                                           # a g6 Instance (sandbox_server_agent.py). The KernelBench
                                           # torch/CUDA checker runs THERE (remote) — the ONLY backend
                                           # with a GPU. SANDBOX=agentcore (Code Interpreter) is CPU-only
                                           # and cannot serve this training.
+# WARM-INSTANCE (shared-g6) default for the REMOTE path too (matching the LOCAL_GPU farm above): all
+# episodes invoke the g6 under ONE shared runtimeSessionId (B4_SHARED_RUNTIME_SESSION) + a per-episode
+# sub_session, so AgentCore keeps them on the SAME warm g6 (cold-boot paid ONCE per run) and the
+# server's in-process Ray farm gives each episode a FRESH isolated env on a WHOLE GPU. Replaces the old
+# remote one-session-=one-dedicated-g6 default, whose instance count scaled with concurrency (not
+# cost-feasible). Same g6 image serves both paths; no redeploy. (`:-` no-ops when LOCAL_GPU=1 set these.)
+# Set SANDBOX=agentcore-runtime for the legacy per-episode dedicated-instance path.
+B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-b4farm-$(python3 -c 'import secrets;print(secrets.token_hex(16))')}"
+export B4_FARM_MAX_CONCURRENT="${B4_FARM_MAX_CONCURRENT:-1}"   # client open-gate == server whole-GPU slots (one warm g6)
+CONC="${CONC:-1}"                         # <= whole-GPU farm slots (one warm g6, whole GPU per episode)
 # ---- Task set: the REAL KernelBench (ScalingIntelligence/KernelBench) ----------------------------
 # Train = level_1 (100 single-op CUDA problems); held-out eval = 20 level_2 fusion problems (disjoint,
 # no leakage). Build with build_dataset.py --dataset kernelbench --level level_1 --limit 100 (train)

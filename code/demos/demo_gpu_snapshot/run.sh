@@ -23,9 +23,43 @@
 # UNVERIFIED on hardware.
 set -euo pipefail
 
-SANDBOX="${SANDBOX:-agentcore-runtime}"   # the sandbox is its OWN GPU-backed AgentCore Runtime #2
+# ON-BOX SMOKE (no remote g6): LOCAL_GPU=1 serves the SAME sandbox_server_agent GPU image as a LOCAL
+# whole-GPU Ray farm on this box's reserved GPUs 6,7 (identical to demo_gpu_local), with slime on GPUs
+# 0-5. App-level snapshot/resume works unchanged (it persists to the snapshot store, not the session).
+# Two-step, exactly like demo_gpu_local / demo_gpu_customruntime:
+#     bash code/deploy/run_local_gpu_runtime.sh local        # start the farm on 6,7 (host)
+#     LOCAL_GPU=1 bash code/demos/demo_gpu_snapshot/run.sh    # then run this (inside agentcore_p4)
+#     bash code/deploy/run_local_gpu_runtime.sh stop          # tear down after
+LOCAL_GPU="${LOCAL_GPU:-0}"
+if [ "$LOCAL_GPU" = "1" ]; then
+  SANDBOX="${SANDBOX:-agentcore-ray-farm}"                 # local Ray-farm backend (RayFarmRuntimeSandbox)
+  ACTOR_GPUS="${ACTOR_GPUS:-4}"; ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"   # 4 train + 2 infer = 6; GPUs 6,7 -> farm
+  SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-6}"; SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-0,1,2,3,4,5}"
+  AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-http://127.0.0.1:8080}"
+  AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:-}"  # local endpoint, no remote ARN
+  CONC="${CONC:-2}"                                        # <= whole-GPU farm slots (2)
+  B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-b4farm-$(python3 -c 'import secrets;print(secrets.token_hex(16))')}"
+  export B4_FARM_MAX_CONCURRENT="${B4_FARM_MAX_CONCURRENT:-2}"   # client open-gate == server whole-GPU slots
+  INVOKE_MAX_RETRIES="${INVOKE_MAX_RETRIES:-20}"
+fi
+
+SANDBOX="${SANDBOX:-agentcore-ray-farm}"  # the sandbox is its OWN GPU-backed AgentCore Runtime #2
                                           # (sandbox_server_agent.py on a g6). The KernelBench torch/CUDA
                                           # checker runs THERE (remote), so no local env GPUs are used.
+# WARM-INSTANCE (shared-g6) default: all episodes invoke the g6 under ONE shared runtimeSessionId
+# (B4_SHARED_RUNTIME_SESSION) + a per-episode sub_session, so AgentCore keeps them on the SAME warm g6
+# (capacity-provider cold-boot paid ONCE per run, not per episode) and the server's in-process Ray farm
+# (engaged by the sub_session) gives each episode a FRESH isolated env on a WHOLE GPU. Replaces the old
+# one-session-=one-dedicated-g6 default, whose instance count scaled with concurrency (not cost-feasible).
+# App-level snapshot/resume is orthogonal — it persists SNAPSHOT_PATHS in the snapshot store keyed by
+# task and restores them into each fresh sub_session dir. Same g6 image serves both paths; no redeploy.
+# (Set SANDBOX=agentcore-runtime for the legacy per-episode dedicated-instance path.)
+B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-b4farm-$(python3 -c 'import secrets;print(secrets.token_hex(16))')}"
+# Client OPEN gate; must EQUAL the server's whole-GPU farm slots (one slot per g6 GPU). Default 1 (one
+# warm g6, episodes serialized); raise to the g6's GPU count for intra-instance parallelism (still ONE
+# warm instance).
+export B4_FARM_MAX_CONCURRENT="${B4_FARM_MAX_CONCURRENT:-1}"
+CONC="${CONC:-1}"                         # <= whole-GPU farm slots (one warm g6, whole GPU per episode)
 # ---- Task set: the REAL KernelBench (ScalingIntelligence/KernelBench) ----------------------------
 # Train = level_1 (100 single-op CUDA problems); held-out eval = 20 level_2 fusion problems (disjoint).
 # Save-only-at-end holds regardless of dataset size (explicit --num-rollout => no epoch-boundary save;
@@ -61,7 +95,10 @@ ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"                       # 4 train + 4 infer = 8;
 SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-8}"
 SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-}"
 AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-}"
-AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU sandbox Runtime #2 ARN — for an on-box GPU run with no remote g6, use demo_gpu_local instead}"
+# Remote path requires the g6 ARN; the LOCAL_GPU on-box path uses the local endpoint instead (no ARN).
+if [ "$LOCAL_GPU" != "1" ]; then
+  AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU sandbox Runtime #2 ARN — for an on-box GPU run with no remote g6, use LOCAL_GPU=1 (or demo_gpu_local)}"
+fi
 DATA="${DATA:-$DEMO_DIR/data/kernelbench_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-kernelbench}"
@@ -173,6 +210,7 @@ RUNTIME_ENV_JSON="{
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\",
     \"AGENTCORE_LOCAL_ENDPOINT\": \"${AGENTCORE_LOCAL_ENDPOINT}\",
+    \"B4_SHARED_RUNTIME_SESSION\": \"${B4_SHARED_RUNTIME_SESSION:-}\",
     \"SNAPSHOT_EVERY\": \"${SNAPSHOT_EVERY}\",
     \"SNAPSHOT_DIR\": \"${SNAPSHOT_DIR}\",
     \"SNAPSHOT_PATHS\": \"${SNAPSHOT_PATHS}\",

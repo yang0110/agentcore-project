@@ -105,9 +105,18 @@ def runtime_on_cp(name: str, image_uri: str, exec_arn: str, cp_arn: str, env: di
     """Register the Runtime on the CPU capacity provider. networkMode=PUBLIC (pull-only, no inbound);
     no filesystem volume (unlike the GPU path, which mounts a models EBS volume)."""
     control = boto3.client("bedrock-agentcore-control", region_name=REGION)
+    # A new image or env (e.g. turning on the CPU farm) needs a fresh CreateAgentRuntime — the reuse
+    # path does NOT update an existing runtime's image/env. FORCE_RECREATE=1 deletes the existing one
+    # first so the redeploy picks up the change (this mints a new ARN — the script prints it).
+    if os.environ.get("FORCE_RECREATE") == "1":
+        _, rid, _ = d._existing_runtime_arn(control, name)
+        if rid:
+            d.err(f"FORCE_RECREATE=1 — deleting existing runtime {name} to pick up new image/env")
+            control.delete_agent_runtime(agentRuntimeId=rid)
+            time.sleep(10)
     arn = d._reuse_or_clear(control, name)
     if arn:
-        d.err(f"reusing runtime {name}")
+        d.err(f"reusing runtime {name} (set FORCE_RECREATE=1 to pick up a new image/env)")
         return arn
     resp = control.create_agent_runtime(
         agentRuntimeName=name,
@@ -127,7 +136,9 @@ def main() -> int:
     xrole = d.exec_role(f"{PREFIX}-exec-role")
     op_arn = d.operator_role(f"{PREFIX}-cpu-operator-role")
     cp_arn = cpu_capacity_provider(CP_NAME, op_arn)
-    env = {"AWS_REGION": REGION, "SANDBOX_WORKDIR": "/workspace"}
+    # SANDBOX_FARM=cpu turns on the shared-instance CPU farm (fresh env per sub_session). It is also
+    # baked into the image (Dockerfile ENV); set here too so it's explicit in the runtime config.
+    env = {"AWS_REGION": REGION, "SANDBOX_WORKDIR": "/workspace", "SANDBOX_FARM": "cpu"}
     arn = runtime_on_cp(RUNTIME_NAME, uri, xrole, cp_arn, env)
     d.err(f"runtime {RUNTIME_NAME} -> {arn}")
 

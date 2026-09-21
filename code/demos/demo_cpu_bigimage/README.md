@@ -71,12 +71,45 @@ docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_bigimage/metrics.py \
     --csv train.csv --eval-csv train.eval.csv --plot train.png
 ```
 
+## Warm-instance reuse: the shared-instance CPU farm
+
+By default (`SANDBOX=agentcore-runtime`) every episode mints its **own** `runtimeSessionId`, and
+AgentCore maps 1 session → 1 instance, so **each episode boots a fresh `m5` and pays the ~60–80 s
+capacity-provider cold-boot.** For a 10-step smoke that is ~180 cold boots — the boot dominates the
+wall-clock. That per-episode isolation is the *point* of the default path (each episode is pristine),
+but it is wasteful when you just want throughput.
+
+`SANDBOX=agentcore-ray-farm` is the **warm-reuse** path: all episodes invoke under **one shared
+`runtimeSessionId`** (`B4_SHARED_RUNTIME_SESSION`, minted once per run in `run.sh`), so they all land
+on the **same warm `m5`** — the cold-boot is paid **once for the whole run.** The server-side
+`SANDBOX_FARM=cpu` farm (`agentcore_slime_demo/sandbox_cpu_farm.py`, baked into the image) then gives
+every per-episode **`sub_session`** a **fresh, fully-isolated environment** so warm reuse costs no
+correctness: each sub_session gets its own workdir **and** its own `HOME`/`TMPDIR`/caches
+(`pip`/`HF`/`torch`/`xdg`/pyc), all wiped on close. Nothing an episode writes can leak to another.
+
+```bash
+# Same deploy (the image already sets SANDBOX_FARM=cpu). If you deployed BEFORE the farm existed,
+# redeploy to pick up the new image + env: FORCE_RECREATE=1 python3 deploy/deploy_bigimage.py
+docker exec -e NR=11 -e EVAL_INTERVAL=10 -e EVAL_NS=2 \
+    -e SANDBOX=agentcore-ray-farm \
+    -e AGENTCORE_SANDBOX_RUNTIME_ARN="$AGENTCORE_SANDBOX_RUNTIME_ARN" agentcore_p4 \
+    bash -lc 'cd /work && bash code/demos/demo_cpu_bigimage/run.sh 2>&1 | tee code/demos/demo_cpu_bigimage/smoke_run.log'
+```
+
+The [`metrics.py`](metrics.py) cold/warm latency split (`perf/sandbox_open_*` vs `perf/sandbox_*`)
+makes the win visible: the cold-boot **count** drops from one-per-episode to **1**. Why this is safe
+— and how it differs from the GPU farm, which keeps caches *shared* to preserve the warm CUDA
+kernel cache — is written up in
+[`docs/sandbox-fresh-env-on-persistent-instance.md`](../../../docs/sandbox-fresh-env-on-persistent-instance.md).
+
 ## Knobs (env vars; defaults in `run.sh` / `deploy_bigimage.py`)
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `SANDBOX` | `agentcore-runtime` | the big-image Instance Runtime. **`local` is rejected.** |
+| `SANDBOX` | `agentcore-runtime` | `agentcore-runtime` = one fresh instance per episode; `agentcore-ray-farm` = **warm reuse** (one shared instance, fresh env per sub_session). **`local` is rejected.** |
 | `AGENTCORE_SANDBOX_RUNTIME_ARN` | — (**required**) | the ARN from `deploy_bigimage.py` (no baked default — big image is not a shared microVM) |
+| `B4_SHARED_RUNTIME_SESSION` | auto (per run) | shared `runtimeSessionId` for `agentcore-ray-farm`; `run.sh` mints one per run so all episodes reuse one warm instance |
+| `SANDBOX_FARM` | `cpu` (baked) | server-side farm: `cpu` = full per-sub_session freshness (this demo); `gpu` = fractional-GPU Ray farm (B4) |
 | `CPU_INSTANCE` | `m5.xlarge` | EC2 family for the capacity provider (deploy) |
 | `ROOT_FREE_GIB` | `40` | root-volume free space (must exceed the unpacked image) (deploy) |
 | `FAMILY` | `deepscaler` | task family (any in `agentcore_slime_demo/task_families.py`) |

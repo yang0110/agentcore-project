@@ -21,9 +21,13 @@ are byte-identical to `demo_gpu_single`; only the *substrate* the checker lands 
 
 > **1 AgentCore session = 1 whole Instance.** GPUs live on capacity-provider Instances, not on the
 > serverless microVMs, and a runtime session leases a whole instance 1:1 — there is no cross-session
-> GPU time-slicing. To share the GPUs of one instance across episodes you run a self-managed
-> in-instance farm under a single shared session (see `demo_gpu_shared` / `demo_gpu_local`). This
-> demo runs one whole custom-Runtime GPU session as the checker substrate.
+> GPU time-slicing. So opening one dedicated session per episode makes the **instance count scale with
+> concurrency**, which is not cost-feasible. This demo therefore defaults to the **warm-instance**
+> setting (`SANDBOX=agentcore-ray-farm`): all episodes invoke the custom Runtime under **one shared
+> `runtimeSessionId`** (`B4_SHARED_RUNTIME_SESSION`) + a per-episode `sub_session`, so they reuse **one
+> warm g6** and a self-managed in-instance Ray farm hands each episode a fresh isolated env on a whole
+> GPU (`B4_GPU_FRACTION=1.0`) — the same mechanism as `demo_gpu_shared_multi` / `demo_gpu_local`. Set
+> `SANDBOX=agentcore-runtime` for the legacy one-dedicated-instance-per-session path.
 
 ## What runs (real trainer)
 

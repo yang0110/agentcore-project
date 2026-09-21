@@ -1,12 +1,21 @@
 #!/bin/bash
-# Sequential B-demo queue: waits for the in-flight gpu_single to finish, then runs
-# gpu_shared. Each demo's run.sh blocks until its ray job exits.
+# Sequential B-demo queue: waits for the in-flight gpu_single to finish, then runs the
+# two LOCAL shared-farm demos. Each demo's run.sh blocks until its ray job exits.
+#
+# NOTE: demo_gpu_shared_single and demo_gpu_shared_multi are LOCAL two-step-launch demos
+# — they need the matching host farm container running on GPUs 6,7 (started OUTSIDE this
+# queue, on the HOST). Because the two use DIFFERENT server-side farm partitions
+# (shared_single: FARM_GPUS=1 on GPU 6, fraction 0.5; shared_multi: FARM_GPUS=2 on 6,7,
+# fraction 1.0), the host farm must be (re)started in the matching mode before each:
+#   bash code/deploy/run_local_gpu_runtime.sh shared_single   # before demo_gpu_shared_single
+#   bash code/deploy/run_local_gpu_runtime.sh shared_multi    # before demo_gpu_shared_multi
+# So this queue is best used ONE demo at a time (comment out the other), not both back to
+# back, unless you restart the host farm in between.
 set -uo pipefail
 BASE=/work/code/demos
 STAMP=$(date +%Y%m%d_%H%M%S)
 Q=$BASE/b_queue_$STAMP.status
 export PYTHONPATH=/work/code
-GPU_SBX_B4="arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_gpu_b4-7rnu8R3gS7"
 
 log(){ echo "[$(date +%H:%M:%S)] $*" | tee -a "$Q"; }
 
@@ -27,7 +36,7 @@ run_demo(){
   sleep 45
 }
 
-run_demo demo_gpu_shared \
-  AGENTCORE_SANDBOX_RUNTIME_ARN="$GPU_SBX_B4"
+run_demo demo_gpu_shared_single
+# run_demo demo_gpu_shared_multi   # uncomment AFTER restarting the host farm in shared_multi mode
 
 log "QUEUE DONE."

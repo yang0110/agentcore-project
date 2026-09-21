@@ -310,6 +310,11 @@ async def generate(args, base_sample, sampling_params, evaluation: bool = False)
             "[branching] %s reward=%.1f exit=%d fan_out=%d elapsed=%.1fs",
             task.task_id, reward, agent_exit_code, len(samples), time.time() - t0,
         )
+        # DEMO-SPECIFIC metric ([demo] channel): fan_out = #leaf Samples this ONE episode produced
+        # (the branching payoff — sub-agents + compaction turn one episode into many training rows,
+        # while advantage/reward stay per-episode). metrics.py aggregates fan_out mean/p50/p95.
+        print(f"[demo] task={task.task_id} fan_out={len(samples)} reward={float(reward)} "
+              f"exit={agent_exit_code}", flush=True)
         if not samples:
             # Zero branches (agent crashed before any model call) — never hand slime an empty
             # group; see _fallback_sample. Keeps the training job alive across flaky episodes.

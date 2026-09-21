@@ -92,6 +92,10 @@ async def maybe_restore(sb, key: str) -> list[str]:
         restored = await restore_workspace(sb, _make_store(), key)
         if restored:
             _log(f"restore key={key} -> {restored} onto {getattr(sb, 'sandbox_id', '?')}")
+        # DEMO-SPECIFIC metric ([demo] channel): files restored on this resume. A restore>0 IS the
+        # rework saved — those files would otherwise be recomputed from scratch after a recycle.
+        if restored:
+            print(f"[demo] snapshot_restored_files={len(restored)} key={key}", flush=True)
         return restored
     except Exception as exc:  # noqa: BLE001 — best-effort; a fresh workspace / store miss is fine
         _log(f"restore key={key} skipped ({type(exc).__name__})")
@@ -120,6 +124,8 @@ async def maybe_snapshot(sb, key: str) -> list[str]:
         saved = list(manifest)
         if saved:
             _log(f"snapshot key={key} <- {saved} (episode {n})")
+            # DEMO-SPECIFIC metric ([demo] channel): files persisted at this quiescent episode-exit.
+            print(f"[demo] snapshot_saved_files={len(saved)} episode={n} key={key}", flush=True)
         return saved
     except Exception as exc:  # noqa: BLE001 — teardown-adjacent; never fail a rollout on snapshot
         _log(f"snapshot key={key} skipped ({type(exc).__name__})")

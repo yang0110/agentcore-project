@@ -17,11 +17,39 @@ is the "unified data interface" the AL report builds credit assignment on.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from .policy import Completion, Message, Policy
 from .sandbox import Sandbox
 from .task import CodingTask
+
+# Leading-word outcome tokens the hidden checkers print (task.py assert-runner, task_families.py
+# SQL runner). Compressed into ONE space-free `checker=` class for the [demo] metric channel so the
+# per-demo split — compile-vs-assert (humaneval/mbpp), numeric-extraction-vs-wrong (math families,
+# FAIL_AssertionError vs FAIL_NameError), exec-match-vs-syntax-error (sql, QUERY_ERROR vs FAIL),
+# valid-call-vs-correct (xlam/mcp) — falls out of one generic parser (see metrics.py [demo] channel).
+_CHECK_CLASSES = ("IMPORT_ERROR", "SETUP_ERROR", "DB_SETUP_ERROR", "QUERY_ERROR",
+                  "NO_QUERY", "EMPTY_QUERY", "ONE_STATEMENT_ONLY")
+
+
+def _checker_token(stdout: str) -> tuple[str, dict[str, str]]:
+    """Compress a checker's stdout into one space-free outcome token (+ optional pass_n/pass_m)."""
+    text = stdout or ""
+    if not any(ln.strip() for ln in text.splitlines()):
+        return "NO_OUTPUT", {}
+    if "PASSED" in text:
+        m = re.search(r"PASSED\s+(\d+)\s*/\s*(\d+)", text)
+        return "PASSED", ({"pass_n": m.group(1), "pass_m": m.group(2)} if m else {})
+    for cls in _CHECK_CLASSES:
+        if cls in text:
+            return cls, {}
+    m = re.search(r"->\s*([A-Za-z_][A-Za-z0-9_]*)", text)   # "FAIL[0]: … -> ExcType"
+    if "FAIL" in text and m:
+        return "FAIL_" + m.group(1), {}     # e.g. FAIL_AssertionError vs FAIL_NameError
+    if "FAIL" in text:
+        return "FAIL", {}
+    return "OTHER", {}
 
 
 @dataclass
@@ -80,6 +108,7 @@ async def run_episode(
         {"role": "user", "content": task.initial_user_prompt()},
     ]
 
+    last_stdout = ""   # last checker stdout, for the per-episode [demo] outcome token
     for _ in range(task.max_turns):
         completion = await policy.complete(messages, sampling_params)
         messages.append({"role": "assistant", "content": completion.text})
@@ -93,6 +122,7 @@ async def run_episode(
             await sandbox.write_file(artifact_filename, code)
             exit_code, stdout, stderr = await sandbox.exec(check_command, timeout=60)
             observation = task.observation(exit_code, stdout, stderr)
+            last_stdout = stdout
             submitted = True
 
         traj.turns.append(Turn(
@@ -110,4 +140,28 @@ async def run_episode(
         messages.append({"role": "user", "content": observation})
 
     traj.reward = task.reward(0 if traj.solved else 1)
+
+    # Per-episode DEMO-SPECIFIC metric line (parsed by metrics.py's generic [demo] channel). One
+    # emit here instruments EVERY run_episode-based demo: `family` gives mixtask per-family / imagepool
+    # per-family reward, `image` gives imagepool per-image routing+correctness, `checker` gives each
+    # dataset demo's outcome split (compile-vs-assert, numeric-vs-wrong, exec-match-vs-syntax-error,
+    # valid-call-vs-correct), and boot_attempts/status give custom-Runtime rollout health. Numeric
+    # keys are aggregated per step; categorical keys (family/image/checker) get run-level value-counts
+    # + mean-reward-per-category. Values are space-free so the `k=v` parser stays simple.
+    tok, extras = _checker_token(last_stdout)
+    fields = {
+        "task": str(task.task_id).replace(" ", "_"),
+        "family": str(getattr(task, "family", "?")).replace(" ", "_"),
+        "reward": traj.reward,
+        "solved": int(traj.solved),
+        "turns": traj.num_turns,
+        "boot_attempts": traj.boot_attempts,
+        "status": str(traj.status).replace(" ", "_"),
+        "checker": tok,
+    }
+    img = getattr(task, "image", "")
+    if img:
+        fields["image"] = str(img).replace(" ", "_")
+    fields.update(extras)
+    print("[demo] " + " ".join(f"{k}={v}" for k, v in fields.items()), flush=True)
     return traj

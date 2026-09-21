@@ -159,9 +159,21 @@ def _farm():
     if _FARM is None:
         with _FARM_LOCK:
             if _FARM is None:
-                from .sandbox_ray_farm import RayGpuFarm
+                # SANDBOX_FARM selects the shared-instance farm: "cpu" (persistent CPU Instance, full
+                # per-sub_session env freshness — sandbox_cpu_farm.CpuFarm) or the default "gpu"
+                # (fractional-GPU Ray farm — sandbox_ray_farm.RayGpuFarm). Default "gpu" keeps the
+                # verified B4 behaviour untouched; the big-image CPU image sets SANDBOX_FARM=cpu.
+                kind = os.environ.get("SANDBOX_FARM", "gpu").lower()
+                if kind == "cpu":
+                    try:
+                        from .sandbox_cpu_farm import CpuFarm
+                    except ImportError:  # server run as a bare script in the image
+                        from sandbox_cpu_farm import CpuFarm
+                    _FARM = CpuFarm.from_env().start()
+                else:
+                    from .sandbox_ray_farm import RayGpuFarm
 
-                _FARM = RayGpuFarm.from_env().start()
+                    _FARM = RayGpuFarm.from_env().start()
     return _FARM
 
 

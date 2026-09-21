@@ -19,8 +19,11 @@ AgentCore. It does a real 10-step run (`NR=11` ⇒ 10 train + 1 eval, single fin
 
 ## How the snapshot rides the real run
 
-In async/decoupled slime **every episode opens its own fresh sandbox session** (a fresh
-`runtimeSessionId`), so from the workspace's point of view **every episode boundary is already a
+In async/decoupled slime **every episode gets its own fresh, isolated sandbox workspace** — under the
+default warm-g6 farm (`SANDBOX=agentcore-ray-farm`) that is a per-episode `sub_session` dir on the one
+shared warm instance (all episodes reuse `B4_SHARED_RUNTIME_SESSION`, so the g6 count does not scale
+with concurrency); under the legacy `SANDBOX=agentcore-runtime` path it is a fresh `runtimeSessionId`.
+Either way, from the workspace's point of view **every episode boundary is already a
 recycle**. The trainer turns that into snapshot/resume with two hooks in the live rollout
 (`agentcore_slime_demo/generate.py`, gated by `SNAPSHOT_EVERY`):
 

@@ -430,6 +430,18 @@ class RayFarmRuntimeSandbox:
         self._client = None
         self._gate = None  # held open-concurrency slot (released on close); see _farm_open_gate
 
+    def _emit_farm_open(self, resp: dict) -> None:
+        """DEMO-SPECIFIC metric ([demo] channel) for the fractional-GPU sharing farm: the per-
+        sub_session GPU lease the server granted on `open` — mem_fraction (each actor's slice of the
+        one shared GPU), waited_s (time this episode queued for a free slot when concurrency exceeded
+        capacity), and cuda_visible. Together they prove many episodes coexist on ONE shared GPU.
+        metrics.py aggregates mem_fraction/waited_s and value-counts cuda_visible. Best-effort: the
+        server returns these from RayGpuFarm.open; a bare/empty response just prints '?'."""
+        info = resp if isinstance(resp, dict) else {}
+        print(f"[demo] farm_sub={self._sub} mem_fraction={info.get('mem_fraction', '?')} "
+              f"waited_s={info.get('waited_s', '?')} cuda_visible={info.get('cuda_visible', '?')} "
+              f"actor={info.get('actor', info.get('actor_id', '?'))}", flush=True)
+
     async def __aenter__(self) -> "RayFarmRuntimeSandbox":
         # CLIENT-side open-concurrency gate: acquire a farm slot BEFORE opening. If the farm is full
         # this queues in-process (cheap) instead of firing an `op=open` that would block on the
@@ -442,7 +454,8 @@ class RayFarmRuntimeSandbox:
                 # Local AgentCore runtime session: the SAME g6 ray farm, served by a docker-run
                 # sandbox_server_agent on the host's reserved GPUs. All episodes share one local
                 # container (one shared runtimeSessionId) and lease a fractional-GPU actor per sub_session.
-                await self._invoke({"op": "open", "sub_session": self._sub, "workdir": self._workdir})
+                self._emit_farm_open(
+                    await self._invoke({"op": "open", "sub_session": self._sub, "workdir": self._workdir}))
                 return self
             if not self._arn:
                 raise RuntimeError(
@@ -459,7 +472,8 @@ class RayFarmRuntimeSandbox:
             )
             # Lease a fractional-GPU actor for this episode (the client gate above bounds concurrency
             # to the farm capacity, so this open finds a slot instead of blocking on the server gate).
-            await self._invoke({"op": "open", "sub_session": self._sub, "workdir": self._workdir})
+            self._emit_farm_open(
+                await self._invoke({"op": "open", "sub_session": self._sub, "workdir": self._workdir}))
             return self
         except BaseException:
             # Open failed — don't leak the slot (otherwise capacity leaks and later opens deadlock).

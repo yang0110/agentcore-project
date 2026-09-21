@@ -83,6 +83,19 @@ AGENTCORE_SANDBOX_RUNTIME_ARNS="${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}"
 if [ "$SANDBOX" = "agentcore-runtime" ] && [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
    AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN (or ..._ARNS for the multi-Runtime sweep) to the big-image sandbox Runtime ARN printed by deploy/deploy_bigimage.py}"
 fi
+# SHARED-INSTANCE CPU FARM (SANDBOX=agentcore-ray-farm): all episodes invoke under ONE shared
+# runtimeSessionId (B4_SHARED_RUNTIME_SESSION) so they land on the SAME warm m5 — the ~60-80 s
+# capacity-provider cold-boot is paid ONCE per run instead of once per episode — while the server's
+# SANDBOX_FARM=cpu CpuFarm still gives every per-episode sub_session a FRESH, isolated env (own
+# workdir + HOME/TMPDIR/caches, wiped on close). Requires the same big-image Runtime ARN; mint one
+# fresh shared session id per run (>=33 chars, as AgentCore requires).
+if [ "$SANDBOX" = "agentcore-ray-farm" ] && [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
+   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN to the big-image sandbox Runtime ARN printed by deploy/deploy_bigimage.py}"
+fi
+if [ "$SANDBOX" = "agentcore-ray-farm" ]; then
+   B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-bigcpu-farm-$(date +%s)-$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
+   echo "shared-instance CPU farm: all episodes reuse runtimeSessionId=${B4_SHARED_RUNTIME_SESSION} (one warm m5)" >&2
+fi
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
 NR="${NR:-11}"        # num-rollout; real training steps = NR-1 (see NOTE) => 10 train + 1 eval (SMOKE; no more needed).
@@ -299,6 +312,7 @@ RUNTIME_ENV_JSON="{
     \"SANDBOX\": \"${SANDBOX}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARNS\": \"${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}\",
+    \"B4_SHARED_RUNTIME_SESSION\": \"${B4_SHARED_RUNTIME_SESSION:-}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"INFER_CONC\": \"${INFER_CONC:-0}\"

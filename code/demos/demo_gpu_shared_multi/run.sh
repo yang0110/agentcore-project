@@ -1,40 +1,41 @@
 #!/bin/bash
-# Demo B4 — KernelBench, REMOTE g6 sandbox, with SEVERAL episodes SHARING that g6's ONE GPU via Ray.
+# demo_gpu_shared_multi — KernelBench, LOCAL Ray farm across MULTIPLE GPUs, one WHOLE GPU per session.
 # Runner (this dir owns data/ + ckpt/; agentcore_slime_demo is the vendored local copy in this dir). Runs INSIDE the
 # persistent slime container (agentcore_p4), async/decoupled (train_async.py, NO --colocate).
 #
-# Demo B4 == Demo B (SAME task + SAME in-process run_episode harness), but a DIFFERENT sandbox GPU
-# story. B4 is now IDENTICAL to Demo B except for ONE line — the SANDBOX backend:
-#   * Demo B  (SANDBOX=agentcore-runtime):  one AgentCore session -> one g6 instance, so N concurrent
-#     rollouts want N g6 instances. On a capacity-starved g6 fleet that is exactly what stalls it.
-#   * Demo B4 (SANDBOX=agentcore-ray-farm): pack SEVERAL concurrent KernelBench sandboxes onto ONE g6
-#     instance and let RAY SPLIT THAT g6's single GPU between them. Because AgentCore maps
-#     1 runtimeSessionId -> 1 instance, every B4 episode invokes the g6 under ONE shared
-#     runtimeSessionId (B4_SHARED_RUNTIME_SESSION, so they reuse the same g6) and carries a
-#     per-episode sub_session; a Ray farm running INSIDE the g6 (sandbox_ray_farm.RayGpuFarm, driven
-#     by sandbox_server_agent) leases one FRACTIONAL-GPU actor per sub_session. Ray's fraction is
-#     scheduling-only (no memory guard; L4/L40S have NO MIG), so each sandbox ALSO caps its GPU memory
-#     in software (an injected sitecustomize.py). That server-side farm is the WHOLE difference.
+# This is the MULTI-GPU half of the shared-farm split (demo_gpu_shared was split into
+# demo_gpu_shared_single + demo_gpu_shared_multi). Both serve the SAME Ray farm LOCALLY on this box;
+# they differ ONLY in how the farm partitions its GPUs:
+#   * demo_gpu_shared_single      : B4_FARM_GPUS=1, B4_GPU_FRACTION=0.5 -> two FRACTIONAL actors
+#                                    sharing ONE GPU (0.5 + 0.5 on GPU 6).
+#   * demo_gpu_shared_multi (THIS): B4_FARM_GPUS=2, B4_GPU_FRACTION=1.0 -> floor(2/1.0)=2 slots, one
+#                                    WHOLE GPU per Ray session, spread across GPUs 6,7. No fractional
+#                                    sharing => no software memory guard, sidestepping the non-MIG
+#                                    nvcc-wedge that fractional sharing can hit on L40S.
+# Related: demo_gpu_single (one AgentCore session -> one dedicated REMOTE g6) is the remote whole-GPU
+# point of comparison.
 #
-# Same harness as Demo B: the run_episode loop (agentcore_slime_demo.harness) runs IN-PROCESS on this
-# box inside generate.generate, driving SGLang DIRECTLY (SGLangPolicy) — no AnthropicAdapter proxy,
-# no MiniClaudeHarness, no harness Runtime #1. This box gives ALL 8 of its GPUs to slime (4 train +
-# 4 infer); B4 reserves NO local GPU. The only remote piece is the shared-GPU sandbox Runtime #2 (its
-# g6 image bakes `ray` + the B4_* farm config). So B4 adds exactly ONE thing over Demo B: the Ray
-# GPU-sharing farm inside the g6 sandbox, selected purely by SANDBOX=agentcore-ray-farm.
+# AgentCore reality: 1 runtimeSessionId -> 1 instance. So this is NOT "2 AgentCore sessions on one
+# box" — it is ONE shared runtimeSessionId (B4_SHARED_RUNTIME_SESSION) + a per-episode sub_session,
+# and the Ray farm INSIDE that one local runtime container leases one WHOLE-GPU actor per sub_session.
 #
-# DEPLOY the shared-GPU sandbox: build the g6 sandbox image with `ray` installed and the farm config
-# baked as ENV (B4_GPU_FRACTION, B4_MAX_SANDBOXES, B4_PER_SANDBOX_MEM_FRACTION, B4_FARM_GPUS, plus
-# SANDBOX_PYLIB/LD_LIBRARY_PATH so the fractional actors' torch resolves), then export its ARN as
-# AGENTCORE_SANDBOX_RUNTIME_ARN. Those B4_* vars live on the G6, NOT here (the client only picks the
-# shared runtimeSessionId + per-episode sub_session).
+# PREREQ — start the LOCAL runtime container on the HOST first (NOT inside agentcore_p4), which
+# reserves GPUs 6,7 and serves the farm at http://127.0.0.1:8080 (agentcore_p4 is --network host):
+#     bash code/deploy/run_local_gpu_runtime.sh shared_multi
+# That mode bakes the whole-GPU farm defaults (B4_FARM_GPUS=2, B4_GPU_FRACTION=1.0,
+# B4_PER_SANDBOX_MEM_FRACTION=0.95, on host GPUs 6,7). Then, inside agentcore_p4, just:
+#     bash code/demos/demo_gpu_shared_multi/run.sh
+#
+# Same harness as demo_gpu_single/local: the run_episode loop (agentcore_slime_demo.harness) runs
+# IN-PROCESS on this box inside generate.generate, driving SGLang DIRECTLY (SGLangPolicy). slime gets
+# GPUs 0-5 (4 train + 2 infer = 6); GPUs 6,7 belong to the local farm container.
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
 # runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train (SMOKE; no more needed).
 set -euo pipefail
 
-SANDBOX="${SANDBOX:-agentcore-ray-farm}"  # THE one difference from Demo B: sub_session slots on ONE
-                                          # shared g6 whose GPU a Ray farm splits (vs B's dedicated g6)
+SANDBOX="${SANDBOX:-agentcore-ray-farm}"  # the local Ray farm backend (RayFarmRuntimeSandbox): a
+                                          # per-episode sub_session slot on the ONE local runtime.
 # ---- Task set: the REAL KernelBench (ScalingIntelligence/KernelBench) ----------------------------
 # Train = level_1 (100 single-op CUDA problems); held-out eval = 20 level_2 fusion problems (disjoint).
 # Build with build_dataset.py --dataset kernelbench --level level_1 --limit 100 (train) and
@@ -49,40 +50,48 @@ EVAL_NS="${EVAL_NS:-2}"               # samples per eval prompt
 SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"  # save-only-at-end (final rollout force-saves anyway)
 
 SLIME=/root/slime
-DEMO_DIR=/work/code/demos/demo_gpu_shared
+DEMO_DIR=/work/code/demos/demo_gpu_shared_multi
 CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"   # shared base ckpt (referenced, not copied)
 HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
 
 DATA="${DATA:-$DEMO_DIR/data/kernelbench_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-kernelbench}"
-SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_rayfarm_async}"
+SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_shared_multi_async}"
 
-# ---- GPU split + where the shared-GPU sandbox Runtime lives --------------------------------------
-# ALL 8 GPUs to slime (4 train + 4 infer); the shared-GPU checker is REMOTE (the shared g6 whose one
-# GPU a Ray farm splits). For an on-box GPU run with no remote g6, use demo_gpu_local (a LOCAL
-# whole-GPU Ray farm on this box's reserved GPUs 6,7) instead.
+# ---- GPU split: slime on 0-5, the local whole-GPU farm on 6,7 ------------------------------------
+# Reserve GPUs 6,7 for the local Ray-farm sandbox runtime container (started on the HOST via
+# run_local_gpu_runtime.sh shared_multi) and give slime the other 6 GPUs (4 train + 2 infer). The
+# client reaches the farm over http://127.0.0.1:8080; no remote ARN.
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
-ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"                       # 4 train + 4 infer = 8; farm GPU is remote
-SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-8}"
-SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-}"
-AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-}"
-AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the B4 GPU-shared sandbox Runtime #2 ARN (g6 with ray farm baked in) — for an on-box GPU run with no remote g6, use demo_gpu_local instead}"
+ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"                       # 4 train + 2 infer = 6; GPUs 6,7 reserved
+SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-6}"
+SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-0,1,2,3,4,5}" # keep slime OFF the reserved farm GPUs (6,7)
+AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-http://127.0.0.1:8080}"
+AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:-}"   # local endpoint, no remote ARN
+
+# Whole-GPU farm math: 2 reserved GPUs, 1.0 fraction => floor(2/1.0)=2 whole-GPU slots (one GPU per
+# session across 6,7). These MUST match the farm knobs baked on the local runtime container by
+# run_local_gpu_runtime.sh shared_multi (B4_FARM_GPUS=2, B4_GPU_FRACTION=1.0). They are read here
+# only to size the client OPEN gate below.
+B4_FARM_GPUS="${B4_FARM_GPUS:-2}"
+B4_GPU_FRACTION="${B4_GPU_FRACTION:-1.0}"
+
 # ONE shared runtimeSessionId for the WHOLE job: every episode (across every rollout worker) invokes
-# the g6 under this id, so they all land on the SAME g6 instance whose one GPU the farm splits. Minted
+# the local runtime under this id, so they all land on the SAME farm whose GPUs it splits. Minted
 # once here if unset (AgentCore requires length in [33,128]: "b4farm-" + 32 hex = 39). Pin it to reuse
 # a warm instance across runs.
 B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-b4farm-$(python3 -c 'import secrets;print(secrets.token_hex(16))')}"
 # Client-side OPEN-concurrency gate (agentcore_runtime_sandbox._farm_open_gate): cap how many episodes
-# hold a farm slot at once to the g6 farm's actor count. The async rollout submits RB*NS episodes that
+# hold a farm slot at once to the farm's actor count. The async rollout submits RB*NS episodes that
 # each open their own sandbox, and neither --sglang-server-concurrency (gates GENERATION) nor NS caps
 # `op=open`; without this gate the overflow opens block on the SERVER farm gate until the invoke times
 # out (~min) and stall the step. Must EQUAL the server's B4_MAX_SANDBOXES = floor(B4_FARM_GPUS/
-# B4_GPU_FRACTION) (set on the runtime by run_local_gpu_runtime.sh; default 1 GPU / 0.25 = 4 slots).
-export B4_FARM_MAX_CONCURRENT="${B4_FARM_MAX_CONCURRENT:-$(python3 -c "import os,math;print(max(1,math.floor(float(os.environ.get('B4_FARM_GPUS','1'))/float(os.environ.get('B4_GPU_FRACTION','0.25')))))")}"
-# Runtime-invoke transient-retry budget (agentcore_runtime_sandbox._retry_invoke). B4 invokes the g6
+# B4_GPU_FRACTION) (whole-GPU local default: 2 GPUs / 1.0 = 2 slots).
+export B4_FARM_MAX_CONCURRENT="${B4_FARM_MAX_CONCURRENT:-$(python3 -c "import os,math;print(max(1,math.floor(float(os.environ.get('B4_FARM_GPUS','2'))/float(os.environ.get('B4_GPU_FRACTION','1.0')))))")}"
+# Runtime-invoke transient-retry budget (agentcore_runtime_sandbox._retry_invoke). We invoke the farm
 # once per tool op (open + writes + exec + close), so a transient 502/blip on ANY of them would kill
-# the whole job at the default 8 attempts (~150s) — a2 died this way. 20 attempts ≈ 10 min patience.
+# the whole job at the default 8 attempts (~150s). 20 attempts ≈ 10 min patience.
 INVOKE_MAX_RETRIES="${INVOKE_MAX_RETRIES:-20}"
 
 # clean any prior ray/sglang from a previous run
@@ -127,9 +136,9 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 1024
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
-   # SAME hook as Demo B — the in-process run_episode harness (SGLangPolicy direct). The GPU-sharing
-   # is entirely in the sandbox backend (SANDBOX=agentcore-ray-farm -> RayFarmRuntimeSandbox), which
-   # make_sandbox() selects per episode, so no B4-specific generate function is needed.
+   # SAME hook as demo_gpu_single/shared — the in-process run_episode harness (SGLangPolicy direct).
+   # The GPU packing is entirely in the sandbox backend (SANDBOX=agentcore-ray-farm ->
+   # RayFarmRuntimeSandbox), which make_sandbox() selects per episode, so no custom generate is needed.
    --custom-generate-function-path agentcore_slime_demo.generate.generate
 )
 
@@ -168,12 +177,12 @@ SGLANG_ARGS=(
    --rollout-num-gpus "$ROLLOUT_GPUS"
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
-   # Keep rollout concurrency <= the g6 farm's sandbox count (B4_MAX_SANDBOXES, baked on the g6) so
-   # episodes don't block on the farm's checkout gate. Default 4; raise together with the farm.
-   --sglang-server-concurrency "${CONC:-4}"
+   # Keep rollout concurrency <= the local farm's whole-GPU slot count (B4_MAX_SANDBOXES = 2) so
+   # episodes don't block on the farm's checkout gate. Default 2; raise together with the farm.
+   --sglang-server-concurrency "${CONC:-2}"
    # NOTE: no tool-call/reasoning parser here (unlike the old MiniClaudeHarness path). run_episode
    # extracts a ```python code block from the assistant text (task.extract_submission) and suppresses
-   # <think> via SGLangPolicy's enable_thinking=False — exactly like Demo B, which sets neither flag.
+   # <think> via SGLangPolicy's enable_thinking=False — exactly like demo_gpu_single.
 )
 
 MISC_ARGS=(
@@ -185,9 +194,9 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-# Ray gets SLIME_NUM_GPUS (8; the farm GPU is the remote g6's). SLIME_CUDA_VISIBLE is empty here, so
-# ray discovers all 8 local GPUs. (Do NOT set CUDA_VISIBLE_DEVICES in the ray job runtime-env: ray
-# assigns it per-actor.)
+# Ray gets SLIME_NUM_GPUS (6 here). We pin CUDA_VISIBLE_DEVICES to 0-5 BEFORE `ray start` so ray only
+# discovers/schedules those 6 — GPUs 6,7 stay free for the local Ray-farm sandbox runtime container.
+# (Do NOT set CUDA_VISIBLE_DEVICES in the ray job runtime-env: ray assigns it per-actor.)
 [ -n "$SLIME_CUDA_VISIBLE" ] && export CUDA_VISIBLE_DEVICES="$SLIME_CUDA_VISIBLE"
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "$SLIME_NUM_GPUS" \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
