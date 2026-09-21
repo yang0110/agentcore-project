@@ -92,7 +92,11 @@ echo ">>> starting $NAME on host GPUs $GPUS, port $PORT (mode=$MODE)"
 # `docker rm -f`s it, and every launch calls `stop` first, so a dead/exited container is cleaned up.
 FARM_LOG="${LOCAL_RT_LOG:-$REPO_ROOT/code/demos/_smoke_logs/_farm_container_${MODE}.log}"
 mkdir -p "$(dirname "$FARM_LOG")" 2>/dev/null || true
-docker run -d --restart=on-failure:30 --name "$NAME" \
+# on-failure:100: the Ray GCS in the farm intermittently dies under sustained nvcc compile load
+# ("Failed to connect to GCS within 60s ... The program will terminate", clean exit 0, not OOM) —
+# ~1 crash / 15 min, so a long multi-demo smoke on one container can exceed a small cap. 100 gives
+# ample headroom; `stop` (docker rm -f) still ends it cleanly between mode switches.
+docker run -d --restart=on-failure:100 --name "$NAME" \
   --gpus "\"device=${GPUS}\"" \
   -p "127.0.0.1:${PORT}:8080" \
   "${SHM_ARGS[@]}" \

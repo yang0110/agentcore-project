@@ -1,0 +1,7 @@
+demo	status	secs	note
+demo_gpu_local	PASS	1751	succeeded; final ckpt 10
+demo_gpu_customruntime	PASS	1786	succeeded; final ckpt 10
+demo_gpu_single	PASS	1914	succeeded; final ckpt 10
+demo_gpu_snapshot	PASS	1725	succeeded; final ckpt 10
+demo_gpu_shared_multi	PASS	1867	succeeded; final ckpt 10
+demo_gpu_shared_single	PASS	1966	succeeded; final ckpt 10

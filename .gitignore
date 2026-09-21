@@ -57,3 +57,4 @@ docs/slides/*.pdf
 # ============================================================================
 .DS_Store
 *.swp
+code/demos/demo_gpu_snapshot/snapshots/

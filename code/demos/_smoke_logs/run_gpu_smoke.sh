@@ -9,7 +9,17 @@ REPO=/home/ubuntu/workspace/agentcore-project
 LOGDIR="$REPO/code/demos/_smoke_logs"
 RES="$LOGDIR/gpu_smoke_results.tsv"
 NR="${NR:-11}"; EVAL_INTERVAL="${EVAL_INTERVAL:-10}"; EVAL_NS="${EVAL_NS:-2}"
-TRAIN_TIMEOUT="${TRAIN_TIMEOUT:-2400}"
+# GPU smoke uses a SMALLER GRPO group than the CPU default (NS=8). KernelBench episodes are heavy —
+# each holds a whole-GPU farm slot for ~17s+ and compiles CUDA (nvcc), serialized host-wide by a
+# flock. At NS=8 that's 32 episodes/step: the 2-slot local farm wedges (a Ray GPU actor stuck on a
+# runaway nvcc holds the flock -> the whole step deadlocks; observed customruntime completing 1
+# episode then hanging 30 min). NS=2 => 8 episodes/step, 4x less cumulative nvcc, so a step is
+# tractable AND the wedge risk drops. Keeps the defining smoke budget (10 steps, 1 eval) intact.
+NS="${NS:-2}"
+# 3600s (60 min): a single farm GCS crash + docker restart + torch-reinstall recovery can burn
+# ~10-13 min in the trainer's 30s-capped retry backoff (all concurrent episodes wait it out). 2400s
+# left no headroom for even one crash on demo_gpu_local; 3600s survives one crash and still finishes.
+TRAIN_TIMEOUT="${TRAIN_TIMEOUT:-3600}"
 mkdir -p "$LOGDIR"
 [ -f "$RES" ] || printf 'demo\tstatus\tsecs\tnote\n' > "$RES"
 row(){ printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" | tee -a "$RES"; }
@@ -32,15 +42,17 @@ run(){ # $1=demo  $2=farm-mode  $3..=extra KEY=VAL env for the trainer
   # even root-owned 644 logs); clog = container path (all IN-CONTAINER writes go here, so root — not
   # the host `ubuntu` user — creates/overwrites the log; fixes the Permission-denied false FAIL).
   local hlog="$LOGDIR/$d.log" clog="/work/code/demos/_smoke_logs/$d.log" t0=$SECONDS
-  docker exec $(for kv in "$@" NR="$NR" EVAL_INTERVAL="$EVAL_INTERVAL" EVAL_NS="$EVAL_NS"; do printf -- '-e %s ' "$kv"; done) \
+  docker exec $(for kv in "$@" NR="$NR" NS="$NS" EVAL_INTERVAL="$EVAL_INTERVAL" EVAL_NS="$EVAL_NS"; do printf -- '-e %s ' "$kv"; done) \
     agentcore_p4 bash -lc "cd /work && timeout $TRAIN_TIMEOUT bash code/demos/$d/run.sh > $clog 2>&1"
   local rc=$?
   local save; save=$(grep -aoE -- "--save /[^ ]+" "$hlog" | head -1 | awk '{print $2}')
   local has_final=0
   [ -n "$save" ] && docker exec agentcore_p4 test -f "$save/latest_checkpointed_iteration.txt" && has_final=1
   # metrics.py + its outputs all use container (/work) paths and append inside the container (root).
+  # NOTE: must `cd /work` first — `bash -lc` starts in HOME (/root), so a repo-relative
+  # `code/demos/...` path would resolve to /root/code/... and fail ("can't open file").
   docker exec agentcore_p4 bash -lc \
-      "python3 code/demos/$d/metrics.py $clog --csv /work/code/demos/_smoke_logs/$d.csv --eval-csv /work/code/demos/_smoke_logs/$d.eval.csv --plot /work/code/demos/_smoke_logs/$d.png >> $clog 2>&1" \
+      "cd /work && python3 code/demos/$d/metrics.py $clog --csv /work/code/demos/_smoke_logs/$d.csv --eval-csv /work/code/demos/_smoke_logs/$d.eval.csv --plot /work/code/demos/_smoke_logs/$d.png >> $clog 2>&1" \
       || echo "[gpu] metrics.py non-zero for $d"
   if grep -q "succeeded" "$hlog" && ! grep -qE "No space|CheckpointException|unexpected pos" "$hlog" && [ "$has_final" = 1 ]; then
     row "$d" PASS $((SECONDS-t0)) "succeeded; final ckpt $(docker exec agentcore_p4 cat "$save/latest_checkpointed_iteration.txt" 2>/dev/null)"
