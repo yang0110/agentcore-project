@@ -242,7 +242,44 @@ Policy is always **Qwen3-4B**, trained by slime. The harness is **in-process** �
 |---|---|---|
 | in-process harness | `demo_cpu_mbpp` | `demo_gpu_single` |
 
-Same substrates, more tasks/patterns: `demo_cpu_math`, `demo_cpu_heartbeat` (heartbeat keepalive), `demo_gpu_shared` (Ray pack-many farm), `demo_gpu_snapshot` (app-level snapshot/resume).
+**23 demos on this one design**, in four layers: **6 canonical** anchors, **8 per-task CPU fan-outs** (one real HF dataset each), **2** that scale a new dimension (harness / mixed-family batch), and **7 substrate-and-design variants**. Evidence: **2** carry committed convergence-shaped curves (`demo_cpu_mbpp`, `demo_gpu_single`); the rest are loop-verified 10-step hardware smokes (`Job succeeded`, ckpt 10) — **15 CPU + 6 GPU pass**. One caveat: `demo_cpu_branching` runs but earns reward 0.
+
+## Demo set at a glance (1/2) — canonical + scale
+
+| Demo | Substrate | Task | Result |
+|---|---|---|---|
+| *— canonical (6) —* | | | |
+| `demo_cpu_mbpp` | CPU microVM | MBPP code repair | **trained** + ablation sweep |
+| `demo_cpu_math` | CPU microVM | math word problems | smoke, `eval/math` 1.00 |
+| `demo_gpu_single` | GPU g6 / local farm | KernelBench CUDA | **trained**; farm smoke 0.525 |
+| `demo_gpu_shared_single` | GPU, fractional Ray 0.5+0.5 | KernelBench CUDA | smoke, `eval` 0.775 |
+| `demo_cpu_heartbeat` | CPU microVM | heartbeat / quiesce | smoke 0.71; + offline probe |
+| `demo_gpu_snapshot` | GPU, local farm | snapshot / resume | smoke 0.625; 3 files/ep saved+restored |
+| *— scale a new dimension (2) —* | | | |
+| `demo_cpu_harness_scale` | CPU microVM | DeepScaleR (fixed) | offline sweep + smoke 0.33 |
+| `demo_cpu_mixtask` | CPU microVM | mixed: math+SQL+CTF+tools | smoke, `eval/mixed` 0.67 |
+
+## Demo set at a glance (2/2) — fan-out + variants
+
+| Demo | Substrate | Task | Result |
+|---|---|---|---|
+| *— per-task CPU fan-out (8) —* | | | |
+| `demo_cpu_gsm8k` | CPU microVM | GSM8K | smoke 0.90 |
+| `demo_cpu_math500` | CPU microVM | MATH-500 | smoke 0.89 |
+| `demo_cpu_deepscaler` | CPU microVM | DeepScaleR | smoke 0.78 |
+| `demo_cpu_humaneval` | CPU microVM | HumanEval | smoke 0.85 |
+| `demo_cpu_gretelsql` | CPU microVM | Gretel text-to-SQL | smoke 0.60 |
+| `demo_cpu_hotpotqa` | CPU microVM | HotpotQA (multi-hop) | smoke 0.65 |
+| `demo_cpu_xlam` | CPU microVM | xLAM-60k tool use | smoke 1.00 |
+| `demo_cpu_mcp` | CPU microVM | ToolACE (MCP) | smoke 1.00 |
+| *— substrate & design variants (7) —* | | | |
+| `demo_cpu_branching` | CPU microVM (CLI) | SWE, **real Claude Code CLI** | smoke; fan-out ≥ 1, reward 0 |
+| `demo_cpu_customruntime` | CPU microVM | DeepScaleR, both backends | smoke, `eval` 0.69 |
+| `demo_cpu_imagepool` | CPU microVM (image pool) | datasci + scipy + sklearn | smoke 1.0; 3-image pool routed |
+| `demo_gpu_customruntime` | GPU, custom g6 Runtime | KernelBench + CUDA probe | smoke 0.65 |
+| `demo_gpu_shared_multi` | GPU, one WHOLE GPU/episode | KernelBench CUDA | smoke 0.65 |
+| `demo_gpu_local` | GPU, local whole-GPU Ray farm | KernelBench CUDA | smoke 0.70 |
+| `demo_cpu_bigimage` | CPU **Instance**, ~4 GB image | DeepScaleR math | **trained** on m5; warm-farm boots 201 → 1, `eval` 0.76 |
 
 ## The GPU limit — and how you'd share one L4
 

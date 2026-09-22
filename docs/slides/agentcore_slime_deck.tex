@@ -663,10 +663,109 @@ in-process harness & \texttt{demo\_cpu\_mbpp} &
 \bottomrule\noalign{}
 \end{longtable}
 
-Same substrates, more tasks/patterns: \texttt{demo\_cpu\_math},
-\texttt{demo\_cpu\_heartbeat} (heartbeat keepalive),
-\texttt{demo\_gpu\_shared} (Ray pack-many farm),
-\texttt{demo\_gpu\_snapshot} (app-level snapshot/resume).
+\textbf{23 demos on this one design}, in four layers: \textbf{6
+canonical} anchors, \textbf{8 per-task CPU fan-outs} (one real HF
+dataset each), \textbf{2} that scale a new dimension (harness /
+mixed-family batch), and \textbf{7 substrate-and-design variants}.
+Evidence: \textbf{2} carry committed convergence-shaped curves
+(\texttt{demo\_cpu\_mbpp}, \texttt{demo\_gpu\_single}); the rest are
+loop-verified 10-step hardware smokes (\texttt{Job\ succeeded}, ckpt 10)
+--- \textbf{15 CPU + 6 GPU pass}. One caveat:
+\texttt{demo\_cpu\_branching} runs but earns reward 0.
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Demo set at a glance (1/2) --- canonical + scale}
+\protect\hypertarget{demo-set-at-a-glance-12-canonical-scale}{}
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Demo
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Substrate
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Task
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Result
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\emph{--- canonical (6) ---} & & & \\
+\texttt{demo\_cpu\_mbpp} & CPU microVM & MBPP code repair &
+\textbf{trained} + ablation sweep \\
+\texttt{demo\_cpu\_math} & CPU microVM & math word problems & smoke,
+\texttt{eval/math} 1.00 \\
+\texttt{demo\_gpu\_single} & GPU g6 / local farm & KernelBench CUDA &
+\textbf{trained}; farm smoke 0.525 \\
+\texttt{demo\_gpu\_shared\_single} & GPU, fractional Ray 0.5+0.5 &
+KernelBench CUDA & smoke, \texttt{eval} 0.775 \\
+\texttt{demo\_cpu\_heartbeat} & CPU microVM & heartbeat / quiesce &
+smoke 0.71; + offline probe \\
+\texttt{demo\_gpu\_snapshot} & GPU, local farm & snapshot / resume &
+smoke 0.625; 3 files/ep saved+restored \\
+\emph{--- scale a new dimension (2) ---} & & & \\
+\texttt{demo\_cpu\_harness\_scale} & CPU microVM & DeepScaleR (fixed) &
+offline sweep + smoke 0.33 \\
+\texttt{demo\_cpu\_mixtask} & CPU microVM & mixed: math+SQL+CTF+tools &
+smoke, \texttt{eval/mixed} 0.67 \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Demo set at a glance (2/2) --- fan-out +
+variants}
+\protect\hypertarget{demo-set-at-a-glance-22-fan-out-variants}{}
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Demo
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Substrate
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Task
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Result
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\emph{--- per-task CPU fan-out (8) ---} & & & \\
+\texttt{demo\_cpu\_gsm8k} & CPU microVM & GSM8K & smoke 0.90 \\
+\texttt{demo\_cpu\_math500} & CPU microVM & MATH-500 & smoke 0.89 \\
+\texttt{demo\_cpu\_deepscaler} & CPU microVM & DeepScaleR & smoke
+0.78 \\
+\texttt{demo\_cpu\_humaneval} & CPU microVM & HumanEval & smoke 0.85 \\
+\texttt{demo\_cpu\_gretelsql} & CPU microVM & Gretel text-to-SQL & smoke
+0.60 \\
+\texttt{demo\_cpu\_hotpotqa} & CPU microVM & HotpotQA (multi-hop) &
+smoke 0.65 \\
+\texttt{demo\_cpu\_xlam} & CPU microVM & xLAM-60k tool use & smoke
+1.00 \\
+\texttt{demo\_cpu\_mcp} & CPU microVM & ToolACE (MCP) & smoke 1.00 \\
+\emph{--- substrate \& design variants (7) ---} & & & \\
+\texttt{demo\_cpu\_branching} & CPU microVM (CLI) & SWE, \textbf{real
+Claude Code CLI} & smoke; fan-out ≥ 1, reward 0 \\
+\texttt{demo\_cpu\_customruntime} & CPU microVM & DeepScaleR, both
+backends & smoke, \texttt{eval} 0.69 \\
+\texttt{demo\_cpu\_imagepool} & CPU microVM (image pool) & datasci +
+scipy + sklearn & smoke 1.0; 3-image pool routed \\
+\texttt{demo\_gpu\_customruntime} & GPU, custom g6 Runtime & KernelBench
++ CUDA probe & smoke 0.65 \\
+\texttt{demo\_gpu\_shared\_multi} & GPU, one WHOLE GPU/episode &
+KernelBench CUDA & smoke 0.65 \\
+\texttt{demo\_gpu\_local} & GPU, local whole-GPU Ray farm & KernelBench
+CUDA & smoke 0.70 \\
+\texttt{demo\_cpu\_bigimage} & CPU \textbf{Instance}, \textasciitilde4
+GB image & DeepScaleR math & \textbf{trained} on m5; warm-farm boots 201
+→ 1, \texttt{eval} 0.76 \\
+\bottomrule\noalign{}
+\end{longtable}
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{The GPU limit --- and how you'd share one L4}
