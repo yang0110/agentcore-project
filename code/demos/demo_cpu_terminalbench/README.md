@@ -1,4 +1,4 @@
-# demo_cpu_terminalbench — RL over a LARGE image pool (one image per task), kept warm the reliable way
+# demo_cpu_terminalbench — RL over a LARGE image pool (one image per task), one isolated microVM per episode
 
 Terminal-Bench ships each task as its **own container environment** (a task-specific `Dockerfile` +
 a hidden pytest oracle). This demo turns that into a **large image pool**: one container image → one
@@ -15,42 +15,39 @@ owns its `data/`, `ckpt/`, `run.sh`, a vendored `agentcore_slime_demo/`, its `fe
 
 ---
 
-## The problem this demo solves: keeping a large pool warm
+## The problem this demo solves: isolation vs. cold start
 
-A pool of hundreds of task images makes **cold start** the dominant cost. Opening a *fresh* session
-per episode means: on the first episode of every task, AgentCore allocates a microVM, **pulls that
-task's image from ECR**, and boots it before any work happens. Do that per episode and the rollout
-spends most of its wall-clock waiting on pulls.
+Terminal-Bench tasks act on the **whole OS** — they install packages, edit `/etc`, start services,
+write outside the workdir. So episodes must be **isolated from each other at the machine level**: a
+shared microVM with a reset working folder would leak processes, `/tmp`, packages and config from
+one episode (or one GRPO sibling) into the next. On AgentCore the isolation boundary is the
+**session**: one `runtimeSessionId` = one dedicated microVM, and when the session is stopped the
+microVM is terminated and its memory sanitized. So **every episode gets its own brand-new session,
+never reused**.
 
-AgentCore gives exactly **one guaranteed warm lever: session affinity** — the same `runtimeSessionId`
-stays pinned to the same warm microVM; a new/absent one cold-starts. There is **no documented
-cross-session image cache**, and a microVM is terminated + sanitized when its session ends. So
-"prewarm and release" is best-effort only. **The reliable way is to keep a live session per task and
-heartbeat it** — which is what this demo does.
+The cost is a **cold start per episode**: AgentCore allocates a microVM, **pulls that task's image
+from ECR**, and boots it before any work happens. The demo hides that cost instead of avoiding it.
 
-### Warm-shared session reuse + heartbeat (the reliable path)
+### Fresh session per episode, pre-opened (the design)
 
-1. **One live `runtimeSessionId` per task.** Every episode routed to a task reuses that task's ONE
-   shared session. Because AgentCore scopes a session per `(runtimeArn, runtimeSessionId)` and each
-   task has its own ARN, one shared id yields **exactly one warm microVM per task**
-   (`WarmSharedRuntimeSandbox`, `terminalbench_pool.py`).
-2. **Per-episode workdir isolation via a `sub_session`.** Sharing a microVM means episodes would
-   otherwise see each other's files. The server (`SANDBOX_SHARED_MODE=cpu`) resets a **pristine copy
-   of the task's baked workdir template** per episode: `op=open` → `cp -a /opt/acs/task_template/.
-   /sessions/<sub>/`; every `exec`/`write_file`/`read_file` resolves inside that dir; `op=close`
-   removes it. The reset is cheap because the task's environment is already **in the image** — nothing
-   is re-pulled, only a small directory is copied.
-3. **A `SessionKeeper` heartbeat holds each session warm across the weight-sync stall.** In
-   async/decoupled slime, generation pauses while the trainer syncs weights into SGLang; with no
-   invokes flowing, AgentCore would idle-reclaim the microVMs (~15-min timeout). The pool registers
-   ONE keepalive **anchor** per task ARN; the keeper pings any anchor that goes idle past
-   `WARM_PING_FRACTION × WARM_IDLE_TIMEOUT`, so the whole pool survives the barrier.
+1. **Strict routing.** The episode's `task.image` (the task name) is looked up in the pool map
+   `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE`. An unmapped task is an **error** — it is never sent to a
+   fallback Runtime (that would run it on another task's image).
+2. **Cold start at enqueue, not at pickup.** `run.sh` admits `HARNESS_WORKERS + TB_PREOPEN_MAX`
+   episodes, so up to `TB_PREOPEN_MAX` wait in the harness queue. Each queued episode's session is
+   opened **while it waits** (`TerminalBenchPool._refill`); when a worker frees up, the episode's
+   microVM is usually already booted. `[demo] open_wait_ms` is the part of the cold start that was
+   still on the critical path.
+3. **Stop on exit.** When the episode ends, `StopRuntimeSession` tears the microVM down immediately
+   (frees the quota slot; nothing carries over).
+4. **Heartbeat across the weight-sync stall.** In async/decoupled slime, generation pauses while the
+   trainer syncs weights into SGLang; an episode mid-turn then sends no invokes and AgentCore would
+   idle-reclaim its microVM (~15-min timeout). Every open session — pre-opened or running — is
+   registered with a `SessionKeeper`, which pings any session idle past
+   `WARM_PING_FRACTION × WARM_IDLE_TIMEOUT`.
 
-**Honest caveat — isolation scope.** The per-episode reset isolates the **workdir**, where
-Terminal-Bench tasks graded on file artifacts live (the large majority). A task that mutates **global**
-OS state (`apt install`, `/etc`, `/root`) and grades on it would leak across episodes. For those, set
-`TB_SESSION_RECYCLE_EVERY=K` to mint a fresh session for that task every K episodes (one amortized
-cold start per K, trading a little warmth for a clean OS). Default `0` = never recycle (pure warm).
+The agent works directly in the task's baked workdir (`/app`); the hidden oracle is baked at
+`/opt/acs/oracle`, outside it, and only injected by `grade.sh` after the agent's turns.
 
 ---
 
@@ -59,12 +56,12 @@ cold start per K, trading a little warmth for a clean OS). Default `0` = never r
 ```
 slime → terminalbench_pool_generate.generate → TerminalBenchPool.submit
   worker pulls episode → route by task.image → _runtime_arn_for_image → task's Runtime ARN
-    ensure warm anchor for that ARN (SessionKeeper heartbeats it)   ← one live session per task
-    open per-episode sub_session (server cp's a fresh workdir template)   ← isolation + no re-pull
-      write PROBLEM.md (the instruction) into the fresh workdir
+  (at submit) open a BRAND-NEW session on that ARN while the episode waits   ← its own microVM
+    SessionKeeper heartbeats it until it is stopped
+      write PROBLEM.md (the instruction) into the task's workdir (/app)
       MiniClaudeHarness loop: LLM via adapter (policy under training), bash/write_file/read_file tools
     grade: bash /opt/acs/oracle/grade.sh  (injects hidden tests + runs run-tests.sh → exit 0 = solved)
-  finish_session → loss-masked GRPO samples (list); adapter.drop_session
+  finish_session → loss-masked GRPO samples (list); adapter.drop_session; StopRuntimeSession
 ```
 
 Only single-container tasks are poolable (one image ↔ one sandbox); `fetch_terminalbench.py`
@@ -84,12 +81,12 @@ TB_LIMIT=2 python3 $D/deploy/deploy_terminalbench.py     # validate on 2 tasks
 python3 $D/deploy/deploy_terminalbench.py                # then the full pool
 
 # 2. (optional) Manually prewarm + MEASURE per-start seconds for the whole pool.
-AGENTCORE_REGION=us-west-2 python3 $D/prewarm_pool.py     # KEEP_WARM=1 to leave sessions alive
+AGENTCORE_REGION=us-west-2 python3 $D/prewarm_pool.py     # measures cold-start seconds per task image
 
 # 3. Build the train/eval dataset from the manifest (offline, stdlib-only).
 docker exec agentcore_p4 bash /work/$D/prepare_data.sh    # -> data/tb_train.jsonl + tb_eval.jsonl
 
-# 4. REAL RL train + eval through the WARM-SHARED pool (async/decoupled slime). Smoke = NR=3.
+# 4. REAL RL train + eval through the isolated pool (async/decoupled slime). Smoke = NR=3.
 #    run.sh loads tasks/arn_by_image.json itself; just needs AWS creds in the container.
 docker exec -e NR=3 -e EVAL_INTERVAL=2 agentcore_p4 \
     bash -lc 'cd /work && bash '$D'/run.sh 2>&1 | tee '$D'/smoke_run.log'
@@ -103,14 +100,13 @@ docker exec agentcore_p4 python3 /work/$D/metrics.py /work/$D/smoke_run.log \
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `SANDBOX` | `agentcore-warm-shared` | warm-shared per-task sessions. **`local` is rejected.** |
-| `TB_SHARED_RUNTIME_SESSION` | per-run | shared session base; the pool derives one warm session per task |
-| `TB_SESSION_RECYCLE_EVERY` | `0` | mint a fresh session every K episodes/task (0 = never; use for global-state tasks) |
+| `SANDBOX` | `agentcore-runtime` | fresh AgentCore session per episode. **`local` is rejected.** |
+| `TB_PREOPEN_MAX` | `HARNESS_WORKERS` | episodes whose microVM boots while they wait for a worker (= idle microVMs you pay for) |
 | `WARM_IDLE_TIMEOUT` / `WARM_PING_FRACTION` | `900` / `0.5` | heartbeat any session idle past `fraction × timeout` |
 | `HARNESS_WORKERS` | `4` | warm in-process harness workers (the harness tier) |
 | `EPISODE_MAX_TURNS` / `EPISODE_MAX_TOKENS` | `6` / `1024` | agentic turns / tokens per episode |
 | `RB` / `NS` / `NR` | 4 / 8 / 11 | GRPO prompts-per-step / group size / num-rollout (real steps `NR-1`) |
-| `CONC` | `⌈W/E⌉` | episode-admission concurrency `S = CONC × num_engines` |
+| `CONC` | `⌈(W+TB_PREOPEN_MAX)/E⌉` | episode-admission concurrency `S = CONC × num_engines` |
 | `MODE` | `A` | stock async only — the pool returns a fan-out list; `B` is rejected |
 | `EVAL_INTERVAL` / `EVAL_NS` | 10 / 2 | held-out eval cadence / samples |
 
@@ -120,23 +116,23 @@ Deploy-side: `TB_LIMIT` / `TB_TASKS` (subset), `SKIP_BUILD=1` (reuse pushed imag
 ## What to watch
 
 - `rollout/raw_reward` and `eval/terminalbench` — the learning signal / held-out solve rate.
-- `[demo] warm_anchor …` — one line per task session coming up (and `live_sessions` = tasks kept
-  warm); `[demo] warm_reuse=1 … ep_on_session=N` — episodes reusing an already-warm session (N grows).
+- `[demo] fresh_session=1 preopened=… open_wait_ms=…` — one line per episode: every episode is on
+  its own new session; `open_wait_ms` near 0 means its cold start was fully hidden by the pre-open.
 - `[demo] heartbeat_session=… total_pings=…` — beats fired to hold sessions across the sync stall.
-- `perf/sandbox_ms_*` vs `perf/sglang_gen_ms_*` — the sandbox-vs-decode latency split; with warming
-  working, the per-episode sandbox `op=open` stays small (no per-episode image pull).
+- `perf/sandbox_ms_*` vs `perf/sglang_gen_ms_*` — the sandbox-vs-decode latency split; every episode
+  pays one `op=ping` cold open (an image pull + boot), but it runs while the episode is queued.
 - `prewarm_pool.py` → `tasks/prewarm_times.csv` — per-Runtime cold-start seconds (min/p50/p95/max).
 
 ## Folder layout (self-contained)
 
 - `agentcore_slime_demo/` — vendored library. Key pieces for this demo: `terminalbench_pool.py`
-  (warm-shared pool + SessionKeeper anchors + recycle), `terminalbench_pool_generate.py` (the slime
-  hook), `agentcore_runtime_sandbox.WarmSharedRuntimeSandbox` (client), `sandbox_server_agent.py`
-  (`SANDBOX_SHARED_MODE=cpu` workdir-reset handler), `session_keeper.py` (heartbeat),
-  `task_families.TerminalBenchTask`, and `sandbox.make_sandbox("agentcore-warm-shared", …)`.
+  (fresh session per episode + pre-open + strict routing), `terminalbench_pool_generate.py` (the slime
+  hook), `agentcore_runtime_sandbox.AgentCoreRuntimeSandbox` (client; stops the session on exit),
+  `sandbox_server_agent.py` (the in-image `/invocations` server), `session_keeper.py` (heartbeat),
+  and `task_families.TerminalBenchTask`.
 - `fetch_terminalbench.py` — fetch + classify the corpus into `tasks/` + `manifest.json`.
 - `deploy/deploy_terminalbench.py` — build+push one image per task, register one Runtime per task,
-  bake the workdir template + hidden oracle + `grade.sh`; writes `tasks/arn_by_image.json`.
+  bake the hidden oracle + `grade.sh`; writes `tasks/arn_by_image.json`.
 - `prewarm_pool.py` — manual pool prewarm + per-start latency probe.
 - `build_terminalbench_dataset.py` / `prepare_data.sh` — dataset (step 3) · `run.sh` — the RL run
   (step 4) · `metrics.py` — parse (step 5).

@@ -165,65 +165,6 @@ def _farm():
     return _FARM
 
 
-# ---- demo_cpu_terminalbench: warm-SHARED CPU path (one live session per task) ----------------
-# The RELIABLE warm lever for the large Terminal-Bench image pool. A request carrying a sub_session
-# on a CPU image (SANDBOX_SHARED_MODE=cpu) is an EPISODE slot: many episodes of one task all invoke
-# under ONE shared runtimeSessionId, so they land on the SAME warm microVM (session affinity — no
-# per-episode image pull / cold boot). Per-episode ISOLATION comes from the sub_session: op=open
-# seeds a pristine copy of the task's baked workdir template into /sessions/<sub>; every exec/
-# write_file/read_file for that sub resolves INSIDE it; op=close removes it. So episodes share the
-# warm microVM but never see each other's workdir state. (Global OS state is still shared — see the
-# WarmSharedRuntimeSandbox docstring; grade only on workdir artifacts, or recycle the session.)
-SESSIONS_ROOT = os.environ.get("SANDBOX_SESSIONS_ROOT", "/sessions")
-# Pristine copy of the task's initial workdir, baked into the image by deploy_terminalbench.py
-# (`cp -a /app /opt/acs/task_template`). Reset target for each episode. Falls back to a bare mkdir
-# when unset (e.g. a task whose Dockerfile seeds nothing).
-TASK_TEMPLATE = os.environ.get("SANDBOX_TASK_TEMPLATE")
-
-
-def _sub_dir(sub: str) -> str:
-    # sub is a server-minted opaque id (ep-<hex> / anchor-*), but sanitize defensively so it can
-    # never escape SESSIONS_ROOT via path separators.
-    safe = "".join(c for c in sub if c.isalnum() or c in "-_")
-    return os.path.join(SESSIONS_ROOT, safe or "ep")
-
-
-def _resolve_in(base: str, path: str) -> str:
-    """Resolve a (usually relative) client path inside this episode's sub-dir."""
-    return path if os.path.isabs(path) else os.path.join(base, path)
-
-
-def _handle_cpu_shared(op: str, request: dict) -> dict:
-    sub = request["sub_session"]
-    d = _sub_dir(sub)
-    if op == "open":
-        os.makedirs(d, exist_ok=True)
-        # THE per-episode reset: a fresh, pristine copy of the task's baked workdir. Cheap for
-        # Terminal-Bench task dirs (a handful of small seed files). `cp -a .../.` copies contents
-        # (incl. dotfiles) into d without nesting a subdir. Best-effort: a missing template just
-        # yields an empty workdir (the harness then writes PROBLEM.md into it).
-        if TASK_TEMPLATE and os.path.isdir(TASK_TEMPLATE):
-            subprocess.run(["cp", "-a", TASK_TEMPLATE + "/.", d + "/"], check=False)
-        return {"ok": True, "workdir": d}
-    if op == "close":
-        subprocess.run(["rm", "-rf", d], check=False)
-        return {"ok": True}
-    if op == "ping":
-        # Cheap liveness / heartbeat op: resets AgentCore's idle clock for the shared session
-        # without touching the workdir (used by the SessionKeeper anchor pinger).
-        return {"ok": True}
-    if op == "exec":
-        req = {**request, "workdir": d}          # run inside this episode's isolated workdir
-        return _do_exec(req)
-    if op == "write_file":
-        req = {**request, "path": _resolve_in(d, request["path"])}
-        return _do_write(req)
-    if op == "read_file":
-        req = {**request, "path": _resolve_in(d, request["path"])}
-        return _do_read(req)
-    return {"error": f"unknown cpu-shared op: {op!r}"}
-
-
 def _handle_farm(op: str, request: dict) -> dict:
     sub = request["sub_session"]
     farm = _farm()
@@ -249,12 +190,8 @@ def handle(request: dict) -> dict:
     if (request or {}).get("mode") == "prepare":
         return _gpu_prepare(request)
     op = (request or {}).get("op", "ping")
-    # A sub_session means a SHARED-session slot (many episodes on one warm microVM). Which kind:
-    #   SANDBOX_SHARED_MODE=cpu  -> demo_cpu_terminalbench warm-shared workdir isolation (this image);
-    #   otherwise                -> B4 GPU-shared Ray farm (many episodes on this one g6 GPU).
+    # A sub_session means a B4 op (many episodes on this one g6 GPU via the Ray farm).
     if (request or {}).get("sub_session"):
-        if os.environ.get("SANDBOX_SHARED_MODE", "").lower() == "cpu":
-            return _handle_cpu_shared(op, request)
         return _handle_farm(op, request)
     if op == "ping":
         _ensure_workdir(request.get("workdir") or DEFAULT_WORKDIR)

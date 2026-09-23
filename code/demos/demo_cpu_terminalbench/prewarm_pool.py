@@ -4,17 +4,16 @@
 Run this MANUALLY before a training run. It opens one session against every Runtime in the pool
 (`tasks/arn_by_image.json`, written by deploy_terminalbench.py). Opening a session is exactly one
 `invoke_agent_runtime` "ping": AgentCore allocates a microVM on the fleet, PULLS the task's image
-from ECR, boots it, and starts the /invocations server. So this pass forces the (otherwise
-lazy, per-first-episode) image pull + cold boot to happen NOW, concurrently, off the training
-critical path — and records how long each one took.
+from ECR, boots it, and starts the /invocations server. This measures how long each task
+image's cold start takes — the cost the training pool pays per episode (every episode runs on its own
+fresh session) and hides by pre-opening sessions while episodes wait in the queue.
 
 HONEST SCOPE (see docs/fault-recovery.md — AWS runtime-sessions):
   * A microVM is warm only while ITS `runtimeSessionId` is alive; on session completion the microVM
     is terminated and memory sanitized. AWS does NOT document a per-account cross-session image
-    cache, so prewarm-and-release is BEST-EFFORT: it pays the pull now, but a later fresh-session
-    episode may still cold-start. The GUARANTEED warm lever is session affinity — reuse one
-    `runtimeSessionId` per task and heartbeat it (KeptSandbox / SessionKeeper). This script is the
-    up-front pull + a real latency probe, not a guarantee.
+    cache, so prewarm-and-release is BEST-EFFORT: it may speed later pulls, but a fresh-session episode
+    may still cold-start. Treat this script as a latency probe, not a warm guarantee. (Reusing one
+    session across episodes would keep it warm but breaks per-episode isolation, so the demo does not.)
   * With KEEP_WARM=1 the sessions are left ALIVE (not stopped). They still expire on the ~15-min
     idle timeout unless something keeps pinging them, and each holds a concurrent-session quota
     slot while alive — use it only if you launch training within the idle window.

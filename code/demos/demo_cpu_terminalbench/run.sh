@@ -1,22 +1,22 @@
 #!/bin/bash
-# demo_cpu_terminalbench — REAL slime CPU trainer over a LARGE Terminal-Bench image pool, using the
-# RELIABLE warm path: one live AgentCore session PER TASK, reused across episodes with per-episode
-# workdir isolation, kept warm across the weight-sync stall by a SessionKeeper heartbeat.
+# demo_cpu_terminalbench — REAL slime CPU trainer over a LARGE Terminal-Bench image pool, with every
+# episode ISOLATED on its own fresh AgentCore session (one microVM per episode, never reused).
 #
 # Each episode routes to ITS Terminal-Bench task's OWN Runtime (one image / one ARN per task; the
-# pool map is AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE, written by deploy/deploy_terminalbench.py),
-# reuses that task's warm shared session (TB_SHARED_RUNTIME_SESSION-derived, minted per task by the
-# pool), gets a freshly-reset workdir, runs the MiniClaudeHarness agentic loop (LLM via the adapter
-# under training, tools in the sandbox), and is graded by the task's baked hidden pytest oracle
-# (grade.sh) — the RLVR reward. Self-contained: imports this dir's vendored agentcore_slime_demo copy.
-# Runs INSIDE the persistent container agentcore_p4 (slimerl/slime).
+# pool map is AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE, written by deploy/deploy_terminalbench.py —
+# an unmapped task is an error, never routed elsewhere), gets a brand-new session whose cold start
+# began when the episode was queued, runs the MiniClaudeHarness agentic loop (LLM via the adapter
+# under training, tools in the sandbox), is graded by the task's baked hidden pytest oracle
+# (grade.sh) — the RLVR reward — and then its session is stopped. Self-contained: imports this dir's
+# vendored agentcore_slime_demo copy. Runs INSIDE the persistent container agentcore_p4 (slimerl/slime).
 #
-# WHY WARM-SHARED (the point of this demo's substrate): a fresh session per episode would cold-start
-# (allocate microVM + pull that task's image + boot) on the first episode of every task, repeatedly.
-# Session affinity (one live session per task) + a heartbeat is the only guaranteed warm lever, so the
-# large image pool stays warm without paying a cold pull per episode. See terminalbench_pool.py.
+# WHY A FRESH SESSION PER EPISODE: Terminal-Bench tasks change the whole OS (packages, /etc, services),
+# and the session is the isolation boundary AgentCore guarantees (a stopped session's microVM is
+# terminated + sanitized). The cold start this costs is hidden by opening each episode's session at
+# submit time, while it waits in the harness queue (TB_PREOPEN_MAX bounds how many open ahead). A
+# SessionKeeper heartbeat keeps open sessions alive across the weight-sync stall.
 #
-# WARM POOL => STOCK (Mode A) DRIVER ONLY. terminalbench_pool_generate.generate returns a fan-out LIST
+# POOL => STOCK (Mode A) DRIVER ONLY. terminalbench_pool_generate.generate returns a fan-out LIST
 # of Samples (finish_session shape); slime's fully-async (Mode B) sort key cannot order it. MODE=A only.
 #
 # ADAPTER TOOL PARSER (the A3/B3 dead-reward fix): SGLANG_ARGS bakes in --sglang-tool-call-parser
@@ -24,9 +24,9 @@
 # tool syntax into tool_use blocks, the mini-harness tool loop is dead, and reward is structurally 0.
 set -euo pipefail
 
-SANDBOX="${SANDBOX:-agentcore-warm-shared}"   # warm-shared CPU sandbox (this demo's reliable path).
+SANDBOX="${SANDBOX:-agentcore-runtime}"   # fresh AgentCore session per episode (the pool opens it).
 if [ "$SANDBOX" = "local" ]; then
-   echo "SANDBOX=local is not supported for CPU demos (remote-only) — use agentcore-warm-shared (default)." >&2
+   echo "SANDBOX=local is not supported for CPU demos (remote-only) — use agentcore-runtime (default)." >&2
    exit 1
 fi
 
@@ -38,8 +38,6 @@ if [ ! -f "$POOL_MAP" ]; then
    exit 1
 fi
 AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE="$(cat "$POOL_MAP")"
-# One shared runtimeSessionId base per RUN; the pool derives one warm session per task ARN from it.
-TB_SHARED_RUNTIME_SESSION="${TB_SHARED_RUNTIME_SESSION:-tbwarm-$(date +%s)-$RANDOM$RANDOM$RANDOM}"
 
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
@@ -47,17 +45,17 @@ NR="${NR:-11}"         # num-rollout; real training steps = NR-1 => 10 train + 1
 TEMP="${TEMP:-1.0}"
 GBS=$(( RB * NS ))
 
-# ---- warm-shared + heartbeat knobs (read by TerminalBenchPool inside the rollout process) --------
+# ---- isolation + pre-open + heartbeat knobs (read by TerminalBenchPool inside the rollout process) --------
 HARNESS_WORKERS="${HARNESS_WORKERS:-4}"       # warm in-process harness workers
 EPISODE_MAX_TURNS="${EPISODE_MAX_TURNS:-6}"   # agentic turns per Terminal-Bench episode
 EPISODE_MAX_TOKENS="${EPISODE_MAX_TOKENS:-1024}"
 WARM_IDLE_TIMEOUT="${WARM_IDLE_TIMEOUT:-900}" # serverless microVM idle timeout (~15min); heartbeat < this
 WARM_PING_FRACTION="${WARM_PING_FRACTION:-0.5}"
-TB_SESSION_RECYCLE_EVERY="${TB_SESSION_RECYCLE_EVERY:-0}"  # 0 = never (pure warm); K = fresh session/K eps
+TB_PREOPEN_MAX="${TB_PREOPEN_MAX:-$HARNESS_WORKERS}"  # episodes whose microVM boots while they wait for a worker
 
 MODE="${MODE:-A}"
 case "$MODE" in A|a) MODE=A;;
-   B|b) echo "MODE=B (fully-async) unsupported: the warm pool returns a fan-out LIST of Samples. Use MODE=A." >&2; exit 1;;
+   B|b) echo "MODE=B (fully-async) unsupported: the pool returns a fan-out LIST of Samples. Use MODE=A." >&2; exit 1;;
    *) echo "MODE must be A (got '$MODE')" >&2; exit 1;; esac
 
 EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
@@ -71,7 +69,10 @@ HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a720891212
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 NENG=$(( ROLLOUT_GPUS / 2 ))
-CONC="${CONC:-$(( (HARNESS_WORKERS + NENG - 1) / NENG ))}"
+# Admit W running + TB_PREOPEN_MAX queued episodes (S = CONC*NENG). The queued ones are the look-ahead:
+# their fresh sessions cold-start while they wait, so a worker rarely waits on a boot. With S == W the
+# queue is empty and pre-opening would hide nothing.
+CONC="${CONC:-$(( (HARNESS_WORKERS + TB_PREOPEN_MAX + NENG - 1) / NENG ))}"
 
 DATA="${DATA:-$DEMO_DIR/data/tb_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/tb_eval.jsonl}"
@@ -118,7 +119,7 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 1024
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
-   # THE WARM-SHARED HOOK: hands each episode to the per-task warm-session pool + heartbeat.
+   # THE POOL HOOK: routes each episode to its task's Runtime on its own fresh, pre-opened session.
    --custom-generate-function-path agentcore_slime_demo.terminalbench_pool_generate.generate
 )
 
@@ -176,7 +177,7 @@ export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
-# The warm-shared + heartbeat knobs and the image-pool map are read by TerminalBenchPool INSIDE the
+# The isolation/pre-open/heartbeat knobs and the image-pool map are read by TerminalBenchPool INSIDE the
 # rollout process, so they MUST be forwarded through the ray runtime env (not just the launching shell).
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -184,7 +185,6 @@ RUNTIME_ENV_JSON="{
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE\": $(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' <<< "${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE}"),
-    \"TB_SHARED_RUNTIME_SESSION\": \"${TB_SHARED_RUNTIME_SESSION}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"HARNESS_WORKERS\": \"${HARNESS_WORKERS}\",
@@ -192,7 +192,7 @@ RUNTIME_ENV_JSON="{
     \"EPISODE_MAX_TOKENS\": \"${EPISODE_MAX_TOKENS}\",
     \"WARM_IDLE_TIMEOUT\": \"${WARM_IDLE_TIMEOUT}\",
     \"WARM_PING_FRACTION\": \"${WARM_PING_FRACTION}\",
-    \"TB_SESSION_RECYCLE_EVERY\": \"${TB_SESSION_RECYCLE_EVERY}\"
+    \"TB_PREOPEN_MAX\": \"${TB_PREOPEN_MAX}\"
   }
 }"
 

@@ -362,19 +362,4 @@ def make_sandbox(kind: str | None = None, **kwargs) -> Sandbox:
         from .agentcore_runtime_sandbox import RayFarmRuntimeSandbox
 
         return RayFarmRuntimeSandbox(**kwargs)
-    if kind in ("agentcore-warm-shared", "warm-shared", "tb"):
-        # demo_cpu_terminalbench: warm-SHARED CPU sandbox — one live runtimeSessionId per task,
-        # reused across episodes with per-episode workdir isolation (sub_session). Route to THIS
-        # task's Runtime by its `image` tag (the task name; each task has its own ARN); the shared
-        # session id (TB_SHARED_RUNTIME_SESSION) then pins exactly one warm microVM per task. Server
-        # side is SANDBOX_SHARED_MODE=cpu. Kept warm across weight sync by a SessionKeeper anchor
-        # (see terminalbench_pool.py). Unlike the runtime path this is a POOL of warm sessions, not
-        # a fresh session per episode.
-        from .agentcore_runtime_sandbox import WarmSharedRuntimeSandbox
-
-        if "runtime_arn" not in kwargs:
-            arn = _runtime_arn_for_image(image)
-            if arn is not None:
-                kwargs["runtime_arn"] = arn
-        return WarmSharedRuntimeSandbox(**kwargs)
     raise ValueError(f"unknown sandbox kind: {kind!r}")

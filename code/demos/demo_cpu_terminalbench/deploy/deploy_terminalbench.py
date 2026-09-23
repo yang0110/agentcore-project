@@ -64,15 +64,12 @@ CONTINUE = os.environ.get("CONTINUE_ON_ERROR", "1") == "1"
 # the task's `sleep infinity` command with our server. Uses `python3 -m` from /opt on PYTHONPATH so
 # the module name resolves regardless of the base image's WORKDIR.
 #
-# Warm-shared wiring (the demo's reliable warm path — one live session per task, reused across
-# episodes with per-episode workdir isolation; see terminalbench_pool.py):
-#   * SANDBOX_SHARED_MODE=cpu           -> the server routes sub_session ops to its CPU warm-shared
-#                                          handler (fresh workdir per episode), NOT the GPU ray farm.
-#   * cp -a {workdir} /opt/acs/task_template -> a PRISTINE snapshot of the task's baked workdir,
-#     taken at build time. The server reseeds a fresh copy of this per episode (the cheap reset).
-#   * the hidden oracle (tests/ + run-tests.sh) is baked at /opt/acs/oracle, OUTSIDE the agent's
-#     workdir, so the agent can't read the tests while solving. grade.sh injects it into the episode
-#     workdir + runs it AFTER the agent's turns (mirrors Terminal-Bench's own grade-after semantics).
+# Isolation: every episode runs on its OWN fresh session (one microVM, stopped after the episode;
+# see terminalbench_pool.py), so the agent works directly in the task's baked {workdir} — no
+# template/reset layer is needed. The hidden oracle (tests/ + run-tests.sh) is baked at
+# /opt/acs/oracle, OUTSIDE the agent's workdir, so the agent can't read the tests while solving.
+# grade.sh injects it into the workdir + runs it AFTER the agent's turns (mirrors Terminal-Bench's
+# own grade-after semantics).
 # {oracle_copies} is filled per task with COPY lines only for the oracle files that exist.
 WRAP_APPENDIX = """
 # ===== demo_cpu_terminalbench sandbox wrapper (appended by deploy_terminalbench.py) =====
@@ -84,19 +81,16 @@ RUN (command -v python3 >/dev/null 2>&1 || (apt-get update && apt-get install -y
 COPY __acs_sandbox_server_agent.py /opt/acs/sandbox_server_agent.py
 COPY __acs_grade.sh /opt/acs/oracle/grade.sh
 {oracle_copies}
-RUN mkdir -p {workdir} && cp -a {workdir}/. /opt/acs/task_template/ 2>/dev/null || mkdir -p /opt/acs/task_template
+RUN mkdir -p {workdir}
 ENV PYTHONPATH=/opt/acs
 ENV SANDBOX_WORKDIR={workdir}
-ENV SANDBOX_SHARED_MODE=cpu
-ENV SANDBOX_TASK_TEMPLATE=/opt/acs/task_template
-ENV SANDBOX_SESSIONS_ROOT=/sessions
 EXPOSE 8080
 CMD ["python3", "-m", "sandbox_server_agent"]
 """.lstrip()
 
 # grade.sh — the RLVR reward oracle, baked into every task image. Runs with cwd = the episode's
-# freshly-reset workdir (the server sets it). Injects the hidden tests + run-tests.sh, runs them, and
-# exits with their status (0 = task solved). Kept OUT of the workdir template so the agent never sees
+# workdir (the server sets it). Injects the hidden tests + run-tests.sh, runs them, and
+# exits with their status (0 = task solved). Kept OUT of the workdir so the agent never sees
 # it while solving.
 GRADE_SH = """#!/usr/bin/env bash
 set -u
@@ -183,10 +177,7 @@ def main() -> int:
     tasks = _load_manifest()
     xrole = d.exec_role(f"{PREFIX}-exec-role")
     public_net = {"networkMode": "PUBLIC"}  # egress for run-tests.sh; reached via IAM only
-    # SANDBOX_SHARED_MODE=cpu also set as an image ENV; passed here too so the warm-shared server
-    # path is active regardless of how the Runtime resolves env precedence.
-    env = {"AWS_REGION": REGION, "SANDBOX_WORKDIR": WORKDIR, "SANDBOX_SHARED_MODE": "cpu",
-           "SANDBOX_TASK_TEMPLATE": "/opt/acs/task_template", "SANDBOX_SESSIONS_ROOT": "/sessions"}
+    env = {"AWS_REGION": REGION, "SANDBOX_WORKDIR": WORKDIR}
 
     d.err(f"deploying pool of {len(tasks)} Terminal-Bench task Runtimes ({PLATFORM}, PUBLIC)")
     arn_by_image, failed = {}, {}

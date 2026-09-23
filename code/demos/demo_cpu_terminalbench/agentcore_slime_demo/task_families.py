@@ -1103,7 +1103,7 @@ class TerminalBenchTask(EpisodicTask):
     """One Terminal-Bench task. Unlike the synthetic families, the WHOLE environment is baked into
     the task's own container image (fetch_terminalbench.py + deploy_terminalbench.py build one image
     -> one Runtime per task), so this class carries almost no data: just the English instruction and
-    the routing tag. The agent works in the warm-shared sandbox (WarmSharedRuntimeSandbox); grading
+    the routing tag. The agent works in its own fresh session on that Runtime (one microVM per episode); grading
     is the task's OWN hidden pytest oracle (`run-tests.sh`), injected + run by grade.sh after the
     agent's turns — the RLVR reward.
 
@@ -1134,7 +1134,7 @@ class TerminalBenchTask(EpisodicTask):
         return self.prompt
 
     def setup_files(self) -> dict[str, str]:
-        return {}                      # the task's files are baked into the image template
+        return {}                      # the task's files are baked into its image
 
     def runner_source(self) -> str:
         return ""                      # unused: the checker is the baked run-tests.sh oracle
