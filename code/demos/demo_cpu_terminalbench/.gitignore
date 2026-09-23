@@ -6,3 +6,6 @@ ckpt/
 logs/
 __pycache__/
 *.pyc
+# Deploy build context: fetched standalone CPython + a copy of the vendored server (deploy re-copies it).
+deploy/acs_ctx/py/
+deploy/acs_ctx/sandbox_server_agent.py

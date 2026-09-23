@@ -14,10 +14,10 @@ OFFLINE_TIMEOUT="${OFFLINE_TIMEOUT:-420}"
 TRAIN_TIMEOUT="${TRAIN_TIMEOUT:-1800}"
 
 # Phase lists (override via env to resume a subset).
-OFFLINE_DEMOS="${OFFLINE_DEMOS:-demo_cpu_heartbeat demo_gpu_snapshot demo_cpu_harness_scale}"
+OFFLINE_DEMOS="${OFFLINE_DEMOS:-demo_cpu_heartbeat demo_gpu_snapshot demo_cpu_scale_lanes}"
 # Entries are <demo> or <demo>:<DATASET> — demo_cpu_datasets is ONE folder that trains many datasets,
 # so each dataset is its own entry (run with DATASET=<name>; logged/reported as <demo>-<name>).
-CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_datasets:mbpp demo_cpu_datasets:math demo_cpu_mixtask demo_cpu_datasets:gsm8k demo_cpu_datasets:math500 demo_cpu_datasets:deepscaler demo_cpu_datasets:humaneval demo_cpu_datasets:gretelsql demo_cpu_datasets:hotpotqa demo_cpu_datasets:xlam demo_cpu_datasets:mcp demo_cpu_heartbeat demo_cpu_harness_scale demo_cpu_customruntime}"
+CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_datasets:mbpp demo_cpu_datasets:math demo_cpu_mixtask demo_cpu_datasets:gsm8k demo_cpu_datasets:math500 demo_cpu_datasets:deepscaler demo_cpu_datasets:humaneval demo_cpu_datasets:gretelsql demo_cpu_datasets:hotpotqa demo_cpu_datasets:xlam demo_cpu_datasets:mcp demo_cpu_heartbeat demo_cpu_scale_lanes demo_cpu_customruntime}"
 
 # Each offline demo's RETAINED probe script (run directly; run.sh is now the trainer). Args match the
 # pre-conversion run.sh so the behavior markers below still appear.
@@ -25,7 +25,7 @@ offline_cmd() {
   case "$1" in
     demo_cpu_heartbeat)       echo "python3 heartbeat_demo.py" ;;
     demo_gpu_snapshot)      echo "python3 snapshot_demo.py" ;;
-    demo_cpu_harness_scale) echo "python3 harness_scaling_demo.py --episodes 48 --workers 1,2,4,6,8,12 --cinf 4 --csbx 8 --tinf 0.10 --tsbx 0.05" ;;
+    demo_cpu_scale_lanes) echo "python3 harness_scaling_demo.py --episodes 48 --workers 1,2,4,6,8,12 --cinf 4 --csbx 8 --tinf 0.10 --tsbx 0.05" ;;
     *) echo "" ;;
   esac
 }
@@ -54,7 +54,7 @@ offline_markers() {
         "RUN B" \
         "no-snapshot executed 6 steps; app-snapshot executed 4 steps" \
         "rework step" ;;
-    demo_cpu_harness_scale) # 48/48 solved every W; throughput is the min of the three tiers
+    demo_cpu_scale_lanes) # 48/48 solved every W; throughput is the min of the three tiers
       printf '%s\n' \
         "48/48" \
         "throughput = min(inference, sandbox, harness)" \

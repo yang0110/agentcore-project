@@ -1104,22 +1104,23 @@ class TerminalBenchTask(EpisodicTask):
     the task's own container image (fetch_terminalbench.py + deploy_terminalbench.py build one image
     -> one Runtime per task), so this class carries almost no data: just the English instruction and
     the routing tag. The agent works in its own fresh session on that Runtime (one microVM per episode); grading
-    is the task's OWN hidden pytest oracle (`run-tests.sh`), injected + run by grade.sh after the
-    agent's turns — the RLVR reward.
+    is the task's OWN hidden pytest oracle (`run-tests.sh`), injected + run after the agent's turns
+    (TerminalBenchPool._grade) — the RLVR reward.
 
     Per-INSTANCE routing: `image` is NOT the family ClassVar here; each task routes to its OWN
     Runtime ARN, so we expose the task's routing tag (its name) via a property read from `spec`.
     """
 
     family = "terminalbench"
-    # The reward oracle: grade.sh (baked into the image by deploy_terminalbench.py) injects the
-    # hidden tests/ + run-tests.sh into the episode workdir and runs them, exiting 0 iff they pass.
-    check_command = "bash /opt/acs/oracle/grade.sh"
+    # The reward oracle is graded by TerminalBenchPool._grade: the task's hidden tests/ +
+    # run-tests.sh are injected into /tests AFTER the agent's turns (never baked into the image) and
+    # run Terminal-Bench style (TEST_DIR=/tests); solved iff pytest reports passes and no failures.
     SYSTEM = (
-        "You are operating a Linux shell to complete a task inside a container. You have a bash "
-        "tool (run shell commands), write_file, and read_file. Read PROBLEM.md for the task. Make "
-        "the required changes in the working directory, running commands to inspect and verify your "
-        "work. When you believe the task is complete, stop."
+        "You are operating a Linux shell to complete a task inside a container, as root. You have a "
+        "bash tool (run shell commands), write_file, and read_file; paths are relative to the "
+        "current working directory. Complete the user's task by acting in the environment: inspect "
+        "it, make the required changes, and verify them with commands. Keep replies terse and prefer "
+        "taking a tool action over explaining. When the task is complete, stop."
     )
     submission_hint = "Use the bash / write_file tools to complete the task in the working directory."
 

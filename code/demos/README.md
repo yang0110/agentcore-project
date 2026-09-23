@@ -44,7 +44,7 @@ silently fall off the AgentCore substrate (the serverless CPU sandbox is always 
 | | [`demo_cpu_customruntime/`](demo_cpu_customruntime/) | real RL training on YOUR custom AgentCore Runtime (CPU) |
 | | [`demo_cpu_heartbeat/`](demo_cpu_heartbeat/) | **resilience** — heartbeat that keeps the microVM warm across the weight-sync barrier |
 | **CPU capacity-provider Instance** | [`demo_cpu_bigimage/`](demo_cpu_bigimage/) | a LARGE sandbox image (past the 2 GB microVM cap) on a warm CPU Instance |
-| **harness-scaling** (varies the *harness* tier, not the sandbox) | [`demo_cpu_harness_scale/`](demo_cpu_harness_scale/) | one task (DeepScaleR), a pool of **W warm mini-Claude harness workers** → the async-RL scaling law `throughput = min(inference, sandbox, harness)` |
+| **rollout scaling** (scales harness + inference + sandbox together) | [`demo_cpu_scale_lanes/`](demo_cpu_scale_lanes/) | one task (DeepScaleR) on **4 × 4 × 4 lanes** — 4 warm mini-Claude harness workers : 4 SGLang engines : 4 persistent microVMs, each worker pinned 1:1:1; `LANES=N` scales them together → the async-RL scaling law `throughput = min(inference, sandbox, harness)` |
 | **GPU Runtime instance** (g6 capacity provider) | [`demo_gpu_single/`](demo_gpu_single/) | KernelBench (level_1 CUDA); checker's GPU is the remote g6 sandbox Runtime, so the trainer box stays 4 train + 4 infer + 0 env |
 | | [`demo_gpu_customruntime/`](demo_gpu_customruntime/) | real KernelBench RL on YOUR custom GPU Runtime |
 | | [`demo_gpu_snapshot/`](demo_gpu_snapshot/) | **resilience** — application-level snapshot & resume across a GPU instance recycle |
@@ -56,9 +56,9 @@ silently fall off the AgentCore substrate (the serverless CPU sandbox is always 
 hidden RLVR checker, and gets its own `data/<name>_{train,eval}.jsonl`, `eval/<name>` metric and
 `ckpt/Qwen3-4B_<name>_async` (see its README for the dataset table).
 
-The demos above vary the **sandbox**; `demo_cpu_harness_scale` is the exception — it fixes the task
-and sandbox and makes the **harness the scalable tier** (a warm in-process worker pool), to show the
-rollout scaling law and how the three tiers route/load-balance differently. See
+The demos above vary the **sandbox**; `demo_cpu_scale_lanes` is the exception — it fixes the task
+and scales the **rollout tiers themselves** as 1:1:1 lanes (default 4 harness workers : 4 SGLang
+engines : 4 microVMs), to show the rollout scaling law and how the three tiers route/load-balance. See
 [`../../docs/harness-scaling.md`](../../docs/harness-scaling.md).
 
 In the other demos the **harness is in-process and single**; the sandbox is the AgentCore surface that changes (a

@@ -14,13 +14,23 @@ episodes to them.
 The three replicated tiers scale AND load-balance DIFFERENTLY — this is the whole point of
 the demo, and the asymmetry is deliberate:
 
+  LANES. The default topology binds the three tiers into W fixed 1:1:1 LANES — worker w is pinned
+  to SGLang engine w % E and to its own persistent microVM — so with W = E = 4 the rollout runs on
+  4 harness workers : 4 engines : 4 microVMs. Each episode logs one `[demo] lane=...` record
+  (worker -> engine -> sandbox session) that metrics.py checks, so the 4x4x4 is verifiable.
+
+
   * inference  (E SGLang engines)  — STATELESS per request. slime's SGLang ROUTER load-balances
         every `/generate` call across the E engines (cache-aware). A single episode's turns may
         land on different engines. LB granularity = per REQUEST.
-  * sandbox    (K sandbox Runtimes)— STATEFUL per episode: a sandbox holds the episode's files
-        (solution.py, run_checks.py). So it is STICKY for the episode's whole life; we round-robin
-        NEW episodes across the K endpoints (make_sandbox -> _next_runtime_arn), one fresh session
-        per episode. LB granularity = per EPISODE, sticky.
+  * sandbox    (W microVMs)        — STATEFUL per episode: a sandbox holds the episode's files
+        (solution.py, run_checks.py). In LANE mode (the default, LANE_SANDBOX=1, SANDBOX=
+        agentcore-runtime) each worker owns ONE persistent AgentCore session (= one microVM) on
+        Runtime ARN[w % K], opened once and reused for every episode that worker drives; each
+        episode gets its own fresh workdir under it (/workspace/ep-<hex>, deleted after). So W
+        workers => exactly W concurrent microVMs, and an episode is sticky to its worker's microVM.
+        LANE_SANDBOX=0 restores the old shape: a fresh session per episode, round-robined across
+        the K ARNs (make_sandbox -> _next_runtime_arn).
   * harness    (W warm workers)    — STATELESS but WARM. A shared asyncio.Queue; whichever worker
         is free PULLS the next episode. Pull/work-stealing balances by AVAILABILITY, which is
         robust to the wide, variable per-episode latency of multi-turn agentic rollouts (a push /
@@ -46,10 +56,13 @@ qwen25 + --sglang-reasoning-parser qwen3) that the in-process run_episode harnes
 from __future__ import annotations
 
 import asyncio
+import atexit
+import contextlib
 import logging
 import os
 import secrets
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +105,14 @@ class HarnessPool:
         self._adapters: list = []          # AnthropicAdapter per worker
         self._adapter_urls: list[str] = [] # its in-thread endpoint URL, per worker
         self._engine_urls: list[str] = []  # the SGLang engine each worker is pinned to, per worker
+        # LANE mode: one persistent sandbox session (= one microVM) per worker, reused across that
+        # worker's episodes with a fresh per-episode workdir. Only for the AgentCore Runtime backend.
+        self.lane_sandbox = (
+            os.environ.get("LANE_SANDBOX", "1") not in ("0", "false", "no")
+            and self.sandbox_kind in ("agentcore-runtime", "runtime")
+        )
+        self._lane_sbx: dict[int, object] = {}      # wid -> its open AgentCoreRuntimeSandbox
+        self._lane_episodes: dict[int, int] = {}    # wid -> episodes driven on that microVM
         self._harness = None
         self._started = False
         self._start_lock = asyncio.Lock()
@@ -173,6 +194,54 @@ class HarnessPool:
             finally:
                 self._queue.task_done()
 
+    # ---- lanes: one persistent microVM per worker ------------------------------
+    async def _lane_sandbox(self, wid: int):
+        """This worker's persistent sandbox session, opened on first use (the one cold start)."""
+        sb = self._lane_sbx.get(wid)
+        if sb is not None:
+            return sb
+        from . import router_trace
+        from .agentcore_runtime_sandbox import AgentCoreRuntimeSandbox
+        from .sandbox import _runtime_arns
+
+        arns = _runtime_arns() or [os.environ.get("AGENTCORE_SANDBOX_RUNTIME_ARN", "")]
+        arn = arns[wid % len(arns)] or None
+        # >=33 chars for AgentCore runtimeSessionId (token_hex(16)=32 + prefix clears it).
+        sb = AgentCoreRuntimeSandbox(runtime_arn=arn, region=self.region,
+                                     session_id=f"lane{wid}-{secrets.token_hex(16)}")
+        t0 = time.perf_counter()
+        await sb.__aenter__()
+        sb._lane_root = sb._workdir
+        self._lane_sbx[wid] = sb
+        self._lane_episodes[wid] = 0
+        if len(self._lane_sbx) == 1:
+            atexit.register(self._close_lanes_sync)
+        print(f"[demo] lane_open=1 lane={wid} engine={self._engine_urls[wid]} "
+              f"sandbox_session={sb._session_id} runtime_arn={router_trace.arn_tail(arn)} "
+              f"open_ms={(time.perf_counter() - t0) * 1000.0:.1f}", flush=True)
+        return sb
+
+    @contextlib.asynccontextmanager
+    async def _lane_episode(self, wid: int):
+        """Borrow the worker's microVM for one episode, in a FRESH workdir that is removed after."""
+        sb = await self._lane_sandbox(wid)
+        root = sb._lane_root
+        sb._workdir = f"{root}/ep-{secrets.token_hex(6)}"   # server mkdirs it on the first op
+        self._lane_episodes[wid] += 1
+        try:
+            yield sb
+        finally:
+            ep_dir, sb._workdir = sb._workdir, root
+            with contextlib.suppress(Exception):
+                await sb.exec(f"rm -rf {ep_dir}", timeout=60)
+
+    def _close_lanes_sync(self) -> None:
+        """Process exit: stop every lane session so its microVM is reclaimed now, not at idle timeout."""
+        for sb in list(self._lane_sbx.values()):
+            with contextlib.suppress(Exception):
+                asyncio.run(sb.__aexit__(None, None, None))
+        self._lane_sbx.clear()
+
     # ---- the episode --------------------------------------------------------
     def _problem_text(self, task) -> str:
         """PROBLEM.md the agent reads. We put the task-specific instructions HERE (not in the
@@ -202,9 +271,13 @@ class HarnessPool:
         base_sample.session_id = sid
         adapter.open_session(sid, sampling_defaults=sampling_params)
 
-        # Fresh sandbox session per episode; make_sandbox round-robins across the K ARNs (sticky
-        # for this episode's life — it holds the episode's files).
-        sandbox = make_sandbox(self.sandbox_kind, region=self.region)
+        # LANE mode: this worker's own persistent microVM, fresh workdir per episode. Otherwise a
+        # fresh sandbox session per episode, round-robined across the K ARNs by make_sandbox.
+        # Either way the sandbox is sticky for the episode's life (it holds the episode's files).
+        if self.lane_sandbox:
+            sandbox = self._lane_episode(wid)
+        else:
+            sandbox = make_sandbox(self.sandbox_kind, region=self.region)
         try:
             async with sandbox as sb:
                 # ONE [router] record per episode: the join that ties this episode's sandbox
@@ -220,13 +293,18 @@ class HarnessPool:
                     sandbox_id=getattr(sb, "sandbox_id", "?"),
                     sandbox_session=getattr(sb, "_session_id", getattr(sb, "_sub", "?")),
                     runtime_arn=router_trace.arn_tail(getattr(sb, "_arn", None)),
+                    lane=wid if self.lane_sandbox else None,
                 )
                 # DEMO-SPECIFIC metric ([demo] channel): which warm worker drove this episode +
                 # the shared queue depth at pickup time. metrics.py value-counts `worker` (per-worker
                 # episode counts = utilization: the pull-queue balances by availability, no hot-spot)
                 # and aggregates `qdepth` (backlog waiting on harness capacity). This episode does not
                 # go through harness.run_episode, so this is its only [demo] record.
-                print(f"[demo] worker={wid} qdepth={self._queue.qsize() if self._queue else 0}",
+                # In LANE mode the same record also carries the lane mapping (worker -> engine ->
+                # microVM session) and how many episodes that microVM has served so far.
+                lane = (f" lane={wid} engine={engine} sandbox_session={sb._session_id} "
+                        f"lane_episode={self._lane_episodes[wid]}" if self.lane_sandbox else "")
+                print(f"[demo] worker={wid} qdepth={self._queue.qsize() if self._queue else 0}{lane}",
                       flush=True)
 
                 # Seed the workspace exactly like run_episode: family files, then the checker,

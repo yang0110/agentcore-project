@@ -1,4 +1,26 @@
-# demo_cpu_harness_scale — scaling the **harness** tier (mini-Claude harness pool, one task)
+# demo_cpu_scale_lanes — scaling the rollout as **4 × 4 × 4 lanes** (4 harness workers : 4 SGLang engines : 4 microVMs)
+
+*(Formerly `demo_cpu_harness_scale`.)* The default topology is **4 lanes**. Each lane is one warm
+harness worker, pinned to **its own SGLang engine** (1 GPU, TP1) and **its own persistent AgentCore
+microVM** (one sandbox session, opened once and reused for every episode that worker drives, with a
+fresh workdir per episode). So a run is exactly **4 harness workers : 4 inference engines : 4
+microVMs**, on 4 train GPUs + 4 inference GPUs. `LANES=N` (1, 2 or 4) scales all three tiers
+together; overriding one tier alone (`HARNESS_WORKERS`, `ROLLOUT_GPUS`) unbalances it so you can
+watch it become the ceiling.
+
+```
+lane 0:  harness worker 0 ──► SGLang engine 0 (GPU 4) ──► microVM session lane0-…  (ARN[0])
+lane 1:  harness worker 1 ──► SGLang engine 1 (GPU 5) ──► microVM session lane1-…  (ARN[1])
+lane 2:  harness worker 2 ──► SGLang engine 2 (GPU 6) ──► microVM session lane2-…  (ARN[0])
+lane 3:  harness worker 3 ──► SGLang engine 3 (GPU 7) ──► microVM session lane3-…  (ARN[1])
+          ▲ episodes pulled off one shared queue by whichever worker is free
+```
+
+Every episode logs `[demo] worker=w … lane=w engine=… sandbox_session=… lane_episode=n`, and
+`metrics.py` checks the lanes are 1:1:1 (each worker used one engine and one session; no session
+shared), printing the worker → engine → session table.
+
+The rest of this README explains the scaling law the lanes demonstrate.
 
 The other demos hold the harness **in-process and single** and vary the *task* + *sandbox*. This
 demo does the opposite: it fixes the task (one, end-to-end — **DeepScaleR** math) and makes the
@@ -13,11 +35,11 @@ A rollout is produced by three replicated tiers. If you deepen the async buffer 
 ceiling (its concurrency, the asyncio loop, file descriptors, RAM for in-flight trajectories). So the
 harness has to scale too — and because a harness is **persistent/warm** while a sandbox is **ad-hoc
 per episode**, "scale the harness" does **not** mean "make it ad-hoc": it means run a fixed set of
-**W warm workers** and route episodes to them. Here `W = HARNESS_WORKERS` (default **4**). The
-trainer's other two tiers default to **2** SGLang inference engines (`ROLLOUT_GPUS/2`) and **2**
-sandbox Runtimes (the pinned `K=2` ARNs), so a default `W=4` slightly over-provisions the harness
-tier — the balanced start point from which you raise `W` and watch throughput plateau at
-`min(inference, sandbox)`.
+**W warm workers** and route episodes to them. Here `W = HARNESS_WORKERS` (default `LANES` = **4**),
+matched by **4** SGLang engines (`ROLLOUT_GPUS=4`, one GPU each) and **4** persistent microVMs (one
+session per worker, spread over the pinned `K=2` sandbox Runtime ARNs as `ARN[w % 2]`) — the
+balanced 4+4+4 point. Lower one tier (e.g. `ROLLOUT_GPUS=2`) and throughput drops to that tier's
+ceiling.
 
 The harness driven here is the **"mimic Claude Code" `MiniClaudeHarness`** (the A3/B3 agent): 3 tools
 (`write_file` / `bash` / `read_file`), speaking the **Anthropic Messages API** to slime's in-process
@@ -27,7 +49,7 @@ trajectory), with the tools running in the remote CPU sandbox Runtime. Reward is
 
 - **Task:** DeepScaleR math, coding-shape (`solution.py` sets a module-level `answer`) · one task, end-to-end
 - **Dataset:** `agentica-org/DeepScaleR-Preview-Dataset` — `data/deepscaler_train.jsonl` (400) + `data/deepscaler_eval.jsonl` (40)
-- **The knob:** `HARNESS_WORKERS=W` (default 4) — the harness tier of `min(inference, sandbox, harness)`. The offline simulator also exposes a **balanced joint sweep** (`TIERS=N,…`) that scales **inference = sandbox = harness = N** in lockstep (the **4+4+4** case) — the complement to the harness-only sweep: because every tier rises together, no single one binds, so throughput scales ~linearly with `N` instead of plateauing.
+- **The knob:** `LANES=N` (default 4) — N workers : N engines : N microVMs. `HARNESS_WORKERS=W` alone moves just the harness tier of `min(inference, sandbox, harness)`. The offline simulator also exposes a **balanced joint sweep** (`TIERS=N,…`) that scales **inference = sandbox = harness = N** in lockstep (the **4+4+4** case) — the complement to the harness-only sweep: because every tier rises together, no single one binds, so throughput scales ~linearly with `N` instead of plateauing.
 - **Placement:** in-process asyncio worker pool (see the honest GIL caveat below)
 
 ---
@@ -38,8 +60,8 @@ The three replicated tiers scale **and load-balance differently** — the asymme
 
 | Tier | Replicas | State | Who load-balances | Granularity |
 |---|---|---|---|---|
-| **inference** | `E` SGLang engines (= `ROLLOUT_GPUS / GPUS_PER_ENGINE` = `4/2`, default 2) | **stateless** per request | slime's **SGLang router** (cache-aware) across the `E` engines | per **request** — a single episode's turns may land on different engines |
-| **sandbox** | `K` sandbox Runtimes (ARN list) | **stateful** per episode — holds `solution.py`, `run_checks.py` | `make_sandbox` **round-robins** a *fresh session* per episode across the `K` ARNs (`_next_runtime_arn`) | per **episode**, **sticky** for its whole life |
+| **inference** | `E` SGLang engines (= `ROLLOUT_GPUS / GPUS_PER_ENGINE` = `4/1`, default 4) | **stateless** per request | each worker's adapter is **pinned** to engine `w % E` (bypassing the router's per-request LB) | per **worker** — all of an episode's turns hit its lane's engine |
+| **sandbox** | `W` microVMs (one persistent session per worker, on ARN `w % K`) | **stateful** per episode — holds `solution.py`, `run_checks.py` in a fresh `/workspace/ep-<hex>` workdir, deleted after | the worker's **own** session (`LANE_SANDBOX=1`); `LANE_SANDBOX=0` restores a fresh session per episode round-robined over the `K` ARNs | per **worker** (lane), sticky for the run |
 | **harness** | `W` warm workers (`HARNESS_WORKERS`) | stateless but **warm** (owns a reused `aiohttp` session) | a shared `asyncio.Queue`; whichever worker is **free pulls** the next episode (work-stealing) | per **episode**, by **availability** |
 
 Why pull, not push, for the harness: multi-turn agentic episodes have **wide, variable latency**. A
@@ -50,8 +72,15 @@ its worker exactly as it is sticky to its sandbox.
 
 slime admits up to `S = CONC × E` episodes concurrently, but only `W` are actively **driven by a
 harness** at once. If `S > W`, admitted episodes queue for a free worker — so `W` is the harness
-ceiling in `min(...)`. `run.sh` defaults `CONC` so `S ≈ W` (the balanced start point); raise `W` to
-lift the harness tier, and watch throughput rise until it hits the scarcer of inference/sandbox.
+ceiling in `min(...)`. `run.sh` defaults `CONC = ceil(2W/E)`, so `S = 2W`: `W` episodes running (one
+per lane) and `W` queued, so a lane never idles waiting for slime to admit its next episode.
+
+**Why persistent microVMs are safe here.** The DeepScaleR checker only reads the episode's own
+workdir, and each episode gets a fresh one, so reusing a microVM across episodes leaks nothing that
+the reward depends on — and it removes the per-episode session cold start. (Tasks that change the
+whole OS need a fresh session per episode instead: see `demo_cpu_terminalbench`.) If a lane's
+session is idle-reclaimed (15 min), the next invoke on the same session id just boots a new microVM;
+the per-episode workdir is recreated on demand. Lane sessions are stopped at process exit.
 
 Full model + code: [`agentcore_slime_demo/harness_pool.py`](agentcore_slime_demo/harness_pool.py) and
 [`../../../docs/harness-scaling.md`](../../../docs/harness-scaling.md).
@@ -75,10 +104,10 @@ Everything runs INSIDE the persistent container `agentcore_p4` (`slimerl/slime`)
 
 ```bash
 # 1. Download + prepare the dataset (one-time network to pull the HF rows) — builds deepscaler 400/40
-docker exec agentcore_p4 bash /work/code/demos/demo_cpu_harness_scale/prepare_data.sh
+docker exec agentcore_p4 bash /work/code/demos/demo_cpu_scale_lanes/prepare_data.sh
 
 # 2. See the scaling law offline (no AWS, no GPU): sweep W and watch the knee + plateau
-docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_harness_scale/harness_scaling_demo.py
+docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_scale_lanes/harness_scaling_demo.py
 
 # 2b. (optional) REAL-remote sandbox tier: the sandbox service time is now a genuine measured
 #     round-trip against a live remote AgentCore CPU sandbox (the --tsbx sleep is dropped, the
@@ -86,20 +115,20 @@ docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_harness_scale/harness
 docker exec agentcore_p4 env REAL_SANDBOX=1 SANDBOX=agentcore-runtime \
     AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu-1gzBVp675S \
     EPISODES=8 WORKERS=1,2,4 \
-    python3 /work/code/demos/demo_cpu_harness_scale/harness_scaling_demo.py
+    python3 /work/code/demos/demo_cpu_scale_lanes/harness_scaling_demo.py
 
 # 2c. (optional) BALANCED joint sweep: scale inference=sandbox=harness=N together (the 4+4+4 case).
 #     Unlike step 2 (harness-only, which plateaus at min(inf,sbx)), every tier rises with N, so
 #     throughput scales ~linearly — this is the argument for scaling the three tiers jointly.
 docker exec agentcore_p4 env TIERS=1,2,4,8 EPISODES=24 \
-    python3 /work/code/demos/demo_cpu_harness_scale/harness_scaling_demo.py
+    python3 /work/code/demos/demo_cpu_scale_lanes/harness_scaling_demo.py
 
 # 3. Real RL train + eval (async/decoupled slime) through the WARM worker pool.
 #    Smoke = NR=11 (10 train + 1 eval, single final checkpoint); converge with a larger NR.
-#    HARNESS_WORKERS sweeps the harness tier. STOCK driver only (MODE=A, pinned — the pool's fan-out
+#    LANES=1|2|4 scales all three tiers together (HARNESS_WORKERS alone sweeps just the harness tier). STOCK driver only (MODE=A, pinned — the pool's fan-out
 #    LIST of Samples is incompatible with the fully-async Mode B sort key; run.sh rejects MODE=B).
-docker exec -e NR=11 -e EVAL_INTERVAL=10 -e EVAL_NS=2 -e HARNESS_WORKERS=4 agentcore_p4 \
-    bash -lc 'cd /work && bash code/demos/demo_cpu_harness_scale/run.sh'
+docker exec -e NR=11 -e EVAL_INTERVAL=10 -e EVAL_NS=2 -e LANES=4 agentcore_p4 \
+    bash -lc 'cd /work && bash code/demos/demo_cpu_scale_lanes/run.sh'
 ```
 
 Step 2 is the cheapest way to *see* the claim: it drives the real `run_episode` on a `LocalSandbox`
@@ -123,10 +152,12 @@ measured from real remote latency rather than the modelled `--tsbx`.
 
 | Knob | Default | Tier / meaning |
 |---|---|---|
-| `HARNESS_WORKERS` | 4 | **W** — warm harness workers (the tier this demo scales) |
-| `ROLLOUT_GPUS` / (per-engine) | 4 / 2 | ⇒ **E** SGLang inference engines (2) |
-| `AGENTCORE_SANDBOX_RUNTIME_ARNS` | 2 pinned CPU ARNs | **K** sandbox Runtimes (round-robined per episode) |
-| `CONC` | `ceil(W/E)` | episode-admission concurrency; `S = CONC × E` (default ≈ `W`) |
+| `LANES` | 4 | **N** lanes — sets `HARNESS_WORKERS` = `ROLLOUT_GPUS` = N (≤ 4 with 4 train GPUs) |
+| `HARNESS_WORKERS` | `LANES` | **W** — warm harness workers (= persistent microVMs in lane mode) |
+| `ROLLOUT_GPUS` / `GPUS_PER_ENGINE` | `LANES` / 1 | ⇒ **E** SGLang inference engines (4) |
+| `LANE_SANDBOX` | 1 | 1 = one persistent microVM session per worker; 0 = fresh session per episode |
+| `AGENTCORE_SANDBOX_RUNTIME_ARNS` | 2 pinned CPU ARNs | **K** sandbox Runtimes; lane `w` lives on `ARN[w % K]` |
+| `CONC` | `ceil(2W/E)` | episode-admission concurrency; `S = CONC × E` (default `2W`: W running + W queued) |
 | `MODE` | `A` (pinned) | stock async driver only; `B` (fully-async) is **rejected** — the pool returns a fan-out LIST of Samples the Mode-B sort key can't order |
 | `NR` | 11 | num-rollout ⇒ real steps `NR-1` (10 train + 1 eval); keep `NR×RB ≤ 400` |
 | `RB` / `NS` | 4 / 8 | GRPO prompts-per-step / group size (`GBS = RB×NS`) |
@@ -146,7 +177,7 @@ sandbox Runtime and get fresh ARNs, use the shared deploy orchestrator:
 # from the host (needs docker + AWS creds); builds this demo's Dockerfile, pushes to ECR, (re)creates
 # the Runtime, and prints the ARN to feed AGENTCORE_SANDBOX_RUNTIME_ARNS.
 python3 code/deploy/deploy_two_runtime.py --sandbox-only \
-    --demo-dir code/demos/demo_cpu_harness_scale --dockerfile deploy/Dockerfile.sandbox.cpu
+    --demo-dir code/demos/demo_cpu_scale_lanes --dockerfile deploy/Dockerfile.sandbox.cpu
 ```
 
 The adapter and the harness workers run **in the trainer process** (localhost), so — unlike the
@@ -156,7 +187,7 @@ security-group to open. Only the *sandbox* Runtime is remote.
 ## Metrics → CSV + PNG
 
 ```bash
-docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_harness_scale/metrics.py <train.log> \
+docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_scale_lanes/metrics.py <train.log> \
     --csv train.csv --eval-csv train.eval.csv --plot train.png
 ```
 

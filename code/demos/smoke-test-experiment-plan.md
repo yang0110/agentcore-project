@@ -44,22 +44,24 @@ Each run tees full stdout/stderr to `/work/code/demos/_smoke_logs/<demo>.log` an
 ### The per-run recipe (identical for every demo)
 
 ```bash
-DEMO=<demo>                       # e.g. demo_cpu_gsm8k — any dir under code/demos/
-LOG=/work/code/demos/_smoke_logs/$DEMO.log
+DEMO=<demo>                       # e.g. demo_cpu_datasets — any dir under code/demos/
+DS=                               # demo_cpu_datasets only: DATASET name, e.g. gsm8k (else leave empty)
+TAG=$DEMO${DS:+-$DS}              # log label, e.g. demo_cpu_datasets-gsm8k
+LOG=/work/code/demos/_smoke_logs/$TAG.log
 EXTRA_ENV=()                      # per-demo env from the "Needs" column, e.g. (-e AGENTCORE_SANDBOX_RUNTIME_ARN="$ARN")
 
 # 1. build data (only demos that have prepare_data.sh; others ship data/ already)
 docker exec agentcore_p4 bash /work/code/demos/$DEMO/prepare_data.sh 2>/dev/null || true
 
 # 2. run: 10 train + 1 eval, single final ckpt, FULL log tee'd
-docker exec -e NR=11 -e EVAL_INTERVAL=10 -e EVAL_NS=2 "${EXTRA_ENV[@]}" agentcore_p4 \
+docker exec -e NR=11 -e EVAL_INTERVAL=10 -e EVAL_NS=2 ${DS:+-e DATASET=$DS} "${EXTRA_ENV[@]}" agentcore_p4 \
     bash -lc "cd /work && bash code/demos/$DEMO/run.sh 2>&1 | tee $LOG"
 
 # 3. parse the log into CSVs + a curve PNG
 docker exec agentcore_p4 python3 /work/code/demos/$DEMO/metrics.py $LOG \
-    --csv /work/code/demos/_smoke_logs/$DEMO.csv \
-    --eval-csv /work/code/demos/_smoke_logs/$DEMO.eval.csv \
-    --plot /work/code/demos/_smoke_logs/$DEMO.png
+    --csv /work/code/demos/_smoke_logs/$TAG.csv \
+    --eval-csv /work/code/demos/_smoke_logs/$TAG.eval.csv \
+    --plot /work/code/demos/_smoke_logs/$TAG.png
 ```
 
 `NR/EVAL_INTERVAL/EVAL_NS` are passed explicitly for auditability even though they equal defaults.
@@ -74,22 +76,14 @@ docker exec agentcore_p4 python3 /work/code/demos/$DEMO/metrics.py $LOG \
 
 | Demo (standalone dir) | Substrate | Needs before running |
 |---|---|---|
-| `demo_cpu_mbpp` | CPU sandbox (baked ARNs) | — |
-| `demo_cpu_gsm8k` | CPU sandbox (baked ARNs) | — |
-| `demo_cpu_math` | CPU sandbox (baked ARNs) | — |
-| `demo_cpu_math500` | CPU sandbox (baked ARNs) | — |
-| `demo_cpu_deepscaler` | CPU sandbox (baked ARNs) | — |
-| `demo_cpu_humaneval` | CPU sandbox (baked ARNs) | — |
-| `demo_cpu_gretelsql` | CPU sandbox (baked ARNs) | — |
-| `demo_cpu_hotpotqa` | CPU sandbox (baked ARNs) | — |
-| `demo_cpu_xlam` | CPU sandbox (baked ARNs) | — |
-| `demo_cpu_mcp` | CPU sandbox (baked ARNs) | — |
+| `demo_cpu_datasets` (one run per `DATASET`: mbpp gsm8k math math500 deepscaler humaneval gretelsql hotpotqa xlam mcp) | CPU sandbox (baked ARNs) | — (set `DS=<dataset>`; replaces the ten former `demo_cpu_<ds>` folders, merged 2026-09-23 — older `_smoke_logs/demo_cpu_<ds>.*` files are those runs) |
 | `demo_cpu_mixtask` | CPU sandbox (baked ARNs) | — |
 | `demo_cpu_heartbeat` | CPU sandbox (baked ARNs) | — (heartbeat on by default: `HEARTBEAT_KEEP_WARM=1`) |
-| `demo_cpu_harness_scale` | CPU sandbox (baked ARNs) | — (`HARNESS_WORKERS` warm pool) |
+| `demo_cpu_scale_lanes` (formerly `demo_cpu_harness_scale`) | CPU sandbox (baked ARNs), 4 persistent microVMs | — (`LANES=4`: 4 workers : 4 TP1 engines on rollout GPUs 4–7 : 4 microVMs; the old smoke ran the pre-rework topology) |
 | `demo_cpu_customruntime` | your custom CPU Runtime (`SANDBOX=agentcore-runtime`) | — (baked custom-Runtime ARN) |
 | `demo_cpu_imagepool` | pool of custom CPU images | deploy 3 images (pandas/scipy/sklearn), pass `-e AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE='{...}'`. Without it, custom-image families import-fail → reward 0. |
 | `demo_cpu_branching` | real Claude Code CLI in a CPU Runtime | deploy a CLI-capable image, pass `-e AGENTCORE_SANDBOX_RUNTIME_ARN="$CLI_ARN"`. First run = bring-up (README header stale; trust `run.sh`). |
+| `demo_cpu_terminalbench` | pool of per-task CPU images (~229 Runtimes), fresh microVM per episode | `fetch_terminalbench.py`, then `deploy/deploy_terminalbench.py` (one image + Runtime per task; `TB_LIMIT=2` to validate), pass the resulting `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` map (see its README); run `validate_oracle.py` and rebuild the dataset from usable tasks. Look-ahead pre-open keeps `TB_PREOPEN_BATCHES` × RB × NS (default 64) sessions booted — check the account's concurrent-session quota first. Not run yet. |
 | `demo_cpu_bigimage` | large image (>2 GB) on a CPU **capacity-provider Instance** | `python3 code/demos/demo_cpu_bigimage/deploy/deploy_bigimage.py` (builds image → ECR → CPU CP → Runtime), then pass `-e AGENTCORE_SANDBOX_RUNTIME_ARN="$BIGIMG_ARN"`. No baked default. |
 | `demo_gpu_local` | LOCAL whole-GPU Ray farm (GPUs 6,7) | two-step: host `bash code/deploy/run_local_gpu_runtime.sh local` first; sync save; `bash …/run_local_gpu_runtime.sh stop` after. Ships `data/`. |
 | `demo_gpu_shared_single` | LOCAL fractional-GPU Ray farm (1 GPU, 2×0.5 actors share it) | two-step: host `bash code/deploy/run_local_gpu_runtime.sh shared_single` first; `…/run_local_gpu_runtime.sh stop` after. Warm-shared (`B4_SHARED_RUNTIME_SESSION`). Ships `data/`. |

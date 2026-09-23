@@ -13,7 +13,8 @@
 # WHY A FRESH SESSION PER EPISODE: Terminal-Bench tasks change the whole OS (packages, /etc, services),
 # and the session is the isolation boundary AgentCore guarantees (a stopped session's microVM is
 # terminated + sanitized). The cold start this costs is hidden by opening each episode's session at
-# submit time, while it waits in the harness queue (TB_PREOPEN_MAX bounds how many open ahead). A
+# submit time — and, via the look-ahead data source, for the NEXT TB_PREOPEN_BATCHES rollouts before slime
+# even draws them (TB_PREOPEN_BATCHES is the one knob; 2 batches = 2 x RB x NS = 64 sessions ahead). A
 # SessionKeeper heartbeat keeps open sessions alive across the weight-sync stall.
 #
 # POOL => STOCK (Mode A) DRIVER ONLY. terminalbench_pool_generate.generate returns a fan-out LIST
@@ -47,11 +48,14 @@ GBS=$(( RB * NS ))
 
 # ---- isolation + pre-open + heartbeat knobs (read by TerminalBenchPool inside the rollout process) --------
 HARNESS_WORKERS="${HARNESS_WORKERS:-4}"       # warm in-process harness workers
-EPISODE_MAX_TURNS="${EPISODE_MAX_TURNS:-6}"   # agentic turns per Terminal-Bench episode
+EPISODE_MAX_TURNS="${EPISODE_MAX_TURNS:-8}"   # agentic turns per Terminal-Bench episode
 EPISODE_MAX_TOKENS="${EPISODE_MAX_TOKENS:-1024}"
+MINI_AGENT_MAX_TOOL_CHARS="${MINI_AGENT_MAX_TOOL_CHARS:-2000}"  # clip each tool result fed back (bounds trajectory length)
+TB_EXEC_TIMEOUT="${TB_EXEC_TIMEOUT:-180}"     # per bash-tool command timeout (apt/pip/builds are routine)
+MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-16384}"  # >= one full trajectory: 8 x (1024 gen + ~600 tool) + prompt
 WARM_IDLE_TIMEOUT="${WARM_IDLE_TIMEOUT:-900}" # serverless microVM idle timeout (~15min); heartbeat < this
 WARM_PING_FRACTION="${WARM_PING_FRACTION:-0.5}"
-TB_PREOPEN_MAX="${TB_PREOPEN_MAX:-$HARNESS_WORKERS}"  # episodes whose microVM boots while they wait for a worker
+TB_PREOPEN_BATCHES="${TB_PREOPEN_BATCHES:-2}"   # THE pre-open knob: batches kept booted ahead (x RB x NS = 64 microVMs; 0 = off)
 
 MODE="${MODE:-A}"
 case "$MODE" in A|a) MODE=A;;
@@ -69,10 +73,9 @@ HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a720891212
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 NENG=$(( ROLLOUT_GPUS / 2 ))
-# Admit W running + TB_PREOPEN_MAX queued episodes (S = CONC*NENG). The queued ones are the look-ahead:
-# their fresh sessions cold-start while they wait, so a worker rarely waits on a boot. With S == W the
-# queue is empty and pre-opening would hide nothing.
-CONC="${CONC:-$(( (HARNESS_WORKERS + TB_PREOPEN_MAX + NENG - 1) / NENG ))}"
+# Admit W running + W queued episodes (S = CONC*NENG) so a free worker never idles. Pre-opening no longer
+# needs a deep queue: the look-ahead data source announces upcoming episodes, not the admission gate.
+CONC="${CONC:-$(( (2 * HARNESS_WORKERS + NENG - 1) / NENG ))}"
 
 DATA="${DATA:-$DEMO_DIR/data/tb_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/tb_eval.jsonl}"
@@ -121,6 +124,8 @@ ROLLOUT_ARGS=(
    --global-batch-size "$GBS"
    # THE POOL HOOK: routes each episode to its task's Runtime on its own fresh, pre-opened session.
    --custom-generate-function-path agentcore_slime_demo.terminalbench_pool_generate.generate
+   # THE LOOK-AHEAD: peeks the next TB_PREOPEN_BATCHES rollouts' prompts so their sessions boot early.
+   --data-source-path agentcore_slime_demo.tb_lookahead_source.LookaheadDataSource
 )
 
 MODE_ARGS=()
@@ -134,7 +139,7 @@ PERF_ARGS=(
    --recompute-method uniform
    --recompute-num-layers 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
+   --max-tokens-per-gpu "$MAX_TOKENS_PER_GPU"
 )
 
 GRPO_ARGS=(
@@ -192,7 +197,9 @@ RUNTIME_ENV_JSON="{
     \"EPISODE_MAX_TOKENS\": \"${EPISODE_MAX_TOKENS}\",
     \"WARM_IDLE_TIMEOUT\": \"${WARM_IDLE_TIMEOUT}\",
     \"WARM_PING_FRACTION\": \"${WARM_PING_FRACTION}\",
-    \"TB_PREOPEN_MAX\": \"${TB_PREOPEN_MAX}\"
+    \"TB_PREOPEN_BATCHES\": \"${TB_PREOPEN_BATCHES}\",
+    \"MINI_AGENT_MAX_TOOL_CHARS\": \"${MINI_AGENT_MAX_TOOL_CHARS}\",
+    \"TB_EXEC_TIMEOUT\": \"${TB_EXEC_TIMEOUT}\"
   }
 }"
 

@@ -13,10 +13,12 @@ session is stopped. So this pool gives every episode its OWN brand-new session a
   2. Fresh session per episode, opened AHEAD of time: the cold start (allocate microVM + pull the
      task's image + boot) starts the moment the episode is QUEUED (submit), not when a harness
      worker picks it up. While the episode waits for a free worker, its microVM boots in the
-     background, so with a queue backlog (CONC > HARNESS_WORKERS) the cold start is off the critical
-     path. run.sh admits HARNESS_WORKERS + TB_PREOPEN_MAX episodes so that backlog exists; at most
-     TB_PREOPEN_MAX sessions are open ahead (default HARNESS_WORKERS), bounding the idle microVMs you
-     pay for — beyond that an episode opens its session when a worker picks it up.
+     background. Better still, the look-ahead data source (tb_lookahead_source.py) tells the pool
+     which episodes the NEXT TB_PREOPEN_BATCHES rollouts will hold before slime even draws them, so
+     their sessions boot while the current batch runs. Sessions are pooled per task (an episode
+     takes any ready session on its task's Runtime); at most TB_PREOPEN_BATCHES x RB x NS unclaimed
+     sessions are open ahead (default 2 x 4 x 8 = 64), bounding the idle microVMs you pay for —
+     beyond that an episode opens its session when a worker picks it up.
   3. Stop on exit: StopRuntimeSession when the episode ends (AgentCoreRuntimeSandbox.__aexit__),
      so the microVM is torn down immediately and never serves another episode.
   4. A process-wide SessionKeeper HEARTBEAT holds every open session (pre-opened or running) alive
@@ -36,6 +38,7 @@ Wire with:
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import json
 import logging
@@ -61,33 +64,99 @@ def get_tb_pool(args) -> "TerminalBenchPool":
     return _TB_POOL
 
 
+def oracle_bundle(tasks_dir: str, task_id: str) -> bytes:
+    """tar.gz of a task's hidden oracle laid out as Terminal-Bench puts it in the container:
+    /tests/run-tests.sh + the CONTENTS of tests/ (so $TEST_DIR/test_outputs.py resolves)."""
+    import io
+    import tarfile
+    from pathlib import Path
+
+    tdir = Path(tasks_dir) / task_id
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for cand in ("run-tests.sh", "run_tests.sh"):
+            if (tdir / cand).is_file():
+                tf.add(tdir / cand, arcname="run-tests.sh")
+                break
+        if (tdir / "tests").is_dir():
+            for child in sorted((tdir / "tests").iterdir()):
+                tf.add(child, arcname=child.name)
+    return buf.getvalue()
+
+
+async def put_tar(sb, data: bytes, dest: str) -> None:
+    """Upload a tar.gz into the sandbox (op=put_tar on acs_http_server), chunked under the payload cap."""
+    import base64
+
+    b64 = base64.b64encode(data).decode()
+    chunk, key = 3 * 2**20, secrets.token_hex(4)
+    for i in range(0, max(1, len(b64)), chunk):
+        r = await sb._invoke({"op": "put_tar", "dest": dest, "key": key,
+                              "b64": b64[i:i + chunk], "more": i + chunk < len(b64)})
+        if r.get("error"):
+            raise RuntimeError(f"put_tar failed: {r['error']}")
+
+
+async def grade_episode(sb, task_id: str, tasks_dir: str, test_timeout_s: float = 180.0) -> dict:
+    """Inject the hidden tests AFTER the agent's turns, run them, parse pytest's -rA summary.
+
+    Mirrors Terminal-Bench: tests are copied to /tests, `bash /tests/run-tests.sh` runs in the
+    task's workdir with TEST_DIR=/tests, and the task is solved iff pytest reports >=1 PASSED and
+    no FAILED/ERROR (falls back to the script's exit code when no summary is printed).
+    """
+    import re
+
+    await put_tar(sb, oracle_bundle(tasks_dir, task_id), "/tests")
+    code, out, err = await sb.exec("bash /tests/run-tests.sh", timeout=int(test_timeout_s) + 60,
+                                   env={"TEST_DIR": "/tests"})
+    status = re.findall(r"(?m)^(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\s+\S", f"{out}\n{err}")
+    passed = status.count("PASSED") + status.count("XPASS")
+    failed = status.count("FAILED") + status.count("ERROR")
+    solved = (passed > 0 and failed == 0) if status else code == 0
+    return {"solved": solved, "grade_exit": int(code), "tests_passed": passed,
+            "tests_total": passed + failed, "grade_timeout": int(code == 124),
+            "grade_tail": (out + err)[-600:]}
+
+
 class TerminalBenchPool(HarnessPool):
     """HarnessPool whose sandbox tier is a fresh, pre-opened session per episode + a heartbeat."""
 
     # Terminal-Bench tasks act through the shell, not by writing a solution.py that a checker runs.
-    # Override the coding-shaped prompt so the agent uses its tools against the working directory.
-    _AGENT_PROMPT = (
-        "Read PROBLEM.md in the current directory and complete the task it describes. Use the bash "
-        "tool to inspect the environment and make changes, and write_file to create or edit files. "
-        "Verify your work with shell commands as you go. When the task is complete, stop."
-    )
+    # The task instruction IS the user prompt (the persona is the harness system prompt, set in
+    # _ensure_started); nothing is written into the task's workdir.
+    def _problem_text(self, task) -> str:
+        return task.initial_user_prompt()
 
     def __init__(self, args) -> None:
         super().__init__(args)
         self.sandbox_kind = "agentcore-runtime"
-        self.workdir = os.environ.get("TB_WORKDIR", "/app")   # the task's own baked workdir
+        # "" = use the image's own WORKDIR (the server reports it); TB_WORKDIR forces one for all tasks.
+        self.workdir = os.environ.get("TB_WORKDIR", "")
+        # The hidden oracles live on the TRAINER (fetched tasks/ dir), never in the images.
+        self.tasks_dir = os.environ.get(
+            "TB_TASKS_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tasks"))
+        self.open_attempts = int(os.environ.get("TB_OPEN_ATTEMPTS", "3"))
         # Serverless microVM idle timeout is ~15 min; heartbeat at half that with margin.
         self.idle_timeout = float(os.environ.get("WARM_IDLE_TIMEOUT", "900"))
-        self.preopen_max = int(os.environ.get("TB_PREOPEN_MAX", str(self.num_workers)))
+        # The ONE pre-open knob: how many upcoming batches to keep booted. The session cap follows
+        # from slime's own batch shape, so the two can never disagree. 0 = no look-ahead (each episode
+        # still starts booting at submit, bounded by the admission gate).
+        batches = int(os.environ.get("TB_PREOPEN_BATCHES", "2"))
+        self.preopen_max = (batches * args.rollout_batch_size * args.n_samples_per_prompt
+                            if batches > 0 else self.num_workers)
         # Strict task -> Runtime ARN map (the image pool), parsed once.
         self._arn_by_image: dict[str, str] = json.loads(
             os.environ.get("AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE", "").strip() or "{}"
         )
         self._keeper = None
-        # id(base_sample) -> in-flight open of that episode's own session (started at submit).
-        self._preopen: dict[int, asyncio.Task] = {}
-        # Queued episodes still waiting for a pre-open slot, in submit order: id(base_sample) -> arn.
-        self._waiting: dict[int, str] = {}
+        # Upcoming episodes, in the order they will run, as their task's Runtime ARN:
+        #   _demand — drawn by slime (or submitted without a look-ahead reservation), not yet claimed;
+        #   _future — predicted by the look-ahead data source for the next rollouts (replaced per draw).
+        self._demand: list[str] = []
+        self._future: list[str] = []
+        # ARN -> unclaimed sessions opened (or opening) on that task's Runtime, oldest first. Any of
+        # them serves any episode of that task: each is brand-new and serves exactly one episode.
+        self._ready: dict[str, collections.deque[asyncio.Task]] = collections.defaultdict(collections.deque)
 
     # ---- lifecycle: also stand up the heartbeat keeper -----------------------
     async def _ensure_started(self) -> None:
@@ -103,8 +172,19 @@ class TerminalBenchPool(HarnessPool):
             # Always-on idle heartbeat: hold any open session that goes idle (e.g. across the
             # weight-sync stall) without gating real ops.
             self._keeper.keep_warm_begin()
+            # Terminal-Bench persona (not the solution.py/run_checks.py coding loop) + a longer
+            # per-command timeout (apt/pip/builds are routine here).
+            from .task_families import TerminalBenchTask
+
+            self._harness.system_prompt = TerminalBenchTask.SYSTEM
+            self._harness.exec_timeout_sec = int(os.environ.get("TB_EXEC_TIMEOUT", "180"))
             logger.info("[terminalbench_pool] SessionKeeper started (idle_timeout=%.0fs, preopen_max=%d)",
                         self.idle_timeout, self.preopen_max)
+
+    def arn_for_sample(self, sample) -> str:
+        from .generate import _task_from_sample
+
+        return self._arn_for(_task_from_sample(sample))
 
     def _arn_for(self, task) -> str:
         image = getattr(task, "image", task.task_id)
@@ -118,15 +198,35 @@ class TerminalBenchPool(HarnessPool):
         return arn
 
     async def _open_session(self, arn: str):
-        """Open one BRAND-NEW session (= its own microVM) on the task's Runtime; heartbeat it."""
+        """Open one BRAND-NEW session (= its own microVM) on the task's Runtime; heartbeat it.
+
+        Retries a failed open on a NEW session id (a transient cold-start failure must not kill the
+        episode); the workdir is the image's own WORKDIR, reported by the server's first ping.
+        """
         from .agentcore_runtime_sandbox import AgentCoreRuntimeSandbox
 
-        # >=33 chars for AgentCore runtimeSessionId (token_hex(16)=32 + prefix clears it).
-        sb = AgentCoreRuntimeSandbox(
-            runtime_arn=arn, region=self.region, workdir=self.workdir,
-            session_id=f"tbep-{secrets.token_hex(16)}",
-        )
-        await sb.__aenter__()          # the cold start: allocate + pull + boot + ping
+        last = None
+        for attempt in range(self.open_attempts):
+            # >=33 chars for AgentCore runtimeSessionId (token_hex(16)=32 + prefix clears it).
+            sb = AgentCoreRuntimeSandbox(
+                runtime_arn=arn, region=self.region, workdir=self.workdir,
+                session_id=f"tbep-{secrets.token_hex(16)}",
+            )
+            try:
+                await sb.__aenter__()      # the cold start: allocate + pull + boot + ping
+                break
+            except Exception as e:  # noqa: BLE001
+                last = e
+                logger.warning("[terminalbench_pool] open attempt %d on %s failed: %s", attempt + 1, arn, e)
+                with contextlib.suppress(Exception):
+                    await sb.__aexit__(None, None, None)
+        else:
+            raise RuntimeError(f"could not open a session on {arn} after {self.open_attempts} attempts: {last}")
+        sb._tb_opened_at = time.perf_counter()   # boot done: start of the pre-open idle gap
+        sb._tb_open_attempts = attempt + 1
+        boot = (getattr(sb, "open_reply", None) or {}).get("boot") or {}
+        if not self.workdir and boot.get("workdir"):
+            sb._workdir = boot["workdir"]           # the task's own WORKDIR (/app, /app/astropy, ...)
 
         async def _ping(s=sb) -> None:
             # A raw no-op invoke on the session resets AgentCore's idle clock.
@@ -135,15 +235,79 @@ class TerminalBenchPool(HarnessPool):
         self._keeper.register(sb._session_id, _ping, self.idle_timeout)
         return sb
 
+    @staticmethod
+    def _cold_start(sb) -> dict:
+        """Decompose this session's cold start from client epochs + the server's boot timestamps.
+
+        open_ms       client: first ping sent -> reply (the whole cold start the episode paid)
+        pull_boot_ms  sent -> server process started (allocate microVM + pull image + start container)
+        ready_ms      server started -> first invoke delivered (platform health check + routing)
+        warm_hit      1 if the server was already running BEFORE we asked (AgentCore pre-provisioned it)
+        """
+        boot = (getattr(sb, "open_reply", None) or {}).get("boot") or {}
+        sent, recv = getattr(sb, "open_sent_epoch", None), getattr(sb, "open_recv_epoch", None)
+        out = {"open_ms": round((recv - sent) * 1000.0, 1) if sent and recv else -1.0}
+        srv, first = boot.get("server_start_epoch"), boot.get("first_invoke_epoch")
+        if sent and srv:
+            out["pull_boot_ms"] = round(max(0.0, srv - sent) * 1000.0, 1)
+            out["warm_hit"] = int(srv < sent)
+        if srv and first:
+            out["ready_ms"] = round((first - max(srv, sent or srv)) * 1000.0, 1)
+        return out
+
+    # ---- pre-open window: keep sessions booted for the next TB_PREOPEN_BATCHES batches -----
+    def reserve(self, drawn: list[str], upcoming: list[str]) -> None:
+        """Called by the look-ahead data source on every draw (sync, from slime's rollout loop).
+
+        `drawn` = the episodes slime just drew (they will be submitted now); `upcoming` = the episodes
+        of the next rollouts, predicted. One draw per rollout, so this REPLACES the window: anything
+        left from the previous draw is stale (that rollout is over) and its sessions get trimmed.
+        """
+        self._demand = list(drawn)
+        self._future = list(upcoming)
+        try:
+            asyncio.get_running_loop().create_task(self._start_and_refill())
+        except RuntimeError:          # no loop yet: the first submit refills
+            pass
+
+    async def _start_and_refill(self) -> None:
+        await self._ensure_started()
+        self._refill()
+
     def _refill(self) -> None:
-        """Start pre-opening the oldest queued episodes until TB_PREOPEN_MAX are booting ahead."""
-        while self._waiting and len(self._preopen) < self.preopen_max:
-            key = next(iter(self._waiting))
-            self._preopen[key] = asyncio.create_task(self._open_session(self._waiting.pop(key)))
+        """Open sessions for the first `preopen_max` upcoming episodes; stop surplus ones."""
+        if self._keeper is None:
+            return
+        need = collections.Counter((self._demand + self._future)[: self.preopen_max])
+        for arn in set(need) | set(self._ready):
+            q = self._ready[arn]
+            while len(q) > need[arn]:     # no longer upcoming: drop the newest (least booted) one
+                asyncio.get_running_loop().create_task(self._discard(q.pop()))
+            while len(q) < need[arn]:
+                q.append(asyncio.get_running_loop().create_task(self._open_session(arn)))
+            if not q:
+                del self._ready[arn]
+
+    def _claim(self, arn: str):
+        """A worker picked up an episode of `arn`: take a ready session for it (or None)."""
+        with contextlib.suppress(ValueError):
+            self._demand.remove(arn)
+        q = self._ready.get(arn)
+        pending = q.popleft() if q else None
+        self._refill()                # a slot moved from "ahead" to "running": boot the next one
+        return pending
+
+    async def _discard(self, pending: asyncio.Task) -> None:
+        with contextlib.suppress(Exception):
+            await self._close_session(await pending)
 
     async def _close_session(self, sb) -> None:
         self._keeper.unregister(sb._session_id)
         await sb.__aexit__(None, None, None)   # StopRuntimeSession: the microVM is torn down
+
+    async def _grade(self, sb, task) -> dict:
+        return await grade_episode(sb, task.task_id, self.tasks_dir,
+                                   float(task.spec.get("max_test_timeout_sec") or 180))
 
     # ---- the episode: its own fresh session on THIS task's Runtime -----------
     async def _run_episode(self, wid: int, http, task, sampling_params, base_sample):
@@ -161,14 +325,19 @@ class TerminalBenchPool(HarnessPool):
         base_sample.session_id = sid
 
         arn = self._arn_for(task)
-        pending = self._preopen.pop(id(base_sample), None)
-        self._waiting.pop(id(base_sample), None)
-        self._refill()                      # this slot is free: start the next queued episode's boot
+        pending = self._claim(arn)
         t0 = time.perf_counter()
         sb = await (pending if pending is not None else self._open_session(arn))
         wait_ms = (time.perf_counter() - t0) * 1000.0
+        # How long the booted microVM sat idle before this worker claimed it (0 if it was still
+        # booting at pickup). This is the gap the SessionKeeper must bridge (< idle timeout).
+        idle_ms = max(0.0, (t0 - sb._tb_opened_at) * 1000.0)
+        cold = self._cold_start(sb)
+        spec = task.spec or {}
 
         adapter.open_session(sid, sampling_defaults=sampling_params)
+        ep = {"task": task.task_id, "difficulty": spec.get("difficulty", "?"),
+              "category": spec.get("category", "?"), "solved": 0, "infra_error": "none"}
         try:
             router_trace.emit(
                 task_id=task.task_id,
@@ -183,36 +352,56 @@ class TerminalBenchPool(HarnessPool):
             )
             # DEMO-SPECIFIC metric ([demo] channel): every episode is on its OWN fresh session;
             # `preopened` says whether its cold start was started at submit, and `open_wait_ms` is
-            # how much of that cold start the worker still had to wait for (the critical-path cost).
+            # how much of that cold start the worker still had to wait for (the critical-path cost);
+            # `preopen_idle_ms` is the reverse: how long the booted microVM waited for the worker.
+            # open_ms / pull_boot_ms / ready_ms / warm_hit decompose the cold start itself.
             print(f"[demo] worker={wid} qdepth={self._queue.qsize() if self._queue else 0} "
                   f"fresh_session=1 preopened={int(pending is not None)} "
-                  f"open_wait_ms={wait_ms:.1f} arn={_arn_tail(arn)}", flush=True)
+                  f"open_wait_ms={wait_ms:.1f} preopen_idle_ms={idle_ms:.1f} "
+                  f"open_attempts={sb._tb_open_attempts} "
+                  + " ".join(f"{k}={v}" for k, v in cold.items())
+                  + f" arn={_arn_tail(arn)}", flush=True)
 
-            # Seed only the instruction; the task's environment is already baked into the image.
-            # No run_checks.py (the oracle is the baked grade.sh).
-            await sb.write_file("PROBLEM.md", self._problem_text(task))
-
-            await self._harness.run(
+            # The task's environment is baked into its image; the instruction goes straight into
+            # the prompt (nothing is written into the task's workdir — some tests inspect it).
+            ta = time.perf_counter()
+            res = await self._harness.run(
                 sb,
                 session_id=sid,
                 adapter_url=adapter_url,
-                prompt=self._AGENT_PROMPT,
+                prompt=self._problem_text(task),
                 max_tokens=self.max_tokens,
                 http=http,
             )
+            ep.update(agent_ms=round((time.perf_counter() - ta) * 1000.0, 1), turns=res.turns,
+                      tool_calls=res.tool_calls, stop=res.stop_reason)
 
-            # RLVR reward: the task's OWN hidden pytest oracle, injected + run by grade.sh.
-            exit_code, _out, _err = await sb.exec(
-                getattr(task, "check_command", "bash /opt/acs/oracle/grade.sh"), timeout=600,
-            )
-            reward = task.reward(int(exit_code))
+            # RLVR reward: the task's OWN hidden pytest oracle, injected + run after the agent.
+            tg = time.perf_counter()
+            try:
+                g = await self._grade(sb, task)
+            except Exception as e:  # noqa: BLE001 — a grading infra failure scores 0, flagged
+                logger.warning("[terminalbench_pool] grade failed for %s: %s", task.task_id, e)
+                g = {"solved": False, "grade_exit": -1, "tests_passed": 0, "tests_total": 0,
+                     "grade_timeout": 0}
+                ep["infra_error"] = "grade"
+            g.pop("grade_tail", None)
+            ep.update(g, grade_ms=round((time.perf_counter() - tg) * 1000.0, 1))
+            ep["solved"] = int(g["solved"])
+            reward = 1.0 if g["solved"] else 0.0
 
             return await adapter.finish_session(
                 sid, base_sample=base_sample, reward=float(reward),
-                extra_metadata={"task_id": task.task_id, "solved": reward == 1.0,
+                extra_metadata={"task_id": task.task_id, "solved": bool(g["solved"]),
                                 "harness_worker": wid, "sandbox_session": sb._session_id},
             )
+        except Exception as e:
+            ep["infra_error"] = type(e).__name__
+            raise
         finally:
+            ep["episode_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+            ep["session_s"] = round(time.perf_counter() - sb._tb_opened_at, 1)  # microVM-seconds paid
+            print("[demo] episode_end " + " ".join(f"{k}={v}" for k, v in ep.items()), flush=True)
             await adapter.drop_session(sid, wait_timeout=30)
             await self._close_session(sb)
 
@@ -220,24 +409,18 @@ class TerminalBenchPool(HarnessPool):
     async def submit(self, task, sampling_params, base_sample):
         await self._ensure_started()
         arn = self._arn_for(task)          # fail fast on an unmapped task, before queueing
-        self._waiting[id(base_sample)] = arn
+        if not (getattr(base_sample, "metadata", None) or {}).get("tb_reserved"):
+            # Not announced by the look-ahead source (eval, or no source wired): start its boot now.
+            self._demand.append(arn)
         self._refill()
-        try:
-            return await super().submit(task, sampling_params, base_sample)
-        finally:
-            # Only left here if the episode failed before a worker claimed it: don't leak it.
-            self._waiting.pop(id(base_sample), None)
-            leftover = self._preopen.pop(id(base_sample), None)
-            if leftover is not None:
-                with contextlib.suppress(Exception):
-                    await self._close_session(await leftover)
+        return await super().submit(task, sampling_params, base_sample)
 
     # ---- shutdown: stop any still-pre-opened sessions + the keeper -----------
     async def aclose(self) -> None:
-        for pending in list(self._preopen.values()):
-            with contextlib.suppress(Exception):
-                await self._close_session(await pending)
-        self._preopen.clear()
-        self._waiting.clear()
+        self._demand, self._future = [], []
+        for q in list(self._ready.values()):
+            for pending in q:
+                await self._discard(pending)
+        self._ready.clear()
         if self._keeper is not None:
             await self._keeper.aclose()

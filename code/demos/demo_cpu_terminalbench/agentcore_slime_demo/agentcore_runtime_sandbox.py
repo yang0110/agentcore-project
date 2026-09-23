@@ -235,7 +235,12 @@ class AgentCoreRuntimeSandbox:
             boto3.client, "bedrock-agentcore", region_name=self._region, config=cfg
         )
         # Best-effort workspace init + liveness check (also warms a cold GPU instance).
-        await self._invoke({"op": "ping", "workdir": self._workdir})
+        # The client-side epochs around this first ping + the server's reply (a server that reports
+        # boot timestamps, e.g. demo_cpu_terminalbench's acs_http_server) let callers decompose the
+        # cold start; other servers just return {"ok": true}.
+        self.open_sent_epoch = time.time()
+        self.open_reply = await self._invoke({"op": "ping", "workdir": self._workdir})
+        self.open_recv_epoch = time.time()
         return self
 
     async def __aexit__(self, *exc) -> None:

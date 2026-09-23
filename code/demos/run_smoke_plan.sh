@@ -22,7 +22,7 @@ PHASES="${PHASES:-1 2}"
 
 # Entries are <demo> or <demo>:<DATASET> — demo_cpu_datasets is ONE folder that trains many datasets,
 # so each dataset is its own entry (run with DATASET=<name>; logged/reported as <demo>-<name>).
-CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_datasets:mbpp demo_cpu_datasets:math demo_cpu_mixtask demo_cpu_datasets:gsm8k demo_cpu_datasets:math500 demo_cpu_datasets:deepscaler demo_cpu_datasets:humaneval demo_cpu_datasets:gretelsql demo_cpu_datasets:hotpotqa demo_cpu_datasets:xlam demo_cpu_datasets:mcp demo_cpu_heartbeat demo_cpu_harness_scale demo_cpu_customruntime}"
+CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_datasets:mbpp demo_cpu_datasets:math demo_cpu_mixtask demo_cpu_datasets:gsm8k demo_cpu_datasets:math500 demo_cpu_datasets:deepscaler demo_cpu_datasets:humaneval demo_cpu_datasets:gretelsql demo_cpu_datasets:hotpotqa demo_cpu_datasets:xlam demo_cpu_datasets:mcp demo_cpu_heartbeat demo_cpu_scale_lanes demo_cpu_customruntime}"
 
 mkdir -p "$LOGDIR"
 [ -f "$RESULTS" ] || printf 'demo\tstatus\tsecs\tnote\n' > "$RESULTS"

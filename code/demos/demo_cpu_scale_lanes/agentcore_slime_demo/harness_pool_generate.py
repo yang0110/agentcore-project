@@ -6,7 +6,7 @@ Wire with:
 Unlike agentcore_slime_demo.generate.generate (in-process run_episode driving SGLang directly),
 this hook hands each episode to a WARM in-process harness worker pool (harness_pool.HarnessPool):
 the pool owns W warm workers + one shared AnthropicAdapter; a free worker pulls the episode,
-runs the MiniClaudeHarness loop (LLM via the adapter, tools in a fresh remote sandbox Runtime),
+runs the MiniClaudeHarness loop (LLM via the adapter, tools in its lane's persistent microVM),
 scores it, and finish_session drains the trajectory into loss-masked GRPO samples.
 
 The pool is the throughput ceiling knob (HARNESS_WORKERS=W): slime admits up to

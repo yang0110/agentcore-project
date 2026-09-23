@@ -339,6 +339,7 @@ def parse_log(path: Path):
                    "adapter_session": kv.get("adapter_session", "?"),
                    "sandbox_session": kv.get("sandbox_session", "?"),
                    "runtime_arn": kv.get("runtime_arn", "?"),
+                   "lane": kv.get("lane", ""),
                    "sandbox_image": kv.get("sandbox_image", ""),
                    "family": kv.get("family", "")}
             router_records.append(rec)
@@ -425,6 +426,9 @@ def check_stickiness(router_records: list[dict], op_records: list[dict]) -> bool
 
     A harness-scale-style run (WARM workers each pinned to one engine) is also handled: when the
     [router] records carry a harness_worker, we additionally assert no worker used >1 engine.
+    In LANE mode ([router] carries lane=) each worker also owns ONE persistent sandbox session, so
+    we assert worker -> exactly one session, no session shared by two workers, and print the
+    worker -> engine -> session lane table (the WxExW topology, e.g. 4x4x4).
 
     Returns True if all invariants hold (or there is nothing to check)."""
     if not router_records:
@@ -459,10 +463,27 @@ def check_stickiness(router_records: list[dict], op_records: list[dict]) -> bool
             if len(engs) > 1:
                 violations.append(f"worker {w} used {len(engs)} engines {sorted(engs)} — inference NOT pinned")
         workers = sorted(engines_by_worker)
-        print(f"  episodes={len(router_records)}  workers={len(workers)}  engines={len(engines)}")
+        lanes = any(str(r.get("lane", "")) not in ("", "?") for r in router_records)
+        sessions_by_worker: dict[str, set[str]] = {}
+        for rec in router_records:
+            sessions_by_worker.setdefault(rec["harness_worker"], set()).add(rec["sandbox_session"])
+        print(f"  episodes={len(router_records)}  workers={len(workers)}  engines={len(engines)}"
+              + (f"  microVM sessions={len({s for v in sessions_by_worker.values() for s in v})}"
+                 if lanes else ""))
         for w in workers:
-            print(f"    worker {w} -> engine(s) {sorted(engines_by_worker.get(w, set()))}")
+            eps = sum(1 for r in router_records if r["harness_worker"] == w)
+            print(f"    worker {w} -> engine(s) {sorted(engines_by_worker.get(w, set()))}"
+                  + (f" -> session(s) {sorted(sessions_by_worker[w])}  ({eps} episodes)" if lanes else ""))
         ok_msg = "  ✓ every episode sticky to one worker + one engine + one runtime"
+        if lanes:
+            owner: dict[str, str] = {}
+            for w, sess in sessions_by_worker.items():
+                if len(sess) > 1:
+                    violations.append(f"lane {w} used {len(sess)} sandbox sessions — microVM NOT persistent")
+                for s_ in sess:
+                    if owner.setdefault(s_, w) != w:
+                        violations.append(f"sandbox session {s_} shared by workers {owner[s_]} and {w}")
+            ok_msg = "  ✓ every lane is 1:1:1 — one worker, one engine, one persistent microVM session"
     else:
         dist = Counter(r["engine"] for r in router_records)
         print(f"  episodes={len(router_records)}  engines={len(engines)}  unpinned={unpinned}")
@@ -657,7 +678,7 @@ def main() -> int:
         router_out = Path(args.router_csv) if args.router_csv else log.with_suffix(".router.csv")
         write_raw_csv(router_records, router_out,
                       ["ts", "step", "rollout_id", "task_id", "harness_worker", "engine",
-                       "engine_pinned", "adapter_session", "sandbox_session", "runtime_arn",
+                       "engine_pinned", "adapter_session", "sandbox_session", "runtime_arn", "lane",
                        "sandbox_image", "family"])
         print(f"wrote {len(router_records)} per-episode router records -> {router_out}")
         check_stickiness(router_records, op_records)

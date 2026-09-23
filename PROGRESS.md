@@ -1,9 +1,36 @@
 # Progress / Handoff — AgentCore + slime demos
 
-_Last updated: 2026-09-18. Branch: `feat/agentcore-sandbox-demos`._
+_Last updated: 2026-09-23. Branch: `master`._
 
 This file tracks the current work session so it can be picked up later. It has three
 sections: **Done**, **In progress**, **Next steps (to run)**.
+
+> **2026-09-23 — dataset demos merged (15 demos now).** The ten per-dataset CPU folders
+> (`demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k`, `demo_cpu_math500`, `demo_cpu_deepscaler`,
+> `demo_cpu_humaneval`, `demo_cpu_gretelsql`, `demo_cpu_hotpotqa`, `demo_cpu_xlam`, `demo_cpu_mcp`)
+> are now ONE demo, `demo_cpu_datasets` (a `git mv` of `demo_cpu_mbpp`), selected with
+> `DATASET=<name>` (default `mbpp`; `FAMILY` still works as an alias). The set is 9 CPU + 6 GPU;
+> see `code/demos/README.md`. Old folder names below are kept as history.
+>
+> **2026-09-23 — `demo_cpu_harness_scale` → `demo_cpu_scale_lanes`.** Reworked to
+> `LANES=4` = 4 harness workers : 4 SGLang engines (TP1, rollout GPUs 4–7) : 4 persistent microVMs,
+> strictly 1:1:1 (`LANE_SANDBOX=0` = old fresh session per episode); `[demo]` lane fields, `router.csv`
+> `lane` column, `check_stickiness` 1:1:1 check; convergence `16_cpu_scale_lanes.sh`. **Smoke PASSED
+> on AWS** (`_smoke_logs/lanes_tb_0923/scale_lanes.log`, 10 steps + eval, job succeeded): strict 1:1:1
+> held (lanes 0–3 = 104/102/100/98 episodes, never crossed), raw_reward 0.19–0.50, eval/deepscaler
+> 0.358. Only noise: resource_tracker KeyError at teardown + lane stop_session idle-reclaim fallback.
+> Old names below (`harness_scale`) are history.
+>
+> **2026-09-23 — `demo_cpu_terminalbench`: first smoke PASSED on AWS.** Look-ahead pre-open
+> (`tb_lookahead_source.py`, `TB_PREOPEN_BATCHES`=2 → 64 sessions ahead, `CONC`=⌈2W/E⌉). Deploy
+> 218/229 Runtimes; oracle final **166/218 usable** (47 oracle-fail, 5 errored, 0 null-pass) →
+> dataset 135 train + 31 eval. Quota: Active Session Workloads 5000 (L-3E5722B2) ≫ 64; 25 new/s is
+> retried on throttle. Smoke (`_smoke_logs/lanes_tb_0923/terminalbench.log`, 382 episodes, ~70 min,
+> job succeeded, 0 infra_error): `open_wait_ms` p95 **0** (boot fully hidden), open p50 0.66 s, 100 %
+> warm hit; BUT `preopen_idle_ms` p50 7.3 min vs episode p50 21 s → ~95 % of microVM-s idle.
+> Reward sparse: 4 solves/382 (train 0.088 / 0.026 on 2 steps, else 0), eval 0.0, 42 % pass ≥1 test.
+> Next: try `TB_PREOPEN_BATCHES`=1 (cost), easy-first curriculum / partial-credit reward for signal,
+> run `probe_coldstart.py`. Deck `docs/slides/terminalbench_deck.md` has the results.
 
 ---
 
@@ -37,7 +64,7 @@ sections: **Done**, **In progress**, **Next steps (to run)**.
 
 ### 4. Checkpoint cleanup (disk) — DONE 2026-09-18
 - Deleted output checkpoints (~370G freed, 58% → 39% used):
-  - `code/demos/demo_cpu_mbpp/ckpt/`: Qwen3-4B_{ctf,gretelsql,rag,sql,tool_use}_async
+  - `code/demos/demo_cpu_mbpp/ckpt/` (that folder is now `demo_cpu_datasets/`; its `ckpt/` holds only `.gitkeep`): Qwen3-4B_{ctf,gretelsql,rag,sql,tool_use}_async
   - `code/p4_slime_train/ckpt/`: Qwen3-4B_mbpp_grpo, Qwen3-4B_mbpp_learn
 - **PRESERVED (do NOT delete):** `code/p4_slime_train/ckpt/Qwen3-4B_torch_dist` (7.5G) — the
   base Megatron checkpoint every run trains from (`CKPT_BASE`). Deleting it breaks all reruns.
@@ -70,9 +97,9 @@ Host launch dies on the `/root/slime` model-source permission error.
 
 ### Trainable demos
 CPU (`SANDBOX=agentcore-runtime`; need AWS creds + CPU sandbox ARN, defaulted in each `run.sh`):
-- demo_cpu_gsm8k, demo_cpu_math, demo_cpu_math500, demo_cpu_deepscaler, demo_cpu_humaneval,
-  demo_cpu_gretelsql, demo_cpu_hotpotqa, demo_cpu_mcp, demo_cpu_xlam, demo_cpu_mixtask,
-  demo_cpu_mbpp
+- demo_cpu_datasets, once per `DATASET=` gsm8k, math, math500, deepscaler, humaneval,
+  gretelsql, hotpotqa, mcp, xlam, mbpp (formerly one folder each)
+- demo_cpu_mixtask
 
 GPU:
 - demo_gpu_local  → start local farm first: `bash code/deploy/run_local_gpu_runtime.sh local`
@@ -82,7 +109,7 @@ GPU:
   `B4_GPU_FRACTION` toward 0.5 if it stalls.
 
 ### NOT part of the sweep (no standard training loop)
-- demo_cpu_customruntime, demo_cpu_harness_scale, demo_cpu_heartbeat,
+- demo_cpu_customruntime, demo_cpu_scale_lanes, demo_cpu_heartbeat,
   demo_gpu_customruntime, demo_gpu_snapshot
 
 ### Suggested driver

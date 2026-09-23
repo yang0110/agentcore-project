@@ -11,43 +11,56 @@ for 3 images, here at ~229-image scale.
 Substrate choice (differs from imagepool on purpose):
   * networkMode = PUBLIC (not VPC). Terminal-Bench's `run-tests.sh` installs uv + pytest from the
     internet at grade time, so the sandbox needs egress. Reached only via the IAM control plane
-    (invoke_agent_runtime); it never dials back, so PUBLIC is safe and needs no SG rule (mirrors the
-    A3 CPU sandbox in deploy_two_runtime.py).
-  * arm64, <2 GB per image (the managed serverless fleet cap). Most Terminal-Bench task images are
-    small and build fine for arm64; images that exceed the cap or cannot install python3/pip are
-    reported and SKIPPED — the pool is "every task that built + registered", which is honest for a
-    large-pool showcase.
+    (invoke_agent_runtime); it never dials back, so PUBLIC is safe and needs no SG rule.
+  * arm64, <= 2048 MB per image (the managed serverless fleet cap, AgentCore service quota). Task
+    images that only exist for amd64, fail to build for arm64, or exceed the cap are reported in
+    tasks/images.csv and SKIPPED — the pool is "every task that built + fits + registered".
 
-Wrapping: each task's own Dockerfile builds its environment (seed files baked in). We append a small
-layer that (a) ensures python3 + bedrock-agentcore, (b) drops in sandbox_server_agent.py (the
-/invocations exec/write_file/read_file server the Sandbox client speaks to), and (c) makes it the
-CMD. The task's tests/ and run-tests.sh stay in the image for the reward step.
+Wrapping (the task's environment is left UNTOUCHED): the task's own Dockerfile builds its
+environment; we append a layer that copies in a STANDALONE Python (/opt/acs/py, python-build-standalone,
+~54 MB) running a stdlib-only AgentCore HTTP server (acs_http_server.py -> sandbox_server_agent.handle)
+as the CMD. Nothing is pip-installed into the task's own interpreter (Terminal-Bench images range from
+python3.8 to no Python at all; mutating the task's Python would also change what gets graded), and
+the image WORKDIR is not changed (the server reports it; tasks use /app, /app/astropy, /home/alice...).
+
+The hidden oracle (tests/ + run-tests.sh) is NOT baked into the image: the grader injects it from the
+trainer's tasks/ dir after the agent's turns (op=put_tar), exactly like Terminal-Bench's own harness
+copies tests in only at test time. So the root agent cannot read the tests while solving.
 
     python3 fetch_terminalbench.py            # first: populate ../tasks/ + manifest.json
     python3 deploy/deploy_terminalbench.py    # then: build+push+register the whole pool
-    # writes ../tasks/arn_by_image.json and prints:
-    #   export AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE="$(cat .../tasks/arn_by_image.json)"
+    # writes ../tasks/arn_by_image.json + ../tasks/images.csv (size / build time / status per task)
 
 Knobs (all optional):
-    TB_TASKS=a,b,c   only these tasks (by name)          TB_LIMIT=N   only the first N in the manifest
-    SKIP_BUILD=1     reuse already-pushed :latest images  TB_WORKDIR=/app  sandbox working dir (default /app)
-    CONTINUE_ON_ERROR=1 (default) keep going past a failed task; set 0 to stop on the first failure.
+    TB_TASKS=a,b,c    only these tasks (by name)       TB_LIMIT=N      only the first N in the manifest
+    TB_BUILD_CONC=16  parallel image builds            TB_REBUILD=1    rebuild even if this wrapper's image is pushed
+    TB_NO_REGISTER=1  build + push + measure only (no Runtimes)
 
-Real AWS mutation, at SCALE: up to ~229 ECR repos + images and ~229 managed serverless Runtimes
-(billed per session). Registering hundreds of Runtimes may hit the per-account AgentCore Runtime
-quota — this script registers as many as the account allows and reports the rest. Prove the pipeline
-with TB_LIMIT=2 before launching the full pool.
+Resumable: an image already pushed with this wrapper's recipe tag is not rebuilt, and an existing
+Runtime is reused (updated in place if it points at a different image digest).
 """
 from __future__ import annotations
 
+import csv
+import hashlib
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+import boto3
+import yaml
 
 HERE = Path(__file__).resolve().parent
 DEMO_DIR = HERE.parent                                   # code/demos/demo_cpu_terminalbench
 TASKS_DIR = DEMO_DIR / "tasks"
+ACS_CTX = HERE / "acs_ctx"                               # named build context `acs` (python + server)
 SHARED_DEPLOY = (DEMO_DIR / ".." / ".." / "deploy").resolve()
 sys.path.insert(0, str(SHARED_DEPLOY))
 
@@ -56,58 +69,61 @@ import deploy_two_runtime as d  # noqa: E402
 REGION = d.REGION
 PREFIX = d.PREFIX
 PLATFORM = "linux/arm64"
-WORKDIR = os.environ.get("TB_WORKDIR", "/app")
-CONTINUE = os.environ.get("CONTINUE_ON_ERROR", "1") == "1"
+MAX_IMAGE_MB = 2048                                      # AgentCore "Maximum size of a Docker image"
+BUILD_CONC = int(os.environ.get("TB_BUILD_CONC", "16"))
+REBUILD = os.environ.get("TB_REBUILD") == "1"
+NO_REGISTER = os.environ.get("TB_NO_REGISTER") == "1"
+PBS_URL = ("https://github.com/astral-sh/python-build-standalone/releases/download/20260901/"
+           "cpython-3.12.14%2B20260901-aarch64-unknown-linux-gnu-install_only.tar.gz")
 
-# Appended to each task's own Dockerfile. `command -v python3` avoids a reinstall on python bases;
-# --break-system-packages covers Debian/Ubuntu PEP-668 images. The last CMD wins, so this overrides
-# the task's `sleep infinity` command with our server. Uses `python3 -m` from /opt on PYTHONPATH so
-# the module name resolves regardless of the base image's WORKDIR.
-#
-# Isolation: every episode runs on its OWN fresh session (one microVM, stopped after the episode;
-# see terminalbench_pool.py), so the agent works directly in the task's baked {workdir} — no
-# template/reset layer is needed. The hidden oracle (tests/ + run-tests.sh) is baked at
-# /opt/acs/oracle, OUTSIDE the agent's workdir, so the agent can't read the tests while solving.
-# grade.sh injects it into the workdir + runs it AFTER the agent's turns (mirrors Terminal-Bench's
-# own grade-after semantics).
-# {oracle_copies} is filled per task with COPY lines only for the oracle files that exist.
+# Appended to each task's own Dockerfile. The last CMD wins (the task's `sleep infinity` compose
+# command is not used on AgentCore); ENTRYPOINT is cleared so bases like localstack don't wrap it.
+# The RUN is a build-time sanity check that the standalone Python runs on this base (glibc, arm64).
 WRAP_APPENDIX = """
 # ===== demo_cpu_terminalbench sandbox wrapper (appended by deploy_terminalbench.py) =====
 USER root
-RUN (command -v python3 >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends python3 python3-pip ca-certificates)) \\
- && (python3 -m pip install --no-cache-dir --break-system-packages bedrock-agentcore \\
-     || python3 -m pip install --no-cache-dir bedrock-agentcore \\
-     || pip3 install --no-cache-dir bedrock-agentcore)
-COPY __acs_sandbox_server_agent.py /opt/acs/sandbox_server_agent.py
-COPY __acs_grade.sh /opt/acs/oracle/grade.sh
-{oracle_copies}
-RUN mkdir -p {workdir}
-ENV PYTHONPATH=/opt/acs
-ENV SANDBOX_WORKDIR={workdir}
+COPY --from=acs py /opt/acs/py
+COPY --from=acs acs_http_server.py sandbox_server_agent.py /opt/acs/
+RUN /opt/acs/py/bin/python3 -c "import http.server, tarfile, json, subprocess"
+{env_lines}
 EXPOSE 8080
-CMD ["python3", "-m", "sandbox_server_agent"]
+ENTRYPOINT []
+CMD ["/opt/acs/py/bin/python3", "/opt/acs/acs_http_server.py"]
 """.lstrip()
 
-# grade.sh — the RLVR reward oracle, baked into every task image. Runs with cwd = the episode's
-# workdir (the server sets it). Injects the hidden tests + run-tests.sh, runs them, and
-# exits with their status (0 = task solved). Kept OUT of the workdir so the agent never sees
-# it while solving.
-GRADE_SH = """#!/usr/bin/env bash
-set -u
-ORACLE=/opt/acs/oracle
-if [ -d "$ORACLE/tests" ]; then cp -a "$ORACLE/tests" ./tests; fi
-if [ -f "$ORACLE/run-tests.sh" ]; then
-  cp "$ORACLE/run-tests.sh" ./run-tests.sh
-  bash ./run-tests.sh
-  exit $?
-fi
-if [ -d ./tests ]; then
-  python3 -m pytest -q ./tests
-  exit $?
-fi
-echo "grade: no oracle (tests/ + run-tests.sh) baked for this task" >&2
-exit 2
-"""
+
+def _recipe_tag() -> str:
+    """Image tag that changes whenever the wrapper changes (so a stale image is rebuilt)."""
+    h = hashlib.sha256(WRAP_APPENDIX.encode())
+    for f in ("acs_http_server.py", "sandbox_server_agent.py"):
+        h.update((ACS_CTX / f).read_bytes())
+    return "acs-" + h.hexdigest()[:12]
+
+
+def _ensure_standalone_python() -> None:
+    """Fetch + prune + strip the arm64 standalone CPython into acs_ctx/py (once; gitignored)."""
+    py = ACS_CTX / "py"
+    if (py / "bin" / "python3").exists():
+        return
+    ACS_CTX.mkdir(exist_ok=True)
+    d.err("fetching standalone arm64 CPython (python-build-standalone) -> acs_ctx/py")
+    d.sh(f"curl -sSL -o /tmp/acs_pbs.tgz '{PBS_URL}' && mkdir -p {py} && "
+         f"tar -xzf /tmp/acs_pbs.tgz -C {py} --strip-components=1")
+    lib = py / "lib" / "python3.12"
+    for rel in ("include", "share", "lib/pkgconfig", "lib/libpython3.12.a"):
+        shutil.rmtree(py / rel, ignore_errors=True) if (py / rel).is_dir() else (py / rel).unlink(missing_ok=True)
+    for name in ("test", "idlelib", "tkinter", "turtledemo", "ensurepip", "lib2to3"):
+        shutil.rmtree(lib / name, ignore_errors=True)
+    for p in list(lib.glob("config-3.12-*")) + list(lib.glob("site-packages/pip*")):
+        shutil.rmtree(p, ignore_errors=True)
+    for p in list((py / "lib").glob("libtcl*")) + list((py / "lib").glob("libtk*")):
+        p.unlink(missing_ok=True)
+    # Strip debug info (~190 MB -> ~54 MB) with arm64 binutils (the host strip is x86-only).
+    d.sh(f"docker run --rm --platform {PLATFORM} -v {py}:/py public.ecr.aws/docker/library/debian:bookworm-slim "
+         "bash -c 'apt-get update -qq >/dev/null && apt-get install -y -qq binutils >/dev/null && "
+         "strip --strip-unneeded /py/bin/python3.12 /py/lib/libpython3.12.so.1.0 && "
+         "find /py/lib -name \"*.so\" -exec strip --strip-unneeded {} + && "
+         f"chown -R {os.getuid()}:{os.getgid()} /py'")
 
 
 def _load_manifest() -> list[dict]:
@@ -126,87 +142,210 @@ def _load_manifest() -> list[dict]:
     return tasks
 
 
-def _prepare_context(task_dir: Path) -> Path:
-    """Write the combined Dockerfile (task's own + our wrapper) into the task dir; return its path.
+def _compose_client(task_dir: Path) -> tuple[Path, Path, dict]:
+    """(build context, Dockerfile, extra env) of the task's single `client` service."""
+    ctx, dockerfile, env = task_dir, task_dir / "Dockerfile", {}
+    for name in ("docker-compose.yaml", "docker-compose.yml"):
+        cp = task_dir / name
+        if not cp.exists():
+            continue
+        svcs = (yaml.safe_load(cp.read_text()) or {}).get("services") or {}
+        svc = svcs.get("client") or (next(iter(svcs.values())) if svcs else {})
+        build = svc.get("build") or {}
+        if isinstance(build, str):
+            build = {"context": build}
+        ctx = (task_dir / build.get("context", ".")).resolve()
+        dockerfile = ctx / build.get("dockerfile", "Dockerfile")
+        raw = svc.get("environment") or []
+        items = raw.items() if isinstance(raw, dict) else (e.split("=", 1) for e in raw if "=" in e)
+        # T_BENCH_* placeholders are harness plumbing (TEST_DIR is set by the grader instead).
+        env = {k: str(v) for k, v in items if "${" not in str(v) and k != "TEST_DIR"}
+        break
+    return ctx, dockerfile, env
 
-    Build context = the task dir, because the task's own Dockerfile COPYs its seed files from there.
-    We drop in: sandbox_server_agent.py (as __acs_sandbox_server_agent.py) and grade.sh (as
-    __acs_grade.sh) so their COPYs resolve, and emit COPY lines for the hidden oracle (tests/,
-    run-tests.sh) ONLY when they exist in the task dir (a bare COPY of a missing path fails the build).
-    """
-    server_src = DEMO_DIR / "agentcore_slime_demo" / "sandbox_server_agent.py"
-    (task_dir / "__acs_sandbox_server_agent.py").write_text(server_src.read_text())
-    (task_dir / "__acs_grade.sh").write_text(GRADE_SH)
 
-    # Bake the hidden oracle OUTSIDE the agent's workdir. Only copy what the task actually ships.
-    oracle_lines = []
-    if (task_dir / "tests").is_dir():
-        oracle_lines.append("COPY tests /opt/acs/oracle/tests")
-    for cand in ("run-tests.sh", "run_tests.sh"):
-        if (task_dir / cand).is_file():
-            oracle_lines.append(f"COPY {cand} /opt/acs/oracle/run-tests.sh")
+def _prepare(task_dir: Path) -> tuple[Path, Path]:
+    """Write <context>/Dockerfile.acs = the task's Dockerfile (amd64 pins dropped) + our wrapper."""
+    ctx, dockerfile, env = _compose_client(task_dir)
+    base = dockerfile.read_text()
+    # A few tasks pin `FROM --platform=linux/amd64`; their bases are multi-arch, so try arm64.
+    base = re.sub(r"(?m)^(\s*FROM\s+)--platform=\S+\s+", r"\1", base)
+    env_lines = "\n".join(f"ENV {k}={json.dumps(v)}" for k, v in env.items())
+    out = ctx / "Dockerfile.acs"
+    out.write_text(base.rstrip() + "\n\n" + WRAP_APPENDIX.format(env_lines=env_lines))
+    return ctx, out
+
+
+_login_lock = threading.Lock()
+_logged_in = False
+
+
+def _ecr_login(registry: str) -> None:
+    global _logged_in
+    with _login_lock:
+        if not _logged_in:
+            d.sh(f"aws ecr get-login-password --region {REGION} | "
+                 f"docker login --username AWS --password-stdin {registry}")
+            _logged_in = True
+
+
+def _image_detail(ecr, repo: str, tag: str) -> dict | None:
+    try:
+        return ecr.describe_images(repositoryName=repo, imageIds=[{"imageTag": tag}])["imageDetails"][0]
+    except ecr.exceptions.ImageNotFoundException:
+        return None
+    except ecr.exceptions.RepositoryNotFoundException:
+        return None
+
+
+def build_one(t: dict, tag: str, logs: Path) -> dict:
+    """Build + push one task image (unless this recipe is already pushed); measure its size."""
+    task = t["task"]
+    repo = f"{PREFIX}-tb-{t['image']}"
+    row = {"task": task, "difficulty": t.get("difficulty", ""), "category": t.get("category", ""),
+           "repo": repo, "status": "", "size_mb": "", "layers": "", "build_s": "", "digest": "",
+           "error": ""}
+    ecr = boto3.client("ecr", region_name=REGION)
+    try:
+        uri = d.ensure_ecr(repo)
+        registry = uri.split("/", 1)[0]
+        det = None if REBUILD else _image_detail(ecr, repo, tag)
+        if det is None:
+            ctx, dockerfile = _prepare(TASKS_DIR / task)
+            _ecr_login(registry)
+            t0 = time.perf_counter()
+            with open(logs / f"{task}.log", "w") as lf:
+                subprocess.run(
+                    f"docker buildx build --builder {d.BUILDX_BUILDER} --platform {PLATFORM} "
+                    f"--provenance=false --sbom=false --build-context acs={ACS_CTX} "
+                    f"-f {dockerfile} -t {uri}:{tag} -t {uri}:latest --push {ctx}",
+                    shell=True, check=True, stdout=lf, stderr=subprocess.STDOUT)
+            row["build_s"] = round(time.perf_counter() - t0, 1)
+            det = _image_detail(ecr, repo, tag)
+        mb = det["imageSizeInBytes"] / 2**20                  # compressed (what a pull downloads)
+        row.update(size_mb=round(mb, 1), digest=det["imageDigest"], uri=f"{uri}@{det['imageDigest']}")
+        mf = json.loads(ecr.batch_get_image(
+            repositoryName=repo, imageIds=[{"imageDigest": det["imageDigest"]}],
+        )["images"][0]["imageManifest"])
+        row["layers"] = len(mf.get("layers", []))
+        row["status"] = "too_large" if mb > MAX_IMAGE_MB else "built"
+    except subprocess.CalledProcessError as e:
+        tail = (logs / f"{task}.log").read_text(errors="replace").strip().splitlines()[-3:]
+        row.update(status="build_failed", error=" | ".join(tail)[-300:] or str(e))
+    except Exception as e:  # noqa: BLE001 — one bad task must not sink the whole pool
+        row.update(status="build_failed", error=f"{type(e).__name__}: {e}"[:300])
+    d.err(f"[build] {task}: {row['status']} size_mb={row['size_mb']} build_s={row['build_s']} {row['error'][:120]}")
+    return row
+
+
+def _runtime_name(image: str) -> str:
+    """AgentCore runtime names: [a-zA-Z][a-zA-Z0-9_]{0,47}. Long task names get a hash suffix."""
+    name = f"{PREFIX}_tb_{image}".replace("-", "_")
+    if len(name) > 48:
+        name = name[:39] + "_" + hashlib.sha1(image.encode()).hexdigest()[:8]
+    return name
+
+
+def register_all(rows: list[dict], xrole: str) -> None:
+    """Create (or update to the new digest) one Runtime per built task; wait READY in parallel."""
+    control = boto3.client("bedrock-agentcore-control", region_name=REGION)
+    existing, tok = {}, None
+    while True:
+        resp = control.list_agent_runtimes(**({"nextToken": tok} if tok else {}), maxResults=100)
+        for r in resp.get("agentRuntimes", []):
+            existing[r["agentRuntimeName"]] = r
+        tok = resp.get("nextToken")
+        if not tok:
             break
+    art = lambda uri: {"containerConfiguration": {"containerUri": uri}}  # noqa: E731
+    common = dict(roleArn=xrole, protocolConfiguration={"serverProtocol": "HTTP"},
+                  networkConfiguration={"networkMode": "PUBLIC"},
+                  environmentVariables={"AWS_REGION": REGION})
 
-    base = (task_dir / "Dockerfile").read_text()
-    combined = task_dir / "Dockerfile.acs"
-    combined.write_text(
-        base.rstrip() + "\n\n"
-        + WRAP_APPENDIX.format(workdir=WORKDIR, oracle_copies="\n".join(oracle_lines))
-    )
-    return combined
+    def one(row: dict) -> None:
+        name = _runtime_name(row["repo"].removeprefix(f"{PREFIX}-tb-"))
+        t0 = time.perf_counter()
+        try:
+            cur = existing.get(name)
+            if cur and "FAILED" in cur.get("status", ""):
+                control.delete_agent_runtime(agentRuntimeId=cur["agentRuntimeId"])
+                time.sleep(15)
+                cur = None
+            if cur is None:
+                r = control.create_agent_runtime(agentRuntimeName=name, agentRuntimeArtifact=art(row["uri"]), **common)
+                rid, arn = r["agentRuntimeId"], r["agentRuntimeArn"]
+            else:
+                rid, arn = cur["agentRuntimeId"], cur["agentRuntimeArn"]
+                live = control.get_agent_runtime(agentRuntimeId=rid)
+                if live["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] != row["uri"]:
+                    control.update_agent_runtime(agentRuntimeId=rid, agentRuntimeArtifact=art(row["uri"]), **common)
+            while True:
+                st = control.get_agent_runtime(agentRuntimeId=rid)
+                if st["status"] == "READY":
+                    break
+                if "FAILED" in st["status"]:
+                    raise RuntimeError(f"{st['status']}: {st.get('failureReason')}")
+                time.sleep(10)
+            row.update(status="registered", arn=arn, register_s=round(time.perf_counter() - t0, 1))
+        except Exception as e:  # noqa: BLE001
+            row.update(status="register_failed", error=f"{type(e).__name__}: {e}"[:300])
+        d.err(f"[register] {row['task']}: {row['status']} {row.get('error', '')[:120]}")
 
-
-def build_push_one(repo: str, task_dir: Path) -> str:
-    acct = d.account()
-    registry = f"{acct}.dkr.ecr.{REGION}.amazonaws.com"
-    uri = d.ensure_ecr(repo) + ":latest"
-    if os.environ.get("SKIP_BUILD") == "1":
-        d.err(f"SKIP_BUILD=1 — reusing already-pushed {uri}")
-        return uri
-    dockerfile = _prepare_context(task_dir)
-    d._ensure_buildx()
-    d.sh(f"aws ecr get-login-password --region {REGION} | "
-         f"docker login --username AWS --password-stdin {registry}")
-    d.sh(f"docker buildx build --builder {d.BUILDX_BUILDER} --platform {PLATFORM} "
-         f"--provenance=false --sbom=false -f {dockerfile} -t {uri} --push {task_dir}")
-    d.err(f"pushed {uri} ({PLATFORM})")
-    return uri
+    todo = [r for r in rows if r["status"] == "built"]
+    with ThreadPoolExecutor(max_workers=8) as ex:     # control-plane mutation quota is 50/s
+        list(ex.map(one, todo))
 
 
 def main() -> int:
     tasks = _load_manifest()
-    xrole = d.exec_role(f"{PREFIX}-exec-role")
-    public_net = {"networkMode": "PUBLIC"}  # egress for run-tests.sh; reached via IAM only
-    env = {"AWS_REGION": REGION, "SANDBOX_WORKDIR": WORKDIR}
+    _ensure_standalone_python()
+    shutil.copy(DEMO_DIR / "agentcore_slime_demo" / "sandbox_server_agent.py", ACS_CTX / "sandbox_server_agent.py")
+    tag = _recipe_tag()
+    d._ensure_buildx()
+    logs = TASKS_DIR / "build_logs"
+    logs.mkdir(parents=True, exist_ok=True)
 
-    d.err(f"deploying pool of {len(tasks)} Terminal-Bench task Runtimes ({PLATFORM}, PUBLIC)")
-    arn_by_image, failed = {}, {}
-    for i, t in enumerate(tasks, 1):
-        name_tag = t["image"]                       # lowercased alnum-hyphen task name
-        task_dir = TASKS_DIR / t["task"]
-        d.err(f"[{i}/{len(tasks)}] {t['task']} ({t['difficulty']}/{t['category']})")
-        try:
-            uri = build_push_one(f"{PREFIX}-tb-{name_tag}", task_dir)
-            arn = d.managed_runtime(f"{PREFIX}_tb_{name_tag}".replace("-", "_"),
-                                    uri, xrole, env, public_net)
-            arn_by_image[t["task"]] = arn
-            d.err(f"  -> {arn}")
-        except Exception as e:  # noqa: BLE001 — one bad task must not sink the whole pool
-            failed[t["task"]] = f"{type(e).__name__}: {e}"
-            d.err(f"  FAILED: {failed[t['task']]}")
-            if not CONTINUE:
-                break
+    d.err(f"building {len(tasks)} Terminal-Bench task images ({PLATFORM}, conc={BUILD_CONC}, tag={tag})")
+    t0 = time.perf_counter()
+    rows = []
+    with ThreadPoolExecutor(max_workers=BUILD_CONC) as ex:
+        futs = [ex.submit(build_one, t, tag, logs) for t in tasks]
+        for i, f in enumerate(as_completed(futs), 1):
+            rows.append(f.result())
+            if i % 10 == 0:
+                d.err(f"  ... {i}/{len(tasks)} images done ({time.perf_counter() - t0:.0f}s)")
+    rows.sort(key=lambda r: r["task"])
 
-    # Persist the pool map next to the tasks so run.sh can load it without a huge inline export.
-    (TASKS_DIR / "arn_by_image.json").write_text(json.dumps(arn_by_image, indent=2))
-    if failed:
-        (TASKS_DIR / "deploy_failures.json").write_text(json.dumps(failed, indent=2))
+    if not NO_REGISTER:
+        register_all(rows, d.exec_role(f"{PREFIX}-exec-role"))
 
-    print(f"\n# pool: {len(arn_by_image)} Runtimes registered, {len(failed)} failed")
-    print(f"export AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE=\"$(cat {TASKS_DIR / 'arn_by_image.json'})\"")
-    if failed:
-        print(f"# {len(failed)} tasks failed to build/register — see {TASKS_DIR / 'deploy_failures.json'}")
-    return 0 if arn_by_image else 1
+    # Merge into the pool map (other tasks deployed by an earlier TB_TASKS/TB_LIMIT run are kept).
+    pool_path = TASKS_DIR / "arn_by_image.json"
+    pool = json.loads(pool_path.read_text()) if pool_path.exists() else {}
+    for r in rows:
+        if r.get("arn"):
+            pool[r["task"]] = r["arn"]
+        elif r["task"] in pool and r["status"] != "registered":
+            pool.pop(r["task"])                   # rebuilt but no longer registrable: drop it
+    pool_path.write_text(json.dumps(dict(sorted(pool.items())), indent=2))
+
+    fields = ["task", "difficulty", "category", "status", "size_mb", "layers", "build_s",
+              "register_s", "repo", "digest", "arn", "error"]
+    with (TASKS_DIR / "images.csv").open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+
+    by = {}
+    for r in rows:
+        by[r["status"]] = by.get(r["status"], 0) + 1
+    sizes = sorted(r["size_mb"] for r in rows if isinstance(r["size_mb"], float))
+    print(f"\n# {len(rows)} tasks in {time.perf_counter() - t0:.0f}s: {by}")
+    if sizes:
+        pct = lambda p: sizes[min(len(sizes) - 1, int(p * len(sizes)))]  # noqa: E731
+        print(f"# image size MB (compressed): min={sizes[0]} p50={pct(.5)} p95={pct(.95)} max={sizes[-1]}")
+    print(f"# pool map: {len(pool)} Runtimes -> {pool_path}\n# per-task detail -> {TASKS_DIR / 'images.csv'}")
+    return 0 if pool else 1
 
 
 if __name__ == "__main__":

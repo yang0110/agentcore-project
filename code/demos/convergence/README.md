@@ -33,7 +33,7 @@ convergence/
   13_gpu_shared.sh
   14_gpu_local.sh
   15_cpu_heartbeat.sh    <- property demos, now real trainers (headline knob default-ON;
-  16_cpu_harness_scale.sh    set it OFF => byte-identical to the plain single-substrate trainer)
+  16_cpu_scale_lanes.sh    set it OFF => byte-identical to the plain single-substrate trainer)
   17_cpu_customruntime.sh
   18_gpu_snapshot.sh
   19_gpu_customruntime.sh
@@ -141,7 +141,7 @@ property's effect on convergence:
 | # | wrapper | substrate | property (default-on knob) |
 |---|---------|-----------|-----------------------------|
 | 15 | `15_cpu_heartbeat.sh` | CPU sandbox (baked ARNs) | keep the session warm across the weight-sync barrier (`HEARTBEAT_KEEP_WARM=1`) |
-| 16 | `16_cpu_harness_scale.sh` | CPU sandbox (baked ARNs) | warm in-process `run_episode` worker pool (`HARNESS_WORKERS`; MODE pinned to A) |
+| 16 | `16_cpu_scale_lanes.sh` | CPU sandbox (baked ARNs) | 4×4×4 lanes: 4 warm harness workers : 4 SGLang engines : 4 persistent microVMs (`LANES`; MODE pinned to A) |
 | 17 | `17_cpu_customruntime.sh` | your **custom CPU** Runtime | training runs unchanged on a custom Runtime vs the managed Code Interpreter |
 | 18 | `18_gpu_snapshot.sh` | remote **g6** (needs ARN) | app-level workspace snapshot/resume every episode (`SNAPSHOT_EVERY=1`) |
 | 19 | `19_gpu_customruntime.sh` | custom **GPU** Runtime | KernelBench CUDA training only possible on a custom GPU Runtime; has an on-box `LOCAL_GPU=1` path |

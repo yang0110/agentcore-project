@@ -49,6 +49,13 @@ AgentCore **Code Interpreter** microVM (CPU); the harness is in-process.
 | `demo_cpu_config`  | config edits | `config` | generation |
 | `demo_cpu_data`    | data transforms | `data` | generation |
 
+> **As built (2026-09-23):** the per-task folders above are NOT separate demos. They are all ONE
+> demo, `code/demos/demo_cpu_datasets`, selected with `DATASET=<name>` (real HF `mbpp` (default) `gsm8k`
+> `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, plus the synthetic `math`
+> `swe` `tool_use` `sql` `ctf` `rag` `regex` `planning` `config` `data`). It replaced the ten
+> per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`, …) that differed only in data. The full set is
+> 15 demos (9 CPU + 6 GPU); see `code/demos/README.md`.
+
 \* *Hypothesis only — Tier 3 replaces it with a measurement.* Note most cheap-checker CPU tasks are
 expected to be **generation-bound**; the clear **sandbox-bound** case is CUDA (Tier 2). That
 asymmetry is the point of measuring rather than assuming.
@@ -61,7 +68,7 @@ instance** (a `g6`, x86_64/amd64); the trainer box keeps all its GPUs for policy
 | Demo folder | Task | Notes |
 |---|---|---|
 | `demo_gpu_kernelbench` | KernelBench (level_1 CUDA) | checker = allclose vs torch ref, on `cuda` |
-| `demo_gpu_shared` | KernelBench + Ray pack-many farm | many envs share one GPU (bursty, memory-bound) |
+| `demo_gpu_shared_single` / `demo_gpu_shared_multi` | KernelBench + Ray pack-many farm | many envs share one GPU (bursty, memory-bound); split 2026-09-21 into 0.5+0.5 on one GPU vs one whole GPU per session (the old `demo_gpu_shared`) |
 
 ### Tier 3 — Advanced: scale the *measured* bottleneck
 
@@ -83,8 +90,10 @@ Decision procedure:
 
 There is a **third** tier hiding behind those two: the **harness** that drives the episodes. Rollout
 throughput is `min(inference, sandbox, harness)`, so even after inference + sandbox are scaled, a
-single-process harness can cap everything. [`demo_cpu_harness_scale`](../code/demos/demo_cpu_harness_scale/)
-isolates that tier — one task, a pool of **W warm mini-Claude harness workers** — and shows the knee
+single-process harness can cap everything. [`demo_cpu_scale_lanes`](../code/demos/demo_cpu_scale_lanes/)
+isolates that tier — one task, **4 × 4 × 4 lanes** by default (4 warm mini-Claude harness workers :
+4 SGLang engines : 4 persistent microVMs, strictly 1:1:1; renamed from `demo_cpu_harness_scale`
+2026-09-23) — and shows the knee
 (throughput rises ~linearly with `W`, then plateaus at `min(inference, sandbox)`) plus how the three
 tiers route/load-balance differently (per-request router vs per-episode sticky sandbox vs per-episode
 pull queue). Full write-up: [harness-scaling.md](harness-scaling.md).

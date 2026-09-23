@@ -8,7 +8,7 @@
 # Terminal-Bench task: metadata.task = {family:"terminalbench", task_id, prompt, spec:{image,...}}.
 # Each row's spec.image (the task name) routes its episode to that task's OWN Runtime ARN via
 # AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE — the large image pool this demo showcases. Reward is the
-# task's baked hidden pytest oracle (grade.sh); the sandbox stays task-agnostic. Self-contained:
+# task's hidden pytest suite, injected at grade time; the sandbox stays task-agnostic. Self-contained:
 # imports only this dir's vendored agentcore_slime_demo/. Idempotent (overwrites).
 #
 # Knobs: LIMIT=N (first N tasks), REPEAT=k (repeat each task k times in train), TB_MAX_TURNS=t.

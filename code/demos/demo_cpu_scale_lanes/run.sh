@@ -1,5 +1,10 @@
 #!/bin/bash
-# demo_cpu_harness_scale — REAL slime CPU trainer that SCALES THE HARNESS TIER. Same async/decoupled
+# demo_cpu_scale_lanes — REAL slime CPU trainer that scales the rollout as W 1:1:1 LANES (default
+# 4 harness workers : 4 SGLang engines : 4 AgentCore microVMs). Worker w is pinned to engine w and to
+# its OWN persistent microVM session (opened once, reused across its episodes, fresh workdir per
+# episode), so LANES=N scales all three tiers together. Formerly demo_cpu_harness_scale.
+#
+# Same async/decoupled
 # training shape as demo_cpu_datasets, but the custom-generate hook hands every episode to a WARM
 # in-process harness worker pool (agentcore_slime_demo.harness_pool.HarnessPool) instead of driving
 # one run_episode inline. The pool owns W = HARNESS_WORKERS warm workers + one shared AnthropicAdapter;
@@ -29,7 +34,8 @@
 # reward is structurally 0. Do not remove them.
 #
 # Sandbox backend (SANDBOX): agentcore-runtime -> remote AgentCore Runtime sandbox (default; K=2
-# pinned CPU ARNs, round-robined per episode); agentcore -> AWS Code Interpreter microVM.
+# pinned CPU ARNs; lane w's persistent session lives on ARN[w % K]); agentcore -> AWS Code
+# Interpreter microVM (no lanes: fresh session per episode).
 # SANDBOX=local is DISABLED for CPU demos (remote-only; guard below).
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop runs
@@ -60,11 +66,15 @@ NR="${NR:-11}"         # num-rollout; real training steps = NR-1 (see NOTE) => 1
 TEMP="${TEMP:-1.0}"    # rollout sampling temperature (higher => more intra-group diversity)
 GBS=$(( RB * NS ))     # global batch = all samples, 1 optimizer step per rollout
 
-# ---- THE HARNESS TIER -----------------------------------------------------------------------------
-# W = HARNESS_WORKERS: the number of WARM in-process harness workers the HarnessPool spins up (read
-# from the env inside the rollout process; passed through RUNTIME_ENV_JSON below). This is the knob
-# this demo scales. EPISODE_MAX_TURNS bounds each episode's mini-harness tool loop.
-HARNESS_WORKERS="${HARNESS_WORKERS:-4}"
+# ---- THE LANES --------------------------------------------------------------------------------------
+# LANES = N sets all three tiers at once: N warm harness workers, N SGLang engines (1 GPU each), and
+# N persistent microVMs (one AgentCore session per worker). 8 GPUs = 4 train + up to 4 inference, so
+# LANES <= 4 (LANES=1,2,4 is the scaling sweep). Each tier can still be overridden on its own
+# (HARNESS_WORKERS / ROLLOUT_GPUS / LANE_SANDBOX=0 for a fresh session per episode) to unbalance it
+# and watch throughput = min(inference, sandbox, harness) bind on the scarce tier.
+LANES="${LANES:-4}"
+HARNESS_WORKERS="${HARNESS_WORKERS:-$LANES}"
+LANE_SANDBOX="${LANE_SANDBOX:-1}"   # 1 => one persistent microVM per worker; 0 => fresh session per episode
 EPISODE_MAX_TURNS="${EPISODE_MAX_TURNS:-4}"
 EPISODE_MAX_TOKENS="${EPISODE_MAX_TOKENS:-1024}"
 
@@ -83,18 +93,23 @@ EVAL_NS="${EVAL_NS:-2}"               # samples per eval prompt
 SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"
 
 SLIME=/root/slime
-DEMO_DIR=/work/code/demos/demo_cpu_harness_scale
+DEMO_DIR=/work/code/demos/demo_cpu_scale_lanes
 CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"  # SHARED base Megatron ckpt
 HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
 
 # ---- placement ------------------------------------------------------------------------------------
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
-ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
-# num_engines E = ROLLOUT_GPUS / per-engine(2) = 2. Default CONC so admission S = CONC*E ~= W (the
-# balanced start point the README describes): CONC = ceil(W / E). Raise W to lift the harness tier;
-# raise CONC to admit more episodes than there are workers (they queue for a free worker).
-NENG=$(( ROLLOUT_GPUS / 2 ))
-CONC="${CONC:-$(( (HARNESS_WORKERS + NENG - 1) / NENG ))}"
+ROLLOUT_GPUS="${ROLLOUT_GPUS:-$LANES}"
+GPUS_PER_ENGINE="${GPUS_PER_ENGINE:-1}"   # Qwen3-4B fits one L40S at TP1 => one engine per GPU
+# num_engines E = ROLLOUT_GPUS / GPUS_PER_ENGINE (= LANES by default); worker w is pinned to engine
+# w % E. Admission S = CONC*E: default CONC = ceil(2W / E) => W episodes running (one per lane) plus
+# W queued for the next free worker, so a lane never idles waiting on slime to admit its next episode.
+NENG=$(( ROLLOUT_GPUS / GPUS_PER_ENGINE ))
+if [ $(( ACTOR_GPUS + ROLLOUT_GPUS )) -gt 8 ]; then
+   echo "ACTOR_GPUS($ACTOR_GPUS) + ROLLOUT_GPUS($ROLLOUT_GPUS) > 8 GPUs — use LANES<=4 with 4 train GPUs." >&2
+   exit 1
+fi
+CONC="${CONC:-$(( (2 * HARNESS_WORKERS + NENG - 1) / NENG ))}"
 
 # Task family. One task, end-to-end: DeepScaleR math (coding-shape: solution.py sets a module-level
 # `answer`; hidden run_checks.py numeric-asserts it, tol 1e-4). data/ ships populated.
@@ -103,7 +118,7 @@ _DS="$FAMILY"; _EVAL_NAME="$FAMILY"
 DATA="${DATA:-$DEMO_DIR/data/${_DS}_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/${_DS}_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-$_EVAL_NAME}"
-SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}_harnessscale_async}"
+SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}_lanes_async}"
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -192,10 +207,10 @@ OPTIMIZER_ARGS=(
 
 SGLANG_ARGS=(
    --rollout-num-gpus "$ROLLOUT_GPUS"
-   --rollout-num-gpus-per-engine 2
+   --rollout-num-gpus-per-engine "$GPUS_PER_ENGINE"
    --sglang-mem-fraction-static 0.7
-   # Episode-admission concurrency S = CONC * num_engines (num_engines = ROLLOUT_GPUS/2 = 2). Only W
-   # of the admitted episodes are driven by a harness worker at once; the rest queue for a free worker.
+   # Episode-admission concurrency S = CONC * num_engines (num_engines = ROLLOUT_GPUS/GPUS_PER_ENGINE).
+   # Only W of the admitted episodes are driven by a harness worker at once; the rest queue for a free worker.
    --sglang-server-concurrency "$CONC"
    # Adapter tool parser (A3/B3 dead-reward fix): let SGLang emit Qwen3 tool_use/reasoning blocks the
    # AnthropicAdapter parses. WITHOUT these the mini-harness tool loop is dead and reward is 0.
@@ -228,6 +243,7 @@ RUNTIME_ENV_JSON="{
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"HARNESS_WORKERS\": \"${HARNESS_WORKERS}\",
+    \"LANE_SANDBOX\": \"${LANE_SANDBOX}\",
     \"EPISODE_MAX_TURNS\": \"${EPISODE_MAX_TURNS}\",
     \"EPISODE_MAX_TOKENS\": \"${EPISODE_MAX_TOKENS}\",
     \"INFER_CONC\": \"${INFER_CONC:-0}\"

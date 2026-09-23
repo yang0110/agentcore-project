@@ -33,11 +33,15 @@ from ECR**, and boots it before any work happens. The demo hides that cost inste
 1. **Strict routing.** The episode's `task.image` (the task name) is looked up in the pool map
    `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE`. An unmapped task is an **error** — it is never sent to a
    fallback Runtime (that would run it on another task's image).
-2. **Cold start at enqueue, not at pickup.** `run.sh` admits `HARNESS_WORKERS + TB_PREOPEN_MAX`
-   episodes, so up to `TB_PREOPEN_MAX` wait in the harness queue. Each queued episode's session is
-   opened **while it waits** (`TerminalBenchPool._refill`); when a worker frees up, the episode's
-   microVM is usually already booted. `[demo] open_wait_ms` is the part of the cold start that was
-   still on the critical path.
+2. **Cold start before the episode is even drawn.** slime only hands the pool `CONC × engines`
+   episodes of the current batch and does not draw the next batch until this rollout ends, so the
+   pool alone can't look far enough ahead. The look-ahead data source (`tb_lookahead_source.py`,
+   wired with `--data-source-path`) replays slime's deterministic prompt order and, on every draw,
+   tells the pool the episodes of the **next `TB_PREOPEN_BATCHES` rollouts** too. The pool keeps
+   sessions booted for the first `TB_PREOPEN_BATCHES × RB × NS` upcoming episodes (default 2 batches =
+   2 × `RB` × `NS` = 64), pooled per task: a worker takes any ready session on its episode's task
+   Runtime, and the next upcoming episode starts booting (`TerminalBenchPool._refill`).
+   `[demo] open_wait_ms` is the part of the cold start that was still on the critical path.
 3. **Stop on exit.** When the episode ends, `StopRuntimeSession` tears the microVM down immediately
    (frees the quota slot; nothing carries over).
 4. **Heartbeat across the weight-sync stall.** In async/decoupled slime, generation pauses while the
@@ -101,12 +105,12 @@ docker exec agentcore_p4 python3 /work/$D/metrics.py /work/$D/smoke_run.log \
 | Knob | Default | Meaning |
 |---|---|---|
 | `SANDBOX` | `agentcore-runtime` | fresh AgentCore session per episode. **`local` is rejected.** |
-| `TB_PREOPEN_MAX` | `HARNESS_WORKERS` | episodes whose microVM boots while they wait for a worker (= idle microVMs you pay for) |
+| `TB_PREOPEN_BATCHES` | `2` | **the one pre-open knob**: upcoming batches kept booted ahead, i.e. `TB_PREOPEN_BATCHES × RB × NS` microVMs (64) — idle microVMs you pay for, each counting against the account's concurrent-session quota. `0` = look-ahead off |
 | `WARM_IDLE_TIMEOUT` / `WARM_PING_FRACTION` | `900` / `0.5` | heartbeat any session idle past `fraction × timeout` |
 | `HARNESS_WORKERS` | `4` | warm in-process harness workers (the harness tier) |
 | `EPISODE_MAX_TURNS` / `EPISODE_MAX_TOKENS` | `6` / `1024` | agentic turns / tokens per episode |
 | `RB` / `NS` / `NR` | 4 / 8 / 11 | GRPO prompts-per-step / group size / num-rollout (real steps `NR-1`) |
-| `CONC` | `⌈(W+TB_PREOPEN_MAX)/E⌉` | episode-admission concurrency `S = CONC × num_engines` |
+| `CONC` | `⌈2W/E⌉` | episode-admission concurrency `S = CONC × num_engines` (W running + W queued) |
 | `MODE` | `A` | stock async only — the pool returns a fan-out list; `B` is rejected |
 | `EVAL_INTERVAL` / `EVAL_NS` | 10 / 2 | held-out eval cadence / samples |
 
@@ -116,8 +120,11 @@ Deploy-side: `TB_LIMIT` / `TB_TASKS` (subset), `SKIP_BUILD=1` (reuse pushed imag
 ## What to watch
 
 - `rollout/raw_reward` and `eval/terminalbench` — the learning signal / held-out solve rate.
-- `[demo] fresh_session=1 preopened=… open_wait_ms=…` — one line per episode: every episode is on
-  its own new session; `open_wait_ms` near 0 means its cold start was fully hidden by the pre-open.
+- `[demo] fresh_session=1 preopened=… open_wait_ms=… preopen_idle_ms=…` — one line per episode: every
+  episode is on its own new session; `open_wait_ms` near 0 means its cold start was fully hidden by the
+  pre-open. `preopen_idle_ms` is the reverse gap — how long the booted microVM sat idle before a worker
+  claimed it. It must stay under `WARM_IDLE_TIMEOUT` (the heartbeat bridges it past
+  `WARM_PING_FRACTION × timeout`); if it's routinely large, lower `TB_PREOPEN_BATCHES`.
 - `[demo] heartbeat_session=… total_pings=…` — beats fired to hold sessions across the sync stall.
 - `perf/sandbox_ms_*` vs `perf/sglang_gen_ms_*` — the sandbox-vs-decode latency split; every episode
   pays one `op=ping` cold open (an image pull + boot), but it runs while the episode is queued.

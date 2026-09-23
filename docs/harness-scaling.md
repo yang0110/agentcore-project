@@ -10,7 +10,7 @@ throughput  =  min( inference , sandbox , harness )
 ```
 
 Every other demo in this repo holds the **harness in-process and single** and studies the *task* and
-the *sandbox*. That deliberately hides the third tier. [`demo_cpu_harness_scale`](../code/demos/demo_cpu_harness_scale/)
+the *sandbox*. That deliberately hides the third tier. [`demo_cpu_scale_lanes`](../code/demos/demo_cpu_scale_lanes/)
 fixes the task (one, end-to-end — DeepScaleR math) and makes the **harness the scalable tier**, so
 the third term of the `min(...)` becomes visible and tunable.
 
@@ -31,7 +31,17 @@ The two are architecturally different, and conflating them is the trap:
   means run a **fixed pool of W warm workers** and **route** episodes to them.
 
 So the harness tier is `W = HARNESS_WORKERS` warm workers, defaulting to 4 to sit symmetric with the
-demo's 4 inference engines and 4 sandbox Runtimes — the balanced point of the `min(...)`.
+demo's 4 inference engines and 4 microVMs — the balanced point of the `min(...)`.
+
+> **The demo's default: 4 × 4 × 4 lanes (2026-09-23).** `demo_cpu_scale_lanes` (formerly
+> `demo_cpu_harness_scale`) now makes that balance literal: `LANES=4` gives **4 warm workers : 4
+> SGLang engines (TP1, one GPU each on rollout GPUs 4–7) : 4 persistent AgentCore microVMs**, strictly
+> 1:1:1 — worker `w` pins its inference to engine `w` and drives all its episodes on its own sandbox
+> session (opened once, kept for the run, on ARN `w % 2`, fresh `ep-<hex>` workdir per episode).
+> `LANE_SANDBOX=0` restores the per-episode sticky/round-robin sandbox described below, and the
+> per-request router LB below is what you get without the engine pin. `metrics.py`'s
+> `check_stickiness` verifies the lanes are 1:1:1. Verified offline only so far (sweep + a
+> fake-microVM lane test), not yet on AWS.
 
 ## The three tiers route and load-balance differently
 
@@ -88,7 +98,7 @@ must be provisioned together, or the smallest one caps the whole rollout.
 
 ## Placement and the honest CPU caveat
 
-`demo_cpu_harness_scale` places the `W` workers **in-process** (asyncio tasks in the trainer process),
+`demo_cpu_scale_lanes` places the `W` workers **in-process** (asyncio tasks in the trainer process),
 with **one shared in-process `AnthropicAdapter`** on localhost — so there is no harness Runtime to
 deploy and no public adapter port to open (unlike the removed two-Runtime variant; see
 [`harness-sandbox-decoupling.md`](harness-sandbox-decoupling.md)).
@@ -106,7 +116,7 @@ IO-bound regime, where a warm in-process pool is the correct, cheap answer.
 
 ## Files
 
-- [`code/demos/demo_cpu_harness_scale/agentcore_slime_demo/harness_pool.py`](../code/demos/demo_cpu_harness_scale/agentcore_slime_demo/harness_pool.py) — the warm worker pool (queue, workers, per-episode drive) + the routing model in its module docstring
-- [`.../harness_pool_generate.py`](../code/demos/demo_cpu_harness_scale/agentcore_slime_demo/harness_pool_generate.py) — the slime `--custom-generate-function-path` hook that hands each episode to the pool
-- [`.../harness_scaling_demo.py`](../code/demos/demo_cpu_harness_scale/harness_scaling_demo.py) — the offline, measured scaling-law demo above
-- [`code/demos/demo_cpu_harness_scale/README.md`](../code/demos/demo_cpu_harness_scale/README.md) — run/reproduce, knobs, Dockerfile/deploy
+- [`code/demos/demo_cpu_scale_lanes/agentcore_slime_demo/harness_pool.py`](../code/demos/demo_cpu_scale_lanes/agentcore_slime_demo/harness_pool.py) — the warm worker pool (queue, workers, per-episode drive) + the routing model in its module docstring
+- [`.../harness_pool_generate.py`](../code/demos/demo_cpu_scale_lanes/agentcore_slime_demo/harness_pool_generate.py) — the slime `--custom-generate-function-path` hook that hands each episode to the pool
+- [`.../harness_scaling_demo.py`](../code/demos/demo_cpu_scale_lanes/harness_scaling_demo.py) — the offline, measured scaling-law demo above
+- [`code/demos/demo_cpu_scale_lanes/README.md`](../code/demos/demo_cpu_scale_lanes/README.md) — run/reproduce, knobs, Dockerfile/deploy

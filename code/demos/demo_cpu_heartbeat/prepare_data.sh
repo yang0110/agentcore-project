@@ -5,7 +5,7 @@
 #
 # The builder is vendored (agentcore_slime_demo/build_real_datasets.py) so this folder is
 # self-contained. The HF pull needs one-time network; if it is unavailable (fully offline), fall
-# back to the deepscaler JSONL already shipped in the sibling demo_cpu_harness_scale/data so the
+# back to the deepscaler JSONL already shipped in the sibling demo_cpu_scale_lanes/data so the
 # trainer still has data. Idempotent (overwrites). Builds deepscaler (400 train / 40 eval).
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,8 +16,8 @@ if $B --dataset deepscaler --limit 400 --offset 0 --out "$DIR/data/deepscaler_tr
    && $B --dataset deepscaler --limit 40 --offset 400 --out "$DIR/data/deepscaler_eval.jsonl"; then
   echo "done (built from HF) -> $DIR/data : deepscaler (400/40)"
 else
-  echo "HF build failed (offline?) — falling back to sibling demo_cpu_harness_scale/data" >&2
-  cp "$DIR/../demo_cpu_harness_scale/data/deepscaler_train.jsonl" "$DIR/data/deepscaler_train.jsonl"
-  cp "$DIR/../demo_cpu_harness_scale/data/deepscaler_eval.jsonl"  "$DIR/data/deepscaler_eval.jsonl"
+  echo "HF build failed (offline?) — falling back to sibling demo_cpu_scale_lanes/data" >&2
+  cp "$DIR/../demo_cpu_scale_lanes/data/deepscaler_train.jsonl" "$DIR/data/deepscaler_train.jsonl"
+  cp "$DIR/../demo_cpu_scale_lanes/data/deepscaler_eval.jsonl"  "$DIR/data/deepscaler_eval.jsonl"
   echo "done (copied fallback) -> $DIR/data : deepscaler (400/40)"
 fi
