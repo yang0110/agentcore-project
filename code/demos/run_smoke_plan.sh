@@ -20,7 +20,9 @@ EVAL_NS="${EVAL_NS:-2}"
 TRAIN_TIMEOUT="${TRAIN_TIMEOUT:-2400}"
 PHASES="${PHASES:-1 2}"
 
-CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_mbpp demo_cpu_math demo_cpu_mixtask demo_cpu_gsm8k demo_cpu_math500 demo_cpu_deepscaler demo_cpu_humaneval demo_cpu_gretelsql demo_cpu_hotpotqa demo_cpu_xlam demo_cpu_mcp demo_cpu_heartbeat demo_cpu_harness_scale demo_cpu_customruntime}"
+# Entries are <demo> or <demo>:<DATASET> — demo_cpu_datasets is ONE folder that trains many datasets,
+# so each dataset is its own entry (run with DATASET=<name>; logged/reported as <demo>-<name>).
+CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_datasets:mbpp demo_cpu_datasets:math demo_cpu_mixtask demo_cpu_datasets:gsm8k demo_cpu_datasets:math500 demo_cpu_datasets:deepscaler demo_cpu_datasets:humaneval demo_cpu_datasets:gretelsql demo_cpu_datasets:hotpotqa demo_cpu_datasets:xlam demo_cpu_datasets:mcp demo_cpu_heartbeat demo_cpu_harness_scale demo_cpu_customruntime}"
 
 mkdir -p "$LOGDIR"
 [ -f "$RESULTS" ] || printf 'demo\tstatus\tsecs\tnote\n' > "$RESULTS"
@@ -28,15 +30,18 @@ row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" | tee -a "$RESULTS"; }
 
 free_gpus() { pkill -9 sglang 2>/dev/null; ray stop --force >/dev/null 2>&1; pkill -9 ray 2>/dev/null; sleep 5; }
 
-# Run one trainer end-to-end. $1=demo name, $2..=extra `-e VAR=val`-style env exports (as KEY=VAL).
+# Run one trainer end-to-end. $1=demo name (or demo:DATASET), $2..=extra env exports (as KEY=VAL).
 run_trainer() {
-  local d="$1"; shift
-  echo "[plan] TRAINER $d  ($(date -u +%TZ))"
+  local entry="$1"; shift
+  local d="${entry%%:*}" ds=""
+  [ "$entry" != "$d" ] && { ds="${entry#*:}"; set -- "DATASET=$ds" "$@"; }
+  local tag="$d${ds:+-$ds}"      # log/results label: one per dataset for demo_cpu_datasets
+  echo "[plan] TRAINER $tag  ($(date -u +%TZ))"
   free_gpus
-  local log="$LOGDIR/$d.log"
+  local log="$LOGDIR/$tag.log"
   local t0=$SECONDS
   # build data if the demo has a prep step (idempotent; cheap if already built)
-  [ -f "$BASE/$d/prepare_data.sh" ] && bash "$BASE/$d/prepare_data.sh" >>"$log" 2>&1
+  [ -f "$BASE/$d/prepare_data.sh" ] && env "$@" bash "$BASE/$d/prepare_data.sh" >>"$log" 2>&1
   # -u strips any globally-exported image->ARN map so it never leaks into Group-A/mixtask trainers
   # (only imagepool re-adds it via "$@"); a leaked map made mixtask build invalid runtime-env-json.
   ( cd /work && env -u AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE "$@" \
@@ -48,21 +53,21 @@ run_trainer() {
   [ -n "$save" ] && [ -f "$save/latest_checkpointed_iteration.txt" ] && has_final=1
   # parse metrics (non-fatal)
   python3 "$BASE/$d/metrics.py" "$log" \
-      --csv "$LOGDIR/$d.csv" --eval-csv "$LOGDIR/$d.eval.csv" --plot "$LOGDIR/$d.png" \
-      >>"$log" 2>&1 || echo "[plan] metrics.py non-zero for $d" >&2
+      --csv "$LOGDIR/$tag.csv" --eval-csv "$LOGDIR/$tag.eval.csv" --plot "$LOGDIR/$tag.png" \
+      >>"$log" 2>&1 || echo "[plan] metrics.py non-zero for $tag" >&2
   if grep -q "succeeded" "$log" \
      && ! grep -qE "No space|CheckpointException|unexpected pos" "$log" \
      && [ "$has_final" = "1" ]; then
-    row "$d" PASS $((SECONDS-t0)) "succeeded; final ckpt $(cat "$save/latest_checkpointed_iteration.txt" 2>/dev/null)"
+    row "$tag" PASS $((SECONDS-t0)) "succeeded; final ckpt $(cat "$save/latest_checkpointed_iteration.txt" 2>/dev/null)"
   elif [ "$rc" = "124" ]; then
-    row "$d" TIMEOUT $((SECONDS-t0)) "exceeded ${TRAIN_TIMEOUT}s"
+    row "$tag" TIMEOUT $((SECONDS-t0)) "exceeded ${TRAIN_TIMEOUT}s"
   else
     local reason="rc=$rc"
     grep -qE "No space" "$log" && reason="$reason ENOSPC"
     grep -qE "CheckpointException|unexpected pos" "$log" && reason="$reason ckpt-corrupt"
     [ "$has_final" = "0" ] && reason="$reason no-final-ckpt"
     grep -q "succeeded" "$log" || reason="$reason no-success-marker"
-    row "$d" FAIL $((SECONDS-t0)) "$reason (see _smoke_logs/$d.log)"
+    row "$tag" FAIL $((SECONDS-t0)) "$reason (see _smoke_logs/$tag.log)"
   fi
   [ -n "$save" ] && rm -rf "$save" 2>/dev/null   # reclaim disk; keep the log/csv/png
 }

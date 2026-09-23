@@ -265,7 +265,7 @@ def test_assert_mode_runner_distinguishes_pass_fail():
 
 
 def test_task_families_solve_multi_turn_offline():
-    """The demo_cpu_mbpp task-family zoo (SWE, tool-use, SQL, math, CTF, RAG, regex, planning,
+    """The demo_cpu_datasets task-family zoo (SWE, tool-use, SQL, math, CTF, RAG, regex, planning,
     config, data) all run on the SAME in-process harness + CPU sandbox, with a deterministic
     checker per family. Every seed must (a) fail its first (buggy) attempt and (b) pass after
     the fix — proving both the reward and that the checker genuinely discriminates."""

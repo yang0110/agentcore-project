@@ -15,7 +15,7 @@
 # on this box inside generate.generate, and the sandbox (write_file / exec / read_file) is a
 # SINGLE remote AgentCore Runtime (sandbox_server_agent.py), reached over invoke_agent_runtime.
 # There is only ONE runtime here — the sandbox; there is NO separate harness/adapter Runtime.
-# Unlike demo_gpu_single (KernelBench needs CUDA => GPU g6 sandbox), demo_cpu_mbpp's MBPP checker is plain
+# Unlike demo_gpu_single (KernelBench needs CUDA => GPU g6 sandbox), demo_cpu_datasets's MBPP checker is plain
 # Python/IO => it points at a CPU-backed sandbox Runtime (e.g. the a2 CPU sandbox acs_sandbox_a2
 # on the acs_cpu_cp capacity provider).
 #
@@ -147,7 +147,7 @@ HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a720891212
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 
-# Task family selector. demo_cpu_mbpp's in-process harness is task-agnostic: the SAME run_episode
+# Task family selector. demo_cpu_datasets's in-process harness is task-agnostic: the SAME run_episode
 # loop trains any of these families, differing only in the seed dataset + hidden checker
 # (see agentcore_slime_demo/task_families.py). FAMILY defaults to coding/MBPP (unchanged).
 #   coding = MBPP        (build_dataset.py --dataset mbpp)

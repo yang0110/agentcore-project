@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# CONVERGENCE RUN 03 — demo_cpu_gsm8k  (FAMILY=gsm8k)
+# CONVERGENCE RUN 03 — demo_cpu_datasets  (DATASET=gsm8k)
 # ============================================================================
 # TASK / DATASET : GSM8K grade-school word problems. The policy reasons step by
 #                  step and emits a final numeric answer; the checker parses the
@@ -20,13 +20,14 @@
 set -euo pipefail
 
 CONV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_gsm8k"
+DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_datasets"
 
 : "${NR:=201}"; : "${RB:=8}"; : "${NS:=8}"; : "${TEMP:=1.0}"
 : "${EVAL_INTERVAL:=20}"; : "${EVAL_NS:=4}"; : "${SAVE_INTERVAL:=100}"
 : "${MODE:=B}"; : "${CONC:=4}"
-export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC
+: "${DATASET:=gsm8k}"   # which dataset of demo_cpu_datasets to train
+export DATASET NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC
 
-LOG="$DEMO/train.convergence_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_cpu_gsm8k (GSM8K)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
+LOG="$DEMO/train.convergence_${DATASET}_$(date +%Y%m%d_%H%M%S).log"
+echo ">>> converging demo_cpu_datasets DATASET=$DATASET (GSM8K)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

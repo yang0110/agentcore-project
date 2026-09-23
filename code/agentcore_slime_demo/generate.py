@@ -115,7 +115,7 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     slime's dispatch (generate_and_rm) treats a LIST return as the "fan-out" case and hands
     back list[list[Sample]] from generate_and_rm_group. The stock rollout path tolerates that
     nesting everywhere via `isinstance(group[0], list)` guards, but the fully-async path
-    (slime.rollout.fully_async_rollout, used by demo_cpu_mbpp's Mode B ablation) does NOT guard its
+    (slime.rollout.fully_async_rollout, used by demo_cpu_datasets's Mode B ablation) does NOT guard its
     sort key and crashes on the nested shape. Returning a bare Sample keeps us on slime's
     primary (non-fan-out) shape, which BOTH the stock and fully-async paths handle. Behavior
     is identical for the stock demos (one flattened sample per episode either way)."""

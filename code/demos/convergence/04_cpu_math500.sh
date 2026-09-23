@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# CONVERGENCE RUN 04 — demo_cpu_math500  (FAMILY=math500 / MATH-500)
+# CONVERGENCE RUN 04 — demo_cpu_datasets  (DATASET=math500 / MATH-500)
 # ============================================================================
 # TASK / DATASET : MATH-500 (the 500-problem MATH eval subset). Boxed-answer
 #                  reasoning; checker extracts \boxed{} and compares to gold.
@@ -20,13 +20,14 @@
 set -euo pipefail
 
 CONV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_math500"
+DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_datasets"
 
 : "${NR:=201}"; : "${RB:=8}"; : "${NS:=8}"; : "${TEMP:=1.0}"
 : "${EVAL_INTERVAL:=20}"; : "${EVAL_NS:=4}"; : "${SAVE_INTERVAL:=100}"
 : "${MODE:=B}"; : "${CONC:=4}"
-export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC
+: "${DATASET:=math500}"   # which dataset of demo_cpu_datasets to train
+export DATASET NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC
 
-LOG="$DEMO/train.convergence_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_cpu_math500 (MATH-500)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
+LOG="$DEMO/train.convergence_${DATASET}_$(date +%Y%m%d_%H%M%S).log"
+echo ">>> converging demo_cpu_datasets DATASET=$DATASET (MATH-500)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

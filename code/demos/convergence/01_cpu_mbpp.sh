@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# CONVERGENCE RUN 01 — demo_cpu_mbpp  (FAMILY=coding / MBPP)
+# CONVERGENCE RUN 01 — demo_cpu_datasets  (DATASET=mbpp / MBPP)
 # ============================================================================
 # TASK / DATASET : MBPP-style Python programming. The policy writes a function,
 #                  runs it against hidden unit tests in the sandbox, and repairs
@@ -28,7 +28,7 @@
 set -euo pipefail
 
 CONV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_mbpp"
+DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_datasets"
 
 : "${NR:=201}"            # real train steps = NR-1 = 200
 : "${RB:=8}"             # prompts per step
@@ -39,8 +39,9 @@ DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_mbpp"
 : "${SAVE_INTERVAL:=100}"# periodic checkpoints — DISK CAVEAT: ~56 GB each
 : "${MODE:=B}"           # fully-async deep buffer (staleness ~ CONC)
 : "${CONC:=4}"           # sandbox/episode concurrency
-export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC
+: "${DATASET:=mbpp}"   # which dataset of demo_cpu_datasets to train
+export DATASET NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC
 
-LOG="$DEMO/train.convergence_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_cpu_mbpp (coding/MBPP)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
+LOG="$DEMO/train.convergence_${DATASET}_$(date +%Y%m%d_%H%M%S).log"
+echo ">>> converging demo_cpu_datasets DATASET=$DATASET (coding/MBPP)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

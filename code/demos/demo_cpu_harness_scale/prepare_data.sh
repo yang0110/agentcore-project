@@ -1,6 +1,6 @@
 #!/bin/bash
-# Download + prepare the demo_cpu_deepscaler dataset (agentica-org/DeepScaleR-Preview-Dataset) into data/. Run INSIDE agentcore_p4:
-#     docker exec agentcore_p4 bash /work/code/demos/demo_cpu_deepscaler/prepare_data.sh
+# Download + prepare the DeepScaleR dataset (agentica-org/DeepScaleR-Preview-Dataset) into data/. Run INSIDE agentcore_p4:
+#     docker exec agentcore_p4 bash /work/code/demos/demo_cpu_harness_scale/prepare_data.sh
 # RLVR (verifiable reward): numeric match (tol 1e-4), numeric-answer subset — no LLM judge. Idempotent. Builds deepscaler (400/40).
 # The builder is vendored (agentcore_slime_demo/build_real_datasets.py) so this folder is self-contained.
 set -euo pipefail

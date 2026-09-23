@@ -25,7 +25,7 @@
 # AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE (below). Route to the wrong image and solution.py's import
 # fails, the checker errors, reward = 0 — so correct routing is what makes the run learnable.
 #
-# Harness/sandbox split (SAME decoupled shape as demo_cpu_mbpp): the run_episode harness runs
+# Harness/sandbox split (SAME decoupled shape as demo_cpu_datasets): the run_episode harness runs
 # IN-PROCESS on this box inside generate.generate, and the sandbox (write_file / exec / read_file) is
 # a remote AgentCore Runtime (sandbox_server_agent.py), reached over invoke_agent_runtime. Here there
 # are SEVERAL sandbox Runtimes — one per image in the pool — and generate routes each episode to the

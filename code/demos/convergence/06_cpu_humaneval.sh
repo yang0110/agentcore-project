@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# CONVERGENCE RUN 06 — demo_cpu_humaneval  (FAMILY=humaneval)
+# CONVERGENCE RUN 06 — demo_cpu_datasets  (DATASET=humaneval)
 # ============================================================================
 # TASK / DATASET : HumanEval Python programming. The policy completes a function
 #                  from its docstring; the checker EXECUTES the hidden unit tests
@@ -20,13 +20,14 @@
 set -euo pipefail
 
 CONV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_humaneval"
+DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_datasets"
 
 : "${NR:=201}"; : "${RB:=8}"; : "${NS:=8}"; : "${TEMP:=1.0}"
 : "${EVAL_INTERVAL:=20}"; : "${EVAL_NS:=4}"; : "${SAVE_INTERVAL:=100}"
 : "${MODE:=B}"; : "${CONC:=4}"
-export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC
+: "${DATASET:=humaneval}"   # which dataset of demo_cpu_datasets to train
+export DATASET NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC
 
-LOG="$DEMO/train.convergence_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_cpu_humaneval (HumanEval)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
+LOG="$DEMO/train.convergence_${DATASET}_$(date +%Y%m%d_%H%M%S).log"
+echo ">>> converging demo_cpu_datasets DATASET=$DATASET (HumanEval)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

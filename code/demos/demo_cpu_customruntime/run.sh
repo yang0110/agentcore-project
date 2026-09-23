@@ -13,7 +13,7 @@
 # on this box inside generate.generate, and the sandbox (write_file / exec / read_file) is a
 # SINGLE remote AgentCore Runtime (sandbox_server_agent.py), reached over invoke_agent_runtime.
 # There is only ONE runtime here — the sandbox; there is NO separate harness/adapter Runtime.
-# Unlike demo_gpu_single (KernelBench needs CUDA => GPU g6 sandbox), demo_cpu_mbpp's MBPP checker is plain
+# Unlike demo_gpu_single (KernelBench needs CUDA => GPU g6 sandbox), demo_cpu_datasets's MBPP checker is plain
 # Python/IO => it points at a CPU-backed sandbox Runtime (e.g. the a2 CPU sandbox acs_sandbox_a2
 # on the acs_cpu_cp capacity provider).
 #
@@ -72,12 +72,12 @@ if [ "$SANDBOX" = "local" ]; then
    exit 1
 fi
 # The remote sandbox Runtime ARN (sandbox_server_agent.py). REQUIRED for SANDBOX=agentcore-runtime.
-# demo_cpu_mbpp's MBPP checker is pure Python => a CPU-backed sandbox Runtime (e.g. acs_sandbox_a2 on acs_cpu_cp).
+# demo_cpu_datasets's MBPP checker is pure Python => a CPU-backed sandbox Runtime (e.g. acs_sandbox_a2 on acs_cpu_cp).
 # AGENTCORE_SANDBOX_RUNTIME_ARNS (plural, comma-separated) fans episodes out round-robin across
 # SEVERAL sandbox Runtimes — the runtime-count throughput ablation knob. Either the plural list OR
 # the single ARN satisfies the requirement below.
 # PINNED to K=2: the runtime-count ablation (logs/ablation_summary.csv) found throughput flat
-# across K=1/2/4 (sandbox is not the bottleneck for demo_cpu_mbpp's pure-Python CPU checker — the 2 SGLang
+# across K=1/2/4 (sandbox is not the bottleneck for demo_cpu_datasets's pure-Python CPU checker — the 2 SGLang
 # engines / trainer are), with K=2 the marginal goodput peak. Runtime count is NOT tied to
 # num_engines; it only spreads S=CONC*num_engines concurrent sessions across K endpoints. Override
 # by exporting AGENTCORE_SANDBOX_RUNTIME_ARNS (or ..._ARN) to sweep again.
@@ -136,7 +136,7 @@ HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a720891212
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 
-# Task family selector. demo_cpu_mbpp's in-process harness is task-agnostic: the SAME run_episode
+# Task family selector. demo_cpu_datasets's in-process harness is task-agnostic: the SAME run_episode
 # loop trains any of these families, differing only in the seed dataset + hidden checker
 # (see agentcore_slime_demo/task_families.py). FAMILY defaults to coding/MBPP (unchanged).
 #   coding = MBPP        (build_dataset.py --dataset mbpp)

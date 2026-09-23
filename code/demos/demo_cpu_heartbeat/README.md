@@ -1,7 +1,7 @@
 # demo_cpu_heartbeat — keep the sandbox warm across the weight-sync barrier (REAL CPU trainer)
 
 This is a **real slime CPU RL trainer** (async/decoupled GRPO, Qwen3-4B, 10 train steps + 1 held-out
-eval + a single save-at-end — the same shape as `demo_cpu_mbpp`) whose one distinguishing feature
+eval + a single save-at-end — the same shape as `demo_cpu_datasets`) whose one distinguishing feature
 is a **keep-warm lever**: it holds its **remote AgentCore sandbox sessions warm across the live
 weight-sync barrier** so none is idle-reclaimed mid-run.
 
@@ -33,7 +33,7 @@ the offline `heartbeat_demo.py` drives explicitly.)
 The wiring is a few lines in the vendored `agentcore_slime_demo/generate.py`: a lazily-started
 process-wide `SessionKeeper` singleton, and — when `HEARTBEAT_KEEP_WARM` is truthy — every episode's
 `make_sandbox(...)` result is wrapped in a `KeptSandbox`. With `HEARTBEAT_KEEP_WARM=0` the demo behaves
-**exactly** like `demo_cpu_mbpp` (no wrap, no keeper), which is the natural A/B for measuring the
+**exactly** like `demo_cpu_datasets` (no wrap, no keeper), which is the natural A/B for measuring the
 lever.
 
 Heartbeat backstops **idle reclaim**, not an instance *recycle* (a GPU-instance recycle kills the
@@ -65,7 +65,7 @@ docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_heartbeat/metrics.py 
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `HEARTBEAT_KEEP_WARM` | `1` | `1` wrap every sandbox in `KeptSandbox`+`SessionKeeper`; `0` = plain (== `demo_cpu_mbpp`) |
+| `HEARTBEAT_KEEP_WARM` | `1` | `1` wrap every sandbox in `KeptSandbox`+`SessionKeeper`; `0` = plain (== `demo_cpu_datasets`) |
 | `HEARTBEAT_IDLE` | `600` | session idle timeout to defend (s); heartbeat fires at `ping_fraction × this` |
 | `HEARTBEAT_PING_FRACTION` | `0.5` | heartbeat once a session is idle ≥ `fraction × idle_timeout` |
 | `SANDBOX` | `agentcore-runtime` | remote sandbox: `agentcore-runtime` \| `agentcore`. **`local` is rejected.** |

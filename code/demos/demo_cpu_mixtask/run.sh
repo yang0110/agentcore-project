@@ -12,7 +12,7 @@
 # is normalized WITHIN a same-prompt group (one family); mixing is ACROSS groups, so the families'
 # reward scales never need reconciling. See README.md.
 #
-# Harness/sandbox split (SAME decoupled shape as demo_cpu_mbpp): the run_episode harness runs
+# Harness/sandbox split (SAME decoupled shape as demo_cpu_datasets): the run_episode harness runs
 # IN-PROCESS on this box inside generate.generate, and the sandbox (write_file / exec / read_file) is
 # a remote AgentCore Runtime (sandbox_server_agent.py), reached over invoke_agent_runtime. There is
 # only ONE runtime here — the sandbox; there is NO separate harness/adapter Runtime. The mixed

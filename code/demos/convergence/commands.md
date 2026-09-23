@@ -3,10 +3,13 @@
 Run **one at a time**, INSIDE `agentcore_p4` (repo at `/work/code`). Each line trains
 that demo to convergence with the defaults in its script (CPU `NR=201`, GPU `NR=101`,
 `RB=8 NS=8 EVAL_INTERVAL=20 EVAL_NS=4 SAVE_INTERVAL=100`; CPU adds `MODE=B`). Logs land
-next to each demo's `ckpt/` as `train.convergence_<timestamp>.log`. See `README.md`.
+next to each demo's `ckpt/` as `train.convergence_<timestamp>.log` (01–10 all train the ONE
+`demo_cpu_datasets` folder, one `DATASET` each → `train.convergence_<dataset>_<timestamp>.log`).
+See `README.md`.
 
 ```bash
 # ---- CPU demos (remote managed AgentCore sandbox, SANDBOX=agentcore-runtime) ----
+# 01–10 = demo_cpu_datasets with DATASET=mbpp|math|gsm8k|math500|deepscaler|humaneval|gretelsql|hotpotqa|xlam|mcp
 bash code/demos/convergence/01_cpu_mbpp.sh      # MBPP coding
 bash code/demos/convergence/02_cpu_math.sh        # Hendrycks MATH
 bash code/demos/convergence/03_cpu_gsm8k.sh       # GSM8K (easiest — good first run)
@@ -61,7 +64,7 @@ B4_GPU_FRACTION=1.0 bash code/demos/convergence/13_gpu_shared.sh
 ## Watch convergence live
 
 ```bash
-tail -f code/demos/demo_cpu_gsm8k/train.convergence_*.log | grep -E 'eval/|reward'
+tail -f code/demos/demo_cpu_datasets/train.convergence_gsm8k_*.log | grep -E 'eval/|reward'
 ```
 
 Converged ⇒ `eval/<name>` has risen and plateaued for ~3+ consecutive eval points.

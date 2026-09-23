@@ -13,8 +13,8 @@ Both demos use the SAME row schema and the SAME custom generate — they differ 
 task source (MBPP CPU code-repair vs KernelBench CUDA-op repair). Run inside the container
 (has `datasets` + HF cache), writing into the calling demo's own data/ dir. E.g.:
     # MBPP (Demo A / A2 / A3): 500-prompt train + 8-prompt held-out eval
-    python /work/code/demos/demo_cpu_mbpp/build_dataset.py \
-        --dataset mbpp --split "train+test" --limit 500 --out /work/code/demos/demo_cpu_mbpp/data/mbpp_train.jsonl
+    python /work/code/demos/demo_cpu_datasets/build_dataset.py \
+        --dataset mbpp --split "train+test" --limit 500 --out /work/code/demos/demo_cpu_datasets/data/mbpp_train.jsonl
     # KernelBench (Demo B / B2 / B3): level_1 train (100) + level_2 held-out eval (20)
     python /work/code/demos/demo_gpu_single/build_dataset.py \
         --dataset kernelbench --level level_1 --limit 100 --out /work/code/demos/demo_gpu_single/data/kernelbench_train.jsonl

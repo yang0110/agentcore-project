@@ -23,8 +23,10 @@ builds the Runtime images from it and `code/tests/` imports it.
 
 ## The demos
 
-**16 demos**: two sandbox substrates (with a per-task CPU set + a GPU set), two resilience demos, a
-harness-scaling demo, and a mixed-task demo.
+**15 demos** — 9 CPU + 6 GPU. One of them, `demo_cpu_datasets`, is a single folder that trains
+**any of ~19 datasets** through a `DATASET=` selector (it replaces the ten former per-dataset
+folders `demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k` … `demo_cpu_mcp`, which differed only
+in their data).
 
 **Sandbox mode by substrate.** The **CPU** demos are **remote-only** — they run only on remote
 managed serverless AgentCore sandbox sessions (`SANDBOX=agentcore-runtime` default, or `agentcore`
@@ -34,27 +36,25 @@ silently fall off the AgentCore substrate (the serverless CPU sandbox is always 
 
 | Substrate | Demo | Task / point |
 |---|---|---|
-| **CPU serverless microVM** (Code Interpreter) | [`demo_cpu_mbpp/`](demo_cpu_mbpp/) | the reference — MBPP coding on a CPU microVM, 4 train + 4 infer + 0 env; task-family zoo via `FAMILY` |
-| | [`demo_cpu_math/`](demo_cpu_math/) | math word problems (multi-task: `gsm8k`/`math500`/`deepscaler` via `FAMILY`) |
-| | [`demo_cpu_mixtask/`](demo_cpu_mixtask/) | **mixed-task** — every rollout step's batch spans several families at once (math+sql+ctf+tool_use); remote-only |
-| _per-task, real HF datasets_ | [`demo_cpu_gsm8k/`](demo_cpu_gsm8k/) | GSM8K grade-school math (`openai/gsm8k`) |
-| | [`demo_cpu_math500/`](demo_cpu_math500/) | MATH-500 competition math (`HuggingFaceH4/MATH-500`) |
-| | [`demo_cpu_deepscaler/`](demo_cpu_deepscaler/) | DeepScaleR olympiad math (`agentica-org/DeepScaleR-Preview-Dataset`) |
-| | [`demo_cpu_humaneval/`](demo_cpu_humaneval/) | HumanEval Python completion (`openai/openai_humaneval`) |
-| | [`demo_cpu_gretelsql/`](demo_cpu_gretelsql/) | text-to-SQL (`gretelai/synthetic_text_to_sql`) |
-| | [`demo_cpu_hotpotqa/`](demo_cpu_hotpotqa/) | multi-hop retrieval QA (`hotpotqa/hotpot_qa`) |
-| | [`demo_cpu_xlam/`](demo_cpu_xlam/) | function calling (`minpeter/xlam-function-calling-60k-parsed`) |
-| | [`demo_cpu_mcp/`](demo_cpu_mcp/) | MCP-style tool calling (`Team-ACE/ToolACE`) |
+| **CPU serverless microVM** | [`demo_cpu_datasets/`](demo_cpu_datasets/) | the reference — ONE demo, many RLVR datasets via `DATASET=`: real HF `mbpp` (default) `gsm8k` `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, plus the synthetic task-family zoo (`math` `swe` `sql` `ctf` `rag` `tool_use` …); 4 train + 4 infer + 0 env |
+| | [`demo_cpu_mixtask/`](demo_cpu_mixtask/) | **mixed-task** — every rollout step's batch spans several families at once (math+sql+ctf+tool_use) |
+| | [`demo_cpu_imagepool/`](demo_cpu_imagepool/) | mixed-task RL over a pool of prebuilt images (one image → one Runtime per task family) |
+| | [`demo_cpu_terminalbench/`](demo_cpu_terminalbench/) | a LARGE image pool (one image per Terminal-Bench task, ~229), one isolated microVM per episode, pre-opened to hide the cold start |
+| | [`demo_cpu_branching/`](demo_cpu_branching/) | one episode → many training samples ("fan-out") |
+| | [`demo_cpu_customruntime/`](demo_cpu_customruntime/) | real RL training on YOUR custom AgentCore Runtime (CPU) |
 | | [`demo_cpu_heartbeat/`](demo_cpu_heartbeat/) | **resilience** — heartbeat that keeps the microVM warm across the weight-sync barrier |
+| **CPU capacity-provider Instance** | [`demo_cpu_bigimage/`](demo_cpu_bigimage/) | a LARGE sandbox image (past the 2 GB microVM cap) on a warm CPU Instance |
+| **harness-scaling** (varies the *harness* tier, not the sandbox) | [`demo_cpu_harness_scale/`](demo_cpu_harness_scale/) | one task (DeepScaleR), a pool of **W warm mini-Claude harness workers** → the async-RL scaling law `throughput = min(inference, sandbox, harness)` |
 | **GPU Runtime instance** (g6 capacity provider) | [`demo_gpu_single/`](demo_gpu_single/) | KernelBench (level_1 CUDA); checker's GPU is the remote g6 sandbox Runtime, so the trainer box stays 4 train + 4 infer + 0 env |
+| | [`demo_gpu_customruntime/`](demo_gpu_customruntime/) | real KernelBench RL on YOUR custom GPU Runtime |
+| | [`demo_gpu_snapshot/`](demo_gpu_snapshot/) | **resilience** — application-level snapshot & resume across a GPU instance recycle |
+| **local GPU Ray farm** (this box's GPUs 6,7) | [`demo_gpu_local/`](demo_gpu_local/) | KernelBench on a local whole-GPU Ray farm |
 | | [`demo_gpu_shared_single/`](demo_gpu_shared_single/) | KernelBench + a Ray GPU-sharing farm on ONE local GPU (GPU 6), split 0.5 + 0.5 — two episodes share a single card |
 | | [`demo_gpu_shared_multi/`](demo_gpu_shared_multi/) | KernelBench + a Ray farm across TWO local GPUs (6,7) — one whole GPU per Ray session |
-| | [`demo_gpu_snapshot/`](demo_gpu_snapshot/) | **resilience** — application-level snapshot & resume across a GPU instance recycle |
-| **harness-scaling** (varies the *harness* tier, not the sandbox) | [`demo_cpu_harness_scale/`](demo_cpu_harness_scale/) | one task (DeepScaleR), a pool of **W warm mini-Claude harness workers** → the async-RL scaling law `throughput = min(inference, sandbox, harness)` |
 
-The 8 per-task CPU demos (`gsm8k` … `mcp`) are the same in-process-harness loop as `demo_cpu_mbpp`,
-each pinned to one real HF dataset + its hidden RLVR checker (see the task/dataset table in each
-README); `demo_cpu_mbpp` reaches the same tasks via its `FAMILY` selector.
+`demo_cpu_datasets` is one in-process-harness loop; each `DATASET` differs only in its seed rows +
+hidden RLVR checker, and gets its own `data/<name>_{train,eval}.jsonl`, `eval/<name>` metric and
+`ckpt/Qwen3-4B_<name>_async` (see its README for the dataset table).
 
 The demos above vary the **sandbox**; `demo_cpu_harness_scale` is the exception — it fixes the task
 and sandbox and makes the **harness the scalable tier** (a warm in-process worker pool), to show the
@@ -69,8 +69,8 @@ in-process is the recommended path.
 
 ## Which to run
 
-- **`demo_cpu_mbpp`** — the reference. Runs offline-friendly (`SANDBOX=local`) or on real AWS Code
-  Interpreter microVMs (`SANDBOX=agentcore`). Most battle-tested.
+- **`demo_cpu_datasets`** — the reference. `DATASET=<name> bash run.sh` on remote AWS CPU microVMs
+  (`SANDBOX=agentcore-runtime`, or `agentcore` Code Interpreter). Most battle-tested.
 - **`demo_gpu_single`** — GPU-sandbox path; the KernelBench checker's GPU is the remote g6 sandbox Runtime, so
   the trainer box stays 4 train + 4 infer + 0 env. Trains on
   the real KernelBench (level_1, 100 single-op CUDA problems; 20 held-out level_2 fusions for eval).
