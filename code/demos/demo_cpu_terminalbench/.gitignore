@@ -1,0 +1,8 @@
+# Fetched on demand by fetch_terminalbench.py (229 task dirs); not vendored into the repo.
+tasks/
+# Generated artifacts.
+data/
+ckpt/
+logs/
+__pycache__/
+*.pyc
