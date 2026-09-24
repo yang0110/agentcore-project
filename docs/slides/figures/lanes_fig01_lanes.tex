@@ -1,0 +1,43 @@
+% Figure 1 of scale_lanes_deck: 4 lanes = worker : engine : microVM, 1:1:1, fed by a pull queue.
+% Build: xelatex lanes_fig01_lanes.tex  (-> .pdf, included by ../scale_lanes_deck.md)
+\documentclass[tikz,border=4pt]{standalone}
+\usepackage{fontspec}
+\setmainfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc}
+\definecolor{slime}{RGB}{230,230,230}
+\definecolor{host}{RGB}{214,216,240}
+\definecolor{gpu}{RGB}{255,236,204}
+\definecolor{vm}{RGB}{214,238,220}
+\definecolor{ink}{RGB}{40,40,90}
+\begin{document}
+\begin{tikzpicture}[
+  font=\footnotesize,
+  box/.style={draw=ink, rounded corners=3pt, fill=#1, align=center, inner sep=3pt, minimum height=0.72cm, minimum width=2.6cm},
+  line/.style={thick, draw=ink, -{Stealth[length=2mm]}},
+  dline/.style={thick, draw=ink, {Stealth[length=2mm]}-{Stealth[length=2mm]}},
+  head/.style={font=\small\bfseries, text=ink, align=center},
+  note/.style={font=\scriptsize, text=ink!80, align=center},
+]
+\node[head] at (0,1.3)   {slime\\\scriptsize GRPO trainer};
+\node[head] at (4.2,1.3) {Harness tier\\\scriptsize W warm workers};
+\node[head] at (8.6,1.3) {Inference tier\\\scriptsize SGLang, TP1, GPUs 4--7};
+\node[head] at (13.0,1.3) {Sandbox tier\\\scriptsize AgentCore microVMs};
+
+\node[box=slime, minimum height=3.6cm, minimum width=2.4cm] (sl) at (0,-2.05)
+  {\texttt{generate()}\\hook\\[4pt]admits\\S = CONC$\times$E\\= 2W episodes};
+\node[box=slime, minimum width=1.3cm, minimum height=3.6cm] (q) at (2.2,-2.05) {pull\\queue};
+\draw[line] (sl) -- (q);
+
+\foreach \w/\y/\a in {0/0/0, 1/-1.35/1, 2/-2.7/0, 3/-4.05/1} {
+  \node[box=host, minimum height=1.05cm] (h\w) at (4.2,\y) {worker \w\\\scriptsize own adapter};
+  \node[box=gpu, minimum height=0.55cm]  (e\w) at (8.6,\y+0.18) {engine \w};
+  \node[box=vm, minimum height=1.05cm]   (v\w) at (13.0,\y) {\texttt{lane\w-…}\\\scriptsize ARN \a, \texttt{ep-<hex>}/};
+  \draw[line] (q.east |- h\w) -- (h\w);
+  \draw[dline] ($(h\w.east)+(0,0.18)$) -- node[above, note] {LLM turns} (e\w.west);
+  \draw[dline] ($(h\w.east)+(0,-0.3)$) -- node[below, note, pos=0.5] {tool calls (exec / files)} ($(v\w.west)+(0,-0.3)$);
+}
+\node[note] at (6.4,-5.1) {worker $w$ pinned to engine $w \bmod E$\\(bypasses the router's per-request LB)};
+\node[note] at (13.0,-5.25) {opened once per worker, kept for the run;\\fresh workdir per episode, \texttt{rm -rf} after};
+\end{tikzpicture}
+\end{document}
