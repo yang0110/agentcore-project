@@ -252,7 +252,7 @@ task environment untouched} and append one layer:
 
 \begin{verbatim}
 USER root
-COPY --from=acs py /opt/acs/py            # standalone CPython 3.12 (54 MB), NOT the task's Python
+COPY --from=acs py /opt/acs/py            # standalone CPython 3.12 (54 MB), not the task's
 COPY --from=acs acs_http_server.py sandbox_server_agent.py /opt/acs/
 ENTRYPOINT []
 CMD ["/opt/acs/py/bin/python3", "/opt/acs/acs_http_server.py"]   # :8080 /ping + /invocations
@@ -455,8 +455,7 @@ episode, never reused \\
 microVMs per step & \textbf{32} & Session = microVM, 1:1 \\
 Running concurrently & \texttt{HARNESS\_WORKERS} (4) & Warm in-process
 agent workers \\
-Pre-opened, booting ahead & ≤ \texttt{TB\_PREOPEN\_BATCHES} × RB × NS
-(64) & The next 64 upcoming episodes = the next \textbf{2 batches}
+Pre-opened, booting ahead & ≤ P = 64 & The next \textbf{2 batches}
 (\texttt{TB\_PREOPEN\_BATCHES} × RB × NS), announced by the look-ahead
 data source \\
 Peak live microVMs & ≈ 68 (W + P) & Bounded, so idle VMs are bounded \\
@@ -605,9 +604,8 @@ session}
   \textbf{Pre-open:} \texttt{\_refill()} boots a fresh session (a
   \texttt{ping} with a new id
   \texttt{tbep-\textless{}32\ hex\textgreater{}}) for each of the first
-  the pre-open window (\texttt{TB\_PREOPEN\_BATCHES} × RB × NS) (64)
-  upcoming episodes, in order, kept per task in
-  \texttt{\_ready{[}ARN{]}}.
+  \textbf{P} = \texttt{TB\_PREOPEN\_BATCHES} × RB × NS (64) upcoming
+  episodes, in order, kept per task in \texttt{\_ready{[}ARN{]}}.
 \item
   \textbf{slime calls} \texttt{generate(sample)} for the batch, at most
   \texttt{CONC\ ×\ engines} (8) in flight; our hook calls
@@ -726,12 +724,10 @@ terminates the microVM \\
 \bottomrule\noalign{}
 \end{longtable}
 
-\textbf{\texttt{\_refill()}}, run on every draw, \texttt{submit} and
-claim: count the tasks of the first the pre-open window
-(\texttt{TB\_PREOPEN\_BATCHES} × RB × NS) upcoming episodes (default 64
-= 2 × 4 × 8), open sessions until each task has that many ready, and
-\textbf{stop} ready sessions no longer in the window (a wrong guess). So
-live microVMs ≤ W + P = 68.
+\textbf{\texttt{\_refill()}} (on every draw, \texttt{submit} and claim):
+keep one ready session per episode in the first P = 64 upcoming ones,
+pooled per task, and \textbf{stop} any ready session that fell out of
+the window (a wrong guess). Live microVMs ≤ W + P = 68.
 \end{frame}
 
 \begin{frame}[fragile]{Worked example (1/2): one step with the next two
@@ -855,9 +851,9 @@ is booted a full batch or more before a worker needs it. The price is
 idle microVM time (next slides).
 \end{frame}
 
-\begin{frame}[fragile]{How to set \texttt{TB\_PREOPEN\_BATCHES} (1/2):
+\begin{frame}[fragile]{How to set \texttt{TB\_PREOPEN\_BATCHES} (1/3):
 the sizing rule}
-\protect\hypertarget{how-to-set-tb_preopen_batches-12-the-sizing-rule}{}
+\protect\hypertarget{how-to-set-tb_preopen_batches-13-the-sizing-rule}{}
 W = \texttt{HARNESS\_WORKERS}, P = \texttt{TB\_PREOPEN\_BATCHES} × RB ×
 NS (the only pre-open knob; P follows from it), B = cold start
 (\texttt{open\_ms}), E = episode time (agent + grade).
@@ -880,12 +876,16 @@ NS (the only pre-open knob; P follows from it), B = cold start
   heartbeat keeps it alive past the 15-min idle timeout, but it still
   costs money.
 \end{itemize}
+\end{frame}
 
+\begin{frame}[fragile]{How to set \texttt{TB\_PREOPEN\_BATCHES} (2/3):
+choosing a value}
+\protect\hypertarget{how-to-set-tb_preopen_batches-23-choosing-a-value}{}
 \begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.5672}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1343}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1343}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1642}}@{}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3191}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.0638}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3830}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2340}}@{}}
 \caption{Choosing TB\_PREOPEN\_BATCHES (illustrative E, until
 \texttt{coldstart.csv} is in)}\tabularnewline
 \toprule\noalign{}
@@ -924,29 +924,28 @@ full batch of slack & ≈ 32 min − B \\
 \emph{\texttt{TB\_PREOPEN\_BATCHES} is the one pre-open knob. \texttt{0}
 turns the look-ahead off: only episodes slime has already submitted are
 pre-opened (about W).}
+
+\textbf{Measured in the smoke run} (P = 64): E ≈ 21 s, B ≈ 0.7 s (warm
+hit), booted VMs idle \textbf{7.3 min} p50. So
+\texttt{TB\_PREOPEN\_BATCHES} = 1 is the next setting to try.
 \end{frame}
 
-\begin{frame}[fragile]{How to set \texttt{TB\_PREOPEN\_BATCHES} (2/2):
-constraints and tuning}
-\protect\hypertarget{how-to-set-tb_preopen_batches-22-constraints-and-tuning}{}
+\begin{frame}[fragile]{How to set \texttt{TB\_PREOPEN\_BATCHES} (3/3):
+tuning}
+\protect\hypertarget{how-to-set-tb_preopen_batches-33-tuning}{}
 \begin{itemize}
 \tightlist
 \item
-  \textbf{\texttt{CONC} no longer has to follow.} The look-ahead comes
-  from the data source, not from a queue of admitted samples, so
-  \texttt{run.sh} sets \texttt{CONC\ =\ ⌈2W\ /\ engines⌉} (W running + W
-  queued).
+  \textbf{\texttt{CONC} no longer has to follow:} the look-ahead comes
+  from the data source, so \texttt{run.sh} sets
+  \texttt{CONC\ =\ ⌈2W\ /\ engines⌉} (W running + W queued).
 \item
-  \textbf{Predictions assume one draw per rollout} (no dynamic filtering
-  or over-sampling, as \texttt{run.sh} launches it). A wrong guess only
-  costs VMs that get stopped at the next draw; those episodes open on
-  demand.
+  \textbf{One draw per rollout assumed} (no dynamic filtering or
+  over-sampling). A wrong guess only costs VMs stopped at the next draw.
 \item
-  \textbf{Ceilings:} live microVMs ≤ W + P (the account's
-  concurrent-session quota, \emph{Active Session Workloads per Account}
-  = \textbf{5000} here {[}Q2{]}, so P = 64 has \textasciitilde75×
-  headroom), and the first draw opens P sessions at once, so keep P
-  within the 25 new sessions/s budget.
+  \textbf{Ceilings:} live microVMs ≤ W + P, against a quota of
+  \textbf{5000} active sessions {[}Q2{]}; the first draw opens P at
+  once, so keep P within 25 new sessions/s.
 \end{itemize}
 
 \begin{longtable}[]{@{}
@@ -1194,7 +1193,7 @@ Per-Runtime numbers: \texttt{probe\_coldstart.py} →
 \texttt{tasks/coldstart.csv} (Table 11).
 \end{frame}
 
-\begin{frame}[fragile]{Options for dealing with cold start}
+\begin{frame}{Options for dealing with cold start}
 \protect\hypertarget{options-for-dealing-with-cold-start}{}
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.3718}}
@@ -1240,9 +1239,8 @@ path \\
 D. Shrink images (slim bases, lazy pull) & Partly & ✓ & Engineering per
 task & Changes the benchmark environment \\
 E. \textbf{Pre-open the next batches (data-order look-ahead) +
-heartbeat} & ✓ (including step starts) & ✓ & Only ≤ the pre-open window
-(\texttt{TB\_PREOPEN\_BATCHES} × RB × NS) extra VMs (64) & \textbf{Best,
-and used} \\
+heartbeat} & ✓ (including step starts) & ✓ & ≤ P = 64 extra VMs &
+\textbf{Best, and used} \\
 \bottomrule\noalign{}
 \end{longtable}
 
@@ -1262,8 +1260,7 @@ hit} (about 0.5 s), and E hides the rest.
   draw, by replaying slime's deterministic data order.
 \item
   \textbf{Pre-open a bounded window.} The pool keeps a fresh session
-  booted for each of the first the pre-open window
-  (\texttt{TB\_PREOPEN\_BATCHES} × RB × NS) (64 = 2 × 4 × 8) upcoming
+  booted for each of the first \textbf{P} = 64 (2 × 4 × 8) upcoming
   episodes, pooled per task; a worker takes any ready one for its task.
   That caps the idle microVMs you pay for, and wrong guesses are stopped
   at the next draw.
@@ -1472,8 +1469,7 @@ boot \\
 session at pickup & \textbf{Boot left on the critical path}. Near 0
 means pre-open works \\
 \texttt{preopen\_idle\_ms} & Booted VM idle before a worker picked it up
-& Must stay ≪ 15 min idle timeout; sizes the heartbeat and the pre-open
-window (\texttt{TB\_PREOPEN\_BATCHES} × RB × NS) \\
+& Must stay ≪ 15 min idle timeout; sizes the heartbeat and P \\
 \texttt{open\_attempts}, \texttt{infra\_error} & Retries needed /
 episode lost to infra (open, grade) & Keeps infra failures \textbf{out
 of} the reward signal \\

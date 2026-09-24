@@ -45,7 +45,7 @@ Terminal-Bench ships a bespoke Dockerfile per task. We **leave the task environm
 
 ```
 USER root
-COPY --from=acs py /opt/acs/py            # standalone CPython 3.12 (54 MB), NOT the task's Python
+COPY --from=acs py /opt/acs/py            # standalone CPython 3.12 (54 MB), not the task's
 COPY --from=acs acs_http_server.py sandbox_server_agent.py /opt/acs/
 ENTRYPOINT []
 CMD ["/opt/acs/py/bin/python3", "/opt/acs/acs_http_server.py"]   # :8080 /ping + /invocations
@@ -121,7 +121,7 @@ Default smoke config: `RB=4` prompts × `NS=8` GRPO samples gives **32 episodes 
 | Sessions per step | **32** = RB × NS | One fresh session per episode, never reused |
 | microVMs per step | **32** | Session = microVM, 1:1 |
 | Running concurrently | `HARNESS_WORKERS` (4) | Warm in-process agent workers |
-| Pre-opened, booting ahead | ≤ `TB_PREOPEN_BATCHES` × RB × NS (64) | The next 64 upcoming episodes = the next **2 batches** (`TB_PREOPEN_BATCHES` × RB × NS), announced by the look-ahead data source |
+| Pre-opened, booting ahead | ≤ P = 64 | The next **2 batches** (`TB_PREOPEN_BATCHES` × RB × NS), announced by the look-ahead data source |
 | Peak live microVMs | ≈ 68 (W + P) | Bounded, so idle VMs are bounded |
 | Distinct Runtimes touched per step | ≤ RB (4) | The NS siblings of a prompt share the task's Runtime but get **different** sessions |
 
@@ -165,7 +165,7 @@ Default smoke config: `RB=4` prompts × `NS=8` GRPO samples gives **32 episodes 
 
 1. **slime draws a batch** through our `LookaheadDataSource`. It also **peeks** the next 2 rollouts' prompts (replaying slime's seeded shuffle, without moving slime's position) and calls `pool.reserve(drawn 32, upcoming 64)`.
 2. **Routing:** each upcoming episode's task (`spec.image` = task name) is looked up as `ARN = pool_map[spec.image]`. An unmapped task fails right away.
-3. **Pre-open:** `_refill()` boots a fresh session (a `ping` with a new id `tbep-<32 hex>`) for each of the first the pre-open window (`TB_PREOPEN_BATCHES` × RB × NS) (64) upcoming episodes, in order, kept per task in `_ready[ARN]`.
+3. **Pre-open:** `_refill()` boots a fresh session (a `ping` with a new id `tbep-<32 hex>`) for each of the first **P** = `TB_PREOPEN_BATCHES` × RB × NS (64) upcoming episodes, in order, kept per task in `_ready[ARN]`.
 4. **slime calls** `generate(sample)` for the batch, at most `CONC × engines` (8) in flight; our hook calls `pool.submit(task)`.
 5. **Pickup:** a free harness worker (one of `HARNESS_WORKERS`) `_claim`s **any** ready session for its task. If none is ready, it opens one then. The claim moves the window on by one episode, so the next upcoming episode starts booting.
 6. **End:** grade, then `StopRuntimeSession`, and slime gets the finished sample back.
@@ -200,7 +200,7 @@ Default smoke config: `RB=4` prompts × `NS=8` GRPO samples gives **32 episodes 
 
 : Episode states inside TerminalBenchPool
 
-**`_refill()`**, run on every draw, `submit` and claim: count the tasks of the first the pre-open window (`TB_PREOPEN_BATCHES` × RB × NS) upcoming episodes (default 64 = 2 × 4 × 8), open sessions until each task has that many ready, and **stop** ready sessions no longer in the window (a wrong guess). So live microVMs ≤ W + P = 68.
+**`_refill()`** (on every draw, `submit` and claim): keep one ready session per episode in the first P = 64 upcoming ones, pooled per task, and **stop** any ready session that fell out of the window (a wrong guess). Live microVMs ≤ W + P = 68.
 
 ## Worked example (1/2): one step with the next two booting
 
@@ -231,7 +231,7 @@ Step N: RB = 4 prompts (tasks **A** `broken-python`, **B** `chess-best-move`, **
 
 **Why it works:** every episode, including the first of each step, is booted a full batch or more before a worker needs it. The price is idle microVM time (next slides).
 
-## How to set `TB_PREOPEN_BATCHES` (1/2): the sizing rule
+## How to set `TB_PREOPEN_BATCHES` (1/3): the sizing rule
 
 W = `HARNESS_WORKERS`, P = `TB_PREOPEN_BATCHES` × RB × NS (the only pre-open knob; P follows from it), B = cold start (`open_ms`), E = episode time (agent + grade).
 
@@ -239,8 +239,10 @@ W = `HARNESS_WORKERS`, P = `TB_PREOPEN_BATCHES` × RB × NS (the only pre-open k
 - **Hidden boot needs P · E / W ≥ B, i.e. P ≥ ⌈W · B / E⌉**, plus 1–2 for jitter. Across a step boundary the window must also cover the first W episodes of the next step, so **`TB_PREOPEN_BATCHES` ≥ 1** (P ≥ RB × NS) removes the per-step boot tail.
 - **Each booted VM then idles for about P · E / W − B** (plus training time at a step boundary). That is paid microVM time; the heartbeat keeps it alive past the 15-min idle timeout, but it still costs money.
 
+## How to set `TB_PREOPEN_BATCHES` (2/3): choosing a value
+
 | `TB_PREOPEN_BATCHES` | P | Boot hidden? | Idle per VM (E = 120 s, W = 4) |
-|--------------------------------------|---------|---------|-----------|
+|------------------------------|------|------------------------------------|----------------------|
 | 0 — look-ahead off (queue only, ≈ W) | 4 | Mid-step only; each step's first W pay a boot | ≈ 2 min − B |
 | 1 — one batch ahead | 32 | Yes, including step starts | ≈ 16 min − B |
 | **2 — default, two batches ahead** | **64** | Yes, with a full batch of slack | ≈ 32 min − B |
@@ -249,11 +251,13 @@ W = `HARNESS_WORKERS`, P = `TB_PREOPEN_BATCHES` × RB × NS (the only pre-open k
 
 *`TB_PREOPEN_BATCHES` is the one pre-open knob. `0` turns the look-ahead off: only episodes slime has already submitted are pre-opened (about W).*
 
-## How to set `TB_PREOPEN_BATCHES` (2/2): constraints and tuning
+**Measured in the smoke run** (P = 64): E ≈ 21 s, B ≈ 0.7 s (warm hit), booted VMs idle **7.3 min** p50. So `TB_PREOPEN_BATCHES` = 1 is the next setting to try.
 
-- **`CONC` no longer has to follow.** The look-ahead comes from the data source, not from a queue of admitted samples, so `run.sh` sets `CONC = ⌈2W / engines⌉` (W running + W queued).
-- **Predictions assume one draw per rollout** (no dynamic filtering or over-sampling, as `run.sh` launches it). A wrong guess only costs VMs that get stopped at the next draw; those episodes open on demand.
-- **Ceilings:** live microVMs ≤ W + P (the account's concurrent-session quota, *Active Session Workloads per Account* = **5000** here [Q2], so P = 64 has ~75× headroom), and the first draw opens P sessions at once, so keep P within the 25 new sessions/s budget.
+## How to set `TB_PREOPEN_BATCHES` (3/3): tuning
+
+- **`CONC` no longer has to follow:** the look-ahead comes from the data source, so `run.sh` sets `CONC = ⌈2W / engines⌉` (W running + W queued).
+- **One draw per rollout assumed** (no dynamic filtering or over-sampling). A wrong guess only costs VMs stopped at the next draw.
+- **Ceilings:** live microVMs ≤ W + P, against a quota of **5000** active sessions [Q2]; the first draw opens P at once, so keep P within 25 new sessions/s.
 
 | Symptom (from `[demo]` lines) | Meaning | Action |
 |---------------------------------------------------|------------------------------|-------------------------|
@@ -339,7 +343,7 @@ Per-Runtime numbers: `probe_coldstart.py` → `tasks/coldstart.csv` (Table 11).
 | B. Big standing warm pool of pre-opened sessions per task | ✓ | ✓ | ✗ 218 tasks × NS idle VMs | Wasteful at this scale |
 | C. Open on pickup (naive) | ✗ | ✓ | Low | Boot is on the critical path |
 | D. Shrink images (slim bases, lazy pull) | Partly | ✓ | Engineering per task | Changes the benchmark environment |
-| E. **Pre-open the next batches (data-order look-ahead) + heartbeat** | ✓ (including step starts) | ✓ | Only ≤ the pre-open window (`TB_PREOPEN_BATCHES` × RB × NS) extra VMs (64) | **Best, and used** |
+| E. **Pre-open the next batches (data-order look-ahead) + heartbeat** | ✓ (including step starts) | ✓ | ≤ P = 64 extra VMs | **Best, and used** |
 
 : Cold-start mitigation options
 
@@ -348,7 +352,7 @@ Option E also benefits from AgentCore's own behaviour: a Runtime keeps a pre-pro
 ## What the demo does (Option E)
 
 1. **Look ahead two batches.** `LookaheadDataSource` (`--data-source-path`) tells the pool the episodes of the current and next `TB_PREOPEN_BATCHES` (2) rollouts on every draw, by replaying slime's deterministic data order.
-2. **Pre-open a bounded window.** The pool keeps a fresh session booted for each of the first the pre-open window (`TB_PREOPEN_BATCHES` × RB × NS) (64 = 2 × 4 × 8) upcoming episodes, pooled per task; a worker takes any ready one for its task. That caps the idle microVMs you pay for, and wrong guesses are stopped at the next draw.
+2. **Pre-open a bounded window.** The pool keeps a fresh session booted for each of the first **P** = 64 (2 × 4 × 8) upcoming episodes, pooled per task; a worker takes any ready one for its task. That caps the idle microVMs you pay for, and wrong guesses are stopped at the next draw.
 3. **Heartbeat.** A process-wide `SessionKeeper` pings every open session (pre-opened or running) at half the idle timeout, so none is reclaimed during the weight-sync stall.
 4. **Retry on a new id.** If an open fails, it is retried on a **new** session (`TB_OPEN_ATTEMPTS=3`). An infra failure is logged as `infra_error` and is **never** confused with a wrong answer.
 5. **Measure every boot.** The start line of each episode records `open_ms`, `pull_boot_ms`, `warm_hit`, `ready_ms`, `open_wait_ms` and `preopen_idle_ms`. That shows how much boot was hidden and how long a booted VM sat idle before pickup, which is what the heartbeat must cover.
@@ -404,7 +408,7 @@ Option E also benefits from AgentCore's own behaviour: a Runtime keeps a pre-pro
 | `pull_boot_ms` / `ready_ms` | Sent → server up (allocate, pull, start) / server up → first invoke | Separates **image size** effects from **platform** overhead |
 | `warm_hit` | 1 if the server was already up before we asked (pre-provisioned spare) | How often AgentCore's own warm VM saves the boot |
 | `open_wait_ms` | How long the worker **waited** on the session at pickup | **Boot left on the critical path**. Near 0 means pre-open works |
-| `preopen_idle_ms` | Booted VM idle before a worker picked it up | Must stay ≪ 15 min idle timeout; sizes the heartbeat and the pre-open window (`TB_PREOPEN_BATCHES` × RB × NS) |
+| `preopen_idle_ms` | Booted VM idle before a worker picked it up | Must stay ≪ 15 min idle timeout; sizes the heartbeat and P |
 | `open_attempts`, `infra_error` | Retries needed / episode lost to infra (open, grade) | Keeps infra failures **out of** the reward signal |
 | `grade_ms`, `grade_timeout` | Test runtime (includes installing uv and pytest) / tests hit their limit | Grading is part of every episode's latency |
 | `agent_ms`, `episode_ms`, `session_s` | Agent loop time / total episode time / microVM lifetime | `session_s` summed = **microVM-seconds = sandbox cost** |
