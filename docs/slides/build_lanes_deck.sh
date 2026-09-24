@@ -49,7 +49,7 @@ pandoc "$TMP" -t beamer --slide-level=2 \
 % Shrink code listings and tables so long lines do not force a page break.
 \AtBeginEnvironment{Highlighting}{\footnotesize}
 \AtBeginEnvironment{verbatim}{\footnotesize}
-\AtBeginEnvironment{longtable}{\scriptsize}
+\AtBeginEnvironment{longtable}{\small}
 PREAMBLE
 ) \
   --pdf-engine=xelatex \

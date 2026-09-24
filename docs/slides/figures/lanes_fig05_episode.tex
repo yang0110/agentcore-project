@@ -1,0 +1,46 @@
+% Figure for scale_lanes_deck: One episode inside a lane.
+% Build: xelatex lanes_fig05_episode.tex  (-> .pdf, included by ../scale_lanes_deck.md)
+\documentclass[tikz,border=4pt]{standalone}
+\usepackage{fontspec}
+\setmainfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc,decorations.pathreplacing}
+\definecolor{slime}{RGB}{230,230,230}
+\definecolor{host}{RGB}{214,216,240}
+\definecolor{gpu}{RGB}{255,236,204}
+\definecolor{vm}{RGB}{214,238,220}
+\definecolor{ac}{RGB}{255,246,230}
+\definecolor{bad}{RGB}{245,205,205}
+\definecolor{ink}{RGB}{40,40,90}
+\begin{document}
+\begin{tikzpicture}[
+  font=\footnotesize,
+  box/.style={draw=ink, rounded corners=3pt, fill=#1, align=center, inner sep=4pt, minimum height=0.9cm, minimum width=2.8cm},
+  line/.style={thick, draw=ink, -{Stealth[length=2mm]}},
+  dline/.style={thick, draw=ink, {Stealth[length=2mm]}-{Stealth[length=2mm]}},
+  head/.style={font=\small\bfseries, text=ink, align=center},
+  lab/.style={font=\scriptsize, text=ink, fill=white, inner sep=1.5pt, align=center},
+  note/.style={font=\scriptsize, text=ink!80, align=center},
+  region/.style={draw=ink!60, dashed, rounded corners=6pt, inner sep=8pt},
+]
+
+\node[box=host] (H) at (0,0)  {\textbf{Harness worker} $w$};
+\node[box=gpu]  (E) at (5.5,0) {\textbf{Engine} $w \bmod E$};
+\node[box=vm]   (V) at (11,0) {\textbf{Lane microVM}};
+\foreach \n in {H,E,V} \draw[ink!50, dashed] (\n.south) -- ++(0,-6.1);
+\node[box=slime, minimum width=1.6cm] (Q) at (-3.3,0) {queue};
+\draw[ink!50, dashed] (Q.south) -- ++(0,-6.1);
+\draw[line] (-3.3,-0.9) -- node[lab, above] {pull episode} (0,-0.9);
+\draw[line] (0,-1.5) -- node[lab, above] {\texttt{ep-<hex>/}: PROBLEM.md, run\_checks.py} (11,-1.5);
+\draw[line] (0,-2.2) -- node[lab, above] {LLM turn} (5.5,-2.2);
+\draw[line] (5.5,-2.6) -- node[lab, above] {tool call} (0,-2.6);
+\draw[line] (0,-3.2) -- node[lab, above, pos=0.7] {write solution.py · run checks} (11,-3.2);
+\draw[line] (11,-3.6) -- node[lab, above, pos=0.3] {observation} (0,-3.6);
+\draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick, ink] (-0.25,-2.0) -- (-0.25,-3.8)
+  node[midway, left=6pt, note] {≤ 4 turns};
+\draw[line] (0,-4.4) -- node[lab, above, pos=0.7] {final hidden check} (11,-4.4);
+\draw[line] (11,-4.8) -- node[lab, above, pos=0.3] {exit code → reward 0/1} (0,-4.8);
+\draw[line] (0,-5.5) -- node[lab, above] {GRPO samples} (-3.3,-5.5);
+\draw[line] (0,-5.9) -- node[lab, above, pos=0.7] {\texttt{rm -rf ep-<hex>/}} (11,-5.9);
+\end{tikzpicture}
+\end{document}
