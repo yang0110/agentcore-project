@@ -141,1018 +141,153 @@
 \title[Terminal-Bench on AgentCore]{Terminal-Bench on AgentCore: one image, one Runtime, one microVM
 per episode}
 \author[Kaige Yang, AWS]{Kaige Yang --- Senior Applied Scientist, AWS}
-\date{September 23, 2026}
+\date{September 24, 2026}
 
 \setbeamertemplate{frametitle continuation}[from second]
 \begin{document}
 \frame{\titlepage}
 
-\begin{frame}[fragile]{Outline}
-\protect\hypertarget{outline}{}
-\begin{enumerate}
-\tightlist
-\item
-  \textbf{Basic concepts:} image, Runtime, session, microVM, and how
-  they relate
-\item
-  \textbf{The dataset:} Terminal-Bench rows, images, sizes, and why each
-  row has its own image
-\item
-  \textbf{Training-time wiring:} how the Runtime is invoked, how
-  sessions launch, how many exist, and how episodes are isolated
-\item
-  \textbf{Cold start:} the problem, the options, the best one, and what
-  the demo uses
-\item
-  \textbf{The demo:} components, step-by-step flow, and the metrics we
-  collect (what each one means and why we care)
-\end{enumerate}
-
-Source: \texttt{code/demos/demo\_cpu\_terminalbench/} (deploy, pool,
-grader, probe, and \texttt{run.sh}).
-\end{frame}
-
-\hypertarget{basic-concepts}{%
-\section{1 · Basic concepts}\label{basic-concepts}}
-
-\begin{frame}[fragile]{Image → Runtime → session → microVM}
-\protect\hypertarget{image-runtime-session-microvm}{}
+\begin{frame}[fragile]{Summary}
+\protect\hypertarget{summary}{}
 \begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.0952}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.4603}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3333}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1111}}@{}}
-\caption{Image, Runtime, session and microVM: definitions, lifetimes and
-counts}\tabularnewline
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.1522}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.8478}}@{}}
+\caption{The deck in one table}\tabularnewline
 \toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Concept
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-What it is
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Lifetime
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Count in this demo
-\end{minipage} \\
-\midrule\noalign{}
 \endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Concept
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-What it is
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Lifetime
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Count in this demo
-\end{minipage} \\
-\midrule\noalign{}
 \endhead
-\textbf{Image} & arm64 container image in ECR: the task's own
-environment plus a thin wrapper & Built once & One per task \\
-\textbf{Runtime} & An AgentCore \emph{agent runtime}: a registered,
-versioned endpoint pinned to one image digest (ARN) & Long-lived; costs
-nothing when idle & One per image \\
-\textbf{Session} & A \texttt{runtimeSessionId} on a Runtime; invokes
-with the same id reach the same sandbox & First invoke →
-\texttt{StopRuntimeSession} or ≈ 15 min idle & One per
-\textbf{episode} \\
-\textbf{microVM} & A Firecracker VM (2 vCPU, 8 GB) that runs the image's
-container for exactly one session & Same as its session & One per
-session \\
+\textbf{Goal} & RL-train Qwen3-4B (slime GRPO) on Terminal-Bench, every
+episode in its own AgentCore microVM \\
+\textbf{Challenge} & Isolation needs a \textbf{fresh microVM per
+episode}, so every episode pays a \textbf{cold start}, in bursts, at
+every step \\
+\textbf{Solution} & \textbf{Look-ahead pre-open:} replay slime's data
+order and boot the next 2 batches' sessions (P = 64) before slime asks;
+heartbeat keeps them alive \\
+\textbf{Result} & Smoke run on AWS: 382 episodes, \textbf{0 infra
+errors}, \texttt{open\_wait\_ms} \textbf{p95 = 0} (no boot on the
+critical path). Cost: ≈ 95 \% of microVM time idle; reward sparse (4
+solves) \\
 \bottomrule\noalign{}
 \end{longtable}
+
+Source: \texttt{code/demos/demo\_cpu\_terminalbench/}.
 \end{frame}
 
-\begin{frame}{How they relate}
-\protect\hypertarget{how-they-relate}{}
-\centerline{\includegraphics[width=\textwidth,height=0.46\textheight]{figures/tb_fig01_cardinality.pdf}}
+\hypertarget{setup}{%
+\section{1 · Setup}\label{setup}}
 
-\centerline{\emph{Figure 1: Cardinality: image 1:1 Runtime 1:N session 1:1 microVM.}}
+\begin{frame}[fragile]{One image → one Runtime → one microVM per
+episode}
+\protect\hypertarget{one-image-one-runtime-one-microvm-per-episode}{}
+\centerline{\includegraphics[width=\textwidth,height=0.42\textheight]{figures/tb_fig01_cardinality.pdf}}
+
+\centerline{\emph{Figure 1: image 1:1 Runtime 1:N session 1:1 microVM.}}
 
 \begin{itemize}
 \tightlist
 \item
-  \textbf{Session = microVM, 1:1}, terminated and memory-sanitized on
-  stop. \textbf{The session is the isolation boundary.}
+  \textbf{Each Terminal-Bench task is its own environment} (OS,
+  packages, a deliberately broken state), so each task gets its own
+  arm64 image and its own AgentCore Runtime: \textbf{218 Runtimes},
+  routed by task id.
 \item
-  \textbf{One image per Runtime}, so many environments need many
-  Runtimes (quota: 1000 per account, adjustable) {[}Q1{]}.
+  \textbf{Session = microVM, 1:1.} A new \texttt{runtimeSessionId} boots
+  a fresh Firecracker VM (2 vCPU, 8 GB) from the pristine image;
+  \texttt{StopRuntimeSession} terminates and sanitizes it.
 \item
-  \textbf{Serverless limits:} arm64 only · image ≤ 2 GB (fixed) · ≤ 25
-  new sessions/s per account · ≤ 15 min per invoke · 15 min idle →
-  reclaimed {[}Q1{]}.
+  The image is untouched except for one wrapper layer: a standalone
+  Python + a stdlib HTTP server (\texttt{exec}, files, boot timestamps).
+  Hidden tests are injected \textbf{after} the agent finishes.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile]{What the wrapper adds to each task image}
-\protect\hypertarget{what-the-wrapper-adds-to-each-task-image}{}
-Terminal-Bench ships a bespoke Dockerfile per task. We \textbf{leave the
-task environment untouched} and append one layer:
-
-\begin{verbatim}
-USER root
-COPY --from=acs py /opt/acs/py            # standalone CPython 3.12 (54 MB), not the task's
-COPY --from=acs acs_http_server.py sandbox_server_agent.py /opt/acs/
-ENTRYPOINT []
-CMD ["/opt/acs/py/bin/python3", "/opt/acs/acs_http_server.py"]   # :8080 /ping + /invocations
-\end{verbatim}
-
-\centerline{\emph{Figure 2: The wrapper layer appended to every task Dockerfile.}}
-
-\begin{itemize}
-\tightlist
-\item
-  \textbf{Why a standalone Python?} Task images range from python3.8 to
-  having no Python at all. Running \texttt{pip\ install} in them would
-  fail on some, and it would also \textbf{change the environment being
-  graded}.
-\item
-  \textbf{The server is stdlib-only.} It handles \texttt{exec},
-  \texttt{write\_file}, \texttt{read\_file} and \texttt{put\_tar}. It
-  reports the image's own WORKDIR (\texttt{/app}, \texttt{/app/astropy},
-  \texttt{/home/alice}, \ldots) and \textbf{boot timestamps} that let us
-  decompose cold start.
-\item
-  \textbf{The hidden tests are \emph{not} in the image.} The grader
-  injects them only after the agent finishes, as Terminal-Bench's own
-  harness does, so the root agent cannot read them while solving.
-\end{itemize}
-\end{frame}
-
-\hypertarget{the-dataset}{%
-\section{2 · The dataset}\label{the-dataset}}
-
-\begin{frame}[fragile]{Terminal-Bench: 229 tasks = 229 images}
-\protect\hypertarget{terminal-bench-229-tasks-229-images}{}
+\begin{frame}{The dataset}
+\protect\hypertarget{the-dataset}{}
 \begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
-\caption{Terminal-Bench task and image counts}\tabularnewline
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3178}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.1028}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5794}}@{}}
+\caption{From benchmark to training set}\tabularnewline
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
+Stage
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Count
+Tasks
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Dropped because
 \end{minipage} \\
 \midrule\noalign{}
 \endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
+Stage
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Count
+Tasks
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Dropped because
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-Tasks (dataset rows) & \textbf{229} (easy 59 · medium 113 · hard 57) \\
-Distinct environment images needed & \textbf{229} (one per task; no two
-tasks share one) \\
-Built for arm64 and ≤ 2048 MB → deployable & \textbf{218} \\
-Exceed the 2048 MB cap (mteb-×3 at 6.6 GB, png-generation at 6.5 GB) &
-4 \\
-Don't build for arm64 (amd64-only base, qemu-system, x86 wheels, slurm)
-& 7 \\
-Top categories & software-eng 46 · sysadmin 25 · data-sci 19 ·
-sci-computing 18 · security 18 · debugging 17 \\
-\bottomrule\noalign{}
-\end{longtable}
-
-Each row is a natural-language instruction plus its own Docker
-environment, a hidden pytest suite (\texttt{tests/},
-\texttt{run-tests.sh}) and a reference \texttt{solution.sh}. \textbf{The
-reward is 1 only if every test passes.}
-
-\textbf{Train/eval split:} 80/20, disjoint by task and stratified by
-difficulty. Training rows are further filtered to \textbf{oracle-valid}
-tasks (see Section 5): \textbf{166 usable → 135 train + 31 held-out
-eval}.
-\end{frame}
-
-\begin{frame}[fragile]{Image sizes (compressed, as pulled from ECR)}
-\protect\hypertarget{image-sizes-compressed-as-pulled-from-ecr}{}
-\begin{longtable}[]{@{}ll@{}}
-\caption{Image size distribution (compressed)}\tabularnewline
-\toprule\noalign{}
-Size bucket & Images \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-Size bucket & Images \\
-\midrule\noalign{}
-\endhead
-\textless{} 250 MB & \textbf{156} \\
-250 -- 500 MB & 45 \\
-500 MB -- 1 GB & 10 \\
-1 -- 2 GB & 7 \\
-\textgreater{} 2 GB (not deployable) & 4 \\
+Terminal-Bench tasks & 229 & --- \\
+Deployable (arm64, ≤ 2 GB image) & \textbf{218} & 7 don't build for
+arm64 · 4 exceed the fixed 2 GB image cap \\
+Oracle-usable & \textbf{166} & 47 reference solution fails on this
+substrate · 5 timed out · 0 pass untouched \\
+Train / held-out eval & \textbf{135 / 31} & 80/20, disjoint by task,
+stratified by difficulty \\
 \bottomrule\noalign{}
 \end{longtable}
 
 \begin{itemize}
 \tightlist
 \item
-  Percentiles: min 61 MB · p25 74 MB · \textbf{p50 128 MB} · p75 302 MB
-  · p90 492 MB · max 6.7 GB, over all 222 built images (74 GB). The 218
-  deployable images total \textbf{48 GB}.
+  \textbf{Oracle check:} keep a task only if the reference solution
+  passes \textbf{and} the untouched environment fails; otherwise its
+  reward is structurally 0 or 1.
 \item
-  The heavy tail (ML models, conda, TeX, compilers) is what makes cold
-  start vary by an order of magnitude.
+  Images: p50 128 MB, p90 492 MB, max 2 GB (48 GB total). The heavy tail
+  (ML models, TeX, toolchains) is what makes boot time vary.
 \item
-  \textbf{Build cost:} 229 buildx arm64 builds under QEMU on a 192-core
-  x86 host, 64 in parallel, took about 2 h wall-clock. Most finish in
-  1--3 min; C and C++ toolchains under emulation are the tail
-  (\texttt{custom-memory-heap-crash}, a GCC build, alone took 2 h). The
-  build is resumable: a wrapper-hash tag skips images that are already
-  pushed.
+  \textbf{Reward = 1 only if every hidden test passes.}
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile]{Why one image per dataset row?}
-\protect\hypertarget{why-one-image-per-dataset-row}{}
-\begin{itemize}
-\tightlist
-\item
-  \textbf{The environment \emph{is} the task.} ``Fix this broken conda
-  env'', ``recover this corrupted SQLite db'' and ``harden this nginx
-  config'' each need a specific OS, packages, files and even a broken
-  state to start from. That state can't be recreated with a
-  \texttt{pip\ install} at episode start.
-\item
-  \textbf{Graded against its own environment.} Tests check the real
-  system state (files, services, binaries). A shared ``fat'' image would
-  have package conflicts between tasks, and some tasks deliberately
-  \emph{break} the base environment.
-\item
-  \textbf{Setup is too heavy to do at runtime.} Tasks bundle compiled
-  toolchains, models and datasets, up to GBs each. Doing that per
-  episode would cost minutes, which is far worse than pulling an image.
-\item
-  \textbf{Faithful to the benchmark.} Terminal-Bench scores are only
-  comparable if each task runs in its official environment.
-\end{itemize}
+\begin{frame}[fragile]{How one episode runs}
+\protect\hypertarget{how-one-episode-runs}{}
+\centerline{\includegraphics[width=\textwidth,height=0.56\textheight]{figures/tb_fig03_episode-workflow.pdf}}
 
-⇒ \textbf{One image → one Runtime → routed by task id.} The pool map
-\texttt{AGENTCORE\_SANDBOX\_RUNTIME\_ARN\_BY\_IMAGE\ =\ \{task\ →\ ARN\}}
-sends each episode to its own task's Runtime. A task missing from the
-map is an \textbf{error}; it is never sent to some other task's Runtime.
-\end{frame}
-
-\hypertarget{training-time-wiring}{%
-\section{3 · Training-time wiring}\label{training-time-wiring}}
-
-\begin{frame}[fragile]{How a Runtime is invoked and a session launched}
-\protect\hypertarget{how-a-runtime-is-invoked-and-a-session-launched}{}
-\centerline{\includegraphics[width=\textwidth,height=0.58\textheight]{figures/tb_fig03_episode-workflow.pdf}}
-
-\centerline{\emph{Figure 3: Episode flow: routing, session launch, agent loop,
-grading, stop.}}
+\centerline{\emph{Figure 2: route → fresh session → agent loop → grade → stop.}}
 
 \begin{itemize}
 \tightlist
 \item
-  \textbf{There is no ``create session'' API call.} The first invoke
-  carrying a new \texttt{runtimeSessionId} \emph{is} the launch.
+  There is no ``create session'' call: the first invoke with a new
+  \texttt{runtimeSessionId} \textbf{is} the boot.
 \item
-  All calls go through the IAM control plane with
-  \texttt{networkMode=PUBLIC}: the sandbox needs internet egress
-  (\texttt{run-tests.sh} installs uv and pytest), and it never dials
-  back to the trainer.
+  One step = RB 4 prompts × NS 8 samples = \textbf{32 episodes = 32
+  fresh microVMs}; 4 harness workers run them.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile]{How many sessions and microVMs?}
-\protect\hypertarget{how-many-sessions-and-microvms}{}
-Default smoke config: \texttt{RB=4} prompts × \texttt{NS=8} GRPO samples
-gives \textbf{32 episodes per rollout step}.
+\hypertarget{the-challenge-cold-start}{%
+\section{2 · The challenge: cold start}\label{the-challenge-cold-start}}
+
+\begin{frame}[fragile]{Why every episode pays a boot}
+\protect\hypertarget{why-every-episode-pays-a-boot}{}
+\textbf{We can't reuse a warm VM.} Terminal-Bench tasks change the whole
+OS (apt, \texttt{/etc}, services, \texttt{/tmp}). Resetting a workdir
+would leak state into the next episode and corrupt the reward and the
+GRPO advantage. \textbf{The session is the isolation boundary}, so each
+episode needs a new one.
 
 \begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2615}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2000}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5385}}@{}}
-\caption{Sessions and microVMs per training step (smoke
-config)}\tabularnewline
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5567}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.4433}}@{}}
+\caption{Cold-start cost}\tabularnewline
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
-Quantity
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Value
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Why
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Quantity
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Value
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Why
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-Sessions per step & \textbf{32} = RB × NS & One fresh session per
-episode, never reused \\
-microVMs per step & \textbf{32} & Session = microVM, 1:1 \\
-Running concurrently & \texttt{HARNESS\_WORKERS} (4) & Warm in-process
-agent workers \\
-Pre-opened, booting ahead & ≤ P = 64 & The next \textbf{2 batches}
-(\texttt{TB\_PREOPEN\_BATCHES} × RB × NS), announced by the look-ahead
-data source \\
-Peak live microVMs & ≈ 68 (W + P) & Bounded, so idle VMs are bounded \\
-Distinct Runtimes touched per step & ≤ RB (4) & The NS siblings of a
-prompt share the task's Runtime but get \textbf{different} sessions \\
-\bottomrule\noalign{}
-\end{longtable}
-
-\textbf{Scaling:} raise \texttt{HARNESS\_WORKERS} for throughput; set
-\texttt{TB\_PREOPEN\_BATCHES} for how far ahead to boot. The ceilings
-are the account session quota (5000 active sessions {[}Q2{]}) and 25 new
-sessions per second (throttled opens are retried with backoff). A full
-run over 218 Runtimes stays well under the 1000-Runtime quota.
-\end{frame}
-
-\begin{frame}{Example: 4 prompts × 8 samples, shared tasks or not}
-\protect\hypertarget{example-4-prompts-8-samples-shared-tasks-or-not}{}
-\textbf{Sessions per step = RB × NS = 32, always.} Only the number of
-Runtimes used changes: a Runtime belongs to a task's image, not to a
-prompt.
-
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3478}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1630}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3261}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1630}}@{}}
-\caption{Runtimes (= images) and sessions per step, shared tasks or
-not}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Batch (4 prompts)
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Runtimes used
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Sessions per Runtime
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Sessions total
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Batch (4 prompts)
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Runtimes used
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Sessions per Runtime
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Sessions total
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-A, B, C, D (all different) & 4 & A 8 · B 8 · C 8 · D 8 & \textbf{32} \\
-A, A, B, C & 3 & A \textbf{16} · B 8 · C 8 & \textbf{32} \\
-A, A, B, B & 2 & A 16 · B 16 & \textbf{32} \\
-A, A, A, A & 1 & A \textbf{32} & \textbf{32} \\
-\bottomrule\noalign{}
-\end{longtable}
-
-\begin{itemize}
-\tightlist
-\item
-  \textbf{Shared task → fewer Runtimes, never fewer sessions.} Each
-  episode still gets its own fresh microVM.
-\item
-  \textbf{No Runtime is created in training.} All 218 exist from deploy;
-  unused ones cost nothing.
-\item
-  \textbf{No per-Runtime session limit.} The limits are account-wide
-  (concurrent sessions, 25 new/s). Live microVMs stay ≤ W + P = 68 in
-  every case.
-\item
-  \emph{Sharing is rare here:} one row per task, so a batch repeats a
-  task only across an epoch boundary.
-\end{itemize}
-\end{frame}
-
-\begin{frame}[fragile]{Who knows what: slime vs the pool vs AgentCore}
-\protect\hypertarget{who-knows-what-slime-vs-the-pool-vs-agentcore}{}
-\textbf{slime knows none of it.} It only knows prompts (dataset rows)
-and calls one \texttt{generate()} hook per sample. Tasks, images,
-Runtimes, sessions and the queue all live in \emph{our}
-\texttt{TerminalBenchPool}, inside slime's rollout process.
-
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2193}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.4649}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3158}}@{}}
-\caption{Who knows what, by layer}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Layer
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Knows
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Does not know
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Layer
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Knows
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Does not know
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-\textbf{slime} & Rows of \texttt{tb\_train.jsonl}; RB × NS; how many
-\texttt{generate()} calls may be in flight (\texttt{CONC\ ×\ engines} =
-8) & Which image or Runtime a row needs; that sessions exist \\
-\textbf{Dataset row} & \texttt{metadata.task.spec.image} = the task name
-(plus prompt, timeouts) & ARNs (kept out of the data, so a redeploy
-needs no rebuild) \\
-\textbf{\texttt{LookaheadDataSource}} (our slime data source) & slime's
-prompt order: dataset seed, epoch, offset → the prompts of the
-\textbf{next 2 rollouts}, before slime draws them & ARNs or sessions (it
-hands the list to the pool) \\
-\textbf{\texttt{TerminalBenchPool}} (our generate hook) & Pool map
-\texttt{\{task\ →\ ARN\}} from env \texttt{...\_ARN\_BY\_IMAGE} (set by
-\texttt{run.sh}); the ordered list of upcoming episodes; ready sessions
-per task; heartbeat set & Nothing about the model or GRPO \\
-\textbf{AgentCore} & Each Runtime's image; which
-\texttt{runtimeSessionId}s are live microVMs & How many episodes are
-coming. No session count is ever declared \\
-\bottomrule\noalign{}
-\end{longtable}
-\end{frame}
-
-\begin{frame}[fragile]{How a queued episode finds its image, Runtime and
-session}
-\protect\hypertarget{how-a-queued-episode-finds-its-image-runtime-and-session}{}
-\begin{enumerate}
-\tightlist
-\item
-  \textbf{slime draws a batch} through our \texttt{LookaheadDataSource}.
-  It also \textbf{peeks} the next 2 rollouts' prompts (replaying slime's
-  seeded shuffle, without moving slime's position) and calls
-  \texttt{pool.reserve(drawn\ 32,\ upcoming\ 64)}.
-\item
-  \textbf{Routing:} each upcoming episode's task (\texttt{spec.image} =
-  task name) is looked up as \texttt{ARN\ =\ pool\_map{[}spec.image{]}}.
-  An unmapped task fails right away.
-\item
-  \textbf{Pre-open:} \texttt{\_refill()} boots a fresh session (a
-  \texttt{ping} with a new id
-  \texttt{tbep-\textless{}32\ hex\textgreater{}}) for each of the first
-  \textbf{P} = \texttt{TB\_PREOPEN\_BATCHES} × RB × NS (64) upcoming
-  episodes, in order, kept per task in \texttt{\_ready{[}ARN{]}}.
-\item
-  \textbf{slime calls} \texttt{generate(sample)} for the batch, at most
-  \texttt{CONC\ ×\ engines} (8) in flight; our hook calls
-  \texttt{pool.submit(task)}.
-\item
-  \textbf{Pickup:} a free harness worker (one of
-  \texttt{HARNESS\_WORKERS}) \texttt{\_claim}s \textbf{any} ready
-  session for its task. If none is ready, it opens one then. The claim
-  moves the window on by one episode, so the next upcoming episode
-  starts booting.
-\item
-  \textbf{End:} grade, then \texttt{StopRuntimeSession}, and slime gets
-  the finished sample back.
-\end{enumerate}
-
-\textbf{So the number of sessions per Runtime is never configured.} It
-emerges from the data. A task sampled in a step gets \textbf{NS}
-sessions on its Runtime (one per GRPO sibling), and a task not sampled
-gets 0. Live sessions are bounded by workers and the pre-open window
-(\texttt{TB\_PREOPEN\_BATCHES} × RB × NS), not by any per-Runtime
-setting.
-\end{frame}
-
-\begin{frame}[fragile]{Terminal-Bench look-ahead pre-open (1/2): status
-and why}
-\protect\hypertarget{terminal-bench-look-ahead-pre-open-12-status-and-why}{}
-\textbf{Status.} The look-ahead has now run in real training on AWS
-(first smoke run, 2026-09-23): all 382 episodes got a pre-opened session
-and \texttt{open\_wait\_ms} was 0 at p95 (Results slide). With the
-defaults (4 prompts × 8 samples, 2 batches ahead), the pool keeps
-\textbf{64 microVMs booted ahead} of the episodes that are running.
-
-\textbf{How the pool learns the next two batches' episodes.} slime would
-never tell it in time: it passes along only \textbf{8 episodes} of the
-current batch at once and doesn't draw the next batch until the current
-one finishes. But slime's prompt order is \textbf{predictable}: it walks
-a shuffled dataset in order, with a fixed seed for each epoch. So a data
-source can compute what slime will draw next.
-\end{frame}
-
-\begin{frame}[fragile]{Terminal-Bench look-ahead pre-open (2/2): the
-five steps}
-\protect\hypertarget{terminal-bench-look-ahead-pre-open-22-the-five-steps}{}
-\begin{enumerate}
-\tightlist
-\item
-  A new \textbf{look-ahead data source}
-  (\texttt{agentcore\_slime\_demo/tb\_lookahead\_source.py}, wired in
-  \texttt{run.sh} with \texttt{-\/-data-source-path}) wraps slime's
-  normal one. Each time slime draws a batch, it also works out the
-  prompts of the next 2 batches the same way slime will draw them,
-  without moving slime's position.
-\item
-  It sends the pool the task list for each upcoming episode: the
-  \textbf{32} just drawn, plus the next \textbf{64}.
-\item
-  The pool keeps the first \textbf{64} not-yet-started episodes booted,
-  each on its own brand-new session on that task's Runtime. Sessions are
-  matched by task, and each one still serves exactly one episode.
-\item
-  When a worker starts an episode, it takes a ready session for that
-  task and the next episode in line starts booting. So 64 always stay
-  booted ahead, which covers batch \textbf{N+2} before slime draws it.
-  The existing heartbeat keeps waiting sessions alive.
-\item
-  If a prediction is wrong, the extra sessions are stopped at the next
-  draw and those episodes just open on demand.
-\end{enumerate}
-\end{frame}
-
-\begin{frame}[fragile]{Pre-opening sessions for upcoming episodes}
-\protect\hypertarget{pre-opening-sessions-for-upcoming-episodes}{}
-\textbf{Runtimes are never pre-opened}: all 218 were created at deploy
-and stay \texttt{READY} at no idle cost. What is pre-opened is the
-\textbf{session}, which is the \textbf{microVM}.
-
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.1622}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2973}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5405}}@{}}
-\caption{Episode states inside TerminalBenchPool}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Episode state
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Where in the pool
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-What happens
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Episode state
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Where in the pool
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-What happens
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-\textbf{upcoming} & \texttt{\_demand} (drawn) / \texttt{\_future}
-(peeked next 2 rollouts), as ARNs in run order & Announced by
-\texttt{LookaheadDataSource}; beyond the first 64, no session yet \\
-\textbf{pre-opening} & \texttt{\_ready{[}ARN{]}} (asyncio task) & New id
-\texttt{tbep-\textless{}hex\textgreater{}} → \texttt{InvokeAgentRuntime}
-ping → AgentCore allocates, pulls, boots. A failure is retried on a new
-id (3×) \\
-\textbf{booted, idle} & same task, done & \texttt{SessionKeeper} runs a
-no-op exec every \textasciitilde7.5 min (\textless{} 15-min idle
-timeout) \\
-\textbf{claimed} & popped by a worker (any ready one for its task) & The
-worker awaits it; any boot left is \texttt{open\_wait\_ms} \\
-\textbf{closed} & removed & Graded, then \texttt{StopRuntimeSession}
-terminates the microVM \\
-\bottomrule\noalign{}
-\end{longtable}
-
-\textbf{\texttt{\_refill()}} (on every draw, \texttt{submit} and claim):
-keep one ready session per episode in the first P = 64 upcoming ones,
-pooled per task, and \textbf{stop} any ready session that fell out of
-the window (a wrong guess). Live microVMs ≤ W + P = 68.
-\end{frame}
-
-\begin{frame}[fragile]{Worked example (1/2): one step with the next two
-booting}
-\protect\hypertarget{worked-example-12-one-step-with-the-next-two-booting}{}
-Step N: RB = 4 prompts (tasks \textbf{A} \texttt{broken-python},
-\textbf{B} \texttt{chess-best-move}, \textbf{C} \texttt{build-pmars},
-\textbf{D} \texttt{cancel-async-tasks}) × NS = 8 = 32 episodes. Steps
-N+1 (tasks E--H) and N+2 (I--L) follow. W = 4, P = 64, in-flight cap 8.
-
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.0275}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.5229}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1560}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1284}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1651}}@{}}
-\caption{Worked example, step N with look-ahead (W = 4, P =
-64)}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-\#
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Event
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Workers run
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Pre-opened (booted or booting)
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Live microVMs
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-\#
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Event
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Workers run
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Pre-opened (booted or booting)
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Live microVMs
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-0 & \emph{While step N−1 ran}, its draw already announced steps N and
-N+1, so A--D and E--H were booted & N−1's episodes & A1--D8, E1--H8 & ≤
-68 \\
-1 & slime draws step N (A--D) and peeks N+1, N+2. \texttt{reserve} →
-window = A--D + E--H: already booted, so nothing new to open & -- & 64
-(A--H) & 64 \\
-2 & slime admits 8 \texttt{generate()} calls (A1--A8). Workers 0--3
-\texttt{\_claim} booted A sessions: \texttt{open\_wait\_ms\ ≈\ 0} &
-A1--A4 & 60 & 64 \\
-3 & Each claim moves the window: the next upcoming episodes (I1, I2,
-\ldots) of step N+2 start booting & A1--A4 & 64 (A5--H8 + I1--I4) &
-68 \\
-4 & A2 ends: grade → \texttt{StopRuntimeSession} → slime admits B1;
-worker takes a booted A5; I5 starts booting & 4 & 64 & ≤ 68 \\
-\bottomrule\noalign{}
-\end{longtable}
-\end{frame}
-
-\begin{frame}[fragile]{Worked example (2/2): the step boundary}
-\protect\hypertarget{worked-example-22-the-step-boundary}{}
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.0275}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.5229}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1560}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1284}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1651}}@{}}
-\caption{Worked example, across the step boundary (W = 4, P =
-64)}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-\#
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Event
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Workers run
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Pre-opened
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Live microVMs
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-\#
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Event
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Workers run
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Pre-opened
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Live microVMs
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-5 & Steady state: each finish stops one VM, a worker claims a
-\emph{booted} session, one more of step N+2 boots & 4 & 64 & ≤ 68 \\
-6 & Last samples (D5--D8) finish. Window = E--H (booted) + I1--J8
-(booted by the claims) & ≤ 4 & 64 & falling to 64 \\
-7 & slime trains on 4 groups of 8; the 64 ready VMs idle through
-training (heartbeat keeps them) & -- & 64 & 64 \\
-8 & Step N+1 draws E--H: \textbf{all already booted}, so its first
-episodes start with \texttt{open\_wait\_ms\ ≈\ 0} & 4 & 64 & ≤ 68 \\
-\bottomrule\noalign{}
-\end{longtable}
-
-\textbf{Tally for the step:} Runtimes A, B, C and D each served
-\textbf{8 sessions} (8 microVMs, one per GRPO sibling). The other
-Runtimes of the step served 0. Peak live microVMs: \textbf{68}. Nobody
-configured ``8 per Runtime'': it falls out of NS.
-
-\textbf{Why it works:} every episode, including the first of each step,
-is booted a full batch or more before a worker needs it. The price is
-idle microVM time (next slides).
-\end{frame}
-
-\begin{frame}[fragile]{How to set \texttt{TB\_PREOPEN\_BATCHES} (1/3):
-the sizing rule}
-\protect\hypertarget{how-to-set-tb_preopen_batches-13-the-sizing-rule}{}
-W = \texttt{HARNESS\_WORKERS}, P = \texttt{TB\_PREOPEN\_BATCHES} × RB ×
-NS (the only pre-open knob; P follows from it), B = cold start
-(\texttt{open\_ms}), E = episode time (agent + grade).
-
-\begin{itemize}
-\tightlist
-\item
-  In steady state a worker frees up every \textbf{E / W} seconds. An
-  episode that starts booting is picked up after the \textbf{P} episodes
-  ahead of it, so it has about \textbf{P · E / W} seconds to boot.
-\item
-  \textbf{Hidden boot needs P · E / W ≥ B, i.e.~P ≥ ⌈W · B / E⌉}, plus
-  1--2 for jitter. Across a step boundary the window must also cover the
-  first W episodes of the next step, so
-  \textbf{\texttt{TB\_PREOPEN\_BATCHES} ≥ 1} (P ≥ RB × NS) removes the
-  per-step boot tail.
-\item
-  \textbf{Each booted VM then idles for about P · E / W − B} (plus
-  training time at a step boundary). That is paid microVM time; the
-  heartbeat keeps it alive past the 15-min idle timeout, but it still
-  costs money.
-\end{itemize}
-\end{frame}
-
-\begin{frame}[fragile]{How to set \texttt{TB\_PREOPEN\_BATCHES} (2/3):
-choosing a value}
-\protect\hypertarget{how-to-set-tb_preopen_batches-23-choosing-a-value}{}
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3191}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.0638}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3830}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2340}}@{}}
-\caption{Choosing TB\_PREOPEN\_BATCHES (illustrative E, until
-\texttt{coldstart.csv} is in)}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-\texttt{TB\_PREOPEN\_BATCHES}
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-P
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Boot hidden?
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Idle per VM (E = 120 s, W = 4)
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-\texttt{TB\_PREOPEN\_BATCHES}
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-P
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Boot hidden?
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Idle per VM (E = 120 s, W = 4)
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-0 --- look-ahead off (queue only, ≈ W) & 4 & Mid-step only; each step's
-first W pay a boot & ≈ 2 min − B \\
-1 --- one batch ahead & 32 & Yes, including step starts & ≈ 16 min −
-B \\
-\textbf{2 --- default, two batches ahead} & \textbf{64} & Yes, with a
-full batch of slack & ≈ 32 min − B \\
-\bottomrule\noalign{}
-\end{longtable}
-
-\emph{\texttt{TB\_PREOPEN\_BATCHES} is the one pre-open knob. \texttt{0}
-turns the look-ahead off: only episodes slime has already submitted are
-pre-opened (about W).}
-
-\textbf{Measured in the smoke run} (P = 64): E ≈ 21 s, B ≈ 0.7 s (warm
-hit), booted VMs idle \textbf{7.3 min} p50. So
-\texttt{TB\_PREOPEN\_BATCHES} = 1 is the next setting to try.
-\end{frame}
-
-\begin{frame}[fragile]{How to set \texttt{TB\_PREOPEN\_BATCHES} (3/3):
-tuning}
-\protect\hypertarget{how-to-set-tb_preopen_batches-33-tuning}{}
-\begin{itemize}
-\tightlist
-\item
-  \textbf{\texttt{CONC} no longer has to follow:} the look-ahead comes
-  from the data source, so \texttt{run.sh} sets
-  \texttt{CONC\ =\ ⌈2W\ /\ engines⌉} (W running + W queued).
-\item
-  \textbf{One draw per rollout assumed} (no dynamic filtering or
-  over-sampling). A wrong guess only costs VMs stopped at the next draw.
-\item
-  \textbf{Ceilings:} live microVMs ≤ W + P, against a quota of
-  \textbf{5000} active sessions {[}Q2{]}; the first draw opens P at
-  once, so keep P within 25 new sessions/s.
-\end{itemize}
-
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.4811}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2830}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2358}}@{}}
-\caption{Tuning TB\_PREOPEN\_BATCHES from the collected
-metrics}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Symptom (from \texttt{{[}demo{]}} lines)
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Meaning
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Action
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Symptom (from \texttt{{[}demo{]}} lines)
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Meaning
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Action
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-\texttt{open\_wait\_ms} p50 ≫ 0 on \texttt{preopened=1} & Boots not
-finished at pickup & Raise \texttt{TB\_PREOPEN\_BATCHES} \\
-\texttt{preopened=0} on many train episodes & Look-ahead guessed wrong,
-or is off & Check the \texttt{{[}tb\_lookahead{]}} log lines \\
-\texttt{preopen\_idle\_ms} ≫ B, often many minutes & VMs booted far too
-early & Lower \texttt{TB\_PREOPEN\_BATCHES} to 1 (saves
-microVM-seconds) \\
-\texttt{open\_wait\_ms\ ≈\ 0} and \texttt{preopen\_idle\_ms} small &
-Balanced & Keep \\
-\bottomrule\noalign{}
-\end{longtable}
-\end{frame}
-
-\begin{frame}[fragile]{How far ahead can we pre-open?}
-\protect\hypertarget{how-far-ahead-can-we-pre-open}{}
-\textbf{As far as the look-ahead reaches: the next
-\texttt{TB\_PREOPEN\_BATCHES} rollouts (default 2).} The pool by itself
-sees only what slime has submitted, and slime draws step N+1 only after
-step N's rollout. So we added a data source that \textbf{peeks at
-slime's data order}.
-
-\begin{itemize}
-\tightlist
-\item
-  slime's order is deterministic: a sequential offset through the
-  dataset, reshuffled each epoch with
-  \texttt{random.seed(seed\ +\ epoch)}. \texttt{LookaheadDataSource}
-  replays that to list the next rollouts' prompts, across epoch
-  boundaries, without advancing slime.
-\item
-  \textbf{Units:} one batch = 4 prompts × 8 = \textbf{32 episodes = 32
-  microVMs}, so two batches ahead = \textbf{64 booted, idle, billed
-  microVMs}.
-\end{itemize}
-
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2273}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.4182}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3545}}@{}}
-\caption{Ways to pre-open across a step boundary}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Option
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Idea
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Catch
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Option
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Idea
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Catch
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-1. Fully-async rollout & slime streams samples continuously; no step
-boundary to drain & Slightly older weights (bounded staleness) \\
-\textbf{2. Peek at data order (used)} & Pool boots the next rows' VMs
-before slime asks & Guesses can be wrong; VMs idle through training \\
-3. Accept the tail & Nothing & About one boot per step (a few \%) \\
-\bottomrule\noalign{}
-\end{longtable}
-\end{frame}
-
-\begin{frame}[fragile]{Option 1 vs option 2: what actually runs early}
-\protect\hypertarget{option-1-vs-option-2-what-actually-runs-early}{}
-\textbf{Option 1 moves the whole episode earlier; option 2 moves only
-its microVM boot.}
-
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2708}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3646}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3646}}@{}}
-\caption{Option 1 vs option 2 for cross-step look-ahead}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-\textbf{1. Fully-async rollout}
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-\textbf{2. Peek at data order}
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-\textbf{1. Fully-async rollout}
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-\textbf{2. Peek at data order}
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-Who picks the next episodes & slime, which \textbf{really submits} them
-& Our pool, which \textbf{guesses} \\
-What runs early & The whole episode (agent + grade) & Only the session /
-microVM boot \\
-Policy weights & May be 1+ updates old (off-policy) & Current
-(on-policy, unchanged) \\
-Look-ahead can be wrong? & No, every episode started is used & Yes
-(dynamic sampling, filtering, restart) → wasted VMs \\
-Idle microVM time & Low: the episode starts after boot & High: idle
-through the step and training \\
-Code change & slime rollout mode (as in demo\_a) & New pool logic
-reading slime's data source \\
-Removes & The whole step barrier & Only the per-step boot tail \\
-\bottomrule\noalign{}
-\end{longtable}
-
-\textbf{What the demo does:} option 2, because it keeps training
-on-policy and needs no slime change (a \texttt{-\/-data-source-path}
-plugin). Watch \texttt{preopen\_idle\_ms}: if the idle cost dominates,
-lower \texttt{TB\_PREOPEN\_BATCHES} or move to option 1.
-\end{frame}
-
-\begin{frame}[fragile]{Isolation: how episodes can't affect each other}
-\protect\hypertarget{isolation-how-episodes-cant-affect-each-other}{}
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.4656}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5344}}@{}}
-\caption{Isolation mechanisms by layer}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Layer
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Mechanism
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Layer
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Mechanism
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-\textbf{Across tasks} & Different image → different Runtime → different
-microVM fleet. Nothing is shared. \\
-\textbf{Across episodes of the same task} (GRPO siblings, later steps) &
-A new \texttt{runtimeSessionId} per episode gives a \textbf{new microVM}
-from the pristine image. No reset or cleanup scripts to trust. \\
-\textbf{After the episode} & \texttt{StopRuntimeSession} right away: the
-VM is terminated, its memory is sanitized, and it never serves another
-episode. \\
-\textbf{Against reward hacking} & Tests are injected after the agent's
-last turn, and the reference solution is never in the image. \\
-\textbf{Trainer ↔ sandbox} & The sandbox is reached only through
-IAM-signed invokes. No inbound path to the trainer, and no credentials
-inside the VM. \\
-\bottomrule\noalign{}
-\end{longtable}
-
-\textbf{Why not reuse a warm session and reset its workdir?}
-Terminal-Bench tasks act on the \emph{whole OS} (apt installs,
-\texttt{/etc}, services, \texttt{/tmp}, kernel parameters). A workdir
-reset would leak that state into the next episode and corrupt both the
-reward and the GRPO advantage.
-\end{frame}
-
-\hypertarget{cold-start}{%
-\section{4 · Cold start}\label{cold-start}}
-
-\begin{frame}[fragile]{The challenge: every episode pays a boot}
-\protect\hypertarget{the-challenge-every-episode-pays-a-boot}{}
-A fresh session means allocating a microVM, pulling the image and
-starting the container before the first command runs.
-
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.6087}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.3913}}@{}}
-\caption{Cold-start phases}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Phase (measured from server boot timestamps)
+Cost of a fresh session
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 Typical
 \end{minipage} \\
@@ -1160,452 +295,371 @@ Typical
 \endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
-Phase (measured from server boot timestamps)
+Cost of a fresh session
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 Typical
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-\texttt{pull\_boot}: request sent → server process up (allocate, pull,
-start) & \textbf{≈ 15 s} for a 447 MB image (early measurement) \\
-\texttt{ready}: server up → first invoke delivered (health check,
-routing) & ≈ 0.7 s \\
-\textbf{Warm hit} (AgentCore had already pre-provisioned a VM for this
-Runtime) & \textbf{≈ 0.5 s} open \\
-\bottomrule\noalign{}
-\end{longtable}
-
-\begin{itemize}
-\tightlist
-\item
-  Scale: 32 episodes per step × about 15 s is \textbf{8 minutes of
-  serial boot per step} if it sits on the critical path.
-\item
-  The cost grows with image size (a long tail up to 2 GB), and it
-  happens \emph{in bursts}: all NS siblings of a task start at once.
-\item
-  Second failure mode, \textbf{idle reclaim:} a session idle ≈ 15 min is
-  reclaimed, and the weight-sync pause can leave a pre-opened or
-  mid-episode session silent that long.
-\end{itemize}
-
-Per-Runtime numbers: \texttt{probe\_coldstart.py} →
-\texttt{tasks/coldstart.csv} (Table 11).
-\end{frame}
-
-\begin{frame}{Options for dealing with cold start}
-\protect\hypertarget{options-for-dealing-with-cold-start}{}
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.3718}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1154}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1026}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.1987}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2115}}@{}}
-\caption{Cold-start mitigation options}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Option
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Hides boot?
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Isolation
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Cost
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Verdict
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Option
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Hides boot?
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Isolation
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Cost
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Verdict
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-A. Reuse one warm session per task, reset between episodes & ✓ & ✗ OS
-state leaks & Low & \textbf{Rejected}: breaks the reward \\
-B. Big standing warm pool of pre-opened sessions per task & ✓ & ✓ & ✗
-218 tasks × NS idle VMs & Wasteful at this scale \\
-C. Open on pickup (naive) & ✗ & ✓ & Low & Boot is on the critical
-path \\
-D. Shrink images (slim bases, lazy pull) & Partly & ✓ & Engineering per
-task & Changes the benchmark environment \\
-E. \textbf{Pre-open the next batches (data-order look-ahead) +
-heartbeat} & ✓ (including step starts) & ✓ & ≤ P = 64 extra VMs &
-\textbf{Best, and used} \\
-\bottomrule\noalign{}
-\end{longtable}
-
-Option E also benefits from AgentCore's own behaviour: a Runtime keeps a
-pre-provisioned spare microVM. The first session on it is a \textbf{warm
-hit} (about 0.5 s), and E hides the rest.
-\end{frame}
-
-\begin{frame}[fragile]{What the demo does (Option E)}
-\protect\hypertarget{what-the-demo-does-option-e}{}
-\begin{enumerate}
-\tightlist
-\item
-  \textbf{Look ahead two batches.} \texttt{LookaheadDataSource}
-  (\texttt{-\/-data-source-path}) tells the pool the episodes of the
-  current and next \texttt{TB\_PREOPEN\_BATCHES} (2) rollouts on every
-  draw, by replaying slime's deterministic data order.
-\item
-  \textbf{Pre-open a bounded window.} The pool keeps a fresh session
-  booted for each of the first \textbf{P} = 64 (2 × 4 × 8) upcoming
-  episodes, pooled per task; a worker takes any ready one for its task.
-  That caps the idle microVMs you pay for, and wrong guesses are stopped
-  at the next draw.
-\item
-  \textbf{Heartbeat.} A process-wide \texttt{SessionKeeper} pings every
-  open session (pre-opened or running) at half the idle timeout, so none
-  is reclaimed during the weight-sync stall.
-\item
-  \textbf{Retry on a new id.} If an open fails, it is retried on a
-  \textbf{new} session (\texttt{TB\_OPEN\_ATTEMPTS=3}). An infra failure
-  is logged as \texttt{infra\_error} and is \textbf{never} confused with
-  a wrong answer.
-\item
-  \textbf{Measure every boot.} The start line of each episode records
-  \texttt{open\_ms}, \texttt{pull\_boot\_ms}, \texttt{warm\_hit},
-  \texttt{ready\_ms}, \texttt{open\_wait\_ms} and
-  \texttt{preopen\_idle\_ms}. That shows how much boot was hidden and
-  how long a booted VM sat idle before pickup, which is what the
-  heartbeat must cover.
-\end{enumerate}
-\end{frame}
-
-\hypertarget{the-demo}{%
-\section{5 · The demo}\label{the-demo}}
-
-\begin{frame}[fragile]{Components}
-\protect\hypertarget{components}{}
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.1250}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3281}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5469}}@{}}
-\caption{Demo components}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Component
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-File
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Role
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Component
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-File
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Role
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-Fetch & \texttt{fetch\_terminalbench.py} & Downloads the 229 tasks and
-writes \texttt{tasks/manifest.json} \\
-Build + deploy & \texttt{deploy/deploy\_terminalbench.py} & Per task:
-wrapped Dockerfile → buildx arm64 → ECR → one Runtime pinned to the
-digest. Writes \texttt{arn\_by\_image.json} and \texttt{images.csv}
-(size, layers, build\_s, status) \\
-Sandbox server & \texttt{deploy/acs\_ctx/} \texttt{acs\_http\_server.py}
-& Stdlib AgentCore HTTP server in every image: exec, files,
-\texttt{put\_tar}, boot timestamps \\
-Oracle check & \texttt{validate\_oracle.py} & Per task: \emph{untouched
-env must fail} and \emph{reference solution must pass} →
-\texttt{oracle.csv} \\
-Cold-start probe & \texttt{probe\_coldstart.py} & First and burst opens
-on every Runtime → \texttt{coldstart.csv} (open, pull+boot, warm hit ×
-size) \\
-Dataset & \texttt{build\_terminalbench\_dataset.py} & Deployed ∩
-oracle-usable tasks → \texttt{tb\_train} / \texttt{tb\_eval} (disjoint,
-stratified) \\
-Look-ahead & \texttt{…/tb\_lookahead\_source.py} & slime data source:
-peeks the next 2 rollouts' prompts → \texttt{pool.reserve} \\
-Rollout pool & \texttt{…/terminalbench\_pool.py} & Routing, fresh
-session, pre-open window, heartbeat, agent loop, grading, metrics \\
-Agent & \texttt{mini\_agent.py} + AnthropicAdapter & Bash-tool loop
-against the policy under training (qwen25 tool parser) \\
-Trainer & \texttt{run.sh} & slime async GRPO, Qwen3-4B, 4 actor + 4
-rollout GPUs (Mode A) \\
-\bottomrule\noalign{}
-\end{longtable}
-\end{frame}
-
-\begin{frame}[fragile]{Step by step}
-\protect\hypertarget{step-by-step}{}
-\begin{enumerate}
-\tightlist
-\item
-  \textbf{Fetch} the tasks, then \textbf{build and deploy} the pool: 229
-  builds → 218 deployable Runtimes (one per task).
-\item
-  \textbf{Validate the oracle} on the real substrate. Keep a task only
-  if the reference solution passes \textbf{and} the untouched
-  environment fails. Otherwise the reward is structurally 0 (the task
-  can't be learned here) or structurally 1 (no signal).
-\item
-  \textbf{Probe cold start} across all Runtimes to get the boot vs
-  image-size distribution.
-\item
-  \textbf{Build the dataset} from deployed ∩ usable tasks: 80\% train
-  and 20\% held-out eval.
-\item
-  \textbf{Train.} Each step samples RB tasks × NS rollouts. Every
-  rollout gets a fresh session on its task's Runtime, booted up to two
-  batches ahead, runs up to 8 agent turns (bash tool, 180 s per
-  command), and is graded by the injected hidden tests. Reward is
-  \{0,1\}, then GRPO updates the weights.
-\item
-  \textbf{Evaluate} on the held-out tasks every \texttt{EVAL\_INTERVAL}
-  steps.
-\item
-  \textbf{Report} from the \texttt{{[}demo{]}\ episode\_end} lines:
-  solve rate by difficulty and category, and the cold-start and cost
-  breakdown.
-\end{enumerate}
-\end{frame}
-
-\begin{frame}[fragile]{Metrics we collect (1/2): learning and agent
-behaviour}
-\protect\hypertarget{metrics-we-collect-12-learning-and-agent-behaviour}{}
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2000}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.4000}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.4000}}@{}}
-\caption{Metrics: learning and agent behaviour}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Metric
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Meaning
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Why we care
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Metric
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Meaning
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Why we care
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-\texttt{rollout/raw\_reward} & Mean episode reward (fraction of train
-episodes that solved their task) & The primary signal that the policy is
-learning \\
-\texttt{eval/terminalbench} & Solve rate on \textbf{held-out} tasks &
-Generalization, not memorizing the train tasks \\
-Solve rate by \texttt{difficulty} / \texttt{category} & Reward grouped
-from \texttt{episode\_end} & Where the gains come from; whether hard
-tasks move at all \\
-Mixed-group fraction & Share of GRPO groups (NS siblings) with some
-solved \textbf{and} some failed & Only mixed groups produce a gradient.
-All-0 or all-1 groups are wasted compute \\
-Distinct tasks ever solved & Coverage of the train set & Shows whether
-RL expands the frontier or just sharpens a few tasks \\
-\texttt{turns}, \texttt{tool\_calls}, \texttt{stop} & Turns used, bash
-calls made, and why the episode ended (done, max\_turns, max\_tokens) &
-Whether the agent acts or just talks, and whether the 8-turn budget
-binds \\
-\texttt{tests\_passed} / \texttt{tests\_total} & Partial credit from
-pytest (logged, not rewarded) & Detects ``almost solved'' progress that
-binary reward hides \\
-\bottomrule\noalign{}
-\end{longtable}
-\end{frame}
-
-\begin{frame}[fragile]{Metrics we collect (2/2): grading,
-infrastructure, cost}
-\protect\hypertarget{metrics-we-collect-22-grading-infrastructure-cost}{}
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2179}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3911}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3911}}@{}}
-\caption{Metrics: grading, infrastructure and cost}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Metric
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Meaning
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Why we care
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Metric
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Meaning
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Why we care
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-\texttt{open\_ms} & First invoke sent → reply: the whole cold start this
-episode's session paid & The raw cost that pre-open must hide \\
-\texttt{pull\_boot\_ms} / \texttt{ready\_ms} & Sent → server up
-(allocate, pull, start) / server up → first invoke & Separates
-\textbf{image size} effects from \textbf{platform} overhead \\
-\texttt{warm\_hit} & 1 if the server was already up before we asked
-(pre-provisioned spare) & How often AgentCore's own warm VM saves the
+Cold boot: allocate VM, pull image, start server & \textbf{≈ 15 s} for a
+447 MB image; grows with image size \\
+Warm hit: AgentCore already had a spare VM up & ≈ 0.5 s \\
+Per step, if on the critical path & 32 × 15 s ≈ \textbf{8 min} of serial
 boot \\
-\texttt{open\_wait\_ms} & How long the worker \textbf{waited} on the
-session at pickup & \textbf{Boot left on the critical path}. Near 0
-means pre-open works \\
-\texttt{preopen\_idle\_ms} & Booted VM idle before a worker picked it up
-& Must stay ≪ 15 min idle timeout; sizes the heartbeat and P \\
-\texttt{open\_attempts}, \texttt{infra\_error} & Retries needed /
-episode lost to infra (open, grade) & Keeps infra failures \textbf{out
-of} the reward signal \\
-\texttt{grade\_ms}, \texttt{grade\_timeout} & Test runtime (includes
-installing uv and pytest) / tests hit their limit & Grading is part of
-every episode's latency \\
-\texttt{agent\_ms}, \texttt{episode\_ms}, \texttt{session\_s} & Agent
-loop time / total episode time / microVM lifetime & \texttt{session\_s}
-summed = \textbf{microVM-seconds = sandbox cost} \\
-\texttt{perf/sandbox\_ms\_*} vs \texttt{perf/sglang\_gen\_ms\_*} & Time
-in sandbox ops vs model generation & Which tier to scale: sandboxes or
-inference \\
 \bottomrule\noalign{}
 \end{longtable}
-\end{frame}
 
-\begin{frame}[fragile]{Results (1/2): data and learning}
-\protect\hypertarget{results-12-data-and-learning}{}
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2093}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5814}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2093}}@{}}
-\caption{Results: data and learning (smoke: RB = 4, NS = 8, 10 steps +
-eval)}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Item
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Value
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Source
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Item
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Value
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Source
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-Deployable Runtimes & 218 / 229 & \texttt{tasks/images.csv} \\
-Oracle-usable tasks & \textbf{166 / 218} (47 oracle fails here · 5
-errored/timeouts · \textbf{0} null-passes) &
-\texttt{tasks/oracle.csv} \\
-Dataset & 135 train + 31 held-out eval & \texttt{data/tb\_*.jsonl} \\
-Train solve rate, steps 1--10 & 0 · 0 · 0.088 · 0 · 0 · 0 · 0 · 0.026 ·
-0 · 0 (4 solves / 382 episodes) & \texttt{rollout/raw\_reward} \\
-Held-out solve rate (step 9) & 0.0 (31 tasks × 2) &
-\texttt{eval/terminalbench} \\
-Partial progress & 160 / 382 episodes pass ≥ 1 hidden test &
-\texttt{tests\_passed} \\
-\bottomrule\noalign{}
-\end{longtable}
-\end{frame}
-
-\begin{frame}[fragile]{Results (2/2): sandbox and cost}
-\protect\hypertarget{results-22-sandbox-and-cost}{}
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2093}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5814}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2093}}@{}}
-\caption{Results: sandbox and cost (W = 4, \texttt{TB\_PREOPEN\_BATCHES}
-= 2)}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Item
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Value
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Source
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Item
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Value
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Source
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-Boot hidden? \texttt{open\_wait\_ms} & \textbf{p50 0 ms · p95 0 ms} ·
-max 4.9 s (first 4 episodes only) & \texttt{{[}demo{]}} start lines \\
-Session open \texttt{open\_ms} & p50 0.66 s · p95 2.5 s · 100 \% warm
-hit · 0 open retries & \texttt{{[}demo{]}} start lines \\
-Episode time p50 / p90 & 21 s / 64 s (agent 9 s + grade 10 s) &
-\texttt{episode\_end} \\
-Pre-open idle p50 / max & \textbf{7.3 min} / 16.5 min (heartbeat kept
-all alive) & \texttt{preopen\_idle\_ms} \\
-microVM-seconds per train step & ≈ 13 000 (32 × 411 s mean
-\texttt{session\_s}); ≈ 95 \% idle & Σ \texttt{session\_s} \\
-Infra errors & \textbf{0} episodes lost; 15 \texttt{read\_file} tool
-errors on 4 tasks (agent-visible, not reward) & \texttt{infra\_error},
-\texttt{{[}sbx-op{]}} \\
-Cold open by image size & \emph{pending} (\texttt{probe\_coldstart.py}
-not yet run) & \texttt{tasks/coldstart.csv} \\
-\bottomrule\noalign{}
-\end{longtable}
-\end{frame}
-
-\begin{frame}[fragile]{What the smoke run tells us}
-\protect\hypertarget{what-the-smoke-run-tells-us}{}
 \begin{itemize}
 \tightlist
 \item
-  \textbf{The pipeline works end to end:} 382 episodes, each on its own
-  fresh microVM, 0 lost to infra, job succeeded in ≈ 70 min.
+  \textbf{Bursty:} all 8 GRPO siblings of a task start at once, on the
+  same Runtime.
 \item
-  \textbf{Pre-open fully hides the boot:} \texttt{open\_wait\_ms} is 0
-  at p95. But the price is high: a booted VM idles \textbf{≈ 7 min} for
-  a \textbf{≈ 21 s} episode, so ≈ 95 \% of microVM-seconds are idle. Per
-  the tuning table, \textbf{\texttt{TB\_PREOPEN\_BATCHES} = 1} (or 0,
-  since opens are ≈ 0.7 s warm hits) should keep boot hidden at a
-  fraction of the cost.
-\item
-  \textbf{Reward is sparse, not dead:} the tool loop runs (median 6
-  turns, 5 bash calls), 42 \% of episodes pass some tests, but only 4
-  full solves (\texttt{acl-permissions-inheritance} ×3,
-  \texttt{git-leak-recovery}). Qwen3-4B with 8 turns rarely produces
-  mixed GRPO groups, so a longer run needs an easier curriculum
-  (easy-first), more turns or a partial-credit reward.
+  \textbf{Idle reclaim:} a session silent for ≈ 15 min is reclaimed, and
+  the weight-sync pause can be that long.
 \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Why the trainer can't hide it on its own}
+\protect\hypertarget{why-the-trainer-cant-hide-it-on-its-own}{}
+\begin{itemize}
+\tightlist
+\item
+  \textbf{slime only reveals a few episodes at a time:} at most
+  \texttt{CONC\ ×\ engines} = 8 \texttt{generate()} calls in flight.
+\item
+  \textbf{It draws step N+1 only after step N finishes}, so every step's
+  first episodes would wait for a boot.
+\item
+  \textbf{slime knows nothing about sandboxes.} Tasks, Runtimes and
+  sessions all live in our \texttt{TerminalBenchPool}, inside slime's
+  rollout process.
+\end{itemize}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3929}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1161}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1518}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3393}}@{}}
+\caption{Options}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Option
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Hides boot?
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Keeps isolation?
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Catch
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Option
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Hides boot?
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Keeps isolation?
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Catch
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Reuse one warm session per task + reset & ✓ & ✗ & OS state leaks →
+\textbf{rejected} \\
+Standing warm pool per task & ✓ & ✓ & 218 tasks × NS idle VMs \\
+Open on pickup & ✗ & ✓ & Boot on the critical path \\
+Fully-async rollout & ✓ & ✓ & Off-policy (stale weights); slime mode
+change \\
+\textbf{Look-ahead pre-open (used)} & ✓ & ✓ & Guesses can be wrong;
+booted VMs idle \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\hypertarget{the-solution-look-ahead-pre-open}{%
+\section{3 · The solution: look-ahead
+pre-open}\label{the-solution-look-ahead-pre-open}}
+
+\begin{frame}[fragile]{Four mechanisms}
+\protect\hypertarget{four-mechanisms}{}
+\begin{enumerate}
+\tightlist
+\item
+  \textbf{Look-ahead data source.} \texttt{tb\_lookahead\_source.py} (a
+  \texttt{-\/-data-source-path} plugin) replays slime's deterministic
+  order (sequential offset, \texttt{random.seed(seed\ +\ epoch)}
+  shuffle) to list the \textbf{next 2 rollouts'} prompts, without moving
+  slime's position. No slime change.
+\item
+  \textbf{Bounded pre-open window.} The pool keeps a fresh session
+  booted for each of the next \textbf{P} = \texttt{TB\_PREOPEN\_BATCHES}
+  × RB × NS = \textbf{64} upcoming episodes, pooled per task. A worker
+  claims any ready session for its task; the claim moves the window on
+  by one. Wrong guesses are stopped at the next draw.
+\item
+  \textbf{Heartbeat.} A \texttt{SessionKeeper} pings every open session
+  at half the 15-min idle timeout, so none is reclaimed during training
+  or weight sync.
+\item
+  \textbf{Retry on a new id.} A failed open retries on a \textbf{new}
+  session (3×); an infra failure is logged as \texttt{infra\_error},
+  never scored as a wrong answer.
+\end{enumerate}
+
+Live microVMs ≤ W + P = 4 + 64 = \textbf{68}. The account quota is
+\textbf{5000} active sessions and 25 new/s {[}Q2{]}; throttled opens
+back off and retry.
+\end{frame}
+
+\begin{frame}{Across a step boundary}
+\protect\hypertarget{across-a-step-boundary}{}
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3600}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5280}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.1120}}@{}}
+\caption{Look-ahead across a step boundary (W = 4, P =
+64)}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Moment
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What happens
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Worker waits for a boot?
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Moment
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What happens
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Worker waits for a boot?
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Step N−1 running & Its draw already announced steps N and N+1 → 64
+sessions booting & --- \\
+Step N drawn & Window = steps N, N+1: already booted, nothing new to
+open & --- \\
+Each claim & Next episode of step N+2 starts booting & \textbf{No} \\
+Step N training & 64 booted VMs idle through training; heartbeat keeps
+them & --- \\
+Step N+1 drawn & All its episodes already booted & \textbf{No} \\
+\bottomrule\noalign{}
+\end{longtable}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Sessions per Runtime are never configured.} A task sampled in
+  a step gets NS = 8 sessions; others get 0.
+\item
+  \textbf{The price is idle time:} each VM is booted about P · E / W
+  seconds before it's needed (E = episode time).
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Sizing \texttt{TB\_PREOPEN\_BATCHES}}
+\protect\hypertarget{sizing-tb_preopen_batches}{}
+Boot is hidden when \textbf{P · E / W ≥ B} (B = boot time), and a window
+of at least one batch (P ≥ RB × NS) also covers each step's first
+episodes. Everything beyond that is paid idle time.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2653}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.0612}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3673}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3061}}@{}}
+\caption{Choosing TB\_PREOPEN\_BATCHES}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\texttt{TB\_PREOPEN\_BATCHES}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+P
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Boot hidden?
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Idle per VM ≈ P · E / W
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\texttt{TB\_PREOPEN\_BATCHES}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+P
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Boot hidden?
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Idle per VM ≈ P · E / W
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+0 --- look-ahead off & ≈ 4 & Mid-step only; each step's first W wait & ≈
+20 s \\
+1 --- one batch ahead & 32 & Yes, including step starts & ≈ 3 min \\
+\textbf{2 --- used in the smoke run} & \textbf{64} & Yes, with a full
+batch of slack & ≈ 6 min (measured: 7.3 min p50) \\
+\bottomrule\noalign{}
+\end{longtable}
+
+E = 21 s (measured episode p50), W = 4. Tune from the
+\texttt{{[}demo{]}} lines: \texttt{open\_wait\_ms} ≫ 0 → raise it;
+\texttt{preopen\_idle\_ms} ≫ boot time → lower it.
+\end{frame}
+
+\hypertarget{results}{%
+\section{4 · Results}\label{results}}
+
+\begin{frame}[fragile]{Smoke run: learning (10 steps + eval,
+2026-09-23)}
+\protect\hypertarget{smoke-run-learning-10-steps-eval-2026-09-23}{}
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.3137}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.6863}}@{}}
+\caption{Learning (RB = 4, NS = 8, Qwen3-4B)}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Metric
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Value
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Metric
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Value
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Train solve rate, steps 1--10 & 0 · 0 · 0.088 · 0 · 0 · 0 · 0 · 0.026 ·
+0 · 0 \\
+Full solves & \textbf{4 / 382} episodes
+(\texttt{acl-permissions-inheritance} ×3, \texttt{git-leak-recovery}) \\
+Held-out solve rate (31 tasks × 2) & 0.0 \\
+Partial progress & \textbf{42 \%} of episodes pass ≥ 1 hidden test \\
+Agent behaviour & Median 6 turns, 5 bash calls; 45 \% hit the 8-turn
+budget \\
+\bottomrule\noalign{}
+\end{longtable}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Sparse, not dead.} The tool loop works and the agent makes
+  partial progress, but almost every GRPO group is all-0, so there is
+  little gradient.
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Smoke run: sandbox and cost}
+\protect\hypertarget{smoke-run-sandbox-and-cost}{}
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.3711}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.6289}}@{}}
+\caption{Sandbox and cost (W = 4, TB\_PREOPEN\_BATCHES =
+2)}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Metric
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Value
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Metric
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Value
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Episodes / infra errors & 382, each on its own fresh microVM /
+\textbf{0} lost (job ≈ 70 min) \\
+Boot on the critical path (\texttt{open\_wait\_ms}) & \textbf{p50 0 ·
+p95 0}; max 4.9 s (first 4 episodes only) \\
+Session open (\texttt{open\_ms}) & p50 0.66 s · p95 2.5 s · \textbf{100
+\% warm hits} · 0 retries \\
+Episode time p50 / p90 & 21 s / 64 s (agent 9 s + grade 10 s) \\
+Pre-opened VM idle p50 / max & \textbf{7.3 min} / 16.5 min; heartbeat
+kept all alive \\
+microVM-seconds per train step & ≈ 13 000 (32 × 411 s); \textbf{≈ 95 \%
+idle} \\
+\bottomrule\noalign{}
+\end{longtable}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Every open was a warm hit.} AgentCore already had a spare VM
+  up for each Runtime, so no ≈ 15 s cold boot occurred in this run. The
+  per-image cold-start probe (\texttt{probe\_coldstart.py}) is still to
+  run.
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Takeaways and next steps}
+\protect\hypertarget{takeaways-and-next-steps}{}
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Works end to end:} per-task Runtimes, one fresh microVM per
+  episode, oracle-checked tasks, 0 infra failures.
+\item
+  \textbf{Cold start is solved, but over-provisioned.} Look-ahead
+  removed all boot wait, but at P = 64 a VM idles ≈ 7 min for a 21 s
+  episode. With warm hits at ≈ 0.7 s,
+  \textbf{\texttt{TB\_PREOPEN\_BATCHES} = 1 (or 0)} should give the same
+  wait at a fraction of the cost.
+\item
+  \textbf{Learning signal is the bottleneck:} 4 solves in 382 episodes.
+  Next: easy-first curriculum, more turns, or partial credit from
+  \texttt{tests\_passed}.
+\end{itemize}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.4433}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5567}}@{}}
+\caption{Next steps}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Next
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Why
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Next
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Why
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Re-run with \texttt{TB\_PREOPEN\_BATCHES} = 1 and 0 & Measure the
+cost/wait trade-off \\
+\texttt{probe\_coldstart.py} over all 218 Runtimes & Cold vs warm boot
+by image size (burst opens) \\
+Curriculum / partial-credit reward & Mixed GRPO groups → real
+gradient \\
+\bottomrule\noalign{}
+\end{longtable}
 \end{frame}
 
 \begin{frame}[fragile]{References}
 \protect\hypertarget{references}{}
 \begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.0968}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5323}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3710}}@{}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.0545}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5455}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.4000}}@{}}
 \caption{References}\tabularnewline
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
@@ -1613,7 +667,7 @@ Ref
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 Source
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-What it supports
+Supports
 \end{minipage} \\
 \midrule\noalign{}
 \endfirsthead
@@ -1623,27 +677,21 @@ Ref
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 Source
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-What it supports
+Supports
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
 {[}Q1{]} & AgentCore quotas:
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html}
-& Total agents (Runtimes) per account \textbf{1,000}, adjustable ·
-Docker image ≤ \textbf{2 GB}, fixed · new-session rate 25/s,
-account-wide · request timeout \textbf{15 min}, fixed · idle session
-timeout 15 min \\
-{[}Q2{]} & Service Quotas for this account
-(\texttt{aws\ service-quotas\ list-service-quotas\ -\/-service-code\ bedrock-agentcore},
-us-west-2, 2026-09-23) & \emph{Total Agents per Account} = 1000
-(L-F4575653) · \emph{Max Docker image size} = 2048 MB (L-0A9E32B3) ·
-\emph{Rate of new Runtime session creation} = 25/s (L-8EE2AEA2) ·
-\emph{Active Session Workloads per Account} = 5000 (L-3E5722B2) ·
-\emph{Control plane mutation APIs} = 50/s (L-DD349033) \\
-{[}D3{]} & Runtime, how it works:
+& 1000 Runtimes/account · image ≤ 2 GB · 15-min request timeout · 15-min
+idle timeout \\
+{[}Q2{]} &
+\texttt{aws\ service-quotas\ list-service-quotas\ -\/-service-code\ bedrock-agentcore}
+(us-west-2, 2026-09-23) & Active Session Workloads = 5000 (L-3E5722B2) ·
+new sessions 25/s (L-8EE2AEA2) · image 2048 MB (L-0A9E32B3) \\
+{[}D3{]} &
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}
-& Session = dedicated microVM; ≈ 15 min idle timeout, 8 h max
-lifetime \\
+& Session = dedicated microVM; 15-min idle, 8 h max lifetime \\
 \bottomrule\noalign{}
 \end{longtable}
 \end{frame}

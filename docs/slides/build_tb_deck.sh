@@ -19,7 +19,7 @@ PDF="$BASE.pdf"
 TITLE="Terminal-Bench on AgentCore: one image, one Runtime, one microVM per episode"
 # ASCII author on purpose: avoids needing a CJK font just for the header line.
 AUTHOR="Kaige Yang --- Senior Applied Scientist, AWS"
-DATE="September 23, 2026"
+DATE="September 24, 2026"
 
 TMP="$(mktemp _build_meta.XXXXXX.md)"
 trap 'rm -f "$TMP" '"$BASE"'.{aux,log,nav,out,snm,toc,vrb}' EXIT
