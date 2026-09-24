@@ -29,7 +29,7 @@ September 24, 2026
 
 ## Three concepts: environment, episode, isolation
 
-![](figures/lanes_fig03_concepts.pdf){width=92%}
+![](figures/lanes_fig03_concepts.pdf){width=100%}
 
 *Figure 2: Runtime 1 : N sessions, session 1 : 1 microVM.*
 
@@ -48,17 +48,11 @@ September 24, 2026
 
 ## Throughput = min(inference, sandbox, harness)
 
-| Tier | Holds state? | Balanced by default | Unit |
-|--------------|-------------------|--------------------------------------|-------------|
-| Inference | No | SGLang router | per request |
-| Sandbox | Yes: the episode's files | New session per episode | per episode |
-| Harness | Warm connection + trajectory | Whoever calls `generate()` | per episode |
+![](figures/lanes_fig08_balancers.pdf){width=92%}
 
-: Three tiers, three independent load balancers
+*Figure 4: by default each tier balances on its own.*
 
-- **Harness** is a hidden ceiling: add engines and VMs, throughput still flat-lines.
-- **Router** splits an episode's turns across engines, so its prefix cache misses.
-- **Fresh session** per episode: 400 opens for 400 episodes; sandbox p95 431 ms.
+- **Harness** is a hidden ceiling: add engines and VMs and throughput still flat-lines.
 
 # 3 · The solution: lanes
 
@@ -66,21 +60,21 @@ September 24, 2026
 
 ![](figures/lanes_fig01_lanes.pdf){width=90%}
 
-*Figure 4: LANES = 4 → 4 × 4 × 4.*
+*Figure 5: LANES = 4 → 4 × 4 × 4.*
 
 - Workers **pull** whole episodes; slime admits 2W, so a worker never waits for work.
 
 ## One episode inside a lane
 
-![](figures/lanes_fig05_episode.pdf){width=78%}
+![](figures/lanes_fig05_episode.pdf){width=96%}
 
-*Figure 5: every turn stays on one engine and one microVM.*
+*Figure 6: every turn stays on one engine and one microVM.*
 
 ## The step pipeline: training hides behind the rollout
 
-![](figures/lanes_fig06_pipeline.pdf){width=78%}
+![](figures/lanes_fig06_pipeline.pdf){width=88%}
 
-*Figure 6: slime's async driver overlaps train N with rollout N+1.*
+*Figure 7: slime's async driver overlaps train N with rollout N+1.*
 
 - Weight sync waits for the rollout to finish, so rollouts are **one step off-policy**.
 
@@ -90,7 +84,7 @@ September 24, 2026
 
 ![](figures/lanes_fig07_sweep.pdf){width=88%}
 
-*Figure 7: harness alone plateaus; all three tiers scale near-linearly.*
+*Figure 8: harness alone plateaus; all three tiers scale near-linearly.*
 
 ## On AWS: lanes hold, 4 opens instead of 400
 
@@ -106,13 +100,9 @@ September 24, 2026
 
 ## The sandbox got faster; the rollout didn't
 
-| | Fresh session per episode | Lanes |
-|--------------------------|----------------------|--------------------|
-| Sessions opened | 400 | **4** |
-| Sandbox op p95 | 431 ms | **120 ms** |
-| Rollout time per step | 61 s | 64 s |
+![](figures/lanes_fig09_before-after.pdf){width=72%}
 
-: Same task and harness (engines differ: 2 × TP2 vs 4 × TP1)
+*Figure 9: AWS smoke, same task and harness (engines differ: 2 × TP2 vs 4 × TP1).*
 
 - An episode takes ≈ 8 s; the sandbox part is ≈ **0.65 s**. **≈ 90 % is generation**: this task is inference-bound.
 
@@ -120,27 +110,19 @@ September 24, 2026
 
 ## Pick a task where the sandbox does the work
 
-The engines keep up only if **N · G / T ≤ C**: N sandboxes, G tokens per episode, T episode time, C decode rate.
+The engines keep up only if **N · G / T ≤ C**: N sandboxes, G tokens per episode, T episode time, C ≈ 10k tok/s (4 engines, to measure).
 
-| | |
-|--------------------|------------------------------------------------------|
-| C (4 engines) | ≈ 10 k tok/s (estimate, to measure) |
-| N = 256, G ≈ 1.5 k | **T ≥ 40 s** → aim for 60–90 s of sandbox CPU per episode |
-| Task | **DeepCoder** (code RL; heavy hidden stdin/stdout tests) |
+![](figures/lanes_fig10_task-time.pdf){width=98%}
 
-: Sizing the task
+*Figure 10: DeepCoder: every check runs the full hidden suite.*
+
+- **Probe** (1500 problems): 74 % pass with the gold solution; suite p50 **4.2 s**, 101 tests. Keep the **≥ 8 s** tail (13 %).
 
 ## Harness: 256 workers, 4 engines
 
-| Knob | Value |
-|--------------------|-------------------------------------------|
-| Harness workers | **256**, one per microVM (mostly waiting on tests) |
-| Lanes | 4 × 64: 64 workers share each engine |
-| Adapters | 4, one per engine |
-| slime admission | CONC = 128 per engine → 512 in flight |
-| Session opens | ≤ 25/s quota → ≥ 11 s to open all 256 [Q2] |
+![](figures/lanes_fig11_256.pdf){width=70%}
 
-: 256-sandbox configuration
+*Figure 11: 4 lanes × 64: one worker per microVM, 64 workers per engine.*
 
 - **Proof:** sweep N = 32 → 256 at 4 engines; throughput rises while SGLang latency stays flat.
 

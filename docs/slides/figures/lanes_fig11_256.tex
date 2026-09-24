@@ -1,0 +1,42 @@
+% scale_lanes_deck: 256 workers / microVMs sharing 4 engines (64 per engine).
+\documentclass[tikz,border=4pt]{standalone}
+\usepackage{fontspec}
+\setmainfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc,decorations.pathreplacing,shadows}
+\definecolor{slime}{RGB}{230,230,230}
+\definecolor{host}{RGB}{214,216,240}
+\definecolor{gpu}{RGB}{255,236,204}
+\definecolor{vm}{RGB}{214,238,220}
+\definecolor{ac}{RGB}{255,246,230}
+\definecolor{bad}{RGB}{245,205,205}
+\definecolor{ink}{RGB}{40,40,90}
+\begin{document}
+\begin{tikzpicture}[
+  font=\footnotesize,
+  box/.style={draw=ink, rounded corners=3pt, fill=#1, align=center, inner sep=3pt, minimum height=0.7cm, minimum width=2.2cm},
+  line/.style={thick, draw=ink, -{Stealth[length=2mm]}},
+  head/.style={font=\small\bfseries, text=ink, align=center},
+  note/.style={font=\scriptsize, text=ink!80, align=center},
+]
+\node[box=slime, minimum width=4.2cm, minimum height=0.8cm] (sl) at (4.6,1.6) {slime: CONC 128 / engine $\Rightarrow$ 512 in flight};
+\node[head] at (0,0.75) {Inference\\\scriptsize 4 engines};
+\node[head] at (4.6,0.75) {Harness\\\scriptsize 256 workers};
+\node[head] at (9.2,0.75) {Sandbox\\\scriptsize 256 microVMs};
+\foreach \i/\y in {0/-0.3,1/-1.5,2/-2.7,3/-3.9} {
+  \pgfmathtruncatemacro{\lo}{64*\i}\pgfmathtruncatemacro{\hi}{64*\i+63}
+  \node[box=gpu, minimum width=2.4cm, minimum height=0.85cm] (e\i) at (0,\y) {engine \i\\\scriptsize one shared adapter};
+  \node[box=host, minimum width=2.6cm, minimum height=0.85cm, double copy shadow={shadow xshift=2pt, shadow yshift=2pt}] (h\i) at (4.6,\y) {workers \lo--\hi};
+  \node[box=vm, minimum width=2.6cm, minimum height=0.85cm, double copy shadow={shadow xshift=2pt, shadow yshift=2pt}] (v\i) at (9.2,\y) {64 lane microVMs};
+  \draw[line, <->] (e\i) -- node[above, note] {LLM turns} (h\i);
+  \draw[line, <->] ($(h\i.east)+(0.1,0)$) -- node[above, note] {tests} (v\i);
+}
+\begin{scope}[on background layer]
+  \node[draw=ink!60, dashed, rounded corners=5pt, fit=(h0)(h3), inner sep=6pt] (hw) {};
+\end{scope}
+\draw[line] (sl) -- (hw.north |- 0,1.05);
+\node[note] at (0,-5.0) {decode $\approx$ 15\,\% of an episode};
+\node[note] at (4.6,-5.0) {mostly waiting on tests};
+\node[note] at (9.2,-5.0) {opened $\leq$ 25/s: $\geq$ 11 s for all 256};
+\end{tikzpicture}
+\end{document}

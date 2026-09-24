@@ -1,0 +1,40 @@
+% scale_lanes_deck: episode time split, math (measured) vs DeepCoder (target).
+\documentclass[tikz,border=4pt]{standalone}
+\usepackage{fontspec}
+\setmainfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc,decorations.pathreplacing}
+\definecolor{slime}{RGB}{230,230,230}
+\definecolor{host}{RGB}{214,216,240}
+\definecolor{gpu}{RGB}{255,236,204}
+\definecolor{vm}{RGB}{214,238,220}
+\definecolor{ac}{RGB}{255,246,230}
+\definecolor{bad}{RGB}{245,205,205}
+\definecolor{ink}{RGB}{40,40,90}
+\begin{document}
+\begin{tikzpicture}[
+  font=\footnotesize,
+  box/.style={draw=ink, rounded corners=3pt, fill=#1, align=center, inner sep=3pt, minimum height=0.7cm, minimum width=2.2cm},
+  line/.style={thick, draw=ink, -{Stealth[length=2mm]}},
+  head/.style={font=\small\bfseries, text=ink, align=center},
+  note/.style={font=\scriptsize, text=ink!80, align=center},
+]
+\def\s{0.2}
+\node[head, anchor=east] at (-0.2,0) {math};
+\fill[gpu, draw=ink] (0,-0.3) rectangle (7.35*\s,0.3);
+\fill[vm, draw=ink] (7.35*\s,-0.3) rectangle (8*\s,0.3);
+\node[note, anchor=west] at (8*\s+0.15,0) {$T \approx 8$ s: 90\,\% generation};
+\node[head, anchor=east] at (-0.2,-1.3) {DeepCoder};
+\fill[gpu, draw=ink] (0,-1.6) rectangle (7*\s,-1.0);
+\fill[vm, draw=ink] (7*\s,-1.6) rectangle (47*\s,-1.0);
+\node[font=\scriptsize] at (27*\s,-1.3) {5 checks $\times$ full hidden suite ($\geq$ 8 s each)};
+\node[note, anchor=west] at (47*\s+0.15,-1.3) {$T \approx 45$ s};
+\draw[->, ink] (0,-2.0) -- (50*\s,-2.0) node[right, note] {s};
+\foreach \t in {0,10,20,30,40} \node[note, below] at (\t*\s,-2.0) {\t};
+\fill[gpu, draw=ink] (0,-2.9) rectangle (0.3,-2.7); \node[note, anchor=west] at (0.35,-2.8) {generation (SGLang)};
+\fill[vm, draw=ink] (3.6,-2.9) rectangle (3.9,-2.7); \node[note, anchor=west] at (3.95,-2.8) {sandbox (microVM)};
+% demand vs capacity
+\node[box=bad, anchor=west, minimum width=3.8cm] at (11.2,0) {$256 \cdot 1.5$k$/ 8$ s $\approx$ \textbf{48k tok/s}\\\scriptsize $\gg C$: the engines are the bottleneck};
+\node[box=vm, anchor=west, minimum width=3.8cm] at (11.2,-1.3) {$256 \cdot 1.5$k$/ 45$ s $\approx$ \textbf{8.5k tok/s}\\\scriptsize $\leq C \approx 10$k: the sandbox is the work};
+\end{tikzpicture}
+\end{document}

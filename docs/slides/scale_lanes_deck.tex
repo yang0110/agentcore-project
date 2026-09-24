@@ -190,7 +190,7 @@ loop.}}
 
 \begin{frame}[fragile]{Three concepts: environment, episode, isolation}
 \protect\hypertarget{three-concepts-environment-episode-isolation}{}
-\centerline{\includegraphics[width=0.92\textwidth,height=\textheight]{figures/lanes_fig03_concepts.pdf}}
+\centerline{\includegraphics[width=1\textwidth,height=\textheight]{figures/lanes_fig03_concepts.pdf}}
 
 \centerline{\emph{Figure 2: Runtime 1 : N sessions, session 1 : 1 microVM.}}
 
@@ -222,57 +222,17 @@ loop.}}
 \hypertarget{the-challenge}{%
 \section{2 · The challenge}\label{the-challenge}}
 
-\begin{frame}[fragile]{Throughput = min(inference, sandbox, harness)}
+\begin{frame}{Throughput = min(inference, sandbox, harness)}
 \protect\hypertarget{throughput-mininference-sandbox-harness}{}
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1667}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2262}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.4524}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1548}}@{}}
-\caption{Three tiers, three independent load balancers}\tabularnewline
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Tier
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Holds state?
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Balanced by default
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Unit
-\end{minipage} \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Tier
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Holds state?
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Balanced by default
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Unit
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-Inference & No & SGLang router & per request \\
-Sandbox & Yes: the episode's files & New session per episode & per
-episode \\
-Harness & Warm connection + trajectory & Whoever calls
-\texttt{generate()} & per episode \\
-\bottomrule\noalign{}
-\end{longtable}
+\centerline{\includegraphics[width=0.92\textwidth,height=\textheight]{figures/lanes_fig08_balancers.pdf}}
+
+\centerline{\emph{Figure 4: by default each tier balances on its own.}}
 
 \begin{itemize}
 \tightlist
 \item
-  \textbf{Harness} is a hidden ceiling: add engines and VMs, throughput
-  still flat-lines.
-\item
-  \textbf{Router} splits an episode's turns across engines, so its
-  prefix cache misses.
-\item
-  \textbf{Fresh session} per episode: 400 opens for 400 episodes;
-  sandbox p95 431 ms.
+  \textbf{Harness} is a hidden ceiling: add engines and VMs and
+  throughput still flat-lines.
 \end{itemize}
 \end{frame}
 
@@ -283,7 +243,7 @@ Harness & Warm connection + trajectory & Whoever calls
 \protect\hypertarget{one-lane-one-worker-one-engine-one-microvm}{}
 \centerline{\includegraphics[width=0.9\textwidth,height=\textheight]{figures/lanes_fig01_lanes.pdf}}
 
-\centerline{\emph{Figure 4: LANES = 4 → 4 × 4 × 4.}}
+\centerline{\emph{Figure 5: LANES = 4 → 4 × 4 × 4.}}
 
 \begin{itemize}
 \tightlist
@@ -295,16 +255,16 @@ Harness & Warm connection + trajectory & Whoever calls
 
 \begin{frame}{One episode inside a lane}
 \protect\hypertarget{one-episode-inside-a-lane}{}
-\centerline{\includegraphics[width=0.78\textwidth,height=\textheight]{figures/lanes_fig05_episode.pdf}}
+\centerline{\includegraphics[width=0.96\textwidth,height=\textheight]{figures/lanes_fig05_episode.pdf}}
 
-\centerline{\emph{Figure 5: every turn stays on one engine and one microVM.}}
+\centerline{\emph{Figure 6: every turn stays on one engine and one microVM.}}
 \end{frame}
 
 \begin{frame}{The step pipeline: training hides behind the rollout}
 \protect\hypertarget{the-step-pipeline-training-hides-behind-the-rollout}{}
-\centerline{\includegraphics[width=0.78\textwidth,height=\textheight]{figures/lanes_fig06_pipeline.pdf}}
+\centerline{\includegraphics[width=0.88\textwidth,height=\textheight]{figures/lanes_fig06_pipeline.pdf}}
 
-\centerline{\emph{Figure 6: slime's async driver overlaps train N with rollout N+1.}}
+\centerline{\emph{Figure 7: slime's async driver overlaps train N with rollout N+1.}}
 
 \begin{itemize}
 \tightlist
@@ -321,7 +281,7 @@ Harness & Warm connection + trajectory & Whoever calls
 \protect\hypertarget{offline-tiers-must-scale-together}{}
 \centerline{\includegraphics[width=0.88\textwidth,height=\textheight]{figures/lanes_fig07_sweep.pdf}}
 
-\centerline{\emph{Figure 7: harness alone plateaus; all three tiers scale
+\centerline{\emph{Figure 8: harness alone plateaus; all three tiers scale
 near-linearly.}}
 \end{frame}
 
@@ -359,22 +319,10 @@ Reward (train) / eval & 0.36 / \textbf{0.358} \\
 
 \begin{frame}{The sandbox got faster; the rollout didn't}
 \protect\hypertarget{the-sandbox-got-faster-the-rollout-didnt}{}
-\begin{longtable}[]{@{}lll@{}}
-\caption{Same task and harness (engines differ: 2 × TP2 vs 4 ×
-TP1)}\tabularnewline
-\toprule\noalign{}
-& Fresh session per episode & Lanes \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-& Fresh session per episode & Lanes \\
-\midrule\noalign{}
-\endhead
-Sessions opened & 400 & \textbf{4} \\
-Sandbox op p95 & 431 ms & \textbf{120 ms} \\
-Rollout time per step & 61 s & 64 s \\
-\bottomrule\noalign{}
-\end{longtable}
+\centerline{\includegraphics[width=0.72\textwidth,height=\textheight]{figures/lanes_fig09_before-after.pdf}}
+
+\centerline{\emph{Figure 9: AWS smoke, same task and harness (engines differ: 2 ×
+TP2 vs 4 × TP1).}}
 
 \begin{itemize}
 \tightlist
@@ -391,43 +339,28 @@ engines}\label{next-256-sandboxes-on-4-engines}}
 \begin{frame}{Pick a task where the sandbox does the work}
 \protect\hypertarget{pick-a-task-where-the-sandbox-does-the-work}{}
 The engines keep up only if \textbf{N · G / T ≤ C}: N sandboxes, G
-tokens per episode, T episode time, C decode rate.
+tokens per episode, T episode time, C ≈ 10k tok/s (4 engines, to
+measure).
 
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.2703}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.7297}}@{}}
-\caption{Sizing the task}\tabularnewline
-\toprule\noalign{}
-\endfirsthead
-\endhead
-C (4 engines) & ≈ 10 k tok/s (estimate, to measure) \\
-N = 256, G ≈ 1.5 k & \textbf{T ≥ 40 s} → aim for 60--90 s of sandbox CPU
-per episode \\
-Task & \textbf{DeepCoder} (code RL; heavy hidden stdin/stdout tests) \\
-\bottomrule\noalign{}
-\end{longtable}
+\centerline{\includegraphics[width=0.98\textwidth,height=\textheight]{figures/lanes_fig10_task-time.pdf}}
+
+\centerline{\emph{Figure 10: DeepCoder: every check runs the full hidden suite.}}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Probe} (1500 problems): 74 \% pass with the gold solution;
+  suite p50 \textbf{4.2 s}, 101 tests. Keep the \textbf{≥ 8 s} tail (13
+  \%).
+\end{itemize}
 \end{frame}
 
 \begin{frame}{Harness: 256 workers, 4 engines}
 \protect\hypertarget{harness-256-workers-4-engines}{}
-\begin{longtable}[]{@{}ll@{}}
-\caption{256-sandbox configuration}\tabularnewline
-\toprule\noalign{}
-Knob & Value \\
-\midrule\noalign{}
-\endfirsthead
-\toprule\noalign{}
-Knob & Value \\
-\midrule\noalign{}
-\endhead
-Harness workers & \textbf{256}, one per microVM (mostly waiting on
-tests) \\
-Lanes & 4 × 64: 64 workers share each engine \\
-Adapters & 4, one per engine \\
-slime admission & CONC = 128 per engine → 512 in flight \\
-Session opens & ≤ 25/s quota → ≥ 11 s to open all 256 {[}Q2{]} \\
-\bottomrule\noalign{}
-\end{longtable}
+\centerline{\includegraphics[width=0.7\textwidth,height=\textheight]{figures/lanes_fig11_256.pdf}}
+
+\centerline{\emph{Figure 11: 4 lanes × 64: one worker per microVM, 64 workers per
+engine.}}
 
 \begin{itemize}
 \tightlist
