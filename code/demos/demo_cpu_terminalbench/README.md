@@ -108,7 +108,9 @@ mechanisms above. The same M=24 MockPolicy `sql` episodes run in batches of 6 in
   pings.
 
 The probe runs against a stdlib CPU Runtime, `acs_warmstart_cpu`, and the managed Code Interpreter. The
-Runtime reuses the shared `acs-sandbox-cpu:latest` image with a 60 s `idleRuntimeSessionTimeout`.
+Runtime reuses the shared `acs-sandbox-cpu:latest` image with a 60 s `idleRuntimeSessionTimeout`. That value is
+shortened so the probe finishes in minutes. Training Runtimes keep the 15-min default (`WARM_IDLE_TIMEOUT=900`,
+pings at 450 s), and the mechanism is the same.
 
 ```bash
 bash warmstart/run_warmstart.sh                                  # creates the Runtime if needed, then runs

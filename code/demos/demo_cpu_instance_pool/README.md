@@ -45,13 +45,18 @@ every episode boots its own m5. The old `VARIANT=bigimage` smoke in `logs/bigima
   pool member (`_pool_acquire`, round-robin on ties) and releases the member on close.
 - **Per-episode sub_session.** Every op carries a per-episode `sub_session`.
 - **The server side.** The server-side farm is `SANDBOX_FARM=cpu` (`sandbox_cpu_farm.py`), baked into
-  the Runtime env. The server runs as root in the image. For each `sub_session` it:
-  - leases a **uid slot** and runs everything as uid/gid `20000+slot`, with no supplementary groups;
-  - creates `/workspace/_farm/ep-<id>` owned by that uid, mode `0700`, under a `0711` farm root;
-  - runs every exec as a **fresh subprocess** under `prlimit` and `umask 077`, with `PWD`, `HOME`,
-    `TMPDIR` and pip/XDG/HF caches all pointing into that dir;
-  - on close, **kills every process of the uid**, deletes the dir and the uid's files in
-    `/tmp` / `/var/tmp` / `/dev/shm`, and frees the slot.
+  the Runtime env. For each `sub_session` it:
+  - creates `/workspace/_farm/ep-<id>` (mode `0700`, under a `0711` farm root), with `PWD`, `HOME`,
+    `TMPDIR` and the pip/XDG/HF caches all pointing into it;
+  - runs every exec as a fresh subprocess inside **`sandbox_farm_jail.py`**. That is a **Landlock**
+    domain which may write only this dir, open no TCP connection and signal nobody else. A
+    subreaper wrapper kills the command's whole process tree when it exits, times out, goes above
+    256 processes or goes above 4 GiB RSS;
+  - on close, stops its running execs and deletes the dir.
+
+  Where the container keeps `CAP_SETUID`/`CAP_CHOWN` (local docker), it **also** runs each sub_session
+  as its own uid (`20000+slot`). **AgentCore drops every capability, so on AgentCore Landlock is the
+  boundary** (see below).
 
 **Why `N=2` by default.** One Instance puts every episode of a step on a single m5 (4 vCPU). Two
 Instances halve that CPU contention, and the cold boot is still paid only twice per run. Both boots
@@ -61,64 +66,93 @@ happen in parallel during the first step. Raise N when checker CPU time binds, f
 A singular `B4_SHARED_RUNTIME_SESSION`, or an explicit `shared_session_id`, turns the pool off: every
 episode then goes to that one Instance, as in the old warm-shared bigimage behaviour.
 
-### Isolation guarantees: per-episode uid on a shared kernel, NOT a VM boundary
+### Isolation guarantees: a Landlock jail per episode on a shared kernel, NOT a VM boundary
 
-The warm pool trades the VM boundary for warm reuse. The farm puts back as much isolation as one kernel
-allows: every sub_session is its **own unprivileged uid** (`20000+slot`) with a private `0700` dir.
+The warm pool trades the VM boundary for warm reuse. The farm puts back as much isolation as one
+unprivileged kernel user can.
+
+**What the container allows.** Measured live on the m5, 2026-09-25:
+
+- The server is "root" only inside a user namespace (uid_map `0 100000 65536`).
+- `CapEff` = `CapBnd` = 0, `NoNewPrivs=1`, and seccomp is on.
+- So `setuid`, `chown`, `unshare` (user/mount/pid/net namespaces) and cgroup writes are all `EPERM`.
+
+**Per-episode uids are therefore impossible on AgentCore.** The first hardened image tried them, and
+every farm `open` failed with `chown` `EPERM` (HTTP 500). What the kernel (6.18) *does* allow an
+unprivileged process is **Landlock ABI 7**, so each exec runs in its own Landlock domain.
+`describe()["mode"]` reports `landlock` on AgentCore and `uid+landlock` where the capabilities exist.
 
 | | AgentCore microVM per session (VM boundary, guaranteed by AgentCore) | Shared m5 sub_session (what the farm enforces + what is still shared) |
 |---|---|---|
-| **Filesystem** | own root fs per session, discarded with the microVM | **enforced:** own dir `0700` owned by the episode uid, farm root `0711` (not listable), `umask 077`, HOME / TMPDIR / caches inside the dir; the root server's `read_file` / `write_file` refuse `..`, absolute and symlink escapes; close deletes the dir and the uid's files in `/tmp`, `/var/tmp`, `/dev/shm`. **Shared:** the image's read-only system dirs, and any world-writable path an episode chmods open itself |
-| **Process / user** | own process tree and PID namespace | **enforced:** distinct non-root uid/gid per episode, no supplementary groups, so no ptrace, no signals, no `/proc/<pid>/environ` or `cwd` of another episode; the sub_session id stays off every command line; close SIGKILLs **every** process of the uid (setsid'd daemons included) and reaps the zombies. **Shared:** one PID namespace, so `ps` lists other episodes' command lines |
-| **RAM / CPU** | own vCPU / memory allocation | **enforced:** `prlimit` `NPROC=256` per uid (a fork bomb stops at its own cap), `FSIZE=1 GiB`, `CORE=0`; per-op wall-clock timeout, which kills the uid's tree. **Shared:** no per-episode cgroup and no address-space cap, so one episode can take the m5's CPU and RAM; an OOM can kill a neighbour or the server |
-| **Network** | own network interface per microVM | **enforced:** the server's `AWS_*` env is not inherited. **Shared:** one network namespace. An episode can reach the server's own port `8080`, but acting on another episode there needs that episode's random 64-bit sub_session id, which nothing exposes. It can also reach the instance metadata endpoint and anything the instance can reach |
-| **Kernel** | own guest kernel (Firecracker) | **shared:** one kernel for all sub_sessions on the instance. A kernel exploit or local root escalation from one episode breaks **all** of the above |
+| **Filesystem** | own root fs per session, discarded with the microVM | **enforced (Landlock):** read+exec only on the system dirs (`/usr /bin /lib /etc /opt /app /proc /sys`), read+write **only its own dir** plus `/dev/null` and friends. Sibling episode dirs, the farm root, `/tmp`, `/var/tmp`, `/dev/shm`, `/workspace` and `/root` are all `EACCES`. HOME, TMPDIR and caches are inside the dir, with `umask 077`. The server's `read_file`/`write_file` refuse `..`, absolute and symlink escapes. Close deletes the dir. **Shared:** the image's read-only system files. `/dev/shm` is shared if you set `SANDBOX_FARM_SHM=allow` (needed by `multiprocessing`) |
+| **Process / user** | own process tree and PID namespace | **enforced:** signals, `ptrace` and `/proc/<pid>/{environ,cwd,mem}` are scoped to the episode's own Landlock domain, so another episode's processes return `EPERM`. The sub_session id stays off every command line. The subreaper kills the whole tree, setsid'd daemons included, when each exec ends, so **nothing outlives its exec**. **Shared:** one uid (0 in the userns) for all episodes; one PID namespace, so `ps` shows other episodes' command lines |
+| **RAM / CPU** | own vCPU / memory allocation | **enforced (watchdog, 5–100 ms polling):** more than 256 processes in the tree, or more than 4 GiB RSS, kills the tree (exit 137). `FSIZE=1 GiB`, `CORE=0`, plus the per-op wall-clock timeout. **Shared:** no per-episode cgroup, so one episode can take the m5's CPU. A fast allocation spike between polls can still OOM a neighbour or the server |
+| **Network** | own network interface per microVM | **enforced (Landlock TCP):** every TCP `connect`/`bind` is denied (`SANDBOX_FARM_NET=deny`). An episode can't reach the server's port 8080, the instance-metadata endpoint or the internet. The server's `AWS_*` env is not inherited. **Shared:** one network namespace. **UDP and DNS are not covered** by Landlock. `SANDBOX_FARM_NET=allow` gives up the TCP rule |
+| **Kernel** | own guest kernel (Firecracker) | **shared:** one kernel for all sub_sessions. A kernel exploit breaks **all** of the above, and so does a Landlock bypass |
 | **Fault blast radius** | one session | **one instance:** a crash, OOM or disk-full of the server or instance hits every episode on that pool member (`SANDBOX_POOL` of them in parallel) |
 
 **What this means:**
 
-- **Good enough for RLVR, including adversarial-ish policies.** The farm stops the reward hacks a
-  policy could stumble into: reading a sibling's `solution.py` or answer file, killing a neighbour's
-  checker, or leaving a daemon that tampers with the next episode.
+- **Good enough for RLVR, including adversarial-ish policies.** The jail stops the reward hacks a
+  policy could stumble into:
+  - reading a sibling's `solution.py` or answer file;
+  - killing a neighbour's checker;
+  - calling the server port to act on another episode;
+  - leaving a daemon that tampers with the next episode.
 - **Not good enough against a kernel exploit**, or anything that needs its own network stack or
   guaranteed CPU/RAM. For those, use a **microVM per session**: `SANDBOX=agentcore` (Code Interpreter)
   or `SANDBOX=agentcore-runtime` on a microVM Runtime. This demo's image is > 2 GB, so for it that
   means a fresh Instance per episode, paying the cold boot every time.
-- **Tasks that mutate the whole OS** (Terminal-Bench style) also need a fresh session per episode.
+- **Tasks that mutate the whole OS** (Terminal-Bench style), or that need network access, also need a
+  fresh session per episode.
+- **Per-exec domains.** Each exec is its own Landlock domain, so a process started in one exec can't
+  be signalled by a later exec of the **same** episode. It is also killed when its exec ends. A task
+  that starts a server in one call and uses it in the next must do both in one exec.
 
-**Uid isolation needs a root server,** which is the case in the image (no `USER` line). If the server
-ran unprivileged, `describe()` reports `uid_isolation: false` and only the dir + env freshness remains.
-
-Check it with `isolation_probe.py`. A plants a secret file, a `/tmp` file and a detached process; B
-tries to reach them.
+Check it with `isolation_probe.py`. A plants a secret file, tries `/tmp`, and runs a setsid'd daemon
+inside a long exec. Meanwhile B tries to reach all of it.
 
 ```bash
-python3 isolation_probe.py                                     # offline, as root (the agentcore_p4 container)
+python3 isolation_probe.py                                     # offline: CpuFarm in-process
 AGENTCORE_SANDBOX_RUNTIME_ARN=<arn> python3 isolation_probe.py --live   # live, two sub_sessions on ONE warm m5
 ```
 
-Offline (2026-09-25): **16/16 checks pass**. The checks:
+**22/22 checks pass in all three settings** (2026-09-25):
 
-- **uids:** A and B run as uids 20000 and 20001.
-- **Listing:** `ls` of the farm root and of A's dir both fail with Permission denied.
-- **Reading A's secret:** B gets Permission denied by explicit path and via `../`.
-- **Server file ops:** the server's `read_file` / `write_file` refuse `../<A>/marker.txt`.
-- **`/tmp`:** A's `/tmp` file is unreadable to B.
-- **Signals:** `kill -0` of A's pid is "Operation not permitted".
-- **Env and limits:** `AWS_*` is not inherited, and nproc=256 / fsize=1 GiB are in force.
-- **After A closes:** A's setsid'd `sleep` is gone ("No such process"), and so is its `/tmp` file.
+- offline in `agentcore_p4` (`uid+landlock`);
+- the image under `docker run --cap-drop ALL --security-opt no-new-privileges` (`landlock`, the AgentCore
+  simulation);
+- **live on the m5** (`landlock`; the 22 checks follow).
 
-Also verified offline:
+**Live checks** (Runtime v3, image `:landlock-20260925`):
 
-- A 400-way fork loop stops at "Resource temporarily unavailable".
-- A 2 GB write stops at 1 GiB ("File size limit exceeded").
-- A timed-out exec leaves no process of the uid alive.
-- numpy and torch checkers run unchanged as the uid.
+- **Same host:** A and B had the same boot_id and both ran as uid 0 in `landlock-abi7`.
+- **Filesystem:** B can't list the farm root or A's dir, and can't read A's `marker.txt` by path or
+  via `../`, or write into A's dir. All give Permission denied.
+- **Server file ops:** the server's `read_file`/`write_file` refuse `../<A>` and A's absolute path.
+- **`/tmp`:** A's write to `/tmp` is denied.
+- **A's running daemon:** B's `kill -0` of it gives "Operation not permitted", and B's
+  `cat /proc/<pid>/environ` gives Permission denied.
+- **Env:** `AWS_*` is not inherited.
+- **Limits:** a 1.2 GB write stops at 1 GiB, and a 400-process fan-out is killed (`process cap: 401 > 256`).
+- **Network:** `curl 127.0.0.1:8080/ping` and `curl 169.254.169.254` return `000` (connect refused).
+- **Command lines:** A's sub_session id is in no command line.
+- **Lifetime:** A's daemon is gone ("No such process") once A's exec ends.
 
-<!-- LIVE_ISOLATION -->
+**Live cost of the jail:**
 
-Before this hardening (the first live probe, same day), both sub_sessions ran as root: B could `ls ..`
-and `cat ../<A>/marker.txt`.
+- one cold boot (83 s: the new Runtime version got a fresh Instance), then warm opens of 214 ms and a
+  warm exec p50 of **156 ms**, compared with 117 ms before the jail;
+- the jail itself costs about 50 ms per exec (a python wrapper start plus Landlock setup), measured
+  offline;
+- one MockPolicy episode of **each of the 13 task families** on the same warm m5, all concurrent:
+  **reward 1.0 on all 13**.
+
+**Before the hardening:**
+
+- first live probe: both sub_sessions ran as root with no jail, and B could `ls ..` and
+  `cat ../<A>/marker.txt`;
+- per-uid image (`:uidiso`, Runtime v2): broken on AgentCore by the capability drop above.
 
 See also [`docs/sandbox-fresh-env-on-persistent-instance.md`](../../../docs/sandbox-fresh-env-on-persistent-instance.md).
 
@@ -150,7 +184,9 @@ bash 6_cleanup.sh                          # host: delete the Runtime + the CP (
 | `SANDBOX_POOL` | `2` | number of warm Instances (shared runtimeSessionIds). `POOL` is an alias **only when `run.sh` is called directly**, because `steps_common.sh` forwards only `SANDBOX_*`-style names into the container |
 | `B4_SHARED_RUNTIME_SESSIONS` | minted per run | explicit comma list of pool session ids (reuse Instances across runs) |
 | `SANDBOX_POOL_PROBE` (alias `POOL_PROBE_INSTANCE` when calling `run.sh` directly) | `1` | on open, read the Instance `boot_id` → `[demo] instance=i-xxxxxxxx` (one extra ~150 ms exec per episode; `0` = off) |
-| `SANDBOX_FARM_UID_BASE` / `SANDBOX_FARM_MAX_SLOTS` / `SANDBOX_FARM_NPROC` / `SANDBOX_FARM_FSIZE_MB` / `SANDBOX_FARM_UID_ISOLATION` | 20000 / 256 / 256 / 1024 / 1 | **server-side** (Runtime env): uid range, concurrent sub_sessions per instance, per-uid process cap, max file size; `0` disables uid switching |
+| `SANDBOX_FARM_NET` / `SANDBOX_FARM_SHM` / `SANDBOX_FARM_LANDLOCK` | `deny` / `deny` / `1` | **server-side** (Runtime env): Landlock TCP rule, `/dev/shm` access (`allow` for `multiprocessing`, then shared), `0` turns the jail off |
+| `SANDBOX_FARM_NPROC` / `SANDBOX_FARM_MEM_MB` / `SANDBOX_FARM_FSIZE_MB` | 256 / 4096 / 1024 | **server-side:** per-exec process-tree cap, RSS cap (`0` = off), max file size |
+| `SANDBOX_FARM_UID_ISOLATION` / `SANDBOX_FARM_UID_BASE` / `SANDBOX_FARM_MAX_SLOTS` | 1 / 20000 / 256 | **server-side:** the extra per-episode-uid layer, used only where the container has `CAP_SETUID`/`CAP_CHOWN` (**not** on AgentCore); uid range; concurrent sub_sessions |
 | `SANDBOX` | `agentcore-ray-farm` | the only accepted value (the warm pool) |
 | `DATASET` | `deepscaler` | any `demo_cpu_tasks` dataset, or a comma-list mix |
 | `HEARTBEAT` | `0` | `1` = ping idle sessions so pool Instances survive the weight-sync barrier on long runs |
@@ -216,7 +252,7 @@ pool):
 - `1_…6_*.sh`, `deploy/demo.env`, `deploy/steps_common.sh`: the numbered steps (`steps_common.sh`
   is identical across demos).
 - `deploy/`: `Dockerfile.sandbox.bigcpu`, `deploy_bigimage.py` (CP + Runtime), `agentcore_deploy.py`.
-- `run.sh` (RL run), `metrics.py`, `pool_report.py`, `isolation_probe.py` (cross-episode check), `probe_bigimage.py`, `netcheck.py` (+ samples),
+- `run.sh` (RL run), `metrics.py`, `pool_report.py`, `isolation_probe.py` (cross-episode check; the jail is `agentcore_slime_demo/sandbox_farm_jail.py`), `probe_bigimage.py`, `netcheck.py` (+ samples),
   `prepare_data.sh`, `build_dataset.py`, `data/`.
 - `logs/bigimage/`: the pre-pool results (moved from `demo_cpu_tasks`).
 

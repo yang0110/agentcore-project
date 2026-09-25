@@ -13,7 +13,8 @@ session dir — ``$HOME``, ``$TMPDIR`` / ``/tmp``, and the write caches (pip / H
 redirects those into the session dir so a write in episode A cannot be seen by episode B.
 
 This env redirection is hygiene, not a boundary: the CPU farm (``sandbox_cpu_farm``) additionally runs
-each sub_session as its own unprivileged uid with a 0700 dir, which is what stops a DELIBERATE read.
+every exec in a per-episode Landlock jail (``sandbox_farm_jail``; plus its own uid where the container
+has CAP_SETUID, which AgentCore does not), which is what stops a DELIBERATE read.
 
 The one nuance is caches. Compiled-CUDA-kernel and downloaded-model caches are content-addressed and
 read-mostly, so SHARING them across episodes is both safe (identical regardless of episode) and a big

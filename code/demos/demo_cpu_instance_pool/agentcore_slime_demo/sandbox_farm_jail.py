@@ -23,7 +23,8 @@ SIGKILLs all of it when the command exits (nothing outlives its exec), when the 
 ``--nproc`` processes or ``--mem-mb`` RSS, or on SIGTERM (the server's timeout / close path).
 
     SANDBOX_JAIL_DIR=D python3 sandbox_farm_jail.py [--ro /usr:/etc:…] [--nproc N] [--mem-mb M]
-                                 [--fsize B] [--net deny|allow] [--no-landlock] -- bash -c '…'
+                                 [--fsize B] [--net deny|allow] [--shm deny|allow] [--no-landlock]
+                                 -- bash -c '…'
 
 The session dir comes in via the environment, NOT argv: ``/proc/<pid>/cmdline`` is world-readable,
 and the dir name is the sub_session id, which is the key to that episode's farm ops.
@@ -184,7 +185,10 @@ def main() -> int:
     ap.add_argument("--mem-mb", type=int, default=0, help="kill the tree above this RSS (0 = off)")
     ap.add_argument("--fsize", type=int, default=1 << 30)
     ap.add_argument("--net", choices=("deny", "allow"), default="deny")
-    ap.add_argument("--poll", type=float, default=0.1)
+    ap.add_argument("--shm", choices=("deny", "allow"), default="deny",
+                    help="allow /dev/shm (POSIX semaphores: multiprocessing, torch DataLoader workers); "
+                         "it is SHARED by every allowed episode")
+    ap.add_argument("--poll", type=float, default=0.1, help="max watchdog poll interval (s)")
     ap.add_argument("--require-landlock", action="store_true")
     ap.add_argument("--no-landlock", action="store_true", help="watchdog + lifetime only")
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
@@ -213,7 +217,8 @@ def main() -> int:
             try:
                 if a.no_landlock:
                     raise OSError("disabled (--no-landlock)")
-                abi = apply_landlock([a.dir], [p for p in a.ro.split(":") if p],
+                rw = [a.dir] + (["/dev/shm"] if a.shm == "allow" else [])
+                abi = apply_landlock(rw, [p for p in a.ro.split(":") if p],
                                      [p for p in a.dev.split(":") if p], a.net == "deny")
             except OSError as e:
                 if a.require_landlock and not a.no_landlock:
@@ -229,7 +234,7 @@ def main() -> int:
                 pass
             os._exit(126)
     os.close(wfd)
-    code = None
+    code, poll = None, 0.005   # short commands return fast; long ones settle at --poll
     while code is None:
         for pid, status in _reap():
             if pid == child:
@@ -246,7 +251,8 @@ def main() -> int:
             _kill_tree(me)
             code = 137
             break
-        time.sleep(a.poll)
+        time.sleep(poll)
+        poll = min(a.poll, poll * 2)
     _kill_tree(me)            # nothing the command started outlives it
     err = os.read(rfd, 4096).decode(errors="replace")
     if err:

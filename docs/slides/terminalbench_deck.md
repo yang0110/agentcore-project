@@ -2,7 +2,7 @@
 
 **Kaige Yang** — Senior Applied Scientist, AWS
 
-September 24, 2026
+September 25, 2026
 
 ---
 
@@ -14,10 +14,22 @@ September 24, 2026
 | **Challenge** | Isolation needs a **fresh microVM per episode**, so every episode pays a **cold start**, in bursts, at every step |
 | **Solution** | **Look-ahead pre-open:** replay slime's data order and boot the next 2 batches' sessions (P = 64) before slime asks; heartbeat keeps them alive |
 | **Result** | Smoke run on AWS: 382 episodes, **0 infra errors**, `open_wait_ms` **p95 = 0** (no boot on the critical path). Cost: ≈ 95 % of microVM time idle; reward sparse (4 solves) |
+| **Warm-start probe** | Pre-open cuts wait p50 774 → **5 ms** (own Runtime) / 1715 → **0 ms** (Code Interpreter), makespan −20 % / −15 %. Heartbeat keeps own-Runtime sessions past the idle timeout (3/3 vs 0/3) |
 
 : The deck in one table
 
 Source: `code/demos/demo_cpu_terminalbench/`.
+
+## Use case · why this demo · design
+
+| | |
+|--------------|------------------------------------------------------------------------------|
+| **Use case covered** | Tasks that need **their own OS image** (packages, `/etc`, services): hundreds of custom images, one per task, routed per episode |
+| **Why this demo** | The default Code Interpreter covers most literature tasks; this is the case it cannot: custom images **at scale**, where the cold start is paid per episode |
+| **Isolation** | One episode = one **brand-new session** = one dedicated microVM, stopped (VM terminated, memory sanitized) when the episode ends. Nothing leaks between episodes or GRPO siblings |
+| **Design considerations** | Strict image routing (unmapped task = error, no fallback) · look-ahead pre-open hides the boot · always-on heartbeat keeps pre-opened sessions past the 15-min idle timeout · retry on a new id; infra failures never scored as wrong answers |
+
+: What this demo covers
 
 # 1 · Setup
 
@@ -159,10 +171,39 @@ E = 21 s (measured episode p50), W = 4. Tune from the `[demo]` lines: `open_wait
 
 - **Every open was a warm hit.** AgentCore already had a spare VM up for each Runtime, so no ≈ 15 s cold boot occurred in this run. The per-image cold-start probe (`probe_coldstart.py`) is still to run.
 
+## Warm-start probe: pre-open (`warmstart/`, 2026-09-25)
+
+Host-only, no GPU or trainer (≈ 7 min, a few cents): the same 24 MockPolicy `sql` episodes in batches of 6, **cold** (open at episode start) vs **preopen** (next batch booted while this one runs, the `TB_PREOPEN_BATCHES` idea).
+
+| Backend | Mode | Wait p50 | Episodes that waited | Idle held | Makespan |
+|--------------------|----------|----------:|--------------------:|---------:|-----------------:|
+| Own Runtime | cold | 774 ms | 24 / 24 | 0 s | 31.9 s |
+| Own Runtime | preopen | **5 ms** | 8 / 24 (first batch) | 75 s | 25.5 s (**−20 %**) |
+| Code Interpreter | cold | 1715 ms | 24 / 24 | 0 s | 28.7 s |
+| Code Interpreter | preopen | **0 ms** | 6 / 24 (first batch) | 70 s | 24.3 s (**−15 %**) |
+
+: Pre-open vs cold open (all rewards 1.0)
+
+- **Only the first batch pays the boot.** The price is "idle held", the same trade-off `preopen_idle_ms` shows at full scale.
+
+## Warm-start probe: heartbeat
+
+A Runtime session idle past `idleRuntimeSessionTimeout` is reclaimed. In training that timeout is the **15-min default** (`WARM_IDLE_TIMEOUT` = 900, pings at 450 s). The probe Runtime `acs_warmstart_cpu` sets it to **60 s** only so the test fits in minutes; sessions then sit idle 150 s.
+
+| Backend | Heartbeat | Sessions surviving the idle gap | Resume |
+|--------------------|-----------------|---------:|-------------------------------------------|
+| Own Runtime | on (14 pings) | **3 / 3** | 104 ms, files intact |
+| Own Runtime | off | 0 / 3 | **Silently reclaimed:** same session id, fresh empty sandbox |
+| Code Interpreter | on / off | 0 / 3 | Ends at its `sessionTimeoutSeconds` regardless of pings |
+
+: Heartbeat vs idle reclaim
+
+- **Why the keeper is always on here:** a reclaimed session looks healthy but has lost its files. On the Code Interpreter the lever is a generous session timeout, not pings.
+
 ## Takeaways and next steps
 
 - **Works end to end:** per-task Runtimes, one fresh microVM per episode, oracle-checked tasks, 0 infra failures.
-- **Cold start is solved, but over-provisioned.** Look-ahead removed all boot wait, but at P = 64 a VM idles ≈ 7 min for a 21 s episode. With warm hits at ≈ 0.7 s, **`TB_PREOPEN_BATCHES` = 1 (or 0)** should give the same wait at a fraction of the cost.
+- **Cold start is solved, but over-provisioned.** Look-ahead removed all boot wait (the warm-start probe confirms: only the first batch waits), but at P = 64 a VM idles ≈ 7 min for a 21 s episode. With warm hits at ≈ 0.7 s, **`TB_PREOPEN_BATCHES` = 1 (or 0)** should give the same wait at a fraction of the cost.
 - **Learning signal is the bottleneck:** 4 solves in 382 episodes. Next: easy-first curriculum, more turns, or partial credit from `tests_passed`.
 
 | Next | Why |

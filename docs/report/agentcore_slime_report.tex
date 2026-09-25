@@ -446,9 +446,10 @@ RL}. It is grounded in a working slime + AgentCore project and in the
   heartbeat has no effect; the session timeout is the lever.
 \item
   \textbf{How isolation is guaranteed when sessions share one instance}
-  --- per-episode uid, private directory, resource limits and
-  kill-and-scrub on a shared \texttt{m5} or GPU instance, and exactly
-  what still shares a kernel (Chapters 5 and 7).
+  --- a per-episode Landlock jail (or uid where capabilities allow),
+  private directory, resource limits and kill-and-scrub on a shared
+  \texttt{m5} or GPU instance, and exactly what still shares a kernel
+  (Chapters 5 and 7).
 \item
   \textbf{How to snapshot and resume at the application level} on a
   GPU-EC2 Runtime Instance --- a \textbf{Dockerfile + a custom script,
@@ -3502,16 +3503,16 @@ it differs by substrate:
 \item
   \textbf{CPU (\texttt{CpuFarm}, \texttt{sandbox\_cpu\_farm.py}).} No
   warm GPU cache to protect, so it optimizes for \textbf{isolation
-  instead of warmth}: each \texttt{sub\_session} leases its own
-  unprivileged uid (\texttt{20000+slot}) and a private \texttt{0700} dir
-  holding its \texttt{HOME}/\texttt{TMPDIR}/caches; its \texttt{exec}
-  runs under that uid with \texttt{prlimit} caps; and close kills every
-  process of the uid and scrubs its files (env plumbing in
-  \texttt{sandbox\_farm\_env.py}). The shape is the same as the GPU
-  farm's (a shared session plus \texttt{sub\_session}s), with the
-  opposite cache policy. What this does and does not guarantee is
-  spelled out in §``Isolation on a shared m5 --- what is guaranteed, and
-  what is not''.
+  instead of warmth}: each \texttt{sub\_session} gets a private dir
+  holding its \texttt{HOME}/\texttt{TMPDIR}/caches; every \texttt{exec}
+  runs in its own Landlock jail (own dir only, no TCP, no cross-episode
+  signals) with process and RAM caps, plus its own uid where the
+  container has the capabilities; and close kills the process tree and
+  deletes the dir (env plumbing in \texttt{sandbox\_farm\_env.py}). The
+  shape is the same as the GPU farm's (a shared session plus
+  \texttt{sub\_session}s), with the opposite cache policy. What this
+  does and does not guarantee is spelled out in §``Isolation on a shared
+  m5 --- what is guaranteed, and what is not''.
 \end{itemize}
 
 \textbf{Why it matters.} The payoff is that \textbf{instance count is
@@ -3822,8 +3823,8 @@ Run status
 \textbf{per task} (218) & Terminal-Bench & \textbf{passed} (2026-09-23):
 boot hidden, 4/382 solved; \texttt{warmstart/} probe live \\
 5 & \texttt{demo\_cpu\_instance\_pool} & warm \textbf{m5 Instance} pool,
-per-episode uid & DeepScaleR, \textgreater{} 2 GB image & pool +
-isolation probes passed; RL smoke \textbf{passed} 2026-09-25, eval
+Landlock jail per episode & DeepScaleR, \textgreater{} 2 GB image & pool
++ isolation probes passed; RL smoke \textbf{passed} 2026-09-25, eval
 0.7875, 2 cold boots \\
 6 & \texttt{demo\_cpu\_scale\_lanes} & 256 pooled microVM sessions &
 DeepScaleR (fixed) & pool check ok (64 × 64, 2026-09-25); {[}PENDING: 4
@@ -4273,10 +4274,11 @@ minutes, for a few cents, on both backends. It is a probe folder inside
 that demo's two mechanisms.
 
 \textbf{Design considerations.} MockPolicy episodes, with no GPU, model
-or trainer, so that only the sandbox is measured. A 60 s idle timeout
-makes reclaim observable in minutes. The same episodes run on the own
-Runtime and on the Code Interpreter, because the two behave differently
-under a heartbeat. The pre-open depth is one batch here and
+or trainer, so that only the sandbox is measured. A 60 s idle timeout,
+shortened from the 15-min default that training Runtimes keep, makes
+reclaim observable in minutes. The same episodes run on the own Runtime
+and on the Code Interpreter, because the two behave differently under a
+heartbeat. The pre-open depth is one batch here and
 \texttt{TB\_PREOPEN\_BATCHES} (default 2) in the real demo.
 
 \textbf{Pre-open the next one or two batches.} slime hands the pool only
@@ -4446,9 +4448,24 @@ not}\label{isolation-on-a-shared-m5-what-is-guaranteed-and-what-is-not}}
 
 On a microVM, AgentCore guarantees the isolation: one session is one VM
 with its own kernel. Sharing one Instance between sessions gives that
-boundary up for warm reuse, so the farm (\texttt{sandbox\_cpu\_farm.py})
-puts back as much isolation as \textbf{one kernel} allows. Every
-\texttt{sub\_session} runs as \textbf{its own unprivileged uid}.
+boundary up for warm reuse, so the farm (\texttt{sandbox\_cpu\_farm.py}
++ \texttt{sandbox\_farm\_jail.py}) puts back as much isolation as
+\textbf{one unprivileged kernel user} can.
+
+\textbf{Why not a uid per episode.} Measured live on the m5
+(2026-09-25), the AgentCore container is uid 0 only inside a user
+namespace (uid\_map \texttt{0\ 100000\ 65536}), with \texttt{CapEff} =
+\texttt{CapBnd} = 0, \texttt{NoNewPrivs=1} and seccomp. \texttt{setuid},
+\texttt{chown}, \texttt{unshare} and cgroup writes are all
+\texttt{EPERM}. The first hardened image (\texttt{:uidiso-20260925}, one
+uid per slot) failed every farm \texttt{open} on \texttt{chown} (HTTP
+500), and its \texttt{uid\_isolation:\ false} fallback did not trigger
+because it only checked \texttt{geteuid()==0}. What the kernel (6.18)
+does allow an unprivileged process is \textbf{Landlock ABI 7}, so every
+exec runs in \textbf{its own Landlock domain}.
+\texttt{describe(){[}"mode"{]}} reports \texttt{landlock} on AgentCore,
+and \texttt{uid+landlock} where the capabilities exist (local docker),
+which adds a uid per slot.
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
@@ -4468,63 +4485,72 @@ shared m5 --- \textbf{still shared}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-Filesystem & own root fs, discarded with the VM & own dir \texttt{0700}
-owned by the episode uid; farm root \texttt{0711}; \texttt{umask\ 077};
-HOME / TMPDIR inside the dir; server \texttt{read\_file} /
+Filesystem & own root fs, discarded with the VM & Landlock: read+exec on
+the system dirs, read+write \textbf{only its own dir}; sibling dirs,
+farm root, \texttt{/tmp}, \texttt{/var/tmp}, \texttt{/dev/shm},
+\texttt{/workspace}, \texttt{/root} all \texttt{EACCES}; HOME / TMPDIR
+inside the dir, \texttt{umask\ 077}; server \texttt{read\_file} /
 \texttt{write\_file} refuse \texttt{..}, absolute and symlink escapes &
-the image's read-only system dirs \\
-Process / user & own process tree & uid/gid \texttt{20000+slot} (max
-256), no supplementary groups: no ptrace, signals or
-\texttt{/proc/\textless{}pid\textgreater{}/environ} of another episode &
-one PID namespace: \texttt{ps} shows command lines \\
-RAM / CPU & own allocation & \texttt{prlimit} NPROC=256, FSIZE=1 GiB,
-CORE=0; per-op timeout kills the process tree & no cgroup, no AS cap: an
-OOM can hit a neighbour \\
-Network & own interface & the server's \texttt{AWS\_*} env is stripped &
-one netns: the server port 8080 and IMDS are reachable; acting on
-another episode needs its 64-bit \texttt{sub\_session} id \\
-Kernel & own guest kernel & --- & \textbf{one kernel}: an exploit breaks
-everything above \\
+the image's read-only system files; \texttt{/dev/shm} if
+\texttt{SANDBOX\_FARM\_SHM=allow} (needed by
+\texttt{multiprocessing}) \\
+Process / user & own process tree & signals, \texttt{ptrace} and
+\texttt{/proc/\textless{}pid\textgreater{}/\{environ,cwd,mem\}} scoped
+to the episode's Landlock domain; a subreaper kills the whole tree when
+each exec ends, so nothing outlives its exec & one uid (0 in the
+userns), one PID namespace: \texttt{ps} shows command lines \\
+RAM / CPU & own allocation & watchdog (5--100 ms polling) kills the tree
+over 256 processes or 4 GiB RSS; FSIZE=1 GiB, CORE=0; per-op timeout &
+no per-episode cgroup: one episode can take the CPU, a fast spike
+between polls can OOM a neighbour \\
+Network & own interface & Landlock TCP: every \texttt{connect} /
+\texttt{bind} denied (server port 8080, IMDS, internet); the server's
+\texttt{AWS\_*} env is stripped & one netns; \textbf{UDP and DNS not
+covered} \\
+Kernel & own guest kernel & --- & \textbf{one kernel}: an exploit or a
+Landlock bypass breaks everything above \\
 Blast radius & one session & --- & \textbf{one instance} \\
 \end{longtable}
 
-\textbf{Clean-up on close.} Close SIGKILLs every process of the uid
-(setsid'd daemons included) and reaps the zombies (the server is
-\texttt{PR\_SET\_CHILD\_SUBREAPER}), removes the dir and the uid's files
-in \texttt{/tmp}, \texttt{/var/tmp} and \texttt{/dev/shm}, and frees the
-slot; \texttt{open} also scrubs a reused slot. The \texttt{sub\_session}
-id is kept off every command line (\texttt{/proc/*/cmdline} is
-world-readable, and the id is the key to the farm API) and is
-regex-validated against traversal. Uid isolation needs a root server,
-which the image has; an unprivileged server reports
-\texttt{uid\_isolation:\ false} and keeps only the dir + env freshness.
-Knobs:
-\texttt{SANDBOX\_FARM\_\{UID\_BASE,MAX\_SLOTS,NPROC,FSIZE\_MB,UID\_ISOLATION\}}.
+\textbf{Lifetime and keys.} Close deletes the episode's dir. The
+\texttt{sub\_session} id is kept off every command line
+(\texttt{/proc/*/cmdline} is world-readable, and the id is the key to
+the farm API) and is regex-validated against traversal. Costs: about +50
+ms per exec, and a task that starts a server in one exec and uses it in
+the next must do both in one exec. Knobs:
+\texttt{SANDBOX\_FARM\_\{NET,SHM,NPROC,FSIZE\_MB,UID\_ISOLATION\}}.
 
 \textbf{Verified.} \texttt{isolation\_probe.py} has episode A plant a
-secret file, a \texttt{/tmp} file and a detached process, then has
-episode B try to reach them. \textbf{Before the hardening}, B could read
-A's file by explicit path
-(\texttt{cat\ ../\textless{}A\textgreater{}/marker.txt}) --- dir
-hygiene, not a boundary. \textbf{After}: \textbf{16/16 checks pass
-offline}, both in the \texttt{agentcore\_p4} container and inside the
-built image: B cannot list the root or A's dir, cannot read A's files by
-any path, cannot signal A's process, and inherits no \texttt{AWS\_*};
-after close, A's detached process and \texttt{/tmp} file are gone. Extra
-checks: a fork loop stops at EAGAIN, a 2 GB write is capped at 1 GiB, a
-timeout kills the whole tree, and numpy/torch still run as the uid. The
-hardened image is pushed as \texttt{acs-sandbox-bigcpu:uidiso-20260925};
-the live check on one warm m5 is {[}PENDING: live isolation\_probe.py
---live result on the updated Runtime{]}.
+secret file, try \texttt{/tmp} and run a setsid'd daemon inside a long
+exec, while episode B tries to reach all of it. \textbf{Before the
+hardening}, B could read A's file by explicit path
+(\texttt{cat\ ../\textless{}A\textgreater{}/marker.txt}). \textbf{With
+the jail, 22/22 checks pass in all three settings} (2026-09-25): offline
+in \texttt{agentcore\_p4} (\texttt{uid+landlock}), the image under
+\texttt{docker\ run\ -\/-cap-drop\ ALL\ -\/-security-opt\ no-new-privileges}
+(the AgentCore simulation), and \textbf{live on one warm m5} (Runtime
+v3, image \texttt{acs-sandbox-bigcpu:landlock-20260925}). Live, A and B
+had the same boot\_id and both ran as uid 0 in \texttt{landlock-abi7}; B
+could not list the farm root or A's dir, read A's secret by path or via
+\texttt{../}, or write into A's dir; the server's file ops refused A's
+paths; B's \texttt{kill\ -0} and
+\texttt{cat\ /proc/\textless{}pid\textgreater{}/environ} of A's daemon
+were denied; \texttt{AWS\_*} was not inherited; a 1.2 GB write stopped
+at 1 GiB and a 400-process fan-out was killed; \texttt{curl} to
+\texttt{127.0.0.1:8080} and \texttt{169.254.169.254} failed; A's daemon
+was gone once its exec ended. One MockPolicy episode of each of the 13
+task families, run concurrently on the same warm m5 under the jail, all
+scored 1.0; the live warm exec p50 was 156 ms (117 ms in the pre-jail
+smoke).
 
 \textbf{When is it enough?} It is \textbf{good enough for RLVR},
 including a policy that stumbles into reward hacks: reading a sibling's
-\texttt{solution.py}, killing a neighbour's checker, or leaving a daemon
-that tampers with the next episode. It is \textbf{not} a defence against
-a kernel exploit, and it gives no guaranteed CPU/RAM or private network
-stack. For those, and for tasks that mutate the whole OS
-(Terminal-Bench), use a \textbf{microVM per session}: the Code
-Interpreter or a microVM Runtime.
+\texttt{solution.py}, killing a neighbour's checker, calling the server
+port, or leaving a daemon that tampers with the next episode. It is
+\textbf{not} a defence against a kernel exploit, and it gives no
+guaranteed CPU/RAM or private network stack. For those, and for tasks
+that mutate the whole OS (Terminal-Bench), use a \textbf{microVM per
+session}: the Code Interpreter or a microVM Runtime.
 
 \textbf{Use case covered.} Tasks whose checker needs a big image
 (\textgreater{} 2 GB) or heavy dependencies --- a torch + scientific
@@ -4547,8 +4573,9 @@ story all differ from the microVM demos.
   \textbf{\texttt{SANDBOX\_POOL=N}}, least-loaded assignment, one
   Runtime for the whole pool; idle Instances are reclaimed after 600 s.
 \item
-  \textbf{A per-episode \texttt{sub\_session} with per-slot uid
-  isolation} (table above), plus kill-and-scrub on close.
+  \textbf{A per-episode \texttt{sub\_session} in its own Landlock jail}
+  (table above; per-episode uids are impossible in AgentCore's
+  capability-less container), plus kill-and-scrub.
 \item
   \textbf{Honest limits}: a shared kernel, network namespace and
   CPU/RAM. When a hostile-kernel boundary is required, use a microVM per
@@ -4871,10 +4898,11 @@ that: one shared session, and one whole GPU per \texttt{sub\_session}.
 \subsubsection{GPU isolation --- what a shared GPU instance
 guarantees}\label{gpu-isolation-what-a-shared-gpu-instance-guarantees}}
 
-The farm's host-side isolation is the same as the CPU pool's: every
-\texttt{sub\_session} runs as its own uid in a private \texttt{0700} dir
-with \texttt{prlimit} caps and kill-and-scrub on close
-(\texttt{sandbox\_ray\_farm.py}). The GPU adds its own layer:
+The farm's host-side isolation is the CPU pool's uid mode (the Landlock
+jail is not ported to the GPU farm yet): every \texttt{sub\_session}
+runs as its own uid in a private \texttt{0700} dir with \texttt{prlimit}
+caps and kill-and-scrub on close (\texttt{sandbox\_ray\_farm.py}). The
+GPU adds its own layer:
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2083}}
@@ -4911,13 +4939,12 @@ It is fine for RLVR on kernels you trust not to attack the driver; a
 whole GPU per episode (\texttt{demo\_gpu\_farm\_whole}) removes the
 memory contention and the co-tenant wedge; only a separate instance per
 session (\texttt{demo\_gpu\_single} with one session per episode) gives
-a hardware boundary. The live GPU isolation check is Live check
-(2026-09-25, local farm on GPU 6): slot A and slot B ran as separate
-uids 20000 / 20001; B was denied A's files, dirs and home; \texttt{../},
-absolute and symlink escapes were refused; 4 separate CUDA contexts, the
-0.5 memory cap held in both slots; closing A left no process and removed
-its dir. On the AgentCore g6 (no capabilities) the farm falls back to
-one shared uid..
+a hardware boundary. Live GPU isolation check (2026-09-25, local farm on
+GPU 6): slot A and slot B ran as separate uids 20000 / 20001; B was
+denied A's files, dirs and home; \texttt{../}, absolute and symlink
+escapes were refused; 4 separate CUDA contexts, the 0.5 memory cap held
+in both slots; closing A left no process and removed its dir. On the
+AgentCore g6 (no capabilities) the farm falls back to one shared uid.
 
 \hypertarget{chapter-8-experimental-one-episode-many-samples-demo_cpu_branching}{%
 \subsection{\texorpdfstring{Chapter 8 (experimental) --- one episode,
@@ -6527,7 +6554,7 @@ demos already exercise.
     \texttt{warmstart/} probe;
   \item
     \textbf{a warm CPU Instance pool}: 2 instances, warm opens 121--328
-    ms, isolation 16/16 offline;
+    ms, Landlock isolation 22/22 live on the m5;
   \item
     \textbf{decoupled rollout tiers}: the old 1:1:1 lanes held on AWS;
     the 4 : 256 : 256 pool passed a live pool check, RL smoke pending;
@@ -6554,9 +6581,9 @@ demos already exercise.
     step 4 on runtime 500s ({[}PENDING: root cause of the
     demo\_gpu\_single remote-smoke op=open 500s{]});
   \item
-    the live m5 isolation check is still pending ({[}PENDING: live
-    isolation\_probe.py --live result on the updated Runtime{]}); the
-    instance-pool RL smoke passed (eval 0.7875, 2 cold boots);
+    the instance pool's per-uid isolation failed live (AgentCore drops
+    every capability) and was replaced by a Landlock jail, 22/22 live;
+    its RL smoke passed (eval 0.7875, 2 cold boots, pre-jail image);
   \item
     no demo has yet been run to convergence. This is a capability
     demonstration, not a convergence result.

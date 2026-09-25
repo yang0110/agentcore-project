@@ -433,7 +433,7 @@ While slime syncs weights no ops reach the sandbox, and **your own Runtime** rec
 **Design considerations**
 
 - `SANDBOX_POOL=N` shared session ids, least-loaded placement; boots paid N times per run.
-- Per-episode `sub_session` with per-slot uid isolation, private `0700` dir, rlimits, kill + wipe on close.
+- Per-episode `sub_session` in its own Landlock jail (own dir only, no TCP, no cross-episode signals), process/RAM caps, kill + wipe.
 - Limits: kernel, network, CPU/RAM stay shared → microVM per session for a kernel boundary.
 - Rejected: a fresh `runtimeSessionId` per episode (375 m5 boots in 10 steps).
 
@@ -455,40 +455,39 @@ DELETE_CP=1 bash 6_cleanup.sh
 
 ## Isolation on a shared Instance (1/3) — what is guaranteed, and by what
 
-The pool gives up the VM boundary for warm reuse. The farm (`sandbox_cpu_farm.py`, root server) puts back as much isolation as one kernel allows:
+The pool gives up the VM boundary for warm reuse. The farm (`sandbox_cpu_farm.py` + `sandbox_farm_jail.py`) puts back as much isolation as one **unprivileged** kernel user can.
 
-- **Own unprivileged uid per episode:** each `sub_session` leases uid/gid `20000+slot`, no supplementary groups → no ptrace, no signals, no `/proc/<pid>/environ` of another episode.
-- **Private filesystem:** session dir `0700` owned by that uid, farm root `0711` (not listable), `umask 077`; HOME / TMPDIR / caches inside the dir.
+- **Why not a uid per episode:** live on the m5, the container is uid 0 only in a user namespace with **every capability dropped**: `setuid`, `chown`, `unshare`, cgroups all `EPERM`. The per-slot-uid image failed every open.
+- **A Landlock jail per exec** (kernel 6.18, ABI 7): read+write **only the episode's own dir**; system dirs read-only; sibling dirs, farm root, `/tmp`, `/dev/shm` denied. Signals, `ptrace` and `/proc/<pid>/environ` scoped to the episode's own domain. Every TCP `connect`/`bind` denied (server port, instance metadata, internet).
 - **No path escapes via the server:** `read_file` / `write_file` refuse `..`, absolute and symlink paths; session ids are validated.
-- **Resource caps:** `prlimit` NPROC=256 (a fork bomb stops at its own cap), FSIZE=1 GiB, CORE=0; per-op timeout kills the whole process tree.
-- **Clean close:** SIGKILL every process of the uid (setsid'd daemons too), reap zombies, delete the dir and the uid's files in `/tmp`, `/var/tmp`, `/dev/shm`, free the slot.
-- **No secrets leak:** the server's `AWS_*` env is not passed to episodes; the session id (the key to the farm API) stays off every command line.
+- **Caps and lifetime:** watchdog kill over 256 procs or 4 GiB RSS; FSIZE 1 GiB; the whole tree (daemons too) dies when each exec ends; close deletes the dir; `AWS_*` stripped.
+- Where capabilities exist (local docker) it **also** adds a uid per episode (`uid+landlock`).
 
 ## Isolation on a shared Instance (2/3) — what is still shared
 
-**Good enough for RLVR**, including the reward hacks a policy can stumble into (reading a sibling's answer, killing a neighbour's checker, leaving a daemon). **Not a boundary against a kernel exploit**: for that, or for tasks that mutate the whole OS, use a **microVM per session** (`SANDBOX=agentcore` / `agentcore-runtime`).
+**Good enough for RLVR** (reading a sibling's answer, killing a neighbour's checker, calling the server port). **Not a kernel-exploit boundary**: for that, or OS-mutating / networked tasks, use a **microVM per session**. Costs: +50 ms/exec; `multiprocessing` needs `SANDBOX_FARM_SHM=allow`.
 
 ```{=latex}
 \scriptsize
 ```
 
-| | microVM per session (AgentCore) | shared m5 `sub_session` |
+| | microVM per session (AgentCore) | shared m5 `sub_session` (Landlock jail) |
 |------|------------|--------------------|
-| Filesystem | own root fs, discarded | own `0700` dir; system dirs shared read-only |
-| Process / user | own PID namespace | own uid, but **one PID namespace** (`ps` lists others) |
-| CPU / RAM | own allocation | **no per-episode cgroup**: one episode can starve or OOM others |
-| Network | own interface | **one netns**: server port and instance metadata reachable |
-| Kernel | own guest kernel | **one kernel**: an exploit breaks all of the above |
+| Filesystem | own root fs, discarded | own dir only; system dirs shared read-only |
+| Process / user | own PID namespace | one uid and **one PID namespace** (`ps` lists others), but no signal / ptrace across episodes |
+| CPU / RAM | own allocation | **no per-episode cgroup**: one episode can take the CPU; a fast spike can OOM others |
+| Network | own interface | TCP denied; **UDP / DNS not covered**, one netns |
+| Kernel | own guest kernel | **one kernel**: an exploit or Landlock bypass breaks all of the above |
 | Blast radius | one session | one Instance and all its episodes |
 
 ## Isolation on a shared Instance (3/3) — how it is verified
 
-`isolation_probe.py`: episode A plants a secret file, a `/tmp` file and a detached process; episode B, on the same Instance, tries to reach them.
+`isolation_probe.py`: episode A plants a secret file, tries `/tmp`, and runs a setsid'd daemon inside a long exec; episode B, on the same Instance, tries to reach all of it.
 
-- **Offline (root farm, in the container and inside the built image): 16/16 checks pass.** A and B run as uids 20000 / 20001; B's `ls` of the root and of A's dir → Permission denied; reading A's secret by explicit path and via `../` → denied; the server's file ops refuse `../<A>`; A's `/tmp` file unreadable; `kill -0` of A's pid → not permitted; `AWS_*` not inherited; limits in force; after A closes, its daemon and `/tmp` file are gone.
-- **Also:** a 400-way fork loop stops at EAGAIN; a 2 GB write stops at 1 GiB; a timed-out exec leaves no process alive; numpy/torch checkers run unchanged as the uid.
-- **Live, two `sub_session`s on one warm m5:** [PENDING: isolation_probe.py --live result on m5]. The uid layer needs a root server **with** CAP_SETUID / SETGID; the AgentCore g6 container has none (next section), so the live m5 probe decides whether the uid rows hold on AgentCore or the farm falls back to dir + env isolation (`uid_isolation: false`).
-- **Before the hardening** (first live probe, same day): both ran as root, and B could `cat ../<A>/marker.txt`. That is why the uid layer exists.
+- **22/22 checks pass in all three settings** (2026-09-25): offline in the container (`uid+landlock`), the image under `--cap-drop ALL` (the AgentCore simulation), and **live on one warm m5** (Runtime v3, `:landlock-20260925`).
+- **Live:** same boot_id, both uid 0 in `landlock-abi7`. B can't list the farm root or A's dir, read A's secret by path or `../`, or write into A's dir; the server's file ops refuse A's paths; `kill -0` and `/proc/<pid>/environ` of A's daemon denied; a 1.2 GB write stops at 1 GiB; a 400-process fan-out is killed; `curl` to port 8080 and to 169.254.169.254 fail; A's daemon is gone when its exec ends.
+- **Real tasks:** one MockPolicy episode of each of the 13 families, concurrently on one warm m5 under the jail: all reward 1.0. Live warm exec p50 156 ms (117 ms without the jail).
+- **Why it exists:** the first live probe (no hardening) ran both as root and B could `cat ../<A>/marker.txt`; the uid-based fix then failed on AgentCore's capability-less container.
 
 # 10 · Scaling the tiers independently
 
@@ -639,13 +638,13 @@ bash 5_run.sh && bash 6_cleanup.sh
 
 ## Isolation on a shared GPU Instance
 
-The GPU farm (`sandbox_ray_farm.py`) applies the **same uid + `0700` dir + path-confinement + kill-on-close layer** as the CPU pool, plus:
+The GPU farm (`sandbox_ray_farm.py`) applies a **uid + `0700` dir + path-confinement + kill-on-close layer** (the CPU pool's uid mode; the CPU pool's Landlock jail is not ported yet), plus:
 
 - **Separate CUDA contexts** per actor: no reading another episode's device memory (driver-enforced).
 - **Cooperative memory cap:** `B4_PER_SANDBOX_MEM_FRACTION` is applied in-process (`sitecustomize.py`), not by the driver.
 - **Per-uid warm caches:** no slot can plant a kernel another slot loads; `SANDBOX_ISOLATE_HOME=1` makes them per episode.
 - **No MIG on L4 / L40S:** a GPU fault or wedge hits every co-tenant on the card; `whole` confines it to one GPU.
-- **Where the uid layer applies:** it needs CAP_SETUID / SETGID / CHOWN / KILL. The local farm's Docker root has them; **the AgentCore g6 container is uid 0 with no capabilities**, so it falls back to one shared uid (dirs, path confinement, kill still apply); `ping` / `open` report `uid_isolation`. Live check: [PENDING: GPU farm uid-isolation live check result].
+- **Where the uid layer applies:** it needs CAP_SETUID / SETGID / CHOWN / KILL. The local farm's Docker root has them; **the AgentCore g6 container is uid 0 with no capabilities**, so it falls back to one shared uid (dirs, path confinement, kill still apply); `ping` / `open` report `uid_isolation`. Live (local farm, GPU 6): separate uids, B denied A's files, 0.5 cap held, close left no process.
 - Must not share a kernel or GPU? One `runtimeSessionId` per episode, one Instance each.
 
 # 12 · Experimental and summary
@@ -694,7 +693,7 @@ bash 5_run.sh && bash 6_cleanup.sh
 |------------------|-----------|-----------|-----------|
 | `demo_cpu_tasks` | literature tasks on the **default** runtime | microVM per episode | gsm8k 0.90; libs 1.0 |
 | `demo_cpu_terminalbench` | ~229 images; pre-open + heartbeat | fresh microVM per episode | wait p95 0; pre-open −15–20 % |
-| `demo_cpu_instance_pool` | > 2 GB image, warm m5 pool | uid + `0700` dir, shared kernel | 2 boots per run; opens 121–328 ms |
+| `demo_cpu_instance_pool` | > 2 GB image, warm m5 pool | Landlock jail per episode, shared kernel | 2 boots per run; opens 121–328 ms |
 | `demo_cpu_scale_lanes` | 4 engines : 256 workers : 256 microVMs, decoupled | pooled microVM, one episode at a time, fresh workdir | pool check ok; [PENDING: RL smoke] |
 | `demo_gpu_single` | KernelBench on one warm g6 | `sub_session` on a shared g6 | trained; smoke 0.525 |
 | `demo_gpu_farm_fractional` | one GPU split 0.5 + 0.5 | own CUDA context, shared card | eval 0.65; 181 / 178 split |
@@ -706,7 +705,7 @@ bash 5_run.sh && bash 6_cleanup.sh
 - **Start on the Code Interpreter.** Most literature tasks need no image: no Dockerfile, no ECR, no Runtime.
 - **Add an image only when the environment differs**: a pinned OS, > 2 GB, CUDA, or a missing package. Route by `task.image`; AgentCore only ever sees an image and a session.
 - **Hide boots with pre-open, bridge stalls with heartbeat** on your own Runtimes; on the Code Interpreter, set the session timeout.
-- **Share an Instance only with the isolation layer** (own uid, private dir, caps, kill-on-close), and know what stays shared: kernel, network, CPU/RAM, GPU faults. **Need a kernel boundary? One microVM or Instance per session.**
+- **Share an Instance only with the isolation layer** (Landlock jail / own uid where allowed, private dir, caps, kill-on-close), and know what stays shared: kernel, network, CPU/RAM, GPU faults. **Need a kernel boundary? One microVM or Instance per session.**
 
 ## References
 

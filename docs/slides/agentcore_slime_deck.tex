@@ -1204,8 +1204,9 @@ why · design}
   \texttt{SANDBOX\_POOL=N} shared session ids, least-loaded placement;
   boots paid N times per run.
 \item
-  Per-episode \texttt{sub\_session} with per-slot uid isolation, private
-  \texttt{0700} dir, rlimits, kill + wipe on close.
+  Per-episode \texttt{sub\_session} in its own Landlock jail (own dir
+  only, no TCP, no cross-episode signals), process/RAM caps, kill +
+  wipe.
 \item
   Limits: kernel, network, CPU/RAM stay shared → microVM per session for
   a kernel boundary.
@@ -1257,48 +1258,46 @@ Instances, \textbf{2 cold boots} in the whole run, warm op p50
 guaranteed, and by what}
 \protect\hypertarget{isolation-on-a-shared-instance-13-what-is-guaranteed-and-by-what}{}
 The pool gives up the VM boundary for warm reuse. The farm
-(\texttt{sandbox\_cpu\_farm.py}, root server) puts back as much
-isolation as one kernel allows:
+(\texttt{sandbox\_cpu\_farm.py} + \texttt{sandbox\_farm\_jail.py}) puts
+back as much isolation as one \textbf{unprivileged} kernel user can.
 
 \begin{itemize}
 \tightlist
 \item
-  \textbf{Own unprivileged uid per episode:} each \texttt{sub\_session}
-  leases uid/gid \texttt{20000+slot}, no supplementary groups → no
-  ptrace, no signals, no
-  \texttt{/proc/\textless{}pid\textgreater{}/environ} of another
-  episode.
+  \textbf{Why not a uid per episode:} live on the m5, the container is
+  uid 0 only in a user namespace with \textbf{every capability dropped}:
+  \texttt{setuid}, \texttt{chown}, \texttt{unshare}, cgroups all
+  \texttt{EPERM}. The per-slot-uid image failed every open.
 \item
-  \textbf{Private filesystem:} session dir \texttt{0700} owned by that
-  uid, farm root \texttt{0711} (not listable), \texttt{umask\ 077}; HOME
-  / TMPDIR / caches inside the dir.
+  \textbf{A Landlock jail per exec} (kernel 6.18, ABI 7): read+write
+  \textbf{only the episode's own dir}; system dirs read-only; sibling
+  dirs, farm root, \texttt{/tmp}, \texttt{/dev/shm} denied. Signals,
+  \texttt{ptrace} and
+  \texttt{/proc/\textless{}pid\textgreater{}/environ} scoped to the
+  episode's own domain. Every TCP \texttt{connect}/\texttt{bind} denied
+  (server port, instance metadata, internet).
 \item
   \textbf{No path escapes via the server:} \texttt{read\_file} /
   \texttt{write\_file} refuse \texttt{..}, absolute and symlink paths;
   session ids are validated.
 \item
-  \textbf{Resource caps:} \texttt{prlimit} NPROC=256 (a fork bomb stops
-  at its own cap), FSIZE=1 GiB, CORE=0; per-op timeout kills the whole
-  process tree.
+  \textbf{Caps and lifetime:} watchdog kill over 256 procs or 4 GiB RSS;
+  FSIZE 1 GiB; the whole tree (daemons too) dies when each exec ends;
+  close deletes the dir; \texttt{AWS\_*} stripped.
 \item
-  \textbf{Clean close:} SIGKILL every process of the uid (setsid'd
-  daemons too), reap zombies, delete the dir and the uid's files in
-  \texttt{/tmp}, \texttt{/var/tmp}, \texttt{/dev/shm}, free the slot.
-\item
-  \textbf{No secrets leak:} the server's \texttt{AWS\_*} env is not
-  passed to episodes; the session id (the key to the farm API) stays off
-  every command line.
+  Where capabilities exist (local docker) it \textbf{also} adds a uid
+  per episode (\texttt{uid+landlock}).
 \end{itemize}
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{Isolation on a shared Instance (2/3) --- what is
 still shared}
 \protect\hypertarget{isolation-on-a-shared-instance-23-what-is-still-shared}{}
-\textbf{Good enough for RLVR}, including the reward hacks a policy can
-stumble into (reading a sibling's answer, killing a neighbour's checker,
-leaving a daemon). \textbf{Not a boundary against a kernel exploit}: for
-that, or for tasks that mutate the whole OS, use a \textbf{microVM per
-session} (\texttt{SANDBOX=agentcore} / \texttt{agentcore-runtime}).
+\textbf{Good enough for RLVR} (reading a sibling's answer, killing a
+neighbour's checker, calling the server port). \textbf{Not a
+kernel-exploit boundary}: for that, or OS-mutating / networked tasks,
+use a \textbf{microVM per session}. Costs: +50 ms/exec;
+\texttt{multiprocessing} needs \texttt{SANDBOX\_FARM\_SHM=allow}.
 
 \scriptsize
 
@@ -1311,20 +1310,21 @@ session} (\texttt{SANDBOX=agentcore} / \texttt{agentcore-runtime}).
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 microVM per session (AgentCore)
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-shared m5 \texttt{sub\_session}
+shared m5 \texttt{sub\_session} (Landlock jail)
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-Filesystem & own root fs, discarded & own \texttt{0700} dir; system dirs
-shared read-only \\
-Process / user & own PID namespace & own uid, but \textbf{one PID
-namespace} (\texttt{ps} lists others) \\
+Filesystem & own root fs, discarded & own dir only; system dirs shared
+read-only \\
+Process / user & own PID namespace & one uid and \textbf{one PID
+namespace} (\texttt{ps} lists others), but no signal / ptrace across
+episodes \\
 CPU / RAM & own allocation & \textbf{no per-episode cgroup}: one episode
-can starve or OOM others \\
-Network & own interface & \textbf{one netns}: server port and instance
-metadata reachable \\
-Kernel & own guest kernel & \textbf{one kernel}: an exploit breaks all
-of the above \\
+can take the CPU; a fast spike can OOM others \\
+Network & own interface & TCP denied; \textbf{UDP / DNS not covered},
+one netns \\
+Kernel & own guest kernel & \textbf{one kernel}: an exploit or Landlock
+bypass breaks all of the above \\
 Blast radius & one session & one Instance and all its episodes \\
 \bottomrule\noalign{}
 \end{longtable}
@@ -1333,37 +1333,36 @@ Blast radius & one session & one Instance and all its episodes \\
 \begin{frame}[fragile,allowframebreaks]{Isolation on a shared Instance (3/3) --- how it
 is verified}
 \protect\hypertarget{isolation-on-a-shared-instance-33-how-it-is-verified}{}
-\texttt{isolation\_probe.py}: episode A plants a secret file, a
-\texttt{/tmp} file and a detached process; episode B, on the same
-Instance, tries to reach them.
+\texttt{isolation\_probe.py}: episode A plants a secret file, tries
+\texttt{/tmp}, and runs a setsid'd daemon inside a long exec; episode B,
+on the same Instance, tries to reach all of it.
 
 \begin{itemize}
 \tightlist
 \item
-  \textbf{Offline (root farm, in the container and inside the built
-  image): 16/16 checks pass.} A and B run as uids 20000 / 20001; B's
-  \texttt{ls} of the root and of A's dir → Permission denied; reading
-  A's secret by explicit path and via \texttt{../} → denied; the
-  server's file ops refuse \texttt{../\textless{}A\textgreater{}}; A's
-  \texttt{/tmp} file unreadable; \texttt{kill\ -0} of A's pid → not
-  permitted; \texttt{AWS\_*} not inherited; limits in force; after A
-  closes, its daemon and \texttt{/tmp} file are gone.
+  \textbf{22/22 checks pass in all three settings} (2026-09-25): offline
+  in the container (\texttt{uid+landlock}), the image under
+  \texttt{-\/-cap-drop\ ALL} (the AgentCore simulation), and
+  \textbf{live on one warm m5} (Runtime v3,
+  \texttt{:landlock-20260925}).
 \item
-  \textbf{Also:} a 400-way fork loop stops at EAGAIN; a 2 GB write stops
-  at 1 GiB; a timed-out exec leaves no process alive; numpy/torch
-  checkers run unchanged as the uid.
+  \textbf{Live:} same boot\_id, both uid 0 in \texttt{landlock-abi7}. B
+  can't list the farm root or A's dir, read A's secret by path or
+  \texttt{../}, or write into A's dir; the server's file ops refuse A's
+  paths; \texttt{kill\ -0} and
+  \texttt{/proc/\textless{}pid\textgreater{}/environ} of A's daemon
+  denied; a 1.2 GB write stops at 1 GiB; a 400-process fan-out is
+  killed; \texttt{curl} to port 8080 and to 169.254.169.254 fail; A's
+  daemon is gone when its exec ends.
 \item
-  \textbf{Live, two \texttt{sub\_session}s on one warm m5:} {[}PENDING:
-  isolation\_probe.py --live result on m5{]}. The uid layer needs a root
-  server \textbf{with} CAP\_SETUID / SETGID; the AgentCore g6 container
-  has none (next section), so the live m5 probe decides whether the uid
-  rows hold on AgentCore or the farm falls back to dir + env isolation
-  (\texttt{uid\_isolation:\ false}).
+  \textbf{Real tasks:} one MockPolicy episode of each of the 13
+  families, concurrently on one warm m5 under the jail: all reward 1.0.
+  Live warm exec p50 156 ms (117 ms without the jail).
 \item
-  \textbf{Before the hardening} (first live probe, same day): both ran
-  as root, and B could
-  \texttt{cat\ ../\textless{}A\textgreater{}/marker.txt}. That is why
-  the uid layer exists.
+  \textbf{Why it exists:} the first live probe (no hardening) ran both
+  as root and B could
+  \texttt{cat\ ../\textless{}A\textgreater{}/marker.txt}; the uid-based
+  fix then failed on AgentCore's capability-less container.
 \end{itemize}
 \end{frame}
 
@@ -1670,9 +1669,9 @@ demo\_gpu\_farm\_whole smoke{]}.
 
 \begin{frame}[fragile,allowframebreaks]{Isolation on a shared GPU Instance}
 \protect\hypertarget{isolation-on-a-shared-gpu-instance}{}
-The GPU farm (\texttt{sandbox\_ray\_farm.py}) applies the \textbf{same
-uid + \texttt{0700} dir + path-confinement + kill-on-close layer} as the
-CPU pool, plus:
+The GPU farm (\texttt{sandbox\_ray\_farm.py}) applies a \textbf{uid +
+\texttt{0700} dir + path-confinement + kill-on-close layer} (the CPU
+pool's uid mode; the CPU pool's Landlock jail is not ported yet), plus:
 
 \begin{itemize}
 \tightlist
@@ -1695,7 +1694,8 @@ CPU pool, plus:
   AgentCore g6 container is uid 0 with no capabilities}, so it falls
   back to one shared uid (dirs, path confinement, kill still apply);
   \texttt{ping} / \texttt{open} report \texttt{uid\_isolation}. Live
-  check: {[}PENDING: GPU farm uid-isolation live check result{]}.
+  (local farm, GPU 6): separate uids, B denied A's files, 0.5 cap held,
+  close left no process.
 \item
   Must not share a kernel or GPU? One \texttt{runtimeSessionId} per
   episode, one Instance each.
@@ -1799,7 +1799,7 @@ runtime & microVM per episode & gsm8k 0.90; libs 1.0 \\
 + heartbeat & fresh microVM per episode & wait p95 0; pre-open −15--20
 \% \\
 \texttt{demo\_cpu\_instance\_pool} & \textgreater{} 2 GB image, warm m5
-pool & uid + \texttt{0700} dir, shared kernel & 2 boots per run; opens
+pool & Landlock jail per episode, shared kernel & 2 boots per run; opens
 121--328 ms \\
 \texttt{demo\_cpu\_scale\_lanes} & 4 engines : 256 workers : 256
 microVMs, decoupled & pooled microVM, one episode at a time, fresh
@@ -1831,10 +1831,10 @@ microVM & fixes in; RL re-run pending \\
   \textbf{Hide boots with pre-open, bridge stalls with heartbeat} on
   your own Runtimes; on the Code Interpreter, set the session timeout.
 \item
-  \textbf{Share an Instance only with the isolation layer} (own uid,
-  private dir, caps, kill-on-close), and know what stays shared: kernel,
-  network, CPU/RAM, GPU faults. \textbf{Need a kernel boundary? One
-  microVM or Instance per session.}
+  \textbf{Share an Instance only with the isolation layer} (Landlock
+  jail / own uid where allowed, private dir, caps, kill-on-close), and
+  know what stays shared: kernel, network, CPU/RAM, GPU faults.
+  \textbf{Need a kernel boundary? One microVM or Instance per session.}
 \end{itemize}
 \end{frame}
 

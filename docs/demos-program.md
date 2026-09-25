@@ -62,7 +62,7 @@ AgentCore **Code Interpreter** microVM (CPU); the harness is in-process.
 > Code Interpreter), and the custom-vs-managed Runtime check (formerly `demo_cpu_customruntime`) is
 > `demo_cpu_tasks/compare_backends.py`. The ~4 GB image on a CPU capacity-provider Instance (formerly
 > `demo_cpu_bigimage`, then `demo_cpu_tasks VARIANT=bigimage`) is its own demo, `demo_cpu_instance_pool`
-> (warm pool `SANDBOX_POOL=2`, per-slot-uid isolation). After the 2026-09-25 restructure the set is
+> (warm pool `SANDBOX_POOL=2`, a Landlock jail per episode). After the 2026-09-25 restructure the set is
 > 7 demos in storyline order: `demo_cpu_tasks`, `demo_cpu_terminalbench` (with its `warmstart/` probe),
 > `demo_cpu_instance_pool`, `demo_cpu_scale_lanes`, `demo_gpu_single`, `demo_gpu_farm_fractional`,
 > `demo_gpu_farm_whole`, plus the experimental, blocked `demo_cpu_branching`. Every demo runs

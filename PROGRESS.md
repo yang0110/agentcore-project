@@ -15,15 +15,16 @@ sections: **Done**, **In progress**, **Next steps (to run)**.
 > 2. `demo_cpu_terminalbench`: one image + Runtime per task, look-ahead pre-open (`TB_PREOPEN_BATCHES=2`),
 >    always-on heartbeat. It now carries the **`warmstart/` probe** (`bash warmstart/run_warmstart.sh`, results
 >    in its README): pre-open cuts wait p50 774 → 5 ms (own Runtime) / 1715 → 0 ms (CI), makespan −20 % / −15 %,
->    only the first batch waits; heartbeat on keeps 3/3 own-Runtime sessions past a 60 s idle timeout (resume
+>    only the first batch waits; heartbeat on keeps 3/3 own-Runtime sessions past the probe's shortened 60 s idle timeout (training uses the 15-min default; resume
 >    104 ms), off → all silently reclaimed; the CI expires at its session timeout regardless. The short-lived
 >    `demo_cpu_warmstart` folder was deleted with its Runtime/ECR.
 > 3. `demo_cpu_instance_pool` (formerly `demo_cpu_tasks VARIANT=bigimage` / `demo_cpu_bigimage`): ~4 GB image on
 >    one m5 capacity-provider Instance, warm pool `SANDBOX_POOL=N` (default 2) of shared sessions, each episode
->    a sub_session under its own slot uid (0700 dir, umask 077, NPROC/FSIZE/CORE rlimits, process-tree kill on
->    timeout, uid kill + dir//tmp//dev/shm wipe on close, path-escape refusal, `AWS_*` stripped). Still shared:
->    kernel, network namespace, CPU/RAM, `ps`. Offline `isolation_probe.py` 16/16; image
->    `acs-sandbox-bigcpu:uidiso-20260925` pushed; **live check on the m5 pending**.
+>    a sub_session whose every exec runs in its own **Landlock jail** (own dir only, no TCP, signals/ptrace scoped,
+>    256-proc / 4 GiB watchdog, tree killed when the exec ends, path-escape refusal, `AWS_*` stripped). Per-slot
+>    uids (`:uidiso`) broke live: AgentCore drops every capability, so `chown` → EPERM on every open. Still
+>    shared: kernel, netns (UDP/DNS), CPU/RAM, `ps`. `isolation_probe.py` **22/22 live on the m5** (Runtime v3,
+>    `:landlock-20260925` = `:latest`); 13 families reward 1.0 live; RL smoke passed (eval 0.7875, pre-jail image).
 > 4. `demo_cpu_scale_lanes`: now **decoupled tiers**, 4 SGLang engines : `HARNESS_WORKERS`=256 in-process workers :
 >    `SANDBOX_SESSIONS`=256 pooled persistent microVMs (was 4 × 4 × 4 pinned lanes; `LANES`/`LANE_SANDBOX` removed).
 >    Per episode: free worker pulls → borrows any free session (fresh `ep-<hex>`, `rm -rf` on return) → least-loaded

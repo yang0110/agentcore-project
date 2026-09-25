@@ -141,7 +141,7 @@
 \title[Terminal-Bench on AgentCore]{Terminal-Bench on AgentCore: one image, one Runtime, one microVM
 per episode}
 \author[Kaige Yang, AWS]{Kaige Yang --- Senior Applied Scientist, AWS}
-\date{September 24, 2026}
+\date{September 25, 2026}
 
 \setbeamertemplate{frametitle continuation}[from second]
 \begin{document}
@@ -168,10 +168,40 @@ heartbeat keeps them alive \\
 errors}, \texttt{open\_wait\_ms} \textbf{p95 = 0} (no boot on the
 critical path). Cost: ≈ 95 \% of microVM time idle; reward sparse (4
 solves) \\
+\textbf{Warm-start probe} & Pre-open cuts wait p50 774 → \textbf{5 ms}
+(own Runtime) / 1715 → \textbf{0 ms} (Code Interpreter), makespan −20 \%
+/ −15 \%. Heartbeat keeps own-Runtime sessions past the idle timeout
+(3/3 vs 0/3) \\
 \bottomrule\noalign{}
 \end{longtable}
 
 Source: \texttt{code/demos/demo\_cpu\_terminalbench/}.
+\end{frame}
+
+\begin{frame}[fragile]{Use case · why this demo · design}
+\protect\hypertarget{use-case-why-this-demo-design}{}
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.1522}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.8478}}@{}}
+\caption{What this demo covers}\tabularnewline
+\toprule\noalign{}
+\endfirsthead
+\endhead
+\textbf{Use case covered} & Tasks that need \textbf{their own OS image}
+(packages, \texttt{/etc}, services): hundreds of custom images, one per
+task, routed per episode \\
+\textbf{Why this demo} & The default Code Interpreter covers most
+literature tasks; this is the case it cannot: custom images \textbf{at
+scale}, where the cold start is paid per episode \\
+\textbf{Isolation} & One episode = one \textbf{brand-new session} = one
+dedicated microVM, stopped (VM terminated, memory sanitized) when the
+episode ends. Nothing leaks between episodes or GRPO siblings \\
+\textbf{Design considerations} & Strict image routing (unmapped task =
+error, no fallback) · look-ahead pre-open hides the boot · always-on
+heartbeat keeps pre-opened sessions past the 15-min idle timeout · retry
+on a new id; infra failures never scored as wrong answers \\
+\bottomrule\noalign{}
+\end{longtable}
 \end{frame}
 
 \hypertarget{setup}{%
@@ -605,6 +635,127 @@ idle} \\
 \end{itemize}
 \end{frame}
 
+\begin{frame}[fragile]{Warm-start probe: pre-open (\texttt{warmstart/},
+2026-09-25)}
+\protect\hypertarget{warm-start-probe-pre-open-warmstart-2026-09-25}{}
+Host-only, no GPU or trainer (≈ 7 min, a few cents): the same 24
+MockPolicy \texttt{sql} episodes in batches of 6, \textbf{cold} (open at
+episode start) vs \textbf{preopen} (next batch booted while this one
+runs, the \texttt{TB\_PREOPEN\_BATCHES} idea).
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.2222}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1111}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1222}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.2333}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1111}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.2000}}@{}}
+\caption{Pre-open vs cold open (all rewards 1.0)}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Backend
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Mode
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Wait p50
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Episodes that waited
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Idle held
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Makespan
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Backend
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Mode
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Wait p50
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Episodes that waited
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Idle held
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Makespan
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Own Runtime & cold & 774 ms & 24 / 24 & 0 s & 31.9 s \\
+Own Runtime & preopen & \textbf{5 ms} & 8 / 24 (first batch) & 75 s &
+25.5 s (\textbf{−20 \%}) \\
+Code Interpreter & cold & 1715 ms & 24 / 24 & 0 s & 28.7 s \\
+Code Interpreter & preopen & \textbf{0 ms} & 6 / 24 (first batch) & 70 s
+& 24.3 s (\textbf{−15 \%}) \\
+\bottomrule\noalign{}
+\end{longtable}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Only the first batch pays the boot.} The price is ``idle
+  held'', the same trade-off \texttt{preopen\_idle\_ms} shows at full
+  scale.
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Warm-start probe: heartbeat}
+\protect\hypertarget{warm-start-probe-heartbeat}{}
+A Runtime session idle past \texttt{idleRuntimeSessionTimeout} is
+reclaimed. In training that timeout is the \textbf{15-min default}
+(\texttt{WARM\_IDLE\_TIMEOUT} = 900, pings at 450 s). The probe Runtime
+\texttt{acs\_warmstart\_cpu} sets it to \textbf{60 s} only so the test
+fits in minutes; sessions then sit idle 150 s.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2222}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1889}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1111}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.4778}}@{}}
+\caption{Heartbeat vs idle reclaim}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Backend
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Heartbeat
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Sessions surviving the idle gap
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Resume
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Backend
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Heartbeat
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Sessions surviving the idle gap
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Resume
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Own Runtime & on (14 pings) & \textbf{3 / 3} & 104 ms, files intact \\
+Own Runtime & off & 0 / 3 & \textbf{Silently reclaimed:} same session
+id, fresh empty sandbox \\
+Code Interpreter & on / off & 0 / 3 & Ends at its
+\texttt{sessionTimeoutSeconds} regardless of pings \\
+\bottomrule\noalign{}
+\end{longtable}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Why the keeper is always on here:} a reclaimed session looks
+  healthy but has lost its files. On the Code Interpreter the lever is a
+  generous session timeout, not pings.
+\end{itemize}
+\end{frame}
+
 \begin{frame}[fragile]{Takeaways and next steps}
 \protect\hypertarget{takeaways-and-next-steps}{}
 \begin{itemize}
@@ -614,10 +765,10 @@ idle} \\
   episode, oracle-checked tasks, 0 infra failures.
 \item
   \textbf{Cold start is solved, but over-provisioned.} Look-ahead
-  removed all boot wait, but at P = 64 a VM idles ≈ 7 min for a 21 s
-  episode. With warm hits at ≈ 0.7 s,
-  \textbf{\texttt{TB\_PREOPEN\_BATCHES} = 1 (or 0)} should give the same
-  wait at a fraction of the cost.
+  removed all boot wait (the warm-start probe confirms: only the first
+  batch waits), but at P = 64 a VM idles ≈ 7 min for a 21 s episode.
+  With warm hits at ≈ 0.7 s, \textbf{\texttt{TB\_PREOPEN\_BATCHES} = 1
+  (or 0)} should give the same wait at a fraction of the cost.
 \item
   \textbf{Learning signal is the bottleneck:} 4 solves in 382 episodes.
   Next: easy-first curriculum, more turns, or partial credit from

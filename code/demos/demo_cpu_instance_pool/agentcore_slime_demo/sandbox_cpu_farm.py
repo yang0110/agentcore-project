@@ -12,7 +12,8 @@ the container allows (``describe()["mode"]``):
     a Landlock domain that allows read+exec of the system dirs and read+write of ONLY this episode's
     dir (no sibling dirs, no ``/tmp``/``/dev/shm``/``/workspace``); TCP connect/bind denied
     (``SANDBOX_FARM_NET=deny``); signals and abstract unix sockets scoped to the episode; ptrace and
-    ``/proc/<pid>/environ`` of other episodes denied. The wrapper is a subreaper outside the domain:
+    ``/proc/<pid>/environ`` of other episodes denied; ``/dev/shm`` denied unless ``SANDBOX_FARM_SHM=allow``
+    (multiprocessing / DataLoader workers need it; it is then shared). The wrapper is a subreaper outside the domain:
     it kills the WHOLE tree (setsid'd daemons included) when the command exits or times out, above
     ``SANDBOX_FARM_NPROC`` processes or above ``SANDBOX_FARM_MEM_MB`` RSS.
   * **own uid (only with CAP_SETUID/SETGID/CHOWN/KILL)** — the sub_session also runs as uid
@@ -143,6 +144,7 @@ class CpuFarm:
                               and os.environ.get("SANDBOX_FARM_UID_ISOLATION", "1") == "1")
         self.landlock_abi = landlock_abi() if os.environ.get("SANDBOX_FARM_LANDLOCK", "1") == "1" else 0
         self.net = os.environ.get("SANDBOX_FARM_NET", "deny")
+        self.shm = os.environ.get("SANDBOX_FARM_SHM", "deny")   # allow => multiprocessing works, /dev/shm shared
         self.mem_mb = int(os.environ.get("SANDBOX_FARM_MEM_MB", "4096"))
         self.uid_base = int(os.environ.get("SANDBOX_FARM_UID_BASE", "20000"))
         self.max_slots = int(os.environ.get("SANDBOX_FARM_MAX_SLOTS", "256"))
@@ -171,7 +173,8 @@ class CpuFarm:
         with self._lock:
             return {"kind": "cpu", "root": self.root, "open_sessions": len(self._open),
                     "mode": self.mode, "uid_isolation": self.uid_isolation,
-                    "landlock_abi": self.landlock_abi, "net": self.net, "nproc": self.nproc,
+                    "landlock_abi": self.landlock_abi, "net": self.net, "shm": self.shm,
+                    "nproc": self.nproc,
                     "mem_mb": self.mem_mb, "prlimit": bool(self._prlimit and self.uid_isolation)}
 
     @property
@@ -290,7 +293,7 @@ class CpuFarm:
         run_env["SANDBOX_JAIL_DIR"] = d
         full = f"umask 077; bash -lc {shlex.quote(command)}"
         argv = [sys.executable, _JAIL, f"--nproc={self.nproc}", f"--mem-mb={self.mem_mb}",
-                f"--fsize={self.fsize}", f"--net={self.net}"]
+                f"--fsize={self.fsize}", f"--net={self.net}", f"--shm={self.shm}"]
         argv += ["--require-landlock"] if self.landlock_abi else ["--no-landlock"]
         argv += ["--", "bash", "-c", full]
         kw: dict = {"start_new_session": True}

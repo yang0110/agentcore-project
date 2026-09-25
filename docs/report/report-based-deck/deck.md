@@ -511,7 +511,7 @@ Each demo stands in for a **real agent a client would train**. Find yours:
 |:--|:------------|:----------|:--------|:------------|
 | 1–2 | `demo_cpu_tasks` | managed **Code Interpreter** (default) | any literature RLVR dataset, or a mix | **passed** on CI (2026-09-25): gsm8k 0.90, libs 1.0 |
 | 3–4 | `demo_cpu_terminalbench` | µVM, one image + Runtime **per task** (218) | Terminal-Bench | **passed** (2026-09-23): boot hidden, 4/382 solved |
-| 5 | `demo_cpu_instance_pool` | warm **m5 Instance** pool, uid per episode | DeepScaleR, > 2 GB image | pool + isolation probes passed; RL smoke **passed** 2026-09-25, eval 0.7875, 2 cold boots |
+| 5 | `demo_cpu_instance_pool` | warm **m5 Instance** pool, Landlock jail per episode | DeepScaleR, > 2 GB image | pool + isolation probes passed; RL smoke **passed** 2026-09-25, eval 0.7875, 2 cold boots |
 | 6 | `demo_cpu_scale_lanes` | 256 pooled µVM sessions | DeepScaleR (fixed) | pool check ok; [PENDING: RL smoke] (old 4×4×4 lanes: eval 0.358) |
 
 ```{=latex}
@@ -672,7 +672,7 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 **Design considerations.**
 
 - **MockPolicy episodes**, no GPU / model / trainer → only the sandbox is measured.
-- **A 60 s idle timeout** makes reclaim observable in minutes.
+- **A 60 s idle timeout** (training keeps the 15-min default) makes reclaim observable in minutes.
 - **Both backends** (own Runtime and Code Interpreter): they behave differently under a heartbeat.
 - **Pre-open depth** 1 batch here; `TB_PREOPEN_BATCHES` (default 2) in the real demo.
 
@@ -730,7 +730,7 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 **Design considerations.**
 
 - **`SANDBOX_POOL=N`** (default 2), least-loaded, one Runtime; idle Instances reclaimed at 600 s.
-- **Per-episode `sub_session` as its own uid**, kill-and-scrub on close.
+- **Per-episode `sub_session` in its own Landlock jail** (AgentCore drops every capability, so no per-episode uid), kill-and-scrub.
 - **Honest limits:** one kernel, netns, CPU/RAM — hostile code needs a microVM.
 - **Rejected:** an Instance per episode (~32 boots/step); one warm Instance (no parallelism).
 
@@ -742,12 +742,12 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 - **Measured:**
   - offline: 9 episodes split 5 / 4 over two members, load back to 0;
   - **live probe:** **2 distinct Instances**, **2 cold boots** (83.1 s, 83.6 s, in parallel), then warm opens **121–328 ms**, reward 1.0 × 6;
-  - isolation probe **16/16 offline**; image `acs-sandbox-bigcpu:uidiso-20260925`;
+  - isolation probe **22/22** offline, under `--cap-drop ALL`, and **live on the m5** (image `:landlock-20260925`);
   - RL smoke: `smoke_pool2_20260925_113657`: 10 steps, job succeeded; 406 episodes on exactly 2 Instances (210 / 196), **2 cold boots** (only 4 episodes in step 1 waited, 63 s); warm op p50 117 ms / p95 261 ms; step time 38–219 s vs ~715–753 s before pooling; `raw_reward` 0.72–1.0; **`eval/deepscaler` 0.7875**.
 
-## Ch. 5 — m5 isolation (1/3): files, processes, RAM
+## Ch. 5 — m5 isolation (1/3): why Landlock, files, processes, RAM
 
-**A microVM gives one kernel per session. A shared m5 gives that up for warm reuse, so the farm puts back what one kernel allows: every `sub_session` runs as its own unprivileged uid.**
+**A microVM gives one kernel per session. A shared m5 gives that up for warm reuse. The AgentCore container is uid 0 only in a user namespace with every capability dropped (`setuid`, `chown`, `unshare`, cgroups all `EPERM`), so per-episode uids are impossible: each exec runs in its own Landlock jail (ABI 7) instead.**
 
 ```{=latex}
 \small
@@ -755,9 +755,9 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 
 | Layer | microVM per session | shared m5 — **enforced** | shared m5 — **still shared** |
 |:----|:------|:------------|:-------|
-| Filesystem | own root fs | own `0700` dir owned by the episode uid; root `0711`; `umask 077`; HOME/TMPDIR inside; no `..` / absolute / symlink escapes | read-only system dirs |
-| Process / user | own tree | uid `20000+slot`, no extra groups: no ptrace, signals or `environ` of another episode | one PID namespace (`ps`) |
-| RAM / CPU | own allocation | `prlimit` NPROC 256, FSIZE 1 GiB, CORE 0; per-op timeout kills the tree | no cgroup: an OOM can hit a neighbour |
+| Filesystem | own root fs | read+write only its own dir; system dirs read-only; sibling dirs, farm root, `/tmp`, `/dev/shm` denied; no `..` / absolute / symlink escapes via the server | read-only system files |
+| Process / user | own tree | signals, ptrace, `/proc/<pid>/environ` scoped to the episode's domain; nothing outlives its exec | one uid, one PID namespace (`ps`) |
+| RAM / CPU | own allocation | watchdog kills the tree over 256 procs or 4 GiB RSS; FSIZE 1 GiB, CORE 0; per-op timeout | no cgroup: CPU shared, a fast spike can OOM a neighbour |
 
 ```{=latex}
 \normalsize
@@ -765,31 +765,24 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 
 ## Ch. 5 — m5 isolation (2/3): network, kernel
 
-```{=latex}
-\footnotesize
-```
-
-```{=latex}
-\normalsize
-```
-
-- **Clean-up on close:** SIGKILL every process of the uid (daemons too), reap zombies (subreaper), remove the dir and the uid's files in `/tmp`, `/var/tmp`, `/dev/shm`; `open` scrubs a reused slot.
-- **The `sub_session` id is the key:** kept off every command line, regex-validated against traversal.
-
+- **Clean-up:** the whole tree (daemons too) dies when each exec ends; close deletes the dir. The `sub_session` id is kept off every command line.
+- **Where capabilities exist** (local docker) it also adds a uid per episode (`uid+landlock`).
+- **Costs:** +50 ms/exec; `multiprocessing` needs `SANDBOX_FARM_SHM=allow`.
 
 | Layer | microVM per session | shared m5 — **enforced** | shared m5 — **still shared** |
 |:----|:------|:------------|:-------|
-| Network | own interface | the server's `AWS_*` env is stripped | one netns: port 8080 and IMDS reachable; another episode needs its 64-bit id |
-| Kernel | own guest kernel | — | **one kernel**: an exploit breaks everything above |
+| Network | own interface | every TCP connect/bind denied (port 8080, IMDS, internet); `AWS_*` stripped | one netns; **UDP/DNS not covered** |
+| Kernel | own guest kernel | — | **one kernel**: an exploit or Landlock bypass breaks everything above |
 | Blast radius | one session | — | **one instance** |
 
 ## Ch. 5 — m5 isolation (3/3): verified; when enough
 
-- **Verified — `isolation_probe.py`:** episode A plants a secret file, a `/tmp` file and a detached process; episode B tries to reach them.
-  - **Before hardening:** B read A's file by path (`cat ../<A>/marker.txt`) — dir hygiene, not a boundary.
-  - **After: 16/16 checks pass offline** (container and built image): no listing, no read by any path, no signal, no `AWS_*`; after close A's process and `/tmp` file are gone; a fork loop stops at EAGAIN, a 2 GB write at 1 GiB.
-  - Live on the updated Runtime: [PENDING: live isolation_probe.py --live result on the updated Runtime].
-- **When is it enough?** **Good enough for RLVR**, including reward hacks: reading a sibling's `solution.py`, killing a neighbour's checker, a daemon that tampers with the next episode.
+- **Verified — `isolation_probe.py`:** A plants a secret, tries `/tmp`, runs a setsid'd daemon in a long exec; B tries to reach all of it.
+  - **Before hardening:** B read A's file by path (`cat ../<A>/marker.txt`).
+  - **uid attempt (`:uidiso`):** every open failed live (`chown` `EPERM`, HTTP 500).
+  - **Landlock: 22/22** offline, under `--cap-drop ALL`, and **live on one warm m5** (same boot_id, both uid 0): no list/read/write of A's dir, no signal or `environ` of A's daemon, 1 GiB write cap, 400-proc fan-out killed, `curl` to 8080 / IMDS fail, A's daemon gone after its exec.
+  - 13 families concurrently on one m5 under the jail: all reward 1.0; warm exec p50 156 ms (117 ms before).
+- **When is it enough?** **Good enough for RLVR**, including reward hacks: reading a sibling's `solution.py`, killing a neighbour's checker, calling the server port, a daemon that tampers with the next episode.
 - **Not** a defence against a kernel exploit, and no guaranteed CPU/RAM or private network. For those — and for OS-mutating tasks (Terminal-Bench) — use a **microVM per session**.
 
 ## Ch. 6 — `demo_cpu_scale_lanes`: decoupled rollout tiers
@@ -886,7 +879,7 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 \footnotesize
 ```
 
-**Host side = the CPU pool's** (own uid, `0700` dir, `prlimit`, kill-and-scrub). The GPU adds:
+**Host side = the CPU pool's uid mode** (own uid, `0700` dir, `prlimit`, kill-and-scrub; the Landlock jail is not ported yet). The GPU adds:
 
 ```{=latex}
 \small
@@ -896,7 +889,7 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 \normalsize
 ```
 
-**Fractional** = software isolation on shared hardware; **whole** removes memory contention and the wedge; only **`demo_gpu_single`** is a hardware boundary. Live check (2026-09-25, local farm on GPU 6): slot A and slot B ran as separate uids 20000 / 20001; B was denied A's files, dirs and home; `../`, absolute and symlink escapes were refused; 4 separate CUDA contexts, the 0.5 memory cap held in both slots; closing A left no process and removed its dir. On the AgentCore g6 (no capabilities) the farm falls back to one shared uid..
+**Fractional** = software isolation on shared hardware; **whole** removes memory contention and the wedge; only **`demo_gpu_single`** is a hardware boundary. Live check (2026-09-25, local farm on GPU 6): slot A and slot B ran as separate uids 20000 / 20001; B was denied A's files, dirs and home; `../`, absolute and symlink escapes were refused; 4 separate CUDA contexts, the 0.5 memory cap held in both slots; closing A left no process and removed its dir. On the AgentCore g6 (no capabilities) the farm falls back to one shared uid.
 
 
 | Layer | Enforced | Still shared |

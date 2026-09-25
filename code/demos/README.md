@@ -59,12 +59,17 @@ under the same session id (measured by the warmstart probe).
 **Isolation on a shared instance (demos 3, 6, 7).** Several episodes share one warm instance, so
 there is no VM boundary between them. The farm puts back as much isolation as one kernel allows:
 
-- **Its own uid per sub_session** (`20000+slot`): a private `0700` dir with HOME, TMPDIR and caches
-  inside it, `umask 077`.
-- **Limits:** `prlimit` (NPROC, FSIZE, CORE), and a timeout kills the whole process tree.
+- **CPU pool (demo 3): a Landlock jail per exec.** The AgentCore container drops every capability
+  (no `setuid`/`chown`), so per-episode uids are impossible there. Each exec may write only its own
+  dir, can't read sibling dirs, `/tmp` or `/dev/shm`, can't open TCP connections, and can't signal or
+  inspect other episodes' processes. 22/22 checks pass live on the m5 (`isolation_probe.py --live`).
+- **GPU farms (demos 6, 7): its own uid per sub_session** (`20000+slot`) with a private `0700` dir,
+  where the container has the capabilities (the local farm); on the AgentCore g6 they fall back to one
+  shared uid. The CPU pool also adds a uid on top of Landlock where it can.
+- **Limits:** process-count, RAM and file-size caps, and a timeout kills the whole process tree.
 - **Server file ops** refuse `..`, absolute and symlink escapes.
 - **No leaks:** `AWS_*` is not inherited, and the session id never appears on a command line.
-- **Close** kills every process of the uid and wipes its files.
+- **Close** kills the episode's processes and deletes its dir.
 
 The episodes still share the kernel, the network namespace, and CPU/RAM (there is no per-episode
 cgroup). On the GPU farms they also share the GPU: CUDA contexts are separate, but the memory fraction

@@ -1205,8 +1205,8 @@ CI (2026-09-25): gsm8k 0.90, libs 1.0 \\
 \textbf{per task} (218) & Terminal-Bench & \textbf{passed} (2026-09-23):
 boot hidden, 4/382 solved \\
 5 & \texttt{demo\_cpu\_instance\_pool} & warm \textbf{m5 Instance} pool,
-uid per episode & DeepScaleR, \textgreater{} 2 GB image & pool +
-isolation probes passed; RL smoke \textbf{passed} 2026-09-25, eval
+Landlock jail per episode & DeepScaleR, \textgreater{} 2 GB image & pool
++ isolation probes passed; RL smoke \textbf{passed} 2026-09-25, eval
 0.7875, 2 cold boots \\
 6 & \texttt{demo\_cpu\_scale\_lanes} & 256 pooled µVM sessions &
 DeepScaleR (fixed) & pool check ok; {[}PENDING: RL smoke{]} (old 4×4×4
@@ -1632,7 +1632,8 @@ demo's two mechanisms.
   \textbf{MockPolicy episodes}, no GPU / model / trainer → only the
   sandbox is measured.
 \item
-  \textbf{A 60 s idle timeout} makes reclaim observable in minutes.
+  \textbf{A 60 s idle timeout} (training keeps the 15-min default) makes
+  reclaim observable in minutes.
 \item
   \textbf{Both backends} (own Runtime and Code Interpreter): they behave
   differently under a heartbeat.
@@ -1787,8 +1788,9 @@ story all differ from the microVM demos.
   \textbf{\texttt{SANDBOX\_POOL=N}} (default 2), least-loaded, one
   Runtime; idle Instances reclaimed at 600 s.
 \item
-  \textbf{Per-episode \texttt{sub\_session} as its own uid},
-  kill-and-scrub on close.
+  \textbf{Per-episode \texttt{sub\_session} in its own Landlock jail}
+  (AgentCore drops every capability, so no per-episode uid),
+  kill-and-scrub.
 \item
   \textbf{Honest limits:} one kernel, netns, CPU/RAM --- hostile code
   needs a microVM.
@@ -1829,8 +1831,9 @@ story all differ from the microVM demos.
     boots} (83.1 s, 83.6 s, in parallel), then warm opens
     \textbf{121--328 ms}, reward 1.0 × 6;
   \item
-    isolation probe \textbf{16/16 offline}; image
-    \texttt{acs-sandbox-bigcpu:uidiso-20260925};
+    isolation probe \textbf{22/22} offline, under
+    \texttt{-\/-cap-drop\ ALL}, and \textbf{live on the m5} (image
+    \texttt{:landlock-20260925});
   \item
     RL smoke: \texttt{smoke\_pool2\_20260925\_113657}: 10 steps, job
     succeeded; 406 episodes on exactly 2 Instances (210 / 196),
@@ -1842,12 +1845,15 @@ story all differ from the microVM demos.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{Ch. 5 --- m5 isolation (1/3): files, processes,
-RAM}
-\protect\hypertarget{ch.-5-m5-isolation-13-files-processes-ram}{}
+\begin{frame}[fragile,allowframebreaks]{Ch. 5 --- m5 isolation (1/3): why Landlock,
+files, processes, RAM}
+\protect\hypertarget{ch.-5-m5-isolation-13-why-landlock-files-processes-ram}{}
 \textbf{A microVM gives one kernel per session. A shared m5 gives that
-up for warm reuse, so the farm puts back what one kernel allows: every
-\texttt{sub\_session} runs as its own unprivileged uid.}
+up for warm reuse. The AgentCore container is uid 0 only in a user
+namespace with every capability dropped (\texttt{setuid},
+\texttt{chown}, \texttt{unshare}, cgroups all \texttt{EPERM}), so
+per-episode uids are impossible: each exec runs in its own Landlock jail
+(ABI 7) instead.}
 
 \small
 
@@ -1868,15 +1874,17 @@ shared m5 --- \textbf{still shared}
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-Filesystem & own root fs & own \texttt{0700} dir owned by the episode
-uid; root \texttt{0711}; \texttt{umask\ 077}; HOME/TMPDIR inside; no
-\texttt{..} / absolute / symlink escapes & read-only system dirs \\
-Process / user & own tree & uid \texttt{20000+slot}, no extra groups: no
-ptrace, signals or \texttt{environ} of another episode & one PID
-namespace (\texttt{ps}) \\
-RAM / CPU & own allocation & \texttt{prlimit} NPROC 256, FSIZE 1 GiB,
-CORE 0; per-op timeout kills the tree & no cgroup: an OOM can hit a
-neighbour \\
+Filesystem & own root fs & read+write only its own dir; system dirs
+read-only; sibling dirs, farm root, \texttt{/tmp}, \texttt{/dev/shm}
+denied; no \texttt{..} / absolute / symlink escapes via the server &
+read-only system files \\
+Process / user & own tree & signals, ptrace,
+\texttt{/proc/\textless{}pid\textgreater{}/environ} scoped to the
+episode's domain; nothing outlives its exec & one uid, one PID namespace
+(\texttt{ps}) \\
+RAM / CPU & own allocation & watchdog kills the tree over 256 procs or 4
+GiB RSS; FSIZE 1 GiB, CORE 0; per-op timeout & no cgroup: CPU shared, a
+fast spike can OOM a neighbour \\
 \bottomrule\noalign{}
 \end{longtable}
 
@@ -1885,20 +1893,18 @@ neighbour \\
 
 \begin{frame}[fragile,allowframebreaks]{Ch. 5 --- m5 isolation (2/3): network, kernel}
 \protect\hypertarget{ch.-5-m5-isolation-23-network-kernel}{}
-\footnotesize
-
-\normalsize
-
 \begin{itemize}
 \tightlist
 \item
-  \textbf{Clean-up on close:} SIGKILL every process of the uid (daemons
-  too), reap zombies (subreaper), remove the dir and the uid's files in
-  \texttt{/tmp}, \texttt{/var/tmp}, \texttt{/dev/shm}; \texttt{open}
-  scrubs a reused slot.
+  \textbf{Clean-up:} the whole tree (daemons too) dies when each exec
+  ends; close deletes the dir. The \texttt{sub\_session} id is kept off
+  every command line.
 \item
-  \textbf{The \texttt{sub\_session} id is the key:} kept off every
-  command line, regex-validated against traversal.
+  \textbf{Where capabilities exist} (local docker) it also adds a uid
+  per episode (\texttt{uid+landlock}).
+\item
+  \textbf{Costs:} +50 ms/exec; \texttt{multiprocessing} needs
+  \texttt{SANDBOX\_FARM\_SHM=allow}.
 \end{itemize}
 
 \begin{longtable}[]{@{}
@@ -1918,11 +1924,11 @@ shared m5 --- \textbf{still shared}
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-Network & own interface & the server's \texttt{AWS\_*} env is stripped &
-one netns: port 8080 and IMDS reachable; another episode needs its
-64-bit id \\
-Kernel & own guest kernel & --- & \textbf{one kernel}: an exploit breaks
-everything above \\
+Network & own interface & every TCP connect/bind denied (port 8080,
+IMDS, internet); \texttt{AWS\_*} stripped & one netns; \textbf{UDP/DNS
+not covered} \\
+Kernel & own guest kernel & --- & \textbf{one kernel}: an exploit or
+Landlock bypass breaks everything above \\
 Blast radius & one session & --- & \textbf{one instance} \\
 \bottomrule\noalign{}
 \end{longtable}
@@ -1934,29 +1940,33 @@ enough}
 \begin{itemize}
 \tightlist
 \item
-  \textbf{Verified --- \texttt{isolation\_probe.py}:} episode A plants a
-  secret file, a \texttt{/tmp} file and a detached process; episode B
-  tries to reach them.
+  \textbf{Verified --- \texttt{isolation\_probe.py}:} A plants a secret,
+  tries \texttt{/tmp}, runs a setsid'd daemon in a long exec; B tries to
+  reach all of it.
 
   \begin{itemize}
   \tightlist
   \item
     \textbf{Before hardening:} B read A's file by path
-    (\texttt{cat\ ../\textless{}A\textgreater{}/marker.txt}) --- dir
-    hygiene, not a boundary.
+    (\texttt{cat\ ../\textless{}A\textgreater{}/marker.txt}).
   \item
-    \textbf{After: 16/16 checks pass offline} (container and built
-    image): no listing, no read by any path, no signal, no
-    \texttt{AWS\_*}; after close A's process and \texttt{/tmp} file are
-    gone; a fork loop stops at EAGAIN, a 2 GB write at 1 GiB.
+    \textbf{uid attempt (\texttt{:uidiso}):} every open failed live
+    (\texttt{chown} \texttt{EPERM}, HTTP 500).
   \item
-    Live on the updated Runtime: {[}PENDING: live isolation\_probe.py
-    --live result on the updated Runtime{]}.
+    \textbf{Landlock: 22/22} offline, under \texttt{-\/-cap-drop\ ALL},
+    and \textbf{live on one warm m5} (same boot\_id, both uid 0): no
+    list/read/write of A's dir, no signal or \texttt{environ} of A's
+    daemon, 1 GiB write cap, 400-proc fan-out killed, \texttt{curl} to
+    8080 / IMDS fail, A's daemon gone after its exec.
+  \item
+    13 families concurrently on one m5 under the jail: all reward 1.0;
+    warm exec p50 156 ms (117 ms before).
   \end{itemize}
 \item
   \textbf{When is it enough?} \textbf{Good enough for RLVR}, including
   reward hacks: reading a sibling's \texttt{solution.py}, killing a
-  neighbour's checker, a daemon that tampers with the next episode.
+  neighbour's checker, calling the server port, a daemon that tampers
+  with the next episode.
 \item
   \textbf{Not} a defence against a kernel exploit, and no guaranteed
   CPU/RAM or private network. For those --- and for OS-mutating tasks
@@ -2215,8 +2225,9 @@ re-run after the split{]}.
 \protect\hypertarget{ch.-7-gpu-isolation-on-a-shared-instance}{}
 \footnotesize
 
-\textbf{Host side = the CPU pool's} (own uid, \texttt{0700} dir,
-\texttt{prlimit}, kill-and-scrub). The GPU adds:
+\textbf{Host side = the CPU pool's uid mode} (own uid, \texttt{0700}
+dir, \texttt{prlimit}, kill-and-scrub; the Landlock jail is not ported
+yet). The GPU adds:
 
 \small
 
@@ -2230,7 +2241,7 @@ uids 20000 / 20001; B was denied A's files, dirs and home; \texttt{../},
 absolute and symlink escapes were refused; 4 separate CUDA contexts, the
 0.5 memory cap held in both slots; closing A left no process and removed
 its dir. On the AgentCore g6 (no capabilities) the farm falls back to
-one shared uid..
+one shared uid.
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2083}}
