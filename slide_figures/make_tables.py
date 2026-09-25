@@ -67,9 +67,9 @@ render(
     "Canonical — the core story",
     ["#", "Demo", "Use case it demonstrates"],
     [
-        ["1", "demo_cpu_datasets", "Reference demo — RL on verifiable tasks in a CPU microVM sandbox; DATASET= picks the data (default MBPP)"],
+        ["1", "demo_cpu_datasets", "Reference — RL on verifiable tasks in a CPU microVM; DATASET= picks the data (default MBPP)"],
         ["2", "demo_gpu_single", "GPU workload in the sandbox (KernelBench — writing / optimizing CUDA kernels)"],
-        ["3", "demo_gpu_farm", "GPU packing on a local Ray farm — FARM=fractional (two episodes share one GPU, 0.5 + 0.5) | whole (one GPU each)"],
+        ["3", "demo_gpu_farm", "GPU packing on a local Ray farm — FARM=fractional (2 episodes, 1 GPU) | whole (1 GPU each)"],
         ["4", "demo_cpu_heartbeat", "Long-running / offline resilience — keeping a session alive via heartbeat outside the harness"],
         ["5", "demo_gpu_snapshot", "Offline resilience for GPU — snapshot / restore of sandbox state"],
     ],
