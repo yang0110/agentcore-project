@@ -35,9 +35,9 @@ bash code/demos/convergence/14_gpu_farm_whole.sh        # FARM=whole: one GPU ea
 #   (host)      bash code/deploy/run_local_gpu_runtime.sh stop   # teardown
 
 # ---- Property demos, now real trainers (headline knob default-ON) ----
-bash code/demos/convergence/15_cpu_heartbeat.sh        # keep-warm across the barrier (HEARTBEAT_KEEP_WARM=1)
+bash code/demos/convergence/15_cpu_tasks_heartbeat.sh  # demo_cpu_tasks deepscaler + keep-warm (HEARTBEAT=1)
 bash code/demos/convergence/16_cpu_scale_lanes.sh  # 4x4x4 lanes: 4 workers : 4 engines : 4 microVMs (LANES=4, MODE=A)
-bash code/demos/convergence/17_cpu_customruntime.sh  # deepscaler on your custom CPU Runtime
+bash code/demos/convergence/17_cpu_tasks_imagepool.sh  # VARIANT=imagepool (needs deploy/runtime.imagepool.env)
 # 18 = demo_gpu_single + snapshot/resume; REMOTE (g6 ARN) or on-box (LOCAL_GPU=1, farm up on 6,7):
 AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/<g6> \
   bash code/demos/convergence/18_gpu_single_snapshot.sh   # app-level snapshot/resume (SNAPSHOT_EVERY=1)

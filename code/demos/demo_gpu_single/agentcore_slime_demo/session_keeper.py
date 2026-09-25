@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable
@@ -86,6 +87,14 @@ class SessionKeeper:
         self._gate = asyncio.Event()
         self._gate.set()
         self._quiesced = False
+        # Continuous keep-warm (used by the REAL trainer via HEARTBEAT=1): heartbeat any
+        # session that goes idle past ping_fraction*idle_timeout REGARDLESS of an explicit sync
+        # window, WITHOUT closing the gate. A decoupled slime run gives the harness no callback at
+        # its internal weight-sync barrier, but generation naturally goes silent during that barrier
+        # (and rollout tails) — so an always-on idle heartbeat is what actually holds sessions warm
+        # across the live sync stall. `sync_begin/sync_end` (the gate) stay available and unchanged
+        # for the offline heartbeat_demo.py which drives the barrier explicitly.
+        self._keep_warm = False
         self._task: asyncio.Task | None = None
         # Observability for the demo / metrics.
         self.total_pings = 0
@@ -155,11 +164,21 @@ class SessionKeeper:
         self._gate.set()
         logger.info("[keeper] sync_end — gate open (fired %d heartbeat(s) this run)", self.total_pings)
 
+    # --- continuous keep-warm (the REAL trainer path) ----------------------------------------
+    def keep_warm_begin(self) -> None:
+        """Turn on always-on idle heartbeating WITHOUT closing the gate. Real ops flow normally;
+        any session idle past ping_fraction*idle_timeout (e.g. during the weight-sync stall) is
+        heartbeated so AgentCore's idle clock never trips. Idempotent."""
+        self._keep_warm = True
+
+    def keep_warm_end(self) -> None:
+        self._keep_warm = False
+
     # --- the heartbeat loop ------------------------------------------------------------------
     async def _run(self) -> None:
         try:
             while True:
-                if self._quiesced:
+                if self._quiesced or self._keep_warm:
                     now = self._clock()
                     for s in list(self._sessions.values()):
                         if now - s.last >= s.idle_timeout * self._ping_fraction:
@@ -170,6 +189,13 @@ class SessionKeeper:
                             s.last = self._clock()
                             s.pings += 1
                             self.total_pings += 1
+                            # DEMO-SPECIFIC metric ([demo] channel): one line per heartbeat fired.
+                            # This is the whole point of HEARTBEAT=1 — beats keep an idle sandbox session
+                            # alive across the weight-sync stall so it is NOT idle-reclaimed. Must be
+                            # >0 with HEARTBEAT=1 and 0 in the HEARTBEAT=0 baseline; metrics.py
+                            # value-counts `heartbeat_session` and aggregates `total_pings`.
+                            print(f"[demo] heartbeat_session={s.session_id} session_pings={s.pings} "
+                                  f"total_pings={self.total_pings}", flush=True)
                 await asyncio.sleep(self._tick)
         except asyncio.CancelledError:
             raise
@@ -226,3 +252,51 @@ class KeptSandbox:
     async def read_file(self, *a, **kw):
         await self._op()
         return await self._inner.read_file(*a, **kw)
+
+    def __getattr__(self, name):
+        if name == "_inner":             # not set yet (copy/unpickle): don't recurse
+            raise AttributeError(name)
+        # Anything else (_session_id, _arn, _workdir, open_reply, ...) reads through to the real
+        # sandbox, so metrics/router tracing and backend-specific code see through the wrapper.
+        return getattr(self._inner, name)
+
+
+# ---- HEARTBEAT=1: the opt-in keep-warm feature every demo shares --------------------------------
+# One process-wide SessionKeeper per worker process, started lazily on whatever event loop first
+# runs an episode and re-armed if the loop changes (Mode B fully-async worker loop vs the eval
+# loop). It heartbeats any registered session that goes idle past ping_fraction*idle_timeout — the
+# weight-sync stall, rollout tails — so AgentCore never idle-reclaims a session mid-run.
+_KEEPER: SessionKeeper | None = None
+_KEEPER_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def heartbeat_enabled() -> bool:
+    """HEARTBEAT=1 (or the older HEARTBEAT_KEEP_WARM=1). Default off."""
+    v = os.environ.get("HEARTBEAT", os.environ.get("HEARTBEAT_KEEP_WARM", "0"))
+    return (v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def heartbeat_idle() -> float:
+    """The session idle timeout to defend, in seconds (HEARTBEAT_IDLE, default 600)."""
+    return float(os.environ.get("HEARTBEAT_IDLE", "600"))
+
+
+async def get_keeper() -> SessionKeeper:
+    global _KEEPER, _KEEPER_LOOP
+    idle = heartbeat_idle()
+    frac = float(os.environ.get("HEARTBEAT_PING_FRACTION", "0.5"))
+    if _KEEPER is None:
+        _KEEPER = SessionKeeper(ping_fraction=frac, tick=min(5.0, idle * frac / 2 or 5.0))
+        _KEEPER.keep_warm_begin()
+    loop = asyncio.get_running_loop()
+    if _KEEPER_LOOP is not loop:          # first use, or a new loop: (re)arm the loop task
+        await _KEEPER.start()
+        _KEEPER_LOOP = loop
+    return _KEEPER
+
+
+async def maybe_keep_warm(sandbox):
+    """Wrap `sandbox` in a KeptSandbox when HEARTBEAT=1; otherwise return it unchanged."""
+    if not heartbeat_enabled():
+        return sandbox
+    return KeptSandbox(sandbox, await get_keeper(), idle_timeout=heartbeat_idle())

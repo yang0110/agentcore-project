@@ -233,11 +233,21 @@ ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 \
 
 # HARNESS_WORKERS / EPISODE_MAX_* are read by HarnessPool INSIDE the rollout process, so they MUST be
 # forwarded through the ray runtime env (not just the launching shell).
+# HEARTBEAT=1 (opt-in; was the standalone demo_cpu_heartbeat): a process-wide SessionKeeper
+# heartbeats every open sandbox session that goes idle past HEARTBEAT_PING_FRACTION*HEARTBEAT_IDLE,
+# so the weight-sync stall can't idle-reclaim it (agentcore_slime_demo/session_keeper.py).
+# Watch the [demo] heartbeat_session=… lines (0 with HEARTBEAT=0).
+HEARTBEAT="${HEARTBEAT:-${HEARTBEAT_KEEP_WARM:-0}}"
+HEARTBEAT_IDLE="${HEARTBEAT_IDLE:-600}"
+HEARTBEAT_PING_FRACTION="${HEARTBEAT_PING_FRACTION:-0.5}"
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM:${DEMO_DIR}:/root/slime\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
+    \"HEARTBEAT\": \"${HEARTBEAT}\",
+    \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",
+    \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARNS\": \"${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",

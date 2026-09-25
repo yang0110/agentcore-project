@@ -171,14 +171,16 @@
 \IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
 \urlstyle{same}
 \hypersetup{
-  pdftitle={Hands-on: AgentCore as the Sandbox in Agentic RL},
+  pdftitle={AgentCore as the Sandbox in Agentic RL},
   pdfauthor={Kaige Yang --- Senior Applied Scientist, AWS},
   hidelinks,
   pdfcreator={LaTeX via pandoc}}
 
-\title{Hands-on: AgentCore as the Sandbox in Agentic RL}
+\title{AgentCore as the Sandbox in Agentic RL}
+\subtitle{Agentic RL · AgentCore · Integrating AgentCore into slime ·
+Demos}
 \author{Kaige Yang --- Senior Applied Scientist, AWS}
-\date{September 10, 2026}
+\date{September 25, 2026}
 
 \setbeamertemplate{frametitle continuation}[from second]
 \begin{document}
@@ -188,7 +190,7 @@
 \protect\hypertarget{purpose-and-thesis}{}
 A \textbf{hands-on guide for AWS customers doing agentic RL}, grounded
 in a working \textbf{slime + AgentCore} project, the \textbf{official
-AgentCore docs} {[}D1{]} and \textbf{9 runnable demos}.
+AgentCore docs} {[}D1{]} and \textbf{6 runnable demos}.
 
 \begin{itemize}
 \tightlist
@@ -593,9 +595,9 @@ create with a \textbf{null reason}.
 \hypertarget{demos}{%
 \section{4 · Demos}\label{demos}}
 
-\begin{frame}[fragile,allowframebreaks]{Demo catalogue --- 9 demos}
-\protect\hypertarget{demo-catalogue-9-demos}{}
-\textbf{6 CPU + 2 GPU + 1 experimental.} Run any demo with
+\begin{frame}[fragile,allowframebreaks]{Demo catalogue --- 6 demos}
+\protect\hypertarget{demo-catalogue-6-demos}{}
+\textbf{3 CPU + 2 GPU + 1 experimental.} Run any demo with
 \texttt{cd\ code/demos/\textless{}demo\textgreater{}} then
 \texttt{1\_prepare\_data.sh} \ldots{} \texttt{6\_cleanup.sh} on the
 host. Numbers are 10-step smokes, not convergence.
@@ -618,14 +620,8 @@ Use case
 \endhead
 \texttt{demo\_cpu\_tasks} & microVM (\texttt{bigimage}: m5) &
 \textbf{Reference:} RLVR on \textasciitilde19 datasets or a mix \\
-\texttt{demo\_cpu\_imagepool} & microVM, 3 images & mixed tasks routed
-per family to an image \\
 \texttt{demo\_cpu\_terminalbench} & microVM, \textasciitilde229 images &
 one Runtime per task, fresh VM, pre-opened \\
-\texttt{demo\_cpu\_customruntime} & your CPU Runtime & same reward as
-the managed sandbox \\
-\texttt{demo\_cpu\_heartbeat} & microVM & keep the VM warm across weight
-sync \\
 \texttt{demo\_cpu\_scale\_lanes} & 4 microVMs & 4 harness : 4 engines :
 4 VMs, 1:1:1 \\
 \texttt{demo\_gpu\_single} & \texttt{g6} Instance & KernelBench on one
@@ -636,6 +632,10 @@ warm g6 (+ snapshot) \\
 \textbf{experimental, blocked:} fan-out \\
 \bottomrule\noalign{}
 \end{longtable}
+
+\texttt{demo\_cpu\_tasks} also covers \texttt{VARIANT=imagepool} (3
+images), \texttt{compare\_backends.py} (custom vs managed Runtime);
+\texttt{HEARTBEAT=1} works in every demo (all merged 2026-09-25).
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_tasks} --- the reference}
@@ -647,8 +647,10 @@ warm g6 (+ snapshot) \\
 (\texttt{math} \texttt{sql} \texttt{ctf} \texttt{rag} \ldots), a comma
 list, or \texttt{mixed}.
 
-\textbf{Knobs.} \texttt{DATASET=} · \texttt{NR} / \texttt{RB} /
-\texttt{NS} · \texttt{K} (Runtimes round-robin) · \texttt{CONC}.
+\textbf{Knobs.} \texttt{DATASET=} ·
+\texttt{VARIANT=bigimage\textbar{}imagepool} · \texttt{HEARTBEAT=1} ·
+\texttt{NR} / \texttt{RB} / \texttt{NS} · \texttt{K} (Runtimes
+round-robin) · \texttt{CONC}.
 
 \begin{Shaded}
 \begin{Highlighting}[]
@@ -686,26 +688,31 @@ microVM cap, on a warm \textbf{m5} CPU capacity-provider Instance
 \texttt{open}/\texttt{close} pairs, each wiping its own dir).
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_imagepool}}
-\protect\hypertarget{demo_cpu_imagepool}{}
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_tasks}
+\texttt{VARIANT=imagepool} --- a pool of images}
+\protect\hypertarget{demo_cpu_tasks-variantimagepool-a-pool-of-images}{}
 \textbf{Use case.} Mixed-task RL where families need different software:
 a pool of 3 custom images (pandas / scipy / sklearn), one Runtime each,
-and each episode routed to its family's image.
+and each episode routed to its family's image. (Was
+\texttt{demo\_cpu\_imagepool}.)
 
 \textbf{Knobs.} \texttt{AGENTCORE\_SANDBOX\_RUNTIME\_ARN\_BY\_IMAGE}
 (JSON image → ARN, written by step 4) · \texttt{IMAGES=} (which images
-to build).
+to build) · \texttt{DATASET=imagepool} (set by the variant).
 
 \begin{Shaded}
 \begin{Highlighting}[]
-\FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh   }\CommentTok{\# builds 3 arm64 images}
-\FunctionTok{bash}\NormalTok{ 3\_push\_ecr.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh     }\CommentTok{\# 3 Runtimes {-}\textgreater{} ARN\_BY\_IMAGE map}
+\BuiltInTok{cd}\NormalTok{ code/demos/demo\_cpu\_tasks}
+\BuiltInTok{export} \VariableTok{VARIANT}\OperatorTok{=}\NormalTok{imagepool}
+\FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh    }\CommentTok{\# 3 arm64 images}
+\FunctionTok{bash}\NormalTok{ 3\_push\_ecr.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh     }\CommentTok{\# {-}\textgreater{} ARN\_BY\_IMAGE map}
 \FunctionTok{bash}\NormalTok{ 5\_run.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
 \end{Highlighting}
 \end{Shaded}
 
-\textbf{Metrics.} Smoke \texttt{eval/mixed} \textbf{1.0}; all 3 images
-routed from one batch.
+\textbf{Metrics.} Smoke (as \texttt{demo\_cpu\_imagepool}) held-out eval
+\textbf{1.0} (now \texttt{eval/imagepool}); all 3 images routed from one
+batch.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_terminalbench}}
@@ -736,49 +743,35 @@ signals: \texttt{{[}demo{]}\ open\_wait\_ms},
 \texttt{preopen\_idle\_ms}.
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_customruntime}}
-\protect\hypertarget{demo_cpu_customruntime}{}
-\textbf{Use case.} Real RL on \textbf{your own} CPU Runtime instead of
-the managed Code Interpreter. \texttt{compare\_backends.py} shows both
-backends give the same reward on the same task.
-
-\textbf{Knobs.} \texttt{AGENTCORE\_SANDBOX\_RUNTIME\_ARN} (your Runtime)
-· \texttt{FAMILY} (default \texttt{deepscaler}).
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 3\_push\_ecr.sh}
-\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh          }\CommentTok{\# your custom Runtime {-}\textgreater{} deploy/runtime.env}
-\ExtensionTok{python3}\NormalTok{ compare\_backends.py       }\CommentTok{\# managed vs custom, same reward}
-\FunctionTok{bash}\NormalTok{ 5\_run.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
-\end{Highlighting}
-\end{Shaded}
-
-\textbf{Metrics.} Smoke on the custom Runtime, \texttt{eval/deepscaler}
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_tasks} --- custom Runtime and
+\texttt{HEARTBEAT=1}}
+\protect\hypertarget{demo_cpu_tasks-custom-runtime-and-heartbeat1}{}
+\textbf{Custom vs managed Runtime.}
+\texttt{python3\ compare\_backends.py} runs the same episode against the
+managed Code Interpreter and \textbf{your own} CPU Runtime: same reward,
+only operations differ. Real RL on your Runtime is just
+\texttt{AGENTCORE\_SANDBOX\_RUNTIME\_ARNS=\textless{}yours\textgreater{}\ DATASET=deepscaler\ bash\ 5\_run.sh}.
+Smoke (as \texttt{demo\_cpu\_customruntime}) \texttt{eval/deepscaler}
 \textbf{0.69}.
-\end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_heartbeat}}
-\protect\hypertarget{demo_cpu_heartbeat}{}
-\textbf{Use case.} \textbf{Resilience.} During the weight-sync barrier
-no ops reach the sandbox, and the 15-min idle timeout can kill it. A
-\texttt{SessionKeeper} heartbeat, outside the harness, keeps the microVM
-warm.
-
-\textbf{Knobs.} \texttt{HEARTBEAT\_KEEP\_WARM} (1) ·
-\texttt{HEARTBEAT\_IDLE} (600 s) · \texttt{HEARTBEAT\_PING\_FRACTION}
-(0.5).
+\textbf{Heartbeat, \texttt{HEARTBEAT=1} (any demo).} During the
+weight-sync barrier no ops reach the sandbox, and the 15-min idle
+timeout can kill it. A \texttt{SessionKeeper} heartbeat, outside the
+harness, keeps the session warm. Knobs: \texttt{HEARTBEAT\_IDLE} (600 s)
+· \texttt{HEARTBEAT\_PING\_FRACTION} (0.5).
 
 \begin{Shaded}
 \begin{Highlighting}[]
-\ExtensionTok{python3}\NormalTok{ heartbeat\_demo.py         }\CommentTok{\# offline: naive {-}\textgreater{} heartbeat {-}\textgreater{} recover, seconds}
-\FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 3\_push\_ecr.sh}
-\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 5\_run.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
+\BuiltInTok{cd}\NormalTok{ code/demos/demo\_cpu\_tasks}
+\ExtensionTok{python3}\NormalTok{ compare\_backends.py    }\CommentTok{\# managed vs custom, same reward}
+\ExtensionTok{python3}\NormalTok{ heartbeat\_demo.py      }\CommentTok{\# offline, seconds}
+\VariableTok{DATASET}\OperatorTok{=}\NormalTok{deepscaler }\VariableTok{HEARTBEAT}\OperatorTok{=}\NormalTok{1 }\FunctionTok{bash}\NormalTok{ 5\_run.sh}
 \end{Highlighting}
 \end{Shaded}
 
-\textbf{Metrics.} Smoke \texttt{eval/deepscaler} \textbf{0.71} with the
-keeper live through the run; offline probe shows the recovery arc.
+Smoke (as \texttt{demo\_cpu\_heartbeat}) \texttt{eval/deepscaler}
+\textbf{0.71} with the keeper live; the offline probe shows the recovery
+arc.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_scale\_lanes}}

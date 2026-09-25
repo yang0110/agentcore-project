@@ -5,8 +5,25 @@ _Last updated: 2026-09-25. Branch: `master`._
 This file tracks the current work session so it can be picked up later. It has three
 sections: **Done**, **In progress**, **Next steps (to run)**.
 
-> **2026-09-25 — bigimage + GPU single/snapshot/customruntime merged; step scripts everywhere (9 demos now).**
-> The set is **8 main demos** (6 CPU: `demo_cpu_tasks`, `demo_cpu_imagepool`, `demo_cpu_terminalbench`,
+> **2026-09-25 — heartbeat / customruntime / imagepool folded into `demo_cpu_tasks` (6 demos now).**
+> The set is **5 main demos** (3 CPU: `demo_cpu_tasks`, `demo_cpu_terminalbench`, `demo_cpu_scale_lanes`;
+> 2 GPU: `demo_gpu_single`, `demo_gpu_farm`) **plus `demo_cpu_branching`, EXPERIMENTAL/blocked**. Merges:
+> - `demo_cpu_heartbeat` → the opt-in **`HEARTBEAT=1`** knob of every demo (`session_keeper.maybe_keep_warm`
+>   wraps each episode's sandbox in `generate.py`; scale_lanes also registers its lane sessions;
+>   `HEARTBEAT_IDLE`=600, `HEARTBEAT_PING_FRACTION`=0.5; `HEARTBEAT_KEEP_WARM` still aliased). Default off ⇒
+>   unchanged. Terminal-Bench keeps its own always-on keeper. Offline probe → `demo_cpu_tasks/heartbeat_demo.py`.
+> - `demo_cpu_customruntime` → `demo_cpu_tasks/compare_backends.py` (same episode, same reward, custom vs managed Runtime).
+> - `demo_cpu_imagepool` → **`demo_cpu_tasks VARIANT=imagepool`** (`DATASET=imagepool`, `eval/imagepool`,
+>   `data/imagepool_*.jsonl` via `build_mixed_datasets.py --name imagepool`, `deploy/deploy_imagepool.py`
+>   → `deploy/runtime.imagepool.env` with the image→ARN map).
+> - Convergence: `15_cpu_heartbeat.sh` → `15_cpu_tasks_heartbeat.sh`; `17_cpu_customruntime.sh` (= 05 on a
+>   custom Runtime) replaced by `17_cpu_tasks_imagepool.sh`.
+> - Smoke drivers: entries take a `+KEY=VAL` suffix (`demo_cpu_tasks:deepscaler+HEARTBEAT=1`,
+>   `demo_cpu_tasks+VARIANT=imagepool`); offline probes `demo_cpu_tasks:heartbeat` / `demo_cpu_tasks:compare_backends`.
+> - Old logs/ckpts moved to `demo_cpu_tasks/logs/{heartbeat,customruntime,imagepool}/` and `demo_cpu_tasks/ckpt/`.
+>
+> **2026-09-25 — bigimage + GPU single/snapshot/customruntime merged; step scripts everywhere (9 demos at the time).**
+> The set was **8 main demos** (6 CPU: `demo_cpu_tasks`, `demo_cpu_imagepool`, `demo_cpu_terminalbench`,
 > `demo_cpu_customruntime`, `demo_cpu_heartbeat`, `demo_cpu_scale_lanes`; 2 GPU: `demo_gpu_single`,
 > `demo_gpu_farm`) **plus `demo_cpu_branching`, marked EXPERIMENTAL/blocked** (the in-sandbox CLI exits 1
 > before any model call → no trajectories). Merges:
@@ -145,6 +162,8 @@ GPU:
 ### NOT part of the sweep (no standard training loop)
 - demo_cpu_customruntime, demo_cpu_scale_lanes, demo_cpu_heartbeat,
   demo_gpu_customruntime, demo_gpu_snapshot
+  (2026-09-25: all but scale_lanes are now knobs/probes of demo_cpu_tasks / demo_gpu_single —
+  `HEARTBEAT=1`, `compare_backends.py`, `SNAPSHOT_EVERY=1`, `LOCAL_GPU=1`)
 
 ### Suggested driver
 `code/demos/run_smoke_sweep.sh` already does a serial sweep with per-run ckpt cleanup (it used

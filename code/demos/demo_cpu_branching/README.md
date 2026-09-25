@@ -107,11 +107,11 @@ bash 4_deploy_runtime.sh   # 4. deploy/deploy_branching.py: VPC-mode Runtime acs
                            #    (TCP ADAPTER_PORT on the host SG, source = the runtime SG)
                            #    -> deploy/runtime.env: AGENTCORE_SANDBOX_RUNTIME_ARN + ADAPTER_PUBLIC_HOST
 bash 5_run.sh              # 5. container: MODE=A train + eval (BLOCKED: fan_out=0, see the banner)
-bash 6_cleanup.sh          # 6. delete the Runtime (the SG ingress rule is left in place)
+bash 6_cleanup.sh          # 6. delete the Runtime and revoke the SG ingress rule (deploy_branching.py --cleanup)
 ```
 
 `HOST_SG` overrides the auto-detected (IMDS) host security group. Step 4 is idempotent: the existing
-repo, Runtime and SG rule are reused.
+repo, Runtime and SG rule are reused (`FORCE_RECREATE=1` recreates the Runtime to pick up a new image).
 
 The reward is the episode's SWE outcome (bug-fix accepted or not); every leaf of the fanned-out
 episode inherits it.

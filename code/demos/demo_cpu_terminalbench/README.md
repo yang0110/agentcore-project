@@ -3,7 +3,7 @@
 Terminal-Bench ships each task as its **own container environment** (a task-specific `Dockerfile` +
 a hidden pytest oracle). This demo turns that into a **large image pool**: one container image → one
 AgentCore Runtime **per task** (~229 single-container tasks), and every rollout episode is routed to
-**its task's own Runtime**. Where `demo_cpu_imagepool` had 3 images routed by *family*, this is the
+**its task's own Runtime**. Where `demo_cpu_tasks VARIANT=imagepool` has 3 images routed by *family*, this is the
 same routing mechanism at **task scale** — hundreds of images, one per task.
 
 The policy is Qwen3-4B trained by slime (async/decoupled GRPO). The agent is the faithful
@@ -102,7 +102,7 @@ bash 6_cleanup.sh          # 6. delete every Runtime in tasks/arn_by_image.json
 |---|---|---|
 | `SANDBOX` | `agentcore-runtime` | fresh AgentCore session per episode. **`local` is rejected.** |
 | `TB_PREOPEN_BATCHES` | `2` | **the one pre-open knob**: upcoming batches kept booted ahead, i.e. `TB_PREOPEN_BATCHES × RB × NS` microVMs (64) — idle microVMs you pay for, each counting against the account's concurrent-session quota. `0` = look-ahead off |
-| `WARM_IDLE_TIMEOUT` / `WARM_PING_FRACTION` | `900` / `0.5` | heartbeat any session idle past `fraction × timeout` |
+| `WARM_IDLE_TIMEOUT` / `WARM_PING_FRACTION` | `900` / `0.5` | heartbeat any session idle past `fraction × timeout`. This demo's `SessionKeeper` is **always on** (pre-opened sessions must survive), so the cross-demo `HEARTBEAT=1` knob is not needed here |
 | `HARNESS_WORKERS` | `4` | warm in-process harness workers (the harness tier) |
 | `EPISODE_MAX_TURNS` / `EPISODE_MAX_TOKENS` | `6` / `1024` | agentic turns / tokens per episode |
 | `RB` / `NS` / `NR` | 4 / 8 / 11 | GRPO prompts-per-step / group size / num-rollout (real steps `NR-1`) |

@@ -1,8 +1,16 @@
 # Smoke-sweep experiment plan — all 17 demos, end-to-end
 
+> **2026-09-25 (latest):** `demo_cpu_heartbeat` → the opt-in **`HEARTBEAT=1`** knob of every demo (probe
+> `demo_cpu_tasks/heartbeat_demo.py`); `demo_cpu_customruntime` → `demo_cpu_tasks/compare_backends.py`;
+> `demo_cpu_imagepool` → **`demo_cpu_tasks VARIANT=imagepool`**. The set is now **6 demos** (5 main: 3 CPU
+> `demo_cpu_tasks` / `demo_cpu_terminalbench` / `demo_cpu_scale_lanes` + 2 GPU `demo_gpu_single` / `demo_gpu_farm`,
+> plus the experimental `demo_cpu_branching`). Driver entries: offline probes `demo_cpu_tasks:heartbeat`,
+> `demo_cpu_tasks:compare_backends`; trainers `demo_cpu_tasks:deepscaler+HEARTBEAT=1` (the `+KEY=VAL` suffix adds
+> env knobs) and, in `run_smoke_plan.sh` PHASE=2, `demo_cpu_tasks+VARIANT=imagepool`. The log below keeps the old names.
+
 > **2026-09-25 (later):** `demo_cpu_bigimage` → `demo_cpu_tasks VARIANT=bigimage`; `demo_gpu_snapshot` →
 > `demo_gpu_single SNAPSHOT_EVERY=1`; `demo_gpu_customruntime` → `demo_gpu_single` (custom-Runtime angle, `LOCAL_GPU=1`).
-> The set is now **9 demos** (8 main: 6 CPU + 2 GPU, plus the experimental, blocked `demo_cpu_branching`), each with
+> The set was then **9 demos** (8 main: 6 CPU + 2 GPU, plus the experimental, blocked `demo_cpu_branching`), each with
 > step scripts `1_prepare_data.sh` … `6_cleanup.sh`. The offline probe entry is now `demo_gpu_single` → `snapshot_demo.py`.
 
 > **2026-09-25:** `demo_gpu_shared_single`, `demo_gpu_shared_multi` and `demo_gpu_local` were merged into
@@ -12,7 +20,7 @@
 > **Historical plan (pre-2026-09-23).** Written when the set had 17 demos. The ten per-dataset CPU
 > folders (`demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k` … `demo_cpu_mcp`) have since been
 > merged into ONE demo, `demo_cpu_datasets` (now `demo_cpu_tasks`), selected with `DATASET=`. The set was then **15 demos**
-> (9 CPU + 6 GPU); since the 2026-09-25 merges (`demo_gpu_farm`; `demo_cpu_mixtask` folded into `demo_cpu_tasks` as `DATASET=mixed`) it is **12** (see `README.md`). In `run_smoke_sweep.sh` those trainers are now entries of the form
+> (9 CPU + 6 GPU); since the 2026-09-25 merges (`demo_gpu_farm`; `demo_cpu_mixtask` folded into `demo_cpu_tasks` as `DATASET=mixed`) it was **12** (6 since the later 2026-09-25 merges; see `README.md`). In `run_smoke_sweep.sh` those trainers are now entries of the form
 > `demo_cpu_tasks:<ds>` (e.g. `demo_cpu_tasks:gsm8k`), logged as `demo_cpu_tasks-<ds>`.
 > `demo_gpu_shared` was split into `demo_gpu_shared_single` / `demo_gpu_shared_multi` (2026-09-21).
 
@@ -50,8 +58,9 @@ Defaults otherwise (`RB=4`, `NS=8`, `MODE=B` fully-async, `EVAL_INTERVAL=10`, `S
 **Phase 0 — offline PROBES (seconds each, no GPU/AWS).** Driver: `run_smoke_sweep.sh` inside `agentcore_p4`.
 Runs each property demo's **retained probe script directly** (NOT `run.sh`, which is now the trainer);
 logs to `offline_probe.log`. Behavior markers (not just exit 0) must appear.
-- `demo_cpu_heartbeat`      — `python3 heartbeat_demo.py` (naive→heartbeat→recover arc)
-- `demo_gpu_snapshot`     — `python3 snapshot_demo.py` (app-level snapshot/resume across recycle)
+- `demo_cpu_heartbeat` (now `demo_cpu_tasks:heartbeat`) — `python3 heartbeat_demo.py` (naive→heartbeat→recover arc)
+- `demo_cpu_tasks:compare_backends` (was `demo_cpu_customruntime`, added 2026-09-25) — `python3 compare_backends.py --backends local`
+- `demo_gpu_snapshot` (now `demo_gpu_single`) — `python3 snapshot_demo.py` (app-level snapshot/resume across recycle)
 - `demo_cpu_scale_lanes`  — `python3 harness_scaling_demo.py …` (formerly `demo_cpu_harness_scale`) (`throughput = min(inference, sandbox, harness)` sweep)
 
 **Phase 1 — CPU RL trainers (remote AgentCore CPU sandbox, ~10 min each, ckpt deleted after).** Same driver.
@@ -59,7 +68,9 @@ logs to `offline_probe.log`. Behavior markers (not just exit 0) must appear.
 `demo_cpu_tasks:math500`, `demo_cpu_tasks:deepscaler`, `demo_cpu_tasks:humaneval`,
 `demo_cpu_tasks:gretelsql`, `demo_cpu_tasks:hotpotqa`, `demo_cpu_tasks:xlam`,
 `demo_cpu_tasks:mcp` (formerly the ten `demo_cpu_<ds>` folders), plus the three CPU property trainers `demo_cpu_heartbeat`,
-`demo_cpu_scale_lanes`, `demo_cpu_customruntime` (each now wraps a real slime run). The two GPU
+`demo_cpu_scale_lanes`, `demo_cpu_customruntime` (each now wraps a real slime run; since 2026-09-25 the
+entries are `demo_cpu_tasks:deepscaler+HEARTBEAT=1` and `demo_cpu_scale_lanes` — customruntime was the same
+deepscaler run on a custom Runtime and was dropped). The two GPU
 property trainers (`demo_gpu_snapshot`, `demo_gpu_customruntime`) need a live g6 ARN → run with the
 GPU trainers, not in this on-box sweep.
 

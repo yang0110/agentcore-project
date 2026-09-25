@@ -56,8 +56,13 @@ AgentCore **Code Interpreter** microVM (CPU); the harness is in-process.
 > per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`, …) that differed only in data. Mixed-task
 > batches are the same demo: `DATASET=a,b,c` (interleaved) or `DATASET=mixed` (math+sql+ctf+datasci,
 > formerly `demo_cpu_mixtask`). `VARIANT=bigimage` (formerly `demo_cpu_bigimage`) runs the same trainer
-> on a ~4 GB image on a CPU capacity-provider Instance. The full set is 9 demos after the 2026-09-25
-> merges: 8 main (6 CPU + 2 GPU) plus the experimental, blocked `demo_cpu_branching`. Every demo runs
+> on a ~4 GB image on a CPU capacity-provider Instance, and `VARIANT=imagepool` (formerly
+> `demo_cpu_imagepool`) routes a datasci/scipy/sklearn batch over a pool of 3 custom images. The
+> heartbeat (formerly `demo_cpu_heartbeat`) is now the opt-in `HEARTBEAT=1` knob of every demo, and the
+> custom-vs-managed Runtime check (formerly `demo_cpu_customruntime`) is `demo_cpu_tasks/compare_backends.py`.
+> The full set is 6 demos after the 2026-09-25 merges: 5 main (3 CPU `demo_cpu_tasks`,
+> `demo_cpu_terminalbench`, `demo_cpu_scale_lanes` + 2 GPU `demo_gpu_single`, `demo_gpu_farm`) plus the
+> experimental, blocked `demo_cpu_branching`. Every demo runs
 > the same six step scripts (`1_prepare_data.sh` … `6_cleanup.sh`); see `code/demos/README.md`.
 
 \* *Hypothesis only — Tier 3 replaces it with a measurement.* Note most cheap-checker CPU tasks are
@@ -111,7 +116,7 @@ idle. Surviving that pause is **two patterns on two substrates**:
 
 | Demo | Substrate | Lever | Survives |
 |---|---|---|---|
-| [`demo_cpu_heartbeat`](../code/demos/demo_cpu_heartbeat/) | serverless CPU **Code-Interpreter microVM** | **heartbeat** (+ quiesce gate) | the *idle timeout* — keep the warm session from being reclaimed during the pause |
+| `HEARTBEAT=1` on any demo (formerly `demo_cpu_heartbeat`; probe [`demo_cpu_tasks/heartbeat_demo.py`](../code/demos/demo_cpu_tasks/heartbeat_demo.py)) | serverless CPU **microVM** (or any warm session) | **heartbeat** (+ quiesce gate) | the *idle timeout* — keep the warm session from being reclaimed during the pause |
 | [`demo_gpu_single`](../code/demos/demo_gpu_single/) `SNAPSHOT_EVERY=1` (formerly `demo_gpu_snapshot`) | **GPU Runtime instance** | **application-level snapshot & resume** | a genuine *recycle* — restore workspace state onto a fresh session (there is no VM snapshot; [gpu-snapshot.md](gpu-snapshot.md)) |
 
 **Heartbeat keeps a *live* session warm; snapshot restores a *lost* one.** Both have an offline
@@ -119,7 +124,7 @@ probe (no AWS/GPU) that runs in seconds (`heartbeat_demo.py`, `snapshot_demo.py`
 `agentcore_slime_demo/session_keeper.py` (`SessionKeeper` + `KeptSandbox`) and
 `agentcore_slime_demo/snapshot_store.py` (`snapshot_workspace`/`restore_workspace`).
 
-#### Demo 1 — microVM heartbeat (`demo_cpu_heartbeat`)
+#### Demo 1 — microVM heartbeat (`HEARTBEAT=1`; formerly `demo_cpu_heartbeat`)
 
 Chosen semantics: **lightweight quiesce (a gate)** — hold new sandbox invokes during sync, keep
 sessions warm via heartbeat, resume after. The heartbeat lives **outside the harness** by design:

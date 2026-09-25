@@ -5,7 +5,7 @@ This is the demo's whole point: a *large* image pool. Terminal-Bench ships one b
 environment per task; we build each one, wrap it so it can serve as an AgentCore sandbox, push it
 to its own ECR repo, and register ONE managed serverless Runtime per task. The pool map
 (`AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE`, {task -> runtime_arn}) then routes each episode to the
-Runtime built from ITS task's image — the exact same data-driven routing demo_cpu_imagepool uses
+Runtime built from ITS task's image — the exact same data-driven routing demo_cpu_tasks VARIANT=imagepool uses
 for 3 images, here at ~229-image scale.
 
 Substrate choice (differs from imagepool on purpose):

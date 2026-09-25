@@ -214,6 +214,15 @@ class HarnessPool:
         sb._lane_root = sb._workdir
         self._lane_sbx[wid] = sb
         self._lane_episodes[wid] = 0
+        # HEARTBEAT=1: this microVM lives for the whole run, so it is exactly what the weight-sync
+        # stall can idle-reclaim. Register it once with the process-wide keeper (raw no-op pinger);
+        # real episode ops bypass the keeper's clock, so it simply pings every
+        # HEARTBEAT_PING_FRACTION*HEARTBEAT_IDLE seconds (one cheap no-op every few minutes).
+        from .session_keeper import get_keeper, heartbeat_enabled, heartbeat_idle
+        if heartbeat_enabled():
+            async def _ping(s=sb) -> None:
+                await s.exec("true", timeout=30)
+            (await get_keeper()).register(sb._session_id, _ping, heartbeat_idle())
         if len(self._lane_sbx) == 1:
             atexit.register(self._close_lanes_sync)
         print(f"[demo] lane_open=1 lane={wid} engine={self._engine_urls[wid]} "
@@ -277,7 +286,8 @@ class HarnessPool:
         if self.lane_sandbox:
             sandbox = self._lane_episode(wid)
         else:
-            sandbox = make_sandbox(self.sandbox_kind, region=self.region)
+            from .session_keeper import maybe_keep_warm
+            sandbox = await maybe_keep_warm(make_sandbox(self.sandbox_kind, region=self.region))
         try:
             async with sandbox as sb:
                 # ONE [router] record per episode: the join that ties this episode's sandbox

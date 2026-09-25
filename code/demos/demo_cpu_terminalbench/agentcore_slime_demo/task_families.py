@@ -969,7 +969,7 @@ class ScipyTask(EpisodicTask):
 
     The agent must use `scipy` to solve a small numerical problem (a linear system, a determinant,
     numerical integration, root finding) and store the result in a module-level float `answer`. This
-    is the point of demo_cpu_imagepool: unlike demo_cpu_tasks:mixed (one custom image), here EACH family
+    is the point of demo_cpu_tasks VARIANT=imagepool: unlike DATASET=mixed (one custom image), here EACH family
     carries a DIFFERENT `image` tag ("scipy" here, "datasci"/pandas and "sklearn" elsewhere), so the
     batch is heterogeneous in the *container image* it needs. Route an episode to the wrong image and
     solution.py's `import scipy` raises ModuleNotFoundError, the checker fails, reward = 0 — only the

@@ -32,7 +32,7 @@ AgentCore Runtime as the execution sandbox for agentic RL, integrated with slime
 
 - **Problem.** Agentic RL runs **untrusted model output** in an isolated environment thousands of times per run and scores it with a **programmatic checker** — the *sandbox* layer, not the GPU, is often the bottleneck (Kimi K2 [5]: **>10,000 concurrent sandboxes**).
 - **Solution.** **AgentCore Runtime is that sandbox** — one isolated microVM session per episode, **in your own AWS account** (IAM/SigV4, VPC), bring-your-own container, CPU by default and **GPU on Instances** — wired into the **slime** trainer through **one hook**, harness in-process.
-- **Proven.** The full loop runs **end-to-end on real hardware across 9 demos** (8 main + 1 experimental; code, math, SQL, RAG, tool-use, CUDA kernels), each a standard **10-step run** with real rewards from an in-sandbox checker.
+- **Proven.** The full loop runs **end-to-end on real hardware across 6 demos** (5 main + 1 experimental; code, math, SQL, RAG, tool-use, CUDA kernels), each a standard **10-step run** with real rewards from an in-sandbox checker.
 - **How you adopt it.** Build a sandbox image → deploy a Runtime → seed a task → train via one `generate` hook. **CPU↔GPU is one env var.**
 
 ## What tasks do frontier labs run in sandboxes
@@ -261,7 +261,7 @@ CMD ["python","-m","agentcore_slime_demo.sandbox_server_agent"]  # serves :8080
 \end{center}
 ```
 
-*Launch is **implicit** (first invoke); terminate is **implicit** (idle / max-lifetime / health). A heartbeat ping resets the timer (`demo_cpu_heartbeat`).*
+*Launch is **implicit** (first invoke); terminate is **implicit** (idle / max-lifetime / health). A heartbeat ping resets the timer (`HEARTBEAT=1`, any demo).*
 
 ## How to launch & terminate a session — the mechanics
 
@@ -368,7 +368,7 @@ slime's training kernel controls **neither** the Runtime nor the session.
 - **Runtime** (create/delete the ARN) — the **deploy driver**, once before training. slime just gets the ARN.
 - **Session** (per episode) — the `generate` hook's sandbox client: **launch implicit** (first invoke cold-starts the microVM); **terminate implicit** (idle reclaim, no explicit stop on the happy path).
 
-Because termination is *passive*, the weight-sync pause can trip the idle clock and lose a warm session — the failure mode the resilience demo (`cpu_heartbeat`) addresses.
+Because termination is *passive*, the weight-sync pause can trip the idle clock and lose a warm session — the failure mode the `HEARTBEAT=1` knob (any demo; was `cpu_heartbeat`) addresses.
 
 ## The episode, end to end — the loop
 
@@ -470,36 +470,37 @@ app.run()                       # serves 0.0.0.0:8080  (/invocations + /ping)
 
 1. **Files, not images** — most CPU families (math `sympy`, code `unittest`, SQL `sqlite3`, tool-use, light CTF) share **one generic Python image**; prompt, seed files, and hidden checker are written into *that episode's session*.
 2. **Per-session install** — heavier deps go into the ephemeral workspace: **`CMD`-time** (the GPU image installs the ~2.7 GB torch wheel at boot to stay under the ~2 GB arm64 cap) or **seed-time** `git clone`/`pip`.
-3. **Per-capability image** — only a genuine substrate difference (chiefly the **GPU** toolchain: `nvcc` + a real GPU, or a prebuilt dependency set) needs a **second Runtime ARN** (`demo_cpu_imagepool`, the GPU demos).
+3. **Per-capability image** — only a genuine substrate difference (chiefly the **GPU** toolchain: `nvcc` + a real GPU, or a prebuilt dependency set) needs a **second Runtime ARN** (`demo_cpu_tasks` `VARIANT=imagepool`, the GPU demos).
 
 # 5. The demos
 
 ## Find your workload — the demos are client use cases
 
-The 9 demos aren't toys; each stands in for a **real agent a client would train**. Find yours:
+The 6 demos aren't toys; each stands in for a **real agent a client would train**. Find yours:
 
 - **Coding agents** → `cpu_tasks` `DATASET=mbpp` (MBPP repair) / `=humaneval` (function synthesis), `cpu_terminalbench` (whole-OS terminal tasks), `cpu_branching` (a real Claude Code CLI agent; experimental, blocked) — test-driven assistants that iterate against your test runner.
 - **Reasoning / math** → `cpu_tasks` `DATASET=math` / `gsm8k` / `math500` / `deepscaler` — reasoning-model post-training with a one-line numeric checker.
-- **Data & analytics** → `cpu_tasks` `DATASET=gretelsql` (text-to-SQL), `cpu_tasks` `DATASET=mixed` (SQL + datasci in one stream), `cpu_imagepool` (pandas / scipy / sklearn) — agents whose reward is *running the real data stack*.
+- **Data & analytics** → `cpu_tasks` `DATASET=gretelsql` (text-to-SQL), `cpu_tasks` `DATASET=mixed` (SQL + datasci in one stream), `cpu_tasks` `VARIANT=imagepool` (pandas / scipy / sklearn) — agents whose reward is *running the real data stack*.
 - **RAG / search** → `cpu_tasks` `DATASET=hotpotqa` (multi-hop) — retrieval agents over your corpus.
 - **Tool / API use** → `cpu_tasks` `DATASET=xlam` / `mcp` — function-calling and MCP-schema agents for your APIs.
 - **GPU kernels / systems** → `gpu_single`, `gpu_farm` — agents whose checker compiles and runs CUDA on a real GPU.
 
-*The rest (`scale_lanes`, `customruntime`, `cpu_tasks` `VARIANT=bigimage`, `heartbeat`, `gpu_single` `SNAPSHOT_EVERY=1`) show **how to scale and operate**; mixing is `cpu_tasks` `DATASET=a,b,c` / `mixed` these in production.*
+*The rest (`scale_lanes`, `cpu_tasks`' `compare_backends.py` and `VARIANT=bigimage`, `HEARTBEAT=1`, `gpu_single` `SNAPSHOT_EVERY=1`) show **how to scale and operate**; mixing is `cpu_tasks` `DATASET=a,b,c` / `mixed` these in production.*
 
-## The demo set — 9 demos, one design
+## The demo set — 6 demos, one design
 
-Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), AgentCore the **sandbox**; only the *substrate* and *task* vary — **8 main (6 CPU + 2 GPU) + 1 experimental**. Every demo runs the same six step scripts (`1_prepare_data.sh` … `6_cleanup.sh`):
+Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), AgentCore the **sandbox**; only the *substrate* and *task* vary — **5 main (3 CPU + 2 GPU) + 1 experimental**. Every demo runs the same six step scripts (`1_prepare_data.sh` … `6_cleanup.sh`):
 
-- **CPU reference** — `cpu_tasks`: ONE demo, many real RLVR datasets via a `DATASET=` knob (mbpp · math · gsm8k · math500 · deepscaler · humaneval · gretelsql · hotpotqa · xlam · mcp), a comma list to mix them (`DATASET=gsm8k,gretelsql,hotpotqa`), or `mixed` (math + SQL + CTF + datasci). *A single dataset is the one-element mix. These were ten per-dataset folders + `cpu_mixtask` until 2026-09-23 / 25; they differed only in data, so they were merged. Side note: `VARIANT=bigimage` (was `cpu_bigimage`) runs the same trainer on a ~4 GB image on a warm CPU Instance.*
+- **CPU reference** — `cpu_tasks`: ONE demo, many real RLVR datasets via a `DATASET=` knob (mbpp · math · gsm8k · math500 · deepscaler · humaneval · gretelsql · hotpotqa · xlam · mcp), a comma list to mix them (`DATASET=gsm8k,gretelsql,hotpotqa`), or `mixed` (math + SQL + CTF + datasci). *A single dataset is the one-element mix. These were ten per-dataset folders + `cpu_mixtask` until 2026-09-23 / 25; they differed only in data, so they were merged. Side notes: `VARIANT=bigimage` (was `cpu_bigimage`) runs the same trainer on a ~4 GB image on a warm CPU Instance; `VARIANT=imagepool` (was `cpu_imagepool`) routes each family to its own image; `compare_backends.py` (was `cpu_customruntime`) compares managed vs your own Runtime.*
 - **CPU scale** — `cpu_scale_lanes` (4 × 4 × 4 lanes: harness : engine : microVM; was `cpu_harness_scale`).
-- **CPU substrate / design variants** — `cpu_imagepool`, `cpu_terminalbench`, `cpu_customruntime`, `cpu_heartbeat` (resilience).
+- **CPU image pool at task scale** — `cpu_terminalbench` (one Runtime per task, pre-opened).
+- **Every demo** — `HEARTBEAT=1` keeps idle sessions warm across the weight sync (was `cpu_heartbeat`, merged 2026-09-25).
 - **Experimental** — `cpu_branching` (real Claude Code CLI; **blocked**: the in-sandbox CLI exits 1 before any model call, so no trajectories).
 - **GPU** — `gpu_single` (+ custom-Runtime angle and `SNAPSHOT_EVERY=1` snapshot/resume; was `gpu_customruntime` / `gpu_snapshot` until 2026-09-25), `gpu_farm` (local Ray farm; `FARM=fractional` packs two episodes on one GPU, `FARM=whole` gives each a whole GPU). *`gpu_farm` replaces `gpu_shared_single`, `gpu_shared_multi` and `gpu_local` (merged 2026-09-25; they differed only in farm knobs).*
 
 **Honest status — uniform.** Every training demo is **one 10-step run**: 10 train steps · 1 held-out eval · 1 checkpoint · a weight-sync each step (10) — **loop-complete, not convergence**. Exceptions: `cpu_branching` is blocked (no trajectories), and `cpu_terminalbench`'s first smoke (2026-09-23) passed but with a sparse reward (4/382 solves). Both GPU demos in every configuration (three `gpu_single` angles, both `gpu_farm` modes) passed the 2026-09-21 GPU sweep. *One slide per demo follows the summary.*
 
-## All 9 demos at a glance
+## All 6 demos at a glance
 
 ```{=latex}
 \scriptsize
@@ -507,7 +508,7 @@ Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), Age
 
 | Demo | Substrate · task | Checker | Status / measured |
 |---|---|---|---|
-| *CPU (6 + experimental)* | | | |
+| *CPU (3 + experimental)* | | | |
 | `cpu_tasks` `=mbpp` | CPU µVM · MBPP repair | hidden asserts | 10-step; `eval` 0.56 |
 | `cpu_tasks` `=math` | CPU µVM · math words | numeric assert | 10-step; `eval/gsm8k` 0.94 |
 | `cpu_tasks` `=gsm8k` | CPU µVM · GSM8K | exact int match | 10-step; `eval` 0.91 |
@@ -520,12 +521,12 @@ Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), Age
 | `cpu_tasks` `=mcp` | CPU µVM · ToolACE (MCP) | arg-norm call match | 10-step; `eval` 1.00 |
 | `cpu_tasks` `=mixed` | CPU µVM · math+SQL+CTF+datasci | per-row checker | 10-step (as `cpu_mixtask`); `eval/mixed` 0.67 |
 | ↳ `VARIANT=bigimage` | CPU Instance (m5) · DeepScaleR, ~4 GB image | numeric assert | 10-step (as `cpu_bigimage`); `eval` 0.76 |
+| ↳ `VARIANT=imagepool` | CPU µVM ×3 · datasci/scipy/sklearn | per-family checker | 10-step (as `cpu_imagepool`); `eval` 1.00 |
+| ↳ custom Runtime | your CPU Runtime · DeepScaleR | numeric assert | 10-step (as `cpu_customruntime`); `eval` 0.69 |
+| ↳ `HEARTBEAT=1` | CPU µVM · DeepScaleR + heartbeat | numeric assert | offline sim + 10-step (as `cpu_heartbeat`); `eval` 0.71 |
 | `cpu_scale_lanes` | CPU µVM ×4 persistent · DeepScaleR (fixed) | numeric assert | reworked to 4 × 4 × 4 lanes, offline-verified; earlier 10-step `eval` 0.33 was the pre-rework topology |
-| `cpu_imagepool` | CPU µVM ×3 · datasci/scipy/sklearn | per-family checker | 10-step; `eval/mixed` 1.00 |
 | `cpu_terminalbench` | CPU µVM ×~229 · Terminal-Bench | task's hidden pytest | 218/229 Runtimes deployed, 166 usable; smoke passed to ckpt 10 (2026-09-23), reward sparse (4/382), eval 0.0 |
 | `cpu_branching` *(exp.)* | CPU CLI Runtime · SWE + Claude Code CLI | SWE checker | **blocked** — CLI exits 1 pre-model-call; earlier run reward 0 |
-| `cpu_customruntime` | CPU µVM · DeepScaleR, both backends | numeric assert | 10-step; `eval` 0.69 |
-| `cpu_heartbeat` | CPU µVM · heartbeat | — | offline sim + 10-step; `eval` 0.71 |
 | *GPU (2)* | | | |
 | `gpu_single` | GPU g6 · KernelBench | CUDA `allclose` | 10-step; `eval` 0.525 |
 | ↳ custom-Runtime angle | custom GPU Runtime · KernelBench | CUDA `allclose` | 10-step (as `gpu_customruntime`); `eval` 0.65 |
@@ -539,13 +540,13 @@ Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), Age
 \normalsize
 ```
 
-## What the 9 demos demonstrate
+## What the 6 demos demonstrate
 
 - **The core claim.** `cpu_tasks` (MBPP by default) and `gpu_single` (KernelBench) are the two reference training loops, on a CPU and a GPU sandbox. *Shows the loop works on both substrates.*
 - **Breadth across real workloads.** `cpu_tasks` swaps the dataset with one knob (`DATASET=`): GSM8K, MATH-500, DeepScaleR, HumanEval, Gretel SQL, HotpotQA, xLAM, ToolACE, spanning math, code, SQL, RAG and tool-use. *Shows the same task-agnostic sandbox + checker covers every frontier family with no image change. The dataset is data, not a new demo.*
 - **Scale and mix.** `scale_lanes` makes the `min()` throughput law concrete with 4 lanes of harness worker : SGLang engine : microVM, scaled together by `LANES=`; `cpu_tasks` `DATASET=mixed` (or any comma list) trains one generalist across families in a single stream.
-- **Substrate / design variants — the AgentCore mechanics.** `cpu_branching` (real Claude Code CLI as harness; experimental, blocked), `cpu_customruntime` / `gpu_single`'s custom-Runtime angle (managed vs. your own Runtime), `cpu_imagepool` / `cpu_terminalbench` (image pools routed by family / by task), `cpu_tasks` `VARIANT=bigimage` (image past the microVM cap, on an Instance), `gpu_farm` (GPU Ray farm, fractional or whole-GPU). *Shows the substrate choices a production deployment actually makes.*
-- **Resilience.** `cpu_heartbeat` + `gpu_single` `SNAPSHOT_EVERY=1`: *heartbeat prevents loss; snapshot recovers from it.*
+- **Substrate / design variants — the AgentCore mechanics.** `cpu_branching` (real Claude Code CLI as harness; experimental, blocked), `cpu_tasks`' `compare_backends.py` / `gpu_single`'s custom-Runtime angle (managed vs. your own Runtime), `cpu_tasks` `VARIANT=imagepool` / `cpu_terminalbench` (image pools routed by family / by task), `cpu_tasks` `VARIANT=bigimage` (image past the microVM cap, on an Instance), `gpu_farm` (GPU Ray farm, fractional or whole-GPU). *Shows the substrate choices a production deployment actually makes.*
+- **Resilience.** `HEARTBEAT=1` (any demo) + `gpu_single` `SNAPSHOT_EVERY=1`: *heartbeat prevents loss; snapshot recovers from it.*
 
 ## `cpu_tasks` — one demo, many datasets (`DATASET=`)
 
@@ -584,12 +585,12 @@ Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), Age
 - **Measured (2026-09-21 GPU sweep, 10-step runs):** `fractional` `Job succeeded`, ckpt 10, `eval/kernelbench` **0.775**; `whole` passed twice, `eval` 0.65 / 0.70. The client-side open-concurrency gate caps opens at the farm's 2 slots; sandbox `open`==`close` counts balanced.
 - **Why:** isolated needs *N whole g6 at once* (stalls on a starved fleet); the farm needs **one** instance. No MIG on L4 → software-only isolation (`nvcc` `flock`); `whole` sidesteps the fractional compile-wedge when whole GPUs are available. No convergence curve yet.
 
-## `cpu_heartbeat` — heartbeat keeps the sandbox warm · offline
+## `HEARTBEAT=1` — heartbeat keeps the sandbox warm · any demo
 
-**Mechanism, not a training run.** During slime's weight-sync pause generation stalls and an idle session is reclaimed (~15 min); a `SessionKeeper` heartbeat resets the idle clock so the *same* warm microVM survives. **Use case** any long RL run whose warm, stateful session must outlive the sync pause.
+*Was `cpu_heartbeat`; merged 2026-09-25 into an opt-in knob of every demo (offline probe `demo_cpu_tasks/heartbeat_demo.py`; `cpu_terminalbench` already runs its own keeper).* **A mechanism first.** During slime's weight-sync pause generation stalls and an idle session is reclaimed (~15 min); a `SessionKeeper` heartbeat resets the idle clock so the *same* warm microVM survives. **Use case** any long RL run whose warm, stateful session must outlive the sync pause.
 
 - **Three acts:** (1) naive "stop invoking" → reclaimed; (2) heartbeat holds it warm across an arbitrary pause; (3) recover-by-reseed if it dies anyway.
-- Lives **outside** the harness by design; runs offline in seconds (no policy). Paired with `gpu_single` `SNAPSHOT_EVERY=1`: *heartbeat prevents loss; snapshot recovers from it.*
+- Lives **outside** the harness by design; the probe runs offline in seconds (no policy). Smoke (as `cpu_heartbeat`, `DATASET=deepscaler HEARTBEAT=1`) `eval/deepscaler` 0.71 with the keeper live. Paired with `gpu_single` `SNAPSHOT_EVERY=1`: *heartbeat prevents loss; snapshot recovers from it.*
 
 ## `gpu_single` `SNAPSHOT_EVERY=1` — application-level snapshot / resume
 
@@ -676,23 +677,24 @@ Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), Age
 - **Reconciliation:** all leaves tagged with the shared `rollout_id ρ`; advantage baseline + token-mean loss normalized **per rollout, not per sample**, so an incidental fan-out can't reweight the update. `MODE=A`, `dp=1` (TP2×PP2), sync save.
 - **Measured (10-step run):** `Job succeeded` at ckpt 10; **`fan_out=0` blocker resolved** (`=1` ×315, `=2` ×8, `=3` ×1) — but `raw_reward` and `eval/swe` are still **0.0** (the SWE checker earns no reward yet). **Now blocked:** the in-sandbox CLI exits 1 before any model call, so no trajectories are produced.
 
-## `cpu_customruntime` — managed CI vs. your own Runtime · 10-step run
+## `cpu_tasks` + `compare_backends.py` — managed CI vs. your own Runtime · 10-step run
 
 **Both ways to get a CPU sandbox** expose the *identical* `write_file`/`exec`/`read_file` contract: the **managed Code Interpreter** (`SANDBOX=agentcore`, zero-ops) vs **your own custom Runtime** (`SANDBOX=agentcore-runtime`, your OCI image, VPC/IAM posture). **Use case** deciding whether a rollout needs a custom image at all.
 
-- `compare_backends.py` still runs the same episode on both — **reward identical, only operational trade-offs differ** — but `run.sh` now drives a real DeepScaleR training run on the custom Runtime.
-- **Measured (10-step run):** `Job succeeded` at ckpt 10, **`eval/deepscaler` 0.69** (per-rollout `raw_reward` 0.72–0.91).
+- *Was `cpu_customruntime`; merged into `cpu_tasks` 2026-09-25.* `compare_backends.py` runs the same episode on both — **reward identical, only operational trade-offs differ**; `DATASET=deepscaler` with your Runtime's ARN is a real training run on it.
+- **Measured (10-step run, as `cpu_customruntime`):** `Job succeeded` at ckpt 10, **`eval/deepscaler` 0.69** (per-rollout `raw_reward` 0.72–0.91).
 
-## `cpu_imagepool` — capability-routed image pool · 10-step run
+## `cpu_tasks` `VARIANT=imagepool` — capability-routed image pool · 10-step run
 
 **One prebuilt image per capability**, each its own Runtime ARN — `datasci`→pandas, `scipy`→scipy, `sklearn`→sklearn — and the harness **routes each episode to the image its family needs**. **Use case** a portfolio whose families pull heavy, incompatible toolkits that can't co-install under the ~2 GB cap.
 
 - Routing is not cosmetic: send a `scipy` episode to the pandas image and `import scipy` fails → reward 0. The third rung of the dependency ladder (files → CMD-install → **per-capability ARN**).
-- **Measured (10-step run):** `Job succeeded` at ckpt 10 driving the **real 3-image ARN pool** (per-family routing confirmed in the runtime-env), **`eval/mixed` 1.00**.
+- *Was `cpu_imagepool`; merged into `cpu_tasks` 2026-09-25 (`DATASET=imagepool`, now `eval/imagepool`).*
+- **Measured (10-step run, as `cpu_imagepool`):** `Job succeeded` at ckpt 10 driving the **real 3-image ARN pool** (per-family routing confirmed in the runtime-env), held-out eval **1.00**.
 
 ## `cpu_terminalbench` — one image per task, one fresh microVM per episode · smoke
 
-**Terminal-Bench as a large image pool:** one AgentCore Runtime **per task** (~229 images); each episode is routed to its task's own Runtime. It is the `cpu_imagepool` routing idea at task scale. Tasks act on the whole OS, so **every episode gets a brand-new session** (isolation). **Use case** terminal / DevOps agents.
+**Terminal-Bench as a large image pool:** one AgentCore Runtime **per task** (~229 images); each episode is routed to its task's own Runtime. It is the `VARIANT=imagepool` routing idea at task scale. Tasks act on the whole OS, so **every episode gets a brand-new session** (isolation). **Use case** terminal / DevOps agents.
 
 - **Cold start hidden by look-ahead:** a slime data-source plugin (`tb_lookahead_source.py`) replays slime's deterministic data order and announces the **next 2 rollouts'** episodes; the pool keeps **64** fresh sessions (2 × 4 prompts × 8 samples) booted ahead, pooled per task, heartbeated until claimed. Offline-tested.
 - **Reward:** the task's own hidden pytest oracle (`grade.sh`), RLVR. Tool-calling `MiniClaudeHarness` loop (needs the `qwen25` tool parser). Remote-only.
@@ -903,9 +905,9 @@ The reconciliation `cpu_branching` implements, and the reason a **real** agent n
 
 ## Mechanism spotlight — resilience: heartbeat & snapshot
 
-Two levers a long RL run composes, demonstrated by `cpu_heartbeat` and `gpu_single` `SNAPSHOT_EVERY=1` (§5). **Use case:** any multi-hour run whose warm, stateful sessions (installed deps, seeded repo) must survive both the periodic pause and a genuine instance recycle.
+Two levers a long RL run composes, demonstrated by `HEARTBEAT=1` and `gpu_single` `SNAPSHOT_EVERY=1` (§5). **Use case:** any multi-hour run whose warm, stateful sessions (installed deps, seeded repo) must survive both the periodic pause and a genuine instance recycle.
 
-- **Heartbeat (`cpu_heartbeat`)** — during weight sync generation stalls; an idle session is **reclaimed (~15 min)** [D3] and the next round pays a cold start. A `SessionKeeper` pings on a timer, **resetting the idle clock**, so the *same* warm microVM survives. Lives **outside the harness** (`KeptSandbox`), because the stall is a training-loop property, not an episode one.
+- **Heartbeat (`HEARTBEAT=1`, any demo)** — during weight sync generation stalls; an idle session is **reclaimed (~15 min)** [D3] and the next round pays a cold start. A `SessionKeeper` pings on a timer, **resetting the idle clock**, so the *same* warm microVM survives. Lives **outside the harness** (`KeptSandbox`), because the stall is a training-loop property, not an episode one.
 - **Snapshot (`gpu_single` `SNAPSHOT_EVERY=1`)** — a recycled GPU instance comes back blank (no VM/EBS snapshot), so the workspace is serialized to a store you own (S3) and restored onto a fresh session.
 - **The pairing:** *heartbeat prevents loss; snapshot recovers from it.*
 
@@ -920,8 +922,8 @@ Two levers a long RL run composes, demonstrated by `cpu_heartbeat` and `gpu_sing
 
 **Limits & quotas to plan around:**
 
-- **Session length:** 8 h on a CPU microVM, 14 d on a GPU Instance; **idle ~15 min → reclaimed** (use the `cpu_heartbeat` heartbeat to survive the weight-sync pause).
-- **Image size:** ~2 GB arm64 cap — install heavy deps at `CMD`-time, or route a per-capability image (`cpu_imagepool`).
+- **Session length:** 8 h on a CPU microVM, 14 d on a GPU Instance; **idle ~15 min → reclaimed** (use `HEARTBEAT=1` to survive the weight-sync pause).
+- **Image size:** ~2 GB arm64 cap — install heavy deps at `CMD`-time, or route a per-capability image (`cpu_tasks` `VARIANT=imagepool`).
 - **GPU sharing:** **no MIG** on L4 / L40S — cross-session GPU sharing is software-only (the Ray farm), not hardware-partitioned.
 - **Next step after training:** serve the resulting policy on Bedrock / SageMaker — the trained checkpoint is a standard model artifact.
 

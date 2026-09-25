@@ -19,14 +19,14 @@
 # NAMING CONTRACT: each file's prefix == run.sh's DATASET label, so after this you train a dataset
 # with a plain `DATASET=<name> bash run.sh` (no DATA/EVAL_DATA overrides). Row counts (train/eval):
 #   mbpp 500/8   gsm8k 200/40   math500 160/40   deepscaler 400/40   humaneval 140/24
-#   gretelsql 300/40   hotpotqa 300/40   xlam 300/40   mcp 300/40   mixed 174/9
+#   gretelsql 300/40   hotpotqa 300/40   xlam 300/40   mcp 300/40   mixed 174/9   imagepool 72/6
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL="python3 $DIR/agentcore_slime_demo/build_real_datasets.py"
 MBPP="python3 $DIR/build_dataset.py"
 OUT="$DIR/data"
 DATASET="${DATASET:-${1:-all}}"
-ALL="mbpp gsm8k math500 deepscaler humaneval gretelsql hotpotqa xlam mcp mixed"
+ALL="mbpp gsm8k math500 deepscaler humaneval gretelsql hotpotqa xlam mcp mixed imagepool"
 mkdir -p "$OUT"
 
 build() {
@@ -83,6 +83,12 @@ build() {
     mixed)
       BAL=(); [ "${BALANCED:-1}" = "1" ] && BAL=(--balanced)
       python3 "$DIR/build_mixed_datasets.py" --families "${FAMILIES:-math,sql,ctf,datasci}" \
+          --out-dir "$OUT" --repeat "${REPEAT:-6}" "${BAL[@]}" ;;
+    # imagepool (VARIANT=imagepool, was demo_cpu_imagepool) — datasci+scipy+sklearn, each family
+    # needing its OWN custom image (pandas / scipy / scikit-learn), routed per episode by task.image.
+    imagepool)
+      BAL=(); [ "${BALANCED:-1}" = "1" ] && BAL=(--balanced)
+      python3 "$DIR/build_mixed_datasets.py" --name imagepool --families "${FAMILIES:-datasci,scipy,sklearn}" \
           --out-dir "$OUT" --repeat "${REPEAT:-6}" "${BAL[@]}" ;;
     *) # synthetic task-family zoo (math swe sql …): committed in data/, built by build_family_datasets.py
        if [ -f "$OUT/$1_train.jsonl" ]; then echo "$1: synthetic zoo dataset, already in $OUT (skip)"; return 0; fi

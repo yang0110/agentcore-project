@@ -16,15 +16,18 @@ dial-back is the ONLY inbound path we open, and it stays WITHIN THE VPC with NO 
 
 Reuses the vendored deploy/agentcore_deploy.py helpers (account/ensure_ecr/_ensure_buildx/exec_role/
 managed_runtime/default_vpc/ensure_vpc_endpoints) so it shares the SAME exec role + buildx builder +
-VPC endpoints as the rest of the fleet. Idempotent: existing repo/Runtime/SG-rule are reused.
+VPC endpoints as the rest of the fleet. Idempotent: existing repo/Runtime/SG-rule are reused;
+FORCE_RECREATE=1 deletes the Runtime first so it picks up a new image/env.
 
     python3 deploy_branching.py
     # prints: export AGENTCORE_SANDBOX_RUNTIME_ARN=<cli-runtime-arn>
     #         export ADAPTER_PUBLIC_HOST=<this box's private VPC IP>
+    python3 deploy_branching.py --cleanup     # 6_cleanup.sh: delete the Runtime AND revoke the SG rule
 
 Env: HOST_SG (host security group to open 18021 on; auto-detected via IMDS if unset),
      ADAPTER_PORT (default 18021), SKIP_BUILD=1 to reuse the pushed :latest and only (re)register.
-Real AWS mutation: 1 ECR repo + image, 1 managed serverless Runtime, 1 SG ingress rule.
+Real AWS mutation: 1 ECR repo + image, 1 managed serverless Runtime, 1 SG ingress rule (--cleanup undoes
+the last two).
 """
 import json
 import os
@@ -74,11 +77,8 @@ def build_push() -> str:
     return uri
 
 
-def open_adapter_ingress(runtime_sg: str) -> None:
-    """Add the ONE SG->SG ingress rule: host SG allows TCP ADAPTER_PORT FROM the runtime SG.
-
-    Source is the runtime security-group id (never a CIDR): the adapter port is reachable only from
-    the sandbox runtime's ENIs inside this VPC, never publicly. Idempotent (ignore Duplicate)."""
+def _host_sg() -> str:
+    """HOST_SG, else the first security group on this box's primary ENI (via IMDS)."""
     host_sg = os.environ.get("HOST_SG", "")
     if not host_sg:
         # primary-ENI security groups; take the first (inbound rules are the union across attached SGs)
@@ -88,6 +88,15 @@ def open_adapter_ingress(runtime_sg: str) -> None:
     if not host_sg:
         d.die("could not determine HOST_SG (set HOST_SG=sg-... to the host security group to open "
               f"tcp {ADAPTER_PORT} from the runtime SG)")
+    return host_sg
+
+
+def open_adapter_ingress(runtime_sg: str) -> None:
+    """Add the ONE SG->SG ingress rule: host SG allows TCP ADAPTER_PORT FROM the runtime SG.
+
+    Source is the runtime security-group id (never a CIDR): the adapter port is reachable only from
+    the sandbox runtime's ENIs inside this VPC, never publicly. Idempotent (ignore Duplicate)."""
+    host_sg = _host_sg()
     import subprocess
     rule = (f"aws ec2 authorize-security-group-ingress --region {REGION} --group-id {host_sg} "
             f"--protocol tcp --port {ADAPTER_PORT} --source-group {runtime_sg}")
@@ -101,7 +110,32 @@ def open_adapter_ingress(runtime_sg: str) -> None:
         d.err(f"WARN: could not add ingress (rc={p.returncode}): {p.stderr.strip()}")
 
 
+def revoke_adapter_ingress(runtime_sg: str) -> None:
+    """Undo open_adapter_ingress (6_cleanup.sh). Idempotent: a missing rule is not an error."""
+    import subprocess
+    host_sg = _host_sg()
+    rule = (f"aws ec2 revoke-security-group-ingress --region {REGION} --group-id {host_sg} "
+            f"--protocol tcp --port {ADAPTER_PORT} --source-group {runtime_sg}")
+    d.err(f"$ {rule}")
+    p = subprocess.run(rule, shell=True, capture_output=True, text=True)
+    if p.returncode == 0:
+        d.err(f"revoked ingress tcp {ADAPTER_PORT} on {host_sg} from runtime SG {runtime_sg}")
+    elif "InvalidPermission.NotFound" in p.stderr:
+        d.err(f"ingress tcp {ADAPTER_PORT} on {host_sg} from {runtime_sg} already absent")
+    else:
+        d.err(f"WARN: could not revoke ingress (rc={p.returncode}): {p.stderr.strip()}")
+
+
+def cleanup() -> int:
+    d.delete_runtime(f"{PREFIX}_sandbox_cli")
+    _, _, runtime_sg = d.default_vpc()
+    revoke_adapter_ingress(runtime_sg)
+    return 0
+
+
 def main() -> int:
+    if "--cleanup" in sys.argv[1:]:
+        return cleanup()
     xrole = d.exec_role(f"{PREFIX}-exec-role")
     env = {"AWS_REGION": REGION, "SANDBOX_WORKDIR": "/workspace"}
 
@@ -114,6 +148,8 @@ def main() -> int:
                "networkModeConfig": {"securityGroups": [runtime_sg], "subnets": ep_subnets}}
 
     uri = build_push()
+    if os.environ.get("FORCE_RECREATE") == "1":
+        d.delete_runtime(f"{PREFIX}_sandbox_cli")   # waits until the name is free
     arn = d.managed_runtime(f"{PREFIX}_sandbox_cli", uri, xrole, env, vpc_net)
     d.err(f"cli sandbox runtime -> {arn}")
 

@@ -63,8 +63,21 @@ set -euo pipefail
 # shared runtimeSessionId (cold-boot paid once) with a fresh CpuFarm env per episode sub_session.
 # Deploy it with deploy/deploy_bigimage.py (or VARIANT=bigimage bash 2_..4_*.sh); defaults to DATASET=deepscaler.
 VARIANT="${VARIANT:-}"
+# VARIANT=imagepool (was demo_cpu_imagepool): a POOL of custom microVM images, one per task family
+# (datasci=pandas, scipy, sklearn). DATASET=imagepool interleaves the three; each episode is routed to
+# its family's Runtime by task.image via AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE (written by
+# deploy/deploy_imagepool.py = VARIANT=imagepool bash 4_deploy_runtime.sh). A wrong image => the
+# checker's import fails => reward 0, so the routing is visible in the reward.
 if [ "$VARIANT" = "bigimage" ]; then
    SANDBOX="${SANDBOX:-agentcore-ray-farm}"; DATASET="${DATASET:-${FAMILY:-deepscaler}}"
+elif [ "$VARIANT" = "imagepool" ]; then
+   DATASET="${DATASET:-${FAMILY:-imagepool}}"
+   if [ -z "${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}" ] && [ "${SANDBOX:-agentcore-runtime}" = "agentcore-runtime" ]; then
+      echo "VARIANT=imagepool needs AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE (a JSON {image->ARN} map covering datasci/scipy/sklearn) — run VARIANT=imagepool bash 4_deploy_runtime.sh first." >&2
+      exit 1
+   fi
+elif [ -n "$VARIANT" ]; then
+   echo "unknown VARIANT=$VARIANT (bigimage | imagepool)" >&2; exit 1
 fi
 SANDBOX="${SANDBOX:-agentcore-runtime}"   # agentcore-runtime -> SINGLE remote AgentCore Runtime sandbox (default);
                                           # agentcore -> AWS Code Interpreter microVM. CPU demo => REMOTE-ONLY (no local).
@@ -174,6 +187,7 @@ ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 #   synthetic zoo:   math swe tool_use sql ctf rag regex config data planning (build_family_datasets.py)
 #   mixed:           the prebuilt math+sql+ctf+datasci mix (build_mixed_datasets.py; datasci needs the
 #                    pandas image via AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE above)
+#   imagepool:       datasci+scipy+sklearn, one custom image EACH (VARIANT=imagepool; eval/imagepool)
 # MIX: DATASET=a,b,c interleaves those datasets' train/eval files round-robin (balanced: each truncated
 # to the shortest) into ckpt/_mix/<a+b+c>_{train,eval}.jsonl, eval metric eval/mix. GRPO normalizes
 # advantage WITHIN a same-prompt group (one family); mixing is ACROSS groups, so the families' reward
@@ -218,7 +232,16 @@ fi
 DATA="${DATA:-$DEMO_DIR/data/${_DS}_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/${_DS}_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-$_EVAL_NAME}"
-SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}${VARIANT:+_$VARIANT}_async}"
+# HEARTBEAT=1 (opt-in; was the standalone demo_cpu_heartbeat): a process-wide SessionKeeper
+# heartbeats every open sandbox session that goes idle past HEARTBEAT_PING_FRACTION*HEARTBEAT_IDLE,
+# so the weight-sync stall can't idle-reclaim it (agentcore_slime_demo/session_keeper.py).
+# Watch the [demo] heartbeat_session=… lines (0 with HEARTBEAT=0).
+HEARTBEAT="${HEARTBEAT:-${HEARTBEAT_KEEP_WARM:-0}}"
+HEARTBEAT_IDLE="${HEARTBEAT_IDLE:-600}"
+HEARTBEAT_PING_FRACTION="${HEARTBEAT_PING_FRACTION:-0.5}"
+_HB=""; [ "$HEARTBEAT" = "1" ] && _HB="_heartbeat"
+_VS="${VARIANT:+_$VARIANT}"; [ "$VARIANT" = "$_DS" ] && _VS=""   # imagepool: not _imagepool_imagepool
+SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}${_VS}${_HB}_async}"
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -367,6 +390,9 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"/root/Megatron-LM:${DEMO_DIR}:/root/slime\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
+    \"HEARTBEAT\": \"${HEARTBEAT}\",
+    \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",
+    \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARNS\": \"${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}\",
     \"B4_SHARED_RUNTIME_SESSION\": \"${B4_SHARED_RUNTIME_SESSION:-}\",

@@ -148,6 +148,7 @@ workers across the ARNs, so the `sandbox` ceiling is measured instead of the mod
 | `EPISODE_MAX_TURNS` | 4 | mini-harness turn budget per episode |
 | `TEMP` | 1.0 | rollout sampling temperature |
 | `SANDBOX` | `agentcore-runtime` | `agentcore-runtime` \| `agentcore` (Code-Interpreter). **`local` is rejected** (remote-only) |
+| `HEARTBEAT` / `HEARTBEAT_IDLE` / `HEARTBEAT_PING_FRACTION` | 0 / 600 / 0.5 | `1` = a `SessionKeeper` pings each lane's persistent microVM (and per-episode sessions) once idle past `fraction × idle` s, so lanes survive the weight-sync stall (was `demo_cpu_heartbeat`) |
 
 ## Customize the sandbox runtime build (Dockerfile)
 

@@ -14,16 +14,19 @@ OFFLINE_TIMEOUT="${OFFLINE_TIMEOUT:-420}"
 TRAIN_TIMEOUT="${TRAIN_TIMEOUT:-1800}"
 
 # Phase lists (override via env to resume a subset).
-OFFLINE_DEMOS="${OFFLINE_DEMOS:-demo_cpu_heartbeat demo_gpu_single demo_cpu_scale_lanes}"
-# Entries are <demo> or <demo>:<DATASET> — demo_cpu_tasks is ONE folder that trains many datasets,
-# so each dataset is its own entry (run with DATASET=<name>; logged/reported as <demo>-<name>).
-CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_tasks:mbpp demo_cpu_tasks:math demo_cpu_tasks:mixed demo_cpu_tasks:gsm8k demo_cpu_tasks:math500 demo_cpu_tasks:deepscaler demo_cpu_tasks:humaneval demo_cpu_tasks:gretelsql demo_cpu_tasks:hotpotqa demo_cpu_tasks:xlam demo_cpu_tasks:mcp demo_cpu_heartbeat demo_cpu_scale_lanes demo_cpu_customruntime}"
+# Entries are <demo> or <demo>:<probe> (a demo dir can ship several probes; the key picks one).
+OFFLINE_DEMOS="${OFFLINE_DEMOS-demo_cpu_tasks:heartbeat demo_cpu_tasks:compare_backends demo_gpu_single demo_cpu_scale_lanes}"
+# Entries are <demo>[:<DATASET>][+KEY=VAL...] — demo_cpu_tasks is ONE folder that trains many datasets,
+# so each dataset is its own entry (run with DATASET=<name>; logged/reported as <demo>-<name>). A
+# "+KEY=VAL" suffix adds env knobs, e.g. "+HEARTBEAT=1" (was the standalone demo_cpu_heartbeat).
+CPU_TRAINERS="${CPU_TRAINERS-demo_cpu_tasks:mbpp demo_cpu_tasks:math demo_cpu_tasks:mixed demo_cpu_tasks:gsm8k demo_cpu_tasks:math500 demo_cpu_tasks:deepscaler demo_cpu_tasks:humaneval demo_cpu_tasks:gretelsql demo_cpu_tasks:hotpotqa demo_cpu_tasks:xlam demo_cpu_tasks:mcp demo_cpu_tasks:deepscaler+HEARTBEAT=1 demo_cpu_scale_lanes}"
 
 # Each offline demo's RETAINED probe script (run directly; run.sh is now the trainer). Args match the
 # pre-conversion run.sh so the behavior markers below still appear.
 offline_cmd() {
   case "$1" in
-    demo_cpu_heartbeat)       echo "python3 heartbeat_demo.py" ;;
+    demo_cpu_tasks:heartbeat) echo "python3 heartbeat_demo.py" ;;   # HEARTBEAT=1 angle (was demo_cpu_heartbeat)
+    demo_cpu_tasks:compare_backends) echo "python3 compare_backends.py --backends local" ;;   # was demo_cpu_customruntime
     demo_gpu_single)        echo "python3 snapshot_demo.py" ;;   # the SNAPSHOT_EVERY=1 angle (was demo_gpu_snapshot)
     demo_cpu_scale_lanes) echo "python3 harness_scaling_demo.py --episodes 48 --workers 1,2,4,6,8,12 --cinf 4 --csbx 8 --tinf 0.10 --tsbx 0.05" ;;
     *) echo "" ;;
@@ -41,13 +44,16 @@ row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" | tee -a "$RESULTS"; }
 # one literal substring per line; ALL must appear in the log (grep -F, so brackets/parens are literal).
 offline_markers() {
   case "$1" in
-    demo_cpu_heartbeat)      # 3-act arc: naive loss -> heartbeat survives (gate order) -> recover
+    demo_cpu_tasks:heartbeat) # 3-act arc: naive loss -> heartbeat survives (gate order) -> recover
       printf '%s\n' \
         "LOST THE SESSION" \
         "SESSION SURVIVED" \
         "['sync-ended', 'gated-invoke-ran']" \
         ">> RECOVERED" \
         "takeaway:" ;;
+    demo_cpu_tasks:compare_backends) # same episode, same reward on each backend
+      printf '%s\n' \
+        "reward=1.0" ;;
     demo_gpu_single)       # no-snapshot reworks 2 steps; app-snapshot resumes (6 vs 4 executed)
       printf '%s\n' \
         "RUN A" \
@@ -83,31 +89,33 @@ free_gpus() {
 for d in $OFFLINE_DEMOS; do
   echo "[sweep] OFFLINE-PROBE $d"
   t0=$SECONDS
-  log="$BASE/$d/offline_probe.log"
-  ( cd "$BASE/$d" && PYTHONPATH="$BASE/$d:${PYTHONPATH:-}" \
+  dir="${d%%:*}"; probe=""; [ "$d" != "$dir" ] && probe="${d#*:}"
+  log="$BASE/$dir/offline_probe${probe:+_$probe}.log"
+  ( cd "$BASE/$dir" && PYTHONPATH="$BASE/$dir:${PYTHONPATH:-}" \
       timeout "$OFFLINE_TIMEOUT" $(offline_cmd "$d") ) > "$log" 2>&1
   rc=$?
   if [ "$rc" != "0" ]; then
     [ "$rc" = "124" ] && row "$d" TIMEOUT $((SECONDS-t0)) "exceeded ${OFFLINE_TIMEOUT}s" \
-                       || row "$d" FAIL $((SECONDS-t0)) "exit $rc (see $d/offline_probe.log)"
+                       || row "$d" FAIL $((SECONDS-t0)) "exit $rc (see $log)"
   elif miss=$(check_markers "$d" "$log" 2>&1 >/dev/null); then
     # exit 0 AND all behavior markers present
     row "$d" PASS $((SECONDS-t0)) "behavior verified (all markers)"
   else
     # exited 0 but the expected stepwise behavior is absent (e.g. truncated / half-run log)
-    row "$d" FAIL $((SECONDS-t0)) "exit 0 but $miss (see $d/offline_probe.log)"
+    row "$d" FAIL $((SECONDS-t0)) "exit 0 but $miss (see $log)"
   fi
 done
 
 # ---- Phase 1: CPU RL trainers (NR=3), delete checkpoint after each ------------------------------
 for entry in $CPU_TRAINERS; do
+  knobs=""; [ "$entry" != "${entry%%+*}" ] && knobs="${entry#*+}"; entry="${entry%%+*}"
   d="${entry%%:*}"; ds=""; [ "$entry" != "$d" ] && ds="${entry#*:}"
-  tag="$d${ds:+-$ds}"
+  tag="$d${ds:+-$ds}$(printf '%s' "${knobs:+-$knobs}" | tr '+=' '-_' | tr 'A-Z' 'a-z')"
   echo "[sweep] TRAINER $tag"
   free_gpus
   t0=$SECONDS
-  log="$BASE/$d/smoke_run${ds:+_$ds}.log"
-  env ${ds:+DATASET=$ds} NR=3 timeout "$TRAIN_TIMEOUT" bash "$BASE/$d/run.sh" > "$log" 2>&1
+  log="$BASE/$d/smoke_run_${tag#"$d"-}.log"; [ "$tag" = "$d" ] && log="$BASE/$d/smoke_run.log"
+  env ${ds:+DATASET=$ds} ${knobs//+/ } NR=3 timeout "$TRAIN_TIMEOUT" bash "$BASE/$d/run.sh" > "$log" 2>&1
   rc=$?
   # This run's ACTUAL save dir, parsed from the launched --save arg (NOT a newest-mtime guess:
   # a demo dir can hold stale sibling ckpts, and an overwritten iter_* subdir does not bump the

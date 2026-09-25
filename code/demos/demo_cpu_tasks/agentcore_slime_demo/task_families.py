@@ -960,8 +960,144 @@ class DataSciTask(EpisodicTask):
         ]
 
 
+# ==============================================================================
+# 13. Scipy (CUSTOM IMAGE) — numerical linear algebra; needs scipy baked into the sandbox
+# ==============================================================================
+@register_family
+class ScipyTask(EpisodicTask):
+    """A second custom-image family — its sandbox needs **scipy**, absent from the generic CPU image.
+
+    The agent must use `scipy` to solve a small numerical problem (a linear system, a determinant,
+    numerical integration, root finding) and store the result in a module-level float `answer`. This
+    is the point of DATASET=imagepool (VARIANT=imagepool): unlike DATASET=mixed (one custom image), here EACH family
+    carries a DIFFERENT `image` tag ("scipy" here, "datasci"/pandas and "sklearn" elsewhere), so the
+    batch is heterogeneous in the *container image* it needs. Route an episode to the wrong image and
+    solution.py's `import scipy` raises ModuleNotFoundError, the checker fails, reward = 0 — only the
+    correctly-routed episode (its own scipy Runtime) can pass. Reward stays RLVR (numeric assert).
+    """
+
+    family = "scipy"
+    image = "scipy"              # capability tag: needs the scipy sandbox image, not the "cpu" one
+    SYSTEM = (
+        "You are a numerical-computing agent. Write solution.py that uses the `scipy` library to "
+        "compute the requested quantity and stores it in a module-level variable `answer` (a float). "
+        "Reply with ONE fenced ```python block."
+    )
+    submission_hint = (
+        "Reply with solution.py that uses scipy and sets a module-level float `answer` in one ```python block."
+    )
+
+    @classmethod
+    def _t(cls, i, desc, expected, right_body):
+        prompt = (f"{desc}\n\n"
+                  "Write solution.py that uses `scipy` and sets a module-level float `answer`.")
+        return cls(task_id=f"scipy_{i}", prompt=prompt, max_turns=3,
+                   spec={"checks": [f"assert abs(answer - {expected!r}) <= 1e-6, "
+                                    f"f'answer={{answer}} expected {expected!r}'"],
+                         "setup": ""},
+                   mock_attempts=["answer = 0.0\n", right_body])
+
+    @classmethod
+    def seeds(cls) -> list["ScipyTask"]:
+        return [
+            cls._t(0, "Solve the linear system [[3,1],[1,2]] x = [9,8] and set `answer` to x[0].",
+                   2.0,
+                   "import numpy as np\nfrom scipy.linalg import solve\n"
+                   "x = solve(np.array([[3.,1.],[1.,2.]]), np.array([9.,8.]))\n"
+                   "answer = float(x[0])\n"),
+            cls._t(1, "Set `answer` to the determinant of [[4,3],[6,3]].",
+                   -6.0,
+                   "import numpy as np\nfrom scipy.linalg import det\n"
+                   "answer = float(det(np.array([[4.,3.],[6.,3.]])))\n"),
+            cls._t(2, "Set `answer` to the definite integral of f(x)=x**2 from 0 to 3.",
+                   9.0,
+                   "from scipy.integrate import quad\n"
+                   "answer = float(quad(lambda x: x**2, 0, 3)[0])\n"),
+            cls._t(3, "Set `answer` to the root of f(x)=x**2-4 on the interval [0,3].",
+                   2.0,
+                   "from scipy.optimize import brentq\n"
+                   "answer = float(brentq(lambda x: x**2 - 4, 0, 3))\n"),
+            cls._t(4, "Set `answer` to the largest eigenvalue (real part) of [[2,0],[0,5]].",
+                   5.0,
+                   "import numpy as np\nfrom scipy.linalg import eigvals\n"
+                   "answer = float(max(eigvals(np.array([[2.,0.],[0.,5.]])).real))\n"),
+            cls._t(5, "Solve [[1,0],[0,4]] x = [3,8] and set `answer` to x[1].",
+                   2.0,
+                   "import numpy as np\nfrom scipy.linalg import solve\n"
+                   "x = solve(np.array([[1.,0.],[0.,4.]]), np.array([3.,8.]))\n"
+                   "answer = float(x[1])\n"),
+        ]
+
+
+# ==============================================================================
+# 14. Sklearn (CUSTOM IMAGE) — fit a tiny model; needs scikit-learn baked into the sandbox
+# ==============================================================================
+@register_family
+class SklearnTask(EpisodicTask):
+    """A third custom-image family — its sandbox needs **scikit-learn**, absent from the CPU image.
+
+    The agent fits a small `sklearn` model on perfectly-linear data (so the least-squares fit is
+    exactly determined) and reads off a coefficient / intercept / prediction into a float `answer`.
+    Its `image = "sklearn"` tag routes its episodes to the scikit-learn Runtime; on any other image
+    solution.py's `import sklearn` raises ModuleNotFoundError and the checker scores 0. Together with
+    ScipyTask and DataSciTask this makes a genuine *pool* of prebuilt images — one per family."""
+
+    family = "sklearn"
+    image = "sklearn"           # capability tag: needs the scikit-learn sandbox image
+    SYSTEM = (
+        "You are a machine-learning agent. Write solution.py that uses `scikit-learn` to fit the "
+        "requested model and stores the requested quantity in a module-level variable `answer` (a "
+        "float). Reply with ONE fenced ```python block."
+    )
+    submission_hint = (
+        "Reply with solution.py that uses scikit-learn and sets a module-level float `answer` in one ```python block."
+    )
+
+    # A LinearRegression on perfectly linear points recovers the exact slope/intercept.
+    _FIT = ("import numpy as np\nfrom sklearn.linear_model import LinearRegression\n"
+            "X = np.array([[1.],[2.],[3.],[4.]])\n")
+
+    @classmethod
+    def _t(cls, i, desc, expected, right_body):
+        prompt = (f"Fit a linear regression on the points (1,{{y1}}), (2,{{y2}}), (3,{{y3}}), "
+                  f"(4,{{y4}}).\n\n{desc}\n\n"
+                  "Write solution.py that uses `scikit-learn` and sets a module-level float `answer`.")
+        return cls(task_id=f"sklearn_{i}", prompt=prompt, max_turns=3,
+                   spec={"checks": [f"assert abs(answer - {expected!r}) <= 1e-6, "
+                                    f"f'answer={{answer}} expected {expected!r}'"],
+                         "setup": ""},
+                   mock_attempts=["answer = 0.0\n", right_body])
+
+    @classmethod
+    def seeds(cls) -> list["SklearnTask"]:
+        # y = 2x  (points (1,2),(2,4),(3,6),(4,8))
+        y2x = cls._FIT + "y = np.array([2.,4.,6.,8.])\nm = LinearRegression().fit(X, y)\n"
+        # y = 3x + 1  (points (1,4),(2,7),(3,10),(4,13))
+        y3x1 = cls._FIT + "y = np.array([4.,7.,10.,13.])\nm = LinearRegression().fit(X, y)\n"
+        seeds = [
+            cls._t(0, "For y=2x, set `answer` to the fitted slope (coefficient).",
+                   2.0, y2x + "answer = float(m.coef_[0])\n"),
+            cls._t(1, "For y=2x, set `answer` to the fitted intercept.",
+                   0.0, y2x + "answer = float(m.intercept_)\n"),
+            cls._t(2, "For y=2x, set `answer` to the model's prediction at x=5.",
+                   10.0, y2x + "answer = float(m.predict([[5.]])[0])\n"),
+            cls._t(3, "For y=3x+1, set `answer` to the fitted slope (coefficient).",
+                   3.0, y3x1 + "answer = float(m.coef_[0])\n"),
+            cls._t(4, "For y=3x+1, set `answer` to the fitted intercept.",
+                   1.0, y3x1 + "answer = float(m.intercept_)\n"),
+            cls._t(5, "For y=3x+1, set `answer` to the model's prediction at x=10.",
+                   31.0, y3x1 + "answer = float(m.predict([[10.]])[0])\n"),
+        ]
+        # Fill the (y1..y4) placeholders in each prompt from the two datasets above.
+        for i, s in enumerate(seeds):
+            ys = ("2", "4", "6", "8") if i < 3 else ("4", "7", "10", "13")
+            s.prompt = s.prompt.format(y1=ys[0], y2=ys[1], y3=ys[2], y4=ys[3])
+        return seeds
+
+
 # Every family class self-registers via @register_family on import; nothing else to do.
 FAMILY_CLASSES = [
     SweTask, ToolUseTask, SqlTask, MathTask, CtfTask, RagTask,
     RegexTask, PlanningTask, ConfigTask, DataTask, DataSciTask,
+    ScipyTask, SklearnTask,
 ]

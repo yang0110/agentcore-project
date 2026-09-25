@@ -70,7 +70,6 @@ render(
         ["1", "demo_cpu_tasks", "Reference — RL on verifiable tasks in a CPU microVM; DATASET= picks or mixes the data"],
         ["2", "demo_gpu_single", "KernelBench CUDA on one warm g6; + SNAPSHOT_EVERY=1 snapshot/resume, custom-Runtime angle"],
         ["3", "demo_gpu_farm", "GPU packing on a local Ray farm — FARM=fractional (2 episodes, 1 GPU) | whole (1 GPU each)"],
-        ["4", "demo_cpu_heartbeat", "Long-running / offline resilience — keeping a session alive via heartbeat outside the harness"],
     ],
     [0.04, 0.20, 0.76],
 )
@@ -78,7 +77,7 @@ render(
 # ---- Table 2: Real datasets (one demo, DATASET= selector — not separate demos) ----
 render(
     "2_datasets.png",
-    "demo_cpu_tasks — real agentic-RL datasets via DATASET= (one, a,b,c, or mixed)",
+    "demo_cpu_tasks — DATASET= (one, a,b,c, mixed) + variants",
     ["DATASET", "Use case"],
     [
         ["mbpp (default)", "Python code repair against hidden asserts"],
@@ -92,10 +91,13 @@ render(
         ["xlam", "Function / tool calling"],
         ["mcp", "MCP tool-use (agent calling sandbox tools)"],
         ["a,b,c", "Round-robin mix of any datasets above (eval/mix)"],
-        ["mixed", "Math + SQL + CTF + datasci in one batch (was demo_cpu_mixtask)"],
-        ["VARIANT=bigimage", "Side note: ~4 GB image on a warm CPU Instance (was demo_cpu_bigimage)"],
+        ["mixed", "Math + SQL + CTF + datasci, one batch (was demo_cpu_mixtask)"],
+        ["VARIANT=bigimage", "~4 GB image on a warm CPU Instance (was demo_cpu_bigimage)"],
+        ["VARIANT=imagepool", "3 images (pandas/scipy/sklearn), per family (was demo_cpu_imagepool)"],
+        ["compare_backends.py", "Managed CI vs. your own Runtime (was demo_cpu_customruntime)"],
+        ["HEARTBEAT=1", "Any demo: warm across weight sync (was demo_cpu_heartbeat)"],
     ],
-    [0.22, 0.78],
+    [0.27, 0.73],
 )
 
 # ---- Table 3: Scaling ----
@@ -104,7 +106,7 @@ render(
     "Scaling a new dimension",
     ["#", "Demo", "Use case"],
     [
-        ["5", "demo_cpu_scale_lanes", "Scaling as 4 × 4 × 4 lanes — harness worker : SGLang engine : microVM (was harness_scale)"],
+        ["4", "demo_cpu_scale_lanes", "Scaling as 4 × 4 × 4 lanes — harness worker : SGLang engine : microVM (was harness_scale)"],
     ],
     [0.05, 0.26, 0.69],
 )
@@ -112,12 +114,10 @@ render(
 # ---- Table 4: Substrate & design variants ----
 render(
     "4_variants.png",
-    "Substrate & design variants (+ experimental)",
+    "Substrate & design variant (+ experimental)",
     ["#", "Demo", "Use case"],
     [
-        ["6", "demo_cpu_customruntime", "Managed Code Interpreter vs. a custom Runtime — capability comparison"],
-        ["7", "demo_cpu_imagepool", "Capability-routed image pool — one prebuilt image per family (pandas / scipy / sklearn)"],
-        ["8", "demo_cpu_terminalbench", "Terminal-Bench as a large image pool — one Runtime per task (~229), fresh microVM per episode"],
+        ["5", "demo_cpu_terminalbench", "Terminal-Bench as a large image pool — one Runtime per task (~229), fresh microVM per episode"],
         ["exp", "demo_cpu_branching", "EXPERIMENTAL / blocked — real Claude Code CLI fan-out; CLI exits 1 before any model call"],
     ],
     [0.04, 0.22, 0.74],

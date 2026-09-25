@@ -9,7 +9,7 @@ September 25, 2026
 
 ## Purpose and thesis
 
-A **hands-on guide for AWS customers doing agentic RL**, grounded in a working **slime + AgentCore** project, the **official AgentCore docs** [D1] and **9 runnable demos**.
+A **hands-on guide for AWS customers doing agentic RL**, grounded in a working **slime + AgentCore** project, the **official AgentCore docs** [D1] and **6 runnable demos**.
 
 - **What AgentCore can and cannot do** as an RL sandbox.
 - **How to wire it into a trainer** — one `generate` hook into slime, no fork.
@@ -173,9 +173,9 @@ Every Runtime is reached by a SigV4 `invoke_agent_runtime`, with **no inbound po
 
 # 4 · Demos
 
-## Demo catalogue — 9 demos
+## Demo catalogue — 6 demos
 
-**6 CPU + 2 GPU + 1 experimental.** Run any demo with `cd code/demos/<demo>` then `1_prepare_data.sh` … `6_cleanup.sh` on the host. Numbers are 10-step smokes, not convergence.
+**3 CPU + 2 GPU + 1 experimental.** Run any demo with `cd code/demos/<demo>` then `1_prepare_data.sh` … `6_cleanup.sh` on the host. Numbers are 10-step smokes, not convergence.
 
 ```{=latex}
 \scriptsize
@@ -184,20 +184,19 @@ Every Runtime is reached by a SigV4 `invoke_agent_runtime`, with **no inbound po
 | Demo | Substrate | Use case |
 |----------|-------|-----------------|
 | `demo_cpu_tasks` | microVM (`bigimage`: m5) | **Reference:** RLVR on ~19 datasets or a mix |
-| `demo_cpu_imagepool` | microVM, 3 images | mixed tasks routed per family to an image |
 | `demo_cpu_terminalbench` | microVM, ~229 images | one Runtime per task, fresh VM, pre-opened |
-| `demo_cpu_customruntime` | your CPU Runtime | same reward as the managed sandbox |
-| `demo_cpu_heartbeat` | microVM | keep the VM warm across weight sync |
 | `demo_cpu_scale_lanes` | 4 microVMs | 4 harness : 4 engines : 4 VMs, 1:1:1 |
 | `demo_gpu_single` | `g6` Instance | KernelBench on one warm g6 (+ snapshot) |
 | `demo_gpu_farm` | local Ray farm | GPU sharing: `FARM=fractional` or `whole` |
 | *`demo_cpu_branching`* | microVM + CLI | **experimental, blocked:** fan-out |
 
+`demo_cpu_tasks` also covers `VARIANT=imagepool` (3 images), `compare_backends.py` (custom vs managed Runtime); `HEARTBEAT=1` works in every demo (all merged 2026-09-25).
+
 ## `demo_cpu_tasks` — the reference
 
 **Use case.** RLVR on any dataset through one selector: real HF `mbpp` (default) `gsm8k` `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, the synthetic family zoo (`math` `sql` `ctf` `rag` …), a comma list, or `mixed`.
 
-**Knobs.** `DATASET=` · `NR` / `RB` / `NS` · `K` (Runtimes round-robin) · `CONC`.
+**Knobs.** `DATASET=` · `VARIANT=bigimage|imagepool` · `HEARTBEAT=1` · `NR` / `RB` / `NS` · `K` (Runtimes round-robin) · `CONC`.
 
 ```bash
 bash 1_prepare_data.sh && bash 2_build_image.sh && bash 3_push_ecr.sh && bash 4_deploy_runtime.sh
@@ -220,19 +219,21 @@ VARIANT=bigimage DELETE_CP=1 bash 6_cleanup.sh
 
 **Metrics.** Trained on m5, `eval` **0.76**. Cold boots **201 → 1** (8 first-wave opens share one boot within 7.9 s; 215 `open`/`close` pairs, each wiping its own dir).
 
-## `demo_cpu_imagepool`
+## `demo_cpu_tasks` `VARIANT=imagepool` — a pool of images
 
-**Use case.** Mixed-task RL where families need different software: a pool of 3 custom images (pandas / scipy / sklearn), one Runtime each, and each episode routed to its family's image.
+**Use case.** Mixed-task RL where families need different software: a pool of 3 custom images (pandas / scipy / sklearn), one Runtime each, and each episode routed to its family's image. (Was `demo_cpu_imagepool`.)
 
-**Knobs.** `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` (JSON image → ARN, written by step 4) · `IMAGES=` (which images to build).
+**Knobs.** `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` (JSON image → ARN, written by step 4) · `IMAGES=` (which images to build) · `DATASET=imagepool` (set by the variant).
 
 ```bash
-bash 1_prepare_data.sh && bash 2_build_image.sh   # builds 3 arm64 images
-bash 3_push_ecr.sh && bash 4_deploy_runtime.sh     # 3 Runtimes -> ARN_BY_IMAGE map
+cd code/demos/demo_cpu_tasks
+export VARIANT=imagepool
+bash 1_prepare_data.sh && bash 2_build_image.sh    # 3 arm64 images
+bash 3_push_ecr.sh && bash 4_deploy_runtime.sh     # -> ARN_BY_IMAGE map
 bash 5_run.sh && bash 6_cleanup.sh
 ```
 
-**Metrics.** Smoke `eval/mixed` **1.0**; all 3 images routed from one batch.
+**Metrics.** Smoke (as `demo_cpu_imagepool`) held-out eval **1.0** (now `eval/imagepool`); all 3 images routed from one batch.
 
 ## `demo_cpu_terminalbench`
 
@@ -249,34 +250,20 @@ bash 5_run.sh && bash 6_cleanup.sh
 
 **Metrics.** 218/229 Runtimes deployed, 166 usable after the oracle check. First smoke (2026-09-23) passed to ckpt 10: boot fully hidden (`open_wait_ms` p95 0), but ~95 % of pre-opened microVM time idle and reward sparse (4/382 solves, eval 0.0). Key signals: `[demo] open_wait_ms`, `preopen_idle_ms`.
 
-## `demo_cpu_customruntime`
+## `demo_cpu_tasks` — custom Runtime and `HEARTBEAT=1`
 
-**Use case.** Real RL on **your own** CPU Runtime instead of the managed Code Interpreter. `compare_backends.py` shows both backends give the same reward on the same task.
+**Custom vs managed Runtime.** `python3 compare_backends.py` runs the same episode against the managed Code Interpreter and **your own** CPU Runtime: same reward, only operations differ. Real RL on your Runtime is just `AGENTCORE_SANDBOX_RUNTIME_ARNS=<yours> DATASET=deepscaler bash 5_run.sh`. Smoke (as `demo_cpu_customruntime`) `eval/deepscaler` **0.69**.
 
-**Knobs.** `AGENTCORE_SANDBOX_RUNTIME_ARN` (your Runtime) · `FAMILY` (default `deepscaler`).
-
-```bash
-bash 1_prepare_data.sh && bash 2_build_image.sh && bash 3_push_ecr.sh
-bash 4_deploy_runtime.sh          # your custom Runtime -> deploy/runtime.env
-python3 compare_backends.py       # managed vs custom, same reward
-bash 5_run.sh && bash 6_cleanup.sh
-```
-
-**Metrics.** Smoke on the custom Runtime, `eval/deepscaler` **0.69**.
-
-## `demo_cpu_heartbeat`
-
-**Use case.** **Resilience.** During the weight-sync barrier no ops reach the sandbox, and the 15-min idle timeout can kill it. A `SessionKeeper` heartbeat, outside the harness, keeps the microVM warm.
-
-**Knobs.** `HEARTBEAT_KEEP_WARM` (1) · `HEARTBEAT_IDLE` (600 s) · `HEARTBEAT_PING_FRACTION` (0.5).
+**Heartbeat, `HEARTBEAT=1` (any demo).** During the weight-sync barrier no ops reach the sandbox, and the 15-min idle timeout can kill it. A `SessionKeeper` heartbeat, outside the harness, keeps the session warm. Knobs: `HEARTBEAT_IDLE` (600 s) · `HEARTBEAT_PING_FRACTION` (0.5).
 
 ```bash
-python3 heartbeat_demo.py         # offline: naive -> heartbeat -> recover, seconds
-bash 1_prepare_data.sh && bash 2_build_image.sh && bash 3_push_ecr.sh
-bash 4_deploy_runtime.sh && bash 5_run.sh && bash 6_cleanup.sh
+cd code/demos/demo_cpu_tasks
+python3 compare_backends.py    # managed vs custom, same reward
+python3 heartbeat_demo.py      # offline, seconds
+DATASET=deepscaler HEARTBEAT=1 bash 5_run.sh
 ```
 
-**Metrics.** Smoke `eval/deepscaler` **0.71** with the keeper live through the run; offline probe shows the recovery arc.
+Smoke (as `demo_cpu_heartbeat`) `eval/deepscaler` **0.71** with the keeper live; the offline probe shows the recovery arc.
 
 ## `demo_cpu_scale_lanes`
 

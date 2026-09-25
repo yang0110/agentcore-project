@@ -75,6 +75,9 @@ def _interleave(per_family: dict[str, list[dict]]) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build the mixed-task dataset (DATASET=mixed) for demo_cpu_tasks.")
+    ap.add_argument("--name", default="mixed",
+                    help="output name: <name>_train.jsonl / <name>_eval.jsonl / <name>_<fam>_eval.jsonl "
+                         "(default mixed; DATASET=imagepool uses --name imagepool --families datasci,scipy,sklearn)")
     ap.add_argument("--families", default="math,sql,ctf,datasci",
                     help="comma-separated family labels to mix (default: math,sql,ctf,datasci; "
                          "datasci is the custom-image family — needs the pandas sandbox image). "
@@ -114,7 +117,7 @@ def main() -> int:
         # per-family eval file too, so a client can score each task in isolation if they want.
         # Prefixed mixed_ so it never overwrites a same-named single-DATASET eval file (e.g. the
         # synthetic-zoo data/ctf_eval.jsonl) that lives in the same data/ dir.
-        _write(out / f"mixed_{fam}_eval.jsonl", eval_by_fam[fam])
+        _write(out / f"{args.name}_{fam}_eval.jsonl", eval_by_fam[fam])
 
     # ---- mixed TRAIN: combine, (optionally) balance, replicate, shuffle order -------------------
     if args.balanced:
@@ -128,15 +131,15 @@ def main() -> int:
     # ---- mixed EVAL: one interleaved held-out set spanning every family -------------------------
     mixed_eval = _interleave(eval_by_fam)
 
-    _write(out / "mixed_train.jsonl", mixed_train)
-    _write(out / "mixed_eval.jsonl", mixed_eval)
+    _write(out / f"{args.name}_train.jsonl", mixed_train)
+    _write(out / f"{args.name}_eval.jsonl", mixed_eval)
 
     print(f"families mixed: {families}  (balanced={args.balanced}, repeat={args.repeat})")
     for fam in families:
         print(f"  {fam:9s} -> {len(train_by_fam[fam]):2d} train seeds + {len(eval_by_fam[fam])} eval")
-    print(f"mixed_train.jsonl -> {len(mixed_train)} prompts  "
+    print(f"{args.name}_train.jsonl -> {len(mixed_train)} prompts  "
           f"({len(base_train)} unique x {max(1, args.repeat)})")
-    print(f"mixed_eval.jsonl  -> {len(mixed_eval)} prompts")
+    print(f"{args.name}_eval.jsonl  -> {len(mixed_eval)} prompts")
     print(f"out -> {out}")
     return 0
 

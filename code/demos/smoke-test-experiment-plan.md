@@ -76,13 +76,10 @@ docker exec agentcore_p4 python3 /work/code/demos/$DEMO/metrics.py $LOG \
 
 | Demo (standalone dir) | Substrate | Needs before running |
 |---|---|---|
-| `demo_cpu_tasks` (one run per `DATASET`: mbpp gsm8k math math500 deepscaler humaneval gretelsql hotpotqa xlam mcp mixed) | CPU sandbox (baked ARNs) | — (set `DS=<dataset>`; replaces the ten former `demo_cpu_<ds>` folders, merged 2026-09-23 as `demo_cpu_datasets`, and `demo_cpu_mixtask` = `DS=mixed`, merged 2026-09-25 — older `_smoke_logs/demo_cpu_<ds>.*` / `demo_cpu_datasets-*` / `demo_cpu_mixtask.*` files are those runs). **`VARIANT=bigimage`** (formerly `demo_cpu_bigimage`, merged 2026-09-25): a ~4 GB image on a CPU **capacity-provider Instance** — run `VARIANT=bigimage bash 2_build_image.sh` → `3_push_ecr.sh` → `4_deploy_runtime.sh` (image → ECR → CPU CP → Runtime → `deploy/runtime.bigimage.env`) first; no baked default. Old bigimage logs are in `demo_cpu_tasks/logs/bigimage/`. |
-| `demo_cpu_heartbeat` | CPU sandbox (baked ARNs) | — (heartbeat on by default: `HEARTBEAT_KEEP_WARM=1`) |
+| `demo_cpu_tasks` (one run per `DATASET`: mbpp gsm8k math math500 deepscaler humaneval gretelsql hotpotqa xlam mcp mixed) | CPU sandbox (baked ARNs) | — (set `DS=<dataset>`; replaces the ten former `demo_cpu_<ds>` folders, merged 2026-09-23 as `demo_cpu_datasets`, and `demo_cpu_mixtask` = `DS=mixed`, merged 2026-09-25 — older `_smoke_logs/demo_cpu_<ds>.*` / `demo_cpu_datasets-*` / `demo_cpu_mixtask.*` files are those runs). **`VARIANT=bigimage`** (formerly `demo_cpu_bigimage`, merged 2026-09-25): a ~4 GB image on a CPU **capacity-provider Instance** — run `VARIANT=bigimage bash 2_build_image.sh` → `3_push_ecr.sh` → `4_deploy_runtime.sh` (image → ECR → CPU CP → Runtime → `deploy/runtime.bigimage.env`) first; no baked default. Old bigimage logs are in `demo_cpu_tasks/logs/bigimage/`. **`VARIANT=imagepool`** (formerly `demo_cpu_imagepool`, merged 2026-09-25): a pool of 3 custom images (pandas/scipy/sklearn), one Runtime each — run `VARIANT=imagepool bash 2_build_image.sh` → `3_push_ecr.sh` → `4_deploy_runtime.sh` first (→ `deploy/runtime.imagepool.env` with `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE`); without the map, custom-image families import-fail → reward 0. **`HEARTBEAT=1`** (formerly `demo_cpu_heartbeat`, now an opt-in knob of every demo): e.g. `DS=deepscaler` + `-e HEARTBEAT=1`. The custom-vs-managed Runtime angle (formerly `demo_cpu_customruntime`) is the offline `compare_backends.py`. Old logs: `demo_cpu_tasks/logs/{heartbeat,customruntime,imagepool}/`. |
 | `demo_cpu_scale_lanes` (formerly `demo_cpu_harness_scale`) | CPU sandbox (baked ARNs), 4 persistent microVMs | — (`LANES=4`: 4 workers : 4 TP1 engines on rollout GPUs 4–7 : 4 microVMs; the old smoke ran the pre-rework topology) |
-| `demo_cpu_customruntime` | your custom CPU Runtime (`SANDBOX=agentcore-runtime`) | — (baked custom-Runtime ARN) |
-| `demo_cpu_imagepool` | pool of custom CPU images | deploy 3 images (pandas/scipy/sklearn), pass `-e AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE='{...}'`. Without it, custom-image families import-fail → reward 0. |
 | `demo_cpu_branching` (**experimental, blocked**) | real Claude Code CLI in a CPU Runtime | steps 2–4 deploy the CLI-capable image, or pass `-e AGENTCORE_SANDBOX_RUNTIME_ARN="$CLI_ARN"`. First run = bring-up (README header stale; trust `run.sh`). **Blocked:** the in-sandbox CLI exits 1 before any model call → no trajectories. |
-| `demo_cpu_terminalbench` | pool of per-task CPU images (~229 Runtimes), fresh microVM per episode | `fetch_terminalbench.py`, then `deploy/deploy_terminalbench.py` (one image + Runtime per task; `TB_LIMIT=2` to validate), pass the resulting `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` map (see its README); run `validate_oracle.py` and rebuild the dataset from usable tasks. Look-ahead pre-open keeps `TB_PREOPEN_BATCHES` × RB × NS (default 64) sessions booted — check the account's concurrent-session quota first. Not run yet. |
+| `demo_cpu_terminalbench` | pool of per-task CPU images (~229 Runtimes), fresh microVM per episode | `fetch_terminalbench.py`, then `deploy/deploy_terminalbench.py` (one image + Runtime per task; `TB_LIMIT=2` to validate), pass the resulting `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` map (see its README); run `validate_oracle.py` and rebuild the dataset from usable tasks. Look-ahead pre-open keeps `TB_PREOPEN_BATCHES` × RB × NS (default 64) sessions booted — check the account's concurrent-session quota first. First smoke passed 2026-09-23 (4/382 solves, `open_wait_ms` p95 0). Its `SessionKeeper` is always on. |
 | `demo_gpu_farm` (`FARM=whole`) | LOCAL whole-GPU Ray farm (GPUs 6,7, 1 GPU/session) — was `demo_gpu_local` / `demo_gpu_shared_multi` | two-step: host `bash code/deploy/run_local_gpu_runtime.sh whole` first; run with `-e FARM=whole`; sync save; `bash …/run_local_gpu_runtime.sh stop` after. Warm-shared (`B4_SHARED_RUNTIME_SESSION`). Ships `data/`. |
 | `demo_gpu_farm` (`FARM=fractional`) | LOCAL fractional-GPU Ray farm (1 GPU, 2×0.5 actors share it) — was `demo_gpu_shared_single` | two-step: host `bash code/deploy/run_local_gpu_runtime.sh fractional` first; run with `-e FARM=fractional` (default); `…/run_local_gpu_runtime.sh stop` after. Warm-shared (`B4_SHARED_RUNTIME_SESSION`). Ships `data/`. |
 | `demo_gpu_single` (incl. `SNAPSHOT_EVERY=1` and the custom-Runtime angle — formerly `demo_gpu_snapshot` / `demo_gpu_customruntime`, merged 2026-09-25) | ONE warm g6 custom Runtime shared across episodes (remote) — OR local whole-GPU farm for on-box smoke | **Remote:** steps 2–4 (`4_deploy_runtime.sh` → Runtime on the g6 CP → `deploy/runtime.env`), then `5_run.sh`. **On-box smoke (no g6 needed):** `LOCAL_GPU=1 bash 4_deploy_runtime.sh` (starts the local whole-GPU farm on 6,7), `LOCAL_GPU=1 bash 5_run.sh` (slime on 0–5, sync save), `LOCAL_GPU=1 bash 6_cleanup.sh`. Warm-shared (`B4_SHARED_RUNTIME_SESSION`) either way. Add `SNAPSHOT_EVERY=1` for the snapshot/resume angle (default 0 = off; the store works on the local farm too). `gpu_torch_smoke.py` is the offline CUDA-contract probe. (A former customruntime on-box attempt OOM-killed the local trainer — reduce train GPUs / `--max-tokens-per-gpu` if it recurs.) |
@@ -90,7 +87,7 @@ docker exec agentcore_p4 python3 /work/code/demos/$DEMO/metrics.py $LOG \
 ### Offline pre-checks (seconds, no AWS/GPU)
 
 A few demos ship offline probes worth running first — they import the harness/glue and verify a
-mechanism without AWS: property-demo animations (`heartbeat_demo.py`, `snapshot_demo.py`,
+mechanism without AWS: property-demo animations (`demo_cpu_tasks`'s `heartbeat_demo.py` and `compare_backends.py --backends local`, `snapshot_demo.py`,
 `harness_scaling_demo.py`, `demo_gpu_single`'s `gpu_torch_smoke.py`), and `demo_cpu_tasks`'s `probe_bigimage.py`
 (image-size vs the microVM cap + LocalSandbox contract parity) and `netcheck.py` (safe-networking
 checklist). These are **not** the trainers — the trainers all run via the recipe above.
@@ -106,7 +103,7 @@ checklist). These are **not** the trainers — the trainers all run via the reci
 There is no tiering, but two ordering facts still hold:
 
 1. **One demo at a time** — each trainer reserves all 8 local GPUs (4 train + 4 inference).
-2. **Prerequisites first** — a demo with a non-empty **Needs** cell (imagepool, branching, `demo_cpu_tasks VARIANT=bigimage`,
+2. **Prerequisites first** — a demo with a non-empty **Needs** cell (branching, `demo_cpu_tasks VARIANT=bigimage|imagepool`, terminalbench,
    the g6 GPU demos, gpu_farm's host step) must have that deploy/ARN ready before its run. Demos with
    an empty **Needs** cell can run in any order with no extra setup.
 
@@ -120,7 +117,7 @@ have provisioned, then the g6 GPU demos if a live g6 is available.
 - **Exactly 1 eval:** one `eval/<name>` block near step 10.
 - **~10 weight syncs:** one weight update/sync per rollout step in the async driver.
 - **Sane learning signal:** `rollout/raw_reward` present and non-degenerate (not identically 0 — a
-  stuck-at-0 family in `imagepool`/`DATASET=mixed` means a mis-mapped image ARN; in `branching` it can mean
+  stuck-at-0 family in `VARIANT=imagepool`/`DATASET=mixed` means a mis-mapped image ARN; in `branching` it can mean
   the CLI harness isn't producing valid submissions).
 - **Latency split recorded:** `perf/sandbox_ms_*` vs `perf/sglang_gen_ms_*` columns populated
   (in-process harness demos); confirms the remote sandbox round-trips.

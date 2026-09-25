@@ -383,8 +383,8 @@ RL}. It is grounded in a working slime + AgentCore project and in the
   \textbf{How to run a real task on it} --- datasets, Dockerfiles,
   deploy commands, and the single slime hook that wires AgentCore in
   without a fork (§``Using AgentCore as the sandbox in an agentic RL
-  workflow''). The project ships a \textbf{nine-demo set} --- eight main
-  demos (six CPU, two GPU) plus one experimental
+  workflow''). The project ships a \textbf{six-demo set} --- five main
+  demos (three CPU, two GPU) plus one experimental
   (\texttt{demo\_cpu\_branching}, blocked) --- each a self-contained
   folder run through the same six numbered step scripts
   (\texttt{1\_prepare\_data.sh} \ldots{} \texttt{6\_cleanup.sh}),
@@ -428,7 +428,7 @@ RL}. It is grounded in a working slime + AgentCore project and in the
   \textbf{heartbeat ping (health check)} holds the session warm while
   the trainer and inference engine sync weights, resetting the idle
   timer so the \emph{same} sandbox is reused with no cold start per
-  round (\texttt{demo\_cpu\_heartbeat}).
+  round (\texttt{HEARTBEAT=1}, an opt-in knob of every demo).
 \item
   \textbf{How to snapshot and resume at the application level} on a
   GPU-EC2 Runtime Instance --- a \textbf{Dockerfile + a custom script,
@@ -2870,8 +2870,8 @@ instance budget as a single-family batch of the same size --- the family
 mix changes what runs \emph{inside} each session, not how many sessions
 exist. Capability routing (a different image per family) changes that by
 one Runtime per extra image --- \texttt{DATASET=mixed}'s pandas-needing
-\texttt{datasci} family and \texttt{demo\_cpu\_imagepool} do exactly
-this.
+\texttt{datasci} family and \texttt{demo\_cpu\_tasks}
+\texttt{VARIANT=imagepool} do exactly this.
 
 \textbf{Latency --- measure, don't assume.} The docs promise ``fast cold
 starts'' but publish no number {[}D2{]}; a GPU first-invoke can take
@@ -3317,13 +3317,12 @@ Explicit \texttt{StopRuntimeSession} at episode end is the happy-path
 teardown, but a session can still be lost \textbf{mid-episode}: a long
 weight-sync pause between two turns can trip the 15-minute idle clock
 while the episode is still running and reclaim the session out from
-under it --- exactly the failure mode \texttt{demo\_cpu\_heartbeat}'s
-\texttt{SessionKeeper} heartbeat addresses
-(§\texttt{demo\_cpu\_heartbeat}). \textbf{One-sentence version:} the
-deploy driver owns the Runtime, the \texttt{generate} hook + its sandbox
-client own the session (launch on first invoke, terminate with
-\texttt{StopRuntimeSession} at episode end), and slime's training kernel
-owns neither.
+under it --- exactly the failure mode the \texttt{HEARTBEAT=1}
+\texttt{SessionKeeper} heartbeat addresses (§``\texttt{HEARTBEAT=1}'').
+\textbf{One-sentence version:} the deploy driver owns the Runtime, the
+\texttt{generate} hook + its sandbox client own the session (launch on
+first invoke, terminate with \texttt{StopRuntimeSession} at episode
+end), and slime's training kernel owns neither.
 
 \hypertarget{ending-the-session-at-episode-end-explicit-teardown-and-what-end-means-per-substrate}{%
 \subsection{Ending the session at episode end --- explicit teardown, and
@@ -3398,8 +3397,7 @@ out from under sibling episodes still running on it. So the single
 instance, and \textbf{kill only the sub-session} where one warm instance
 is shared. (The complementary hazard --- a session lost
 \emph{mid-episode} to the idle clock during a long weight-sync pause ---
-is what \texttt{demo\_cpu\_heartbeat}'s \texttt{SessionKeeper}
-addresses.)
+is what the \texttt{HEARTBEAT=1} \texttt{SessionKeeper} addresses.)
 
 \hypertarget{warm-instance-shared-by-session-one-hot-instance-a-fresh-env-per-episode}{%
 \subsection{Warm instance shared by session --- one hot Instance, a
@@ -3717,9 +3715,9 @@ In this project the policy is always \textbf{Qwen3-4B}, trained by
 slime, with the harness in-process and AgentCore as the sandbox; what
 varies from demo to demo is only the \textbf{sandbox substrate} (CPU
 microVM vs GPU Runtime instance) and the \textbf{task}. The project
-ships a \textbf{nine-demo set} (eight main + one experimental) on this
-one design, catalogued next (§``Demos --- the demo set at a glance'')
-and then deep-dived with measured results in §``Demos in depth''.
+ships a \textbf{six-demo set} (five main + one experimental) on this one
+design, catalogued next (§``Demos --- the demo set at a glance'') and
+then deep-dived with measured results in §``Demos in depth''.
 
 \hypertarget{demos-the-demo-set-at-a-glance}{%
 \section{Demos --- the demo set at a
@@ -3731,12 +3729,15 @@ always \textbf{Qwen3-4B} trained by \textbf{slime}, the \textbf{harness
 is in-process}, and \textbf{AgentCore is the sandbox} --- so what varies
 from demo to demo is only the \emph{sandbox substrate} (a CPU AgentCore
 Runtime / Code-Interpreter microVM vs a GPU \texttt{g6} Runtime
-instance) and the \emph{task}. There are \textbf{nine} --- eight main
-demos (six on CPU, two on GPU) plus one experimental. \textbf{Four core
-demos} anchor the set: the CPU-sandbox reference
-\texttt{demo\_cpu\_tasks}, the two GPU-sandbox demos
-(\texttt{demo\_gpu\_single}, \texttt{demo\_gpu\_farm}), and the
-\textbf{resilience} demo \texttt{demo\_cpu\_heartbeat}.
+instance) and the \emph{task}. There are \textbf{six} --- five main
+demos (three on CPU, two on GPU) plus one experimental. \textbf{Three
+core demos} anchor the set: the CPU-sandbox reference
+\texttt{demo\_cpu\_tasks} and the two GPU-sandbox demos
+(\texttt{demo\_gpu\_single}, \texttt{demo\_gpu\_farm}). The
+\textbf{resilience} heartbeat is not a demo of its own:
+\texttt{HEARTBEAT=1} is an opt-in knob of every demo (it was the
+separate \texttt{demo\_cpu\_heartbeat} until 2026-09-25; its offline
+probe is now \texttt{demo\_cpu\_tasks/heartbeat\_demo.py}).
 \texttt{demo\_gpu\_single} also carries the GPU resilience angle ---
 application-level snapshot/resume with \texttt{SNAPSHOT\_EVERY=1}
 (default 0, off) --- and the ``only a custom Runtime gives you a GPU''
@@ -3763,34 +3764,36 @@ note on the same track, \texttt{VARIANT=bigimage} (formerly
 \texttt{demo\_cpu\_bigimage}) moves the same trainer onto a
 \textasciitilde4 GB image on a CPU capacity-provider Instance --- past
 the microVM image cap --- with \textbf{warm-instance reuse} and a fresh
-env per episode (deep dives in §``\texttt{demo\_cpu\_tasks} per dataset
-in depth'' and §``\texttt{demo\_cpu\_tasks} mixes in depth'').
-\texttt{demo\_gpu\_farm} works the same way for the GPU split: a
-\textbf{\texttt{FARM=} selector} picks how its local Ray farm partitions
-GPUs --- \texttt{fractional} (default; two episodes share one GPU at 0.5
-+ 0.5) or \texttt{whole} (one whole GPU per episode across two GPUs) ---
-and it replaces three former folders
-(\texttt{demo\_gpu\_shared\_single}, \texttt{demo\_gpu\_shared\_multi},
-\texttt{demo\_gpu\_local}) that differed only in those farm knobs. One
-further demo sits outside the core: \texttt{demo\_cpu\_scale\_lanes}
-fixes the task and sandbox and instead scales the rollout as
-\textbf{lanes} --- 4 harness workers : 4 SGLang engines : 4 persistent
-microVMs by default --- making the §``Scaling the loop'' law
+env per episode; \texttt{VARIANT=imagepool} (formerly
+\texttt{demo\_cpu\_imagepool}) routes each family to its own prebuilt
+image, one Runtime per image; and \texttt{compare\_backends.py}
+(formerly \texttt{demo\_cpu\_customruntime}) runs the same episode on
+the managed Code Interpreter and on your own custom CPU Runtime (deep
+dives in §``\texttt{demo\_cpu\_tasks} per dataset in depth'' and
+§``\texttt{demo\_cpu\_tasks} mixes in depth''). \texttt{demo\_gpu\_farm}
+works the same way for the GPU split: a \textbf{\texttt{FARM=} selector}
+picks how its local Ray farm partitions GPUs --- \texttt{fractional}
+(default; two episodes share one GPU at 0.5 + 0.5) or \texttt{whole}
+(one whole GPU per episode across two GPUs) --- and it replaces three
+former folders (\texttt{demo\_gpu\_shared\_single},
+\texttt{demo\_gpu\_shared\_multi}, \texttt{demo\_gpu\_local}) that
+differed only in those farm knobs. One further demo sits outside the
+core: \texttt{demo\_cpu\_scale\_lanes} fixes the task and sandbox and
+instead scales the rollout as \textbf{lanes} --- 4 harness workers : 4
+SGLang engines : 4 persistent microVMs by default --- making the
+§``Scaling the loop'' law
 \texttt{throughput\ =\ min(inference,\ sandbox,\ harness)} concrete.
-Then \textbf{three substrate-and-design variants} exercise the AgentCore
+Then \textbf{one substrate-and-design variant} exercises the AgentCore
 mechanics the rest of the set holds fixed:
-\texttt{demo\_cpu\_customruntime} (managed Code Interpreter vs.~your own
-custom CPU Runtime), \texttt{demo\_cpu\_imagepool} (a capability-routed
-pool of prebuilt images, one per task family), and
-\texttt{demo\_cpu\_terminalbench} (the same routing at task scale ---
-one image and Runtime per Terminal-Bench task, one fresh microVM per
-episode). That makes \textbf{eight main demos}. Finally,
-\texttt{demo\_cpu\_branching} (the real Claude Code CLI as harness,
-where one episode fans out into many training samples) is kept as
-\textbf{experimental and blocked}: the in-sandbox CLI exits 1 before any
-model call, so it produces no trajectories. \textbf{Nine demos in all.}
-Every folder ships the same six step scripts
-(\texttt{1\_prepare\_data.sh}, \texttt{2\_build\_image.sh},
+\texttt{demo\_cpu\_terminalbench} (image routing at task scale --- one
+image and Runtime per Terminal-Bench task, one fresh microVM per
+episode, pre-opened by a look-ahead data source). That makes
+\textbf{five main demos}. Finally, \texttt{demo\_cpu\_branching} (the
+real Claude Code CLI as harness, where one episode fans out into many
+training samples) is kept as \textbf{experimental and blocked}: the
+in-sandbox CLI exits 1 before any model call, so it produces no
+trajectories. \textbf{Six demos in all.} Every folder ships the same six
+step scripts (\texttt{1\_prepare\_data.sh}, \texttt{2\_build\_image.sh},
 \texttt{3\_push\_ecr.sh}, \texttt{4\_deploy\_runtime.sh},
 \texttt{5\_run.sh}, \texttt{6\_cleanup.sh}; see
 \texttt{code/demos/README.md}), so any demo can be followed from dataset
@@ -3799,16 +3802,17 @@ frontier labs run in a sandbox'' it exercises and a real-world scenario
 it stands in for; the \emph{Run status} column states honestly what has
 been \textbf{trained on hardware} versus what is a ready-to-run recipe.
 
-The table below lists \textbf{all nine} demos, one brief row each,
-grouped as described above (four core, then the one that scales a new
-dimension, then the three substrate-and-design variants, then the
-experimental one); the \texttt{demo\_cpu\_tasks} row is followed by one
-↳ sub-row per \texttt{DATASET} it has been run with plus its
-\texttt{VARIANT=bigimage} side note, \texttt{demo\_gpu\_single} by its
-snapshot and custom-Runtime angles, and \texttt{demo\_gpu\_farm} by one
-per \texttt{FARM} mode. Rows for merged angles keep the smoke results
-measured under their former folder names. Section 7 then deep-dives the
-training demos and catalogues the rest.
+The table below lists \textbf{all six} demos, one brief row each,
+grouped as described above (three core, then the one that scales a new
+dimension, then the substrate-and-design variant, then the experimental
+one); the \texttt{demo\_cpu\_tasks} row is followed by one ↳ sub-row per
+\texttt{DATASET} it has been run with plus its \texttt{VARIANT=bigimage}
+/ \texttt{VARIANT=imagepool}, custom-Runtime and \texttt{HEARTBEAT=1}
+angles, \texttt{demo\_gpu\_single} by its snapshot and custom-Runtime
+angles, and \texttt{demo\_gpu\_farm} by one per \texttt{FARM} mode. Rows
+for merged angles keep the smoke results measured under their former
+folder names. Section 7 then deep-dives the training demos and
+catalogues the rest.
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2603}}
@@ -3832,7 +3836,7 @@ Run status
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-\emph{--- core (4) ---} & & & & \\
+\emph{--- core (3) ---} & & & & \\
 \texttt{demo\_cpu\_tasks} & CPU microVM & one RLVR dataset, or a mix,
 per run via \texttt{DATASET=} & code / math / SQL / RAG / tool use;
 cross-family & all eleven \texttt{DATASET} variants pass a 10-step smoke
@@ -3876,6 +3880,19 @@ large-image / warm-reuse (§4) & \textbf{trained} (run as
 \texttt{demo\_cpu\_bigimage}) --- 10-step run both modes; warm-farm cuts
 m5 boots \textbf{201 → 1}, \texttt{eval/deepscaler} 0.76,
 \texttt{raw\_reward} 0.72--0.91 \\
+↳ \texttt{VARIANT=imagepool} & CPU microVM (image pool) & mixed: datasci
++ scipy + sklearn & capability-routed image pool (§4) & 10-step smoke
+(\texttt{Job\ succeeded}, ckpt 10; run as
+\texttt{demo\_cpu\_imagepool}), 3-image pool, held-out eval 1.0 (then
+\texttt{eval/mixed}, now \texttt{eval/imagepool}) \\
+↳ custom Runtime (\texttt{compare\_backends.py}) & CPU microVM (your
+custom Runtime) & DeepScaleR math, both backends & managed CI vs.~custom
+Runtime (§4) & smoke (ckpt 10; run as
+\texttt{demo\_cpu\_customruntime}), \texttt{eval/deepscaler} 0.69 \\
+↳ \texttt{HEARTBEAT=1} (any demo) & CPU microVM & DeepScaleR + heartbeat
+& resilience (long-horizon) & 10-step smoke (\texttt{Job\ succeeded},
+ckpt 10; run as \texttt{demo\_cpu\_heartbeat}), \texttt{eval/deepscaler}
+0.71; + offline probe \\
 \texttt{demo\_gpu\_single} & GPU instance (warm g6 / local farm) &
 KernelBench CUDA & GPU kernels {[}7{]} & \textbf{trained} --- 10-step
 run; + 10-step GPU-farm smoke, \texttt{eval/kernelbench} 0.525 \\
@@ -3900,22 +3917,12 @@ a 10-step smoke (below) \\
 CUDA & GPU kernels {[}7{]} & two 10-step smokes
 (\texttt{Job\ succeeded}, ckpt 10), \texttt{eval/kernelbench} 0.65 and
 0.70 \\
-\texttt{demo\_cpu\_heartbeat} & CPU microVM & heartbeat / quiesce &
-resilience (long-horizon) & 10-step smoke (\texttt{Job\ succeeded}, ckpt
-10), \texttt{eval/deepscaler} 0.71; + offline probe \\
 \emph{--- scale a new dimension (1) ---} & & & & \\
 \texttt{demo\_cpu\_scale\_lanes} & CPU microVM (4 persistent sessions) &
 DeepScaleR math (fixed) & infra --- 4 × 4 × 4 lanes (§2) & offline sweep
 + fake-microVM lane test; 4 × 4 × 4 not yet run on AWS; pre-rework smoke
 (old topology, \texttt{Job\ succeeded}, ckpt 10) \texttt{eval} 0.33 \\
-\emph{--- substrate \& design variants (3) ---} & & & & \\
-\texttt{demo\_cpu\_customruntime} & CPU microVM & DeepScaleR math, both
-backends & managed CI vs.~custom Runtime (§4) & smoke (ckpt 10),
-\texttt{eval} 0.69 \\
-\texttt{demo\_cpu\_imagepool} & CPU microVM (image pool) & mixed:
-datasci + scipy + sklearn & capability-routed image pool (§4) & smoke
-(\texttt{Job\ succeeded}, ckpt 10), 3-image pool, \texttt{eval/mixed}
-1.0 \\
+\emph{--- substrate \& design variant (1) ---} & & & & \\
 \texttt{demo\_cpu\_terminalbench} & CPU microVM (per-task image pool,
 \textasciitilde229 images) & Terminal-Bench tasks, tool-calling loop &
 terminal / SWE agents {[}6{]} & \textbf{smoke passed} (2026-09-23) ---
@@ -3941,9 +3948,10 @@ exactly 1 held-out eval + one final checkpoint at iter 10} (per-run
 \texttt{.log}/\texttt{.csv}/\texttt{.eval.csv}/\texttt{.png} artifacts;
 the \textasciitilde56 GB checkpoint is deleted right after verification,
 so the \emph{evidence} is the log/CSV, not a committed weight file).
-\textbf{Fifteen CPU smoke runs} (from five of today's CPU demos ---
-\texttt{demo\_cpu\_tasks} alone accounts for eleven: ten single datasets
-plus \texttt{DATASET=mixed}) passed this end-to-end
+\textbf{Fifteen CPU smoke runs} (all but one from what is today
+\texttt{demo\_cpu\_tasks} --- eleven datasets plus its imagepool,
+custom-Runtime and heartbeat angles, run then as separate folders ---
+and one from \texttt{demo\_cpu\_scale\_lanes}) passed this end-to-end
 (\texttt{Job\ succeeded}, ckpt 10 --- loop-verified smokes, not
 convergence curves): all ten \texttt{DATASET=} variants of
 \texttt{demo\_cpu\_tasks} (run then as separate per-dataset folders,
@@ -3953,30 +3961,32 @@ which is why their \texttt{\_smoke\_logs/} files still carry the old
 1.00, \texttt{gsm8k} 0.90, \texttt{math500} 0.89, \texttt{deepscaler}
 0.78, \texttt{humaneval} 0.85, \texttt{gretelsql} 0.60,
 \texttt{hotpotqa} 0.65, \texttt{xlam} 1.00, \texttt{mcp} 1.00 held-out
-solve rate); the resilience/heartbeat trainer
-\texttt{demo\_cpu\_heartbeat} (\texttt{eval/deepscaler} 0.71, its
-\texttt{SessionKeeper} live through the run) alongside its retained
-seconds-long offline probe; \texttt{demo\_cpu\_scale\_lanes} (which also
-keeps its measured \emph{offline} throughput sweep;
-\texttt{eval/deepscaler} 0.33); \texttt{demo\_cpu\_tasks}
-\texttt{DATASET=mixed} (run then as the separate
-\texttt{demo\_cpu\_mixtask}; mixed dataset \textbf{built} --- 174 train
-rows --- and run, \texttt{eval/mixed} 0.67; it FAILed a first pass only
-because the driver leaked an image→ARN map into its runtime-env JSON,
-and passed clean once the driver was fixed to strip it);
-\texttt{demo\_cpu\_customruntime} (a real DeepScaleR run on a
-\textbf{custom} CPU Runtime, \texttt{eval/deepscaler} 0.69 --- now more
-than the backend comparison it was seeded as); and
-\texttt{demo\_cpu\_imagepool} (a run against the \textbf{real 3-image
-ARN pool} with per-family routing, \texttt{eval/mixed} 1.0).
-\texttt{demo\_cpu\_branching} is now marked \textbf{experimental /
-blocked}: an earlier smoke reached ckpt 10 with fan-out ≥ 1 but reward
-0, and the in-sandbox Claude Code CLI currently exits 1 before any model
-call, so it produces no trajectories and cannot train.
-\texttt{demo\_cpu\_terminalbench} postdates the batch; its own first
-smoke (2026-09-23, \texttt{\_smoke\_logs/lanes\_tb\_0923/}) passed to
-ckpt 10 with the boot fully hidden but a sparse reward (4 solves / 382
-episodes, eval 0.0). On the GPU side, a dedicated \textbf{GPU smoke
+solve rate); the resilience/heartbeat trainer (run as
+\texttt{demo\_cpu\_heartbeat}, today
+\texttt{demo\_cpu\_tasks\ DATASET=deepscaler\ HEARTBEAT=1};
+\texttt{eval/deepscaler} 0.71, its \texttt{SessionKeeper} live through
+the run) alongside its retained seconds-long offline probe;
+\texttt{demo\_cpu\_scale\_lanes} (which also keeps its measured
+\emph{offline} throughput sweep; \texttt{eval/deepscaler} 0.33);
+\texttt{demo\_cpu\_tasks} \texttt{DATASET=mixed} (run then as the
+separate \texttt{demo\_cpu\_mixtask}; mixed dataset \textbf{built} ---
+174 train rows --- and run, \texttt{eval/mixed} 0.67; it FAILed a first
+pass only because the driver leaked an image→ARN map into its
+runtime-env JSON, and passed clean once the driver was fixed to strip
+it); \texttt{demo\_cpu\_customruntime} (today \texttt{demo\_cpu\_tasks}
+on your own Runtime + \texttt{compare\_backends.py}; a real DeepScaleR
+run on a \textbf{custom} CPU Runtime, \texttt{eval/deepscaler} 0.69);
+and \texttt{demo\_cpu\_imagepool} (today
+\texttt{demo\_cpu\_tasks\ VARIANT=imagepool}; a run against the
+\textbf{real 3-image ARN pool} with per-family routing,
+\texttt{eval/mixed} 1.0). \texttt{demo\_cpu\_branching} is now marked
+\textbf{experimental / blocked}: an earlier smoke reached ckpt 10 with
+fan-out ≥ 1 but reward 0, and the in-sandbox Claude Code CLI currently
+exits 1 before any model call, so it produces no trajectories and cannot
+train. \texttt{demo\_cpu\_terminalbench} postdates the batch; its own
+first smoke (2026-09-23, \texttt{\_smoke\_logs/lanes\_tb\_0923/}) passed
+to ckpt 10 with the boot fully hidden but a sparse reward (4 solves /
+382 episodes, eval 0.0). On the GPU side, a dedicated \textbf{GPU smoke
 sweep (2026-09-21, driver \texttt{run\_gpu\_smoke.sh})} then drove
 \textbf{every GPU configuration} --- six runs over what were then six
 GPU folders, now the two demos \texttt{demo\_gpu\_single} (three angles)
@@ -4142,27 +4152,32 @@ was a lease leak in a stale vendored sandbox copy: \texttt{op=close}
 never fired in local-GPU mode, so the 2-slot farm starved after two
 episodes.
 
-\hypertarget{demo_cpu_heartbeat-microvm-heartbeat-across-the-weight-sync-barrier}{%
-\subsection{\texorpdfstring{\texttt{demo\_cpu\_heartbeat} --- microVM
-heartbeat across the weight-sync
-barrier}{demo\_cpu\_heartbeat --- microVM heartbeat across the weight-sync barrier}}\label{demo_cpu_heartbeat-microvm-heartbeat-across-the-weight-sync-barrier}}
+\hypertarget{heartbeat1-microvm-heartbeat-across-the-weight-sync-barrier-any-demo}{%
+\subsection{\texorpdfstring{\texttt{HEARTBEAT=1} --- microVM heartbeat
+across the weight-sync barrier (any
+demo)}{HEARTBEAT=1 --- microVM heartbeat across the weight-sync barrier (any demo)}}\label{heartbeat1-microvm-heartbeat-across-the-weight-sync-barrier-any-demo}}
 
-A standalone three-act demo: during slime's trainer → inference weight
-sync, generation stalls and idle sandbox sessions would be reclaimed on
-the \textasciitilde15-minute idle timeout; a \texttt{SessionKeeper}
+\emph{(Formerly the standalone \texttt{demo\_cpu\_heartbeat}; merged
+2026-09-25 into an opt-in knob of every demo --- default off, so
+behaviour is unchanged unless set. \texttt{demo\_cpu\_terminalbench}
+already runs its own always-on keeper for its pre-opened sessions.)} A
+three-act mechanism: during slime's trainer → inference weight sync,
+generation stalls and idle sandbox sessions would be reclaimed on the
+\textasciitilde15-minute idle timeout; a \texttt{SessionKeeper}
 heartbeat (with a quiesce gate) keeps them warm, and a recovery path
 re-seeds a session that dies anyway. It ships two ways to see it: the
 retained seconds-long \textbf{offline} idle-simulator arc
-(\texttt{heartbeat\_demo.py}), and --- since the 2026-09-18→19
-smoke-plan batch --- a \textbf{real 10-step slime trainer}
-(\texttt{run.sh}, \texttt{HEARTBEAT\_KEEP\_WARM=1}) that keeps the
-\texttt{SessionKeeper} live through the run and passed end-to-end
-(\texttt{Job\ succeeded}, ckpt 10, \texttt{eval/deepscaler} 0.71).
-\emph{Exercises (§3):} not a task --- a resilience mechanism for
-\textbf{long-horizon families} (SWE, multi-agent) whose sessions must
-survive stalls. \emph{Scenario:} keeping warm per-episode sandboxes
-alive across the seconds-long weight-sync pause without paying a cold
-start every step.
+(\texttt{demo\_cpu\_tasks/heartbeat\_demo.py}), and a \textbf{real
+10-step slime trainer} (today
+\texttt{DATASET=deepscaler\ HEARTBEAT=1\ bash\ 5\_run.sh} in any demo;
+run in the 2026-09-18→19 smoke-plan batch as
+\texttt{demo\_cpu\_heartbeat}) that keeps the \texttt{SessionKeeper}
+live through the run and passed end-to-end (\texttt{Job\ succeeded},
+ckpt 10, \texttt{eval/deepscaler} 0.71). \emph{Exercises (§3):} not a
+task --- a resilience mechanism for \textbf{long-horizon families} (SWE,
+multi-agent) whose sessions must survive stalls. \emph{Scenario:}
+keeping warm per-episode sandboxes alive across the seconds-long
+weight-sync pause without paying a cold start every step.
 
 \hypertarget{demo_gpu_single-snapshot_every1-application-level-snapshot-resume-across-a-recycle}{%
 \subsection{\texorpdfstring{\texttt{demo\_gpu\_single}
@@ -4267,37 +4282,46 @@ linearizes and the episode-vs-leaf advantage runs --- but
 \textbf{0.0}, so the CLI harness's SWE checker is not yet earning reward
 (the residual open item).
 
-\hypertarget{demo_cpu_customruntime-managed-code-interpreter-vs.-your-own-custom-runtime}{%
-\subsection{\texorpdfstring{\texttt{demo\_cpu\_customruntime} ---
-managed Code Interpreter vs.~your own custom
-Runtime}{demo\_cpu\_customruntime --- managed Code Interpreter vs.~your own custom Runtime}}\label{demo_cpu_customruntime-managed-code-interpreter-vs.-your-own-custom-runtime}}
+\hypertarget{demo_cpu_tasks-compare_backends.py-managed-code-interpreter-vs.-your-own-custom-runtime}{%
+\subsection{\texorpdfstring{\texttt{demo\_cpu\_tasks} +
+\texttt{compare\_backends.py} --- managed Code Interpreter vs.~your own
+custom
+Runtime}{demo\_cpu\_tasks + compare\_backends.py --- managed Code Interpreter vs.~your own custom Runtime}}\label{demo_cpu_tasks-compare_backends.py-managed-code-interpreter-vs.-your-own-custom-runtime}}
 
-A backend comparison that has since grown into a real training run.
-AgentCore gives two ways to get a CPU sandbox --- the \textbf{managed
-Code Interpreter} (\texttt{SANDBOX=agentcore}, zero-ops, but you take
-the environment AWS gives you) and \textbf{your own custom Runtime}
-(\texttt{SANDBOX=agentcore-runtime}, your OCI image, so you own every
-dependency, user, filesystem, and the VPC/IAM posture) --- and both
-expose the \emph{identical} \texttt{write\_file} / \texttt{exec} /
-\texttt{read\_file} contract. The \texttt{compare\_backends.py} probe
-still runs the \textbf{same episode} against both to make the punchline
-concrete (\textbf{the reward is identical; only the operational
-trade-offs differ}), but \texttt{run.sh} now drives a full DeepScaleR
-training run against the custom Runtime by default, so the demo doubles
-as a loop-verified training smoke. \emph{Exercises (§3):} not a task ---
-the \textbf{backend-choice decision} of §4, made concrete.
-\emph{Scenario:} deciding whether a rollout needs a custom image at all,
-or whether the managed microVM suffices. \emph{Run status:} smoke run
-reaches ckpt 10 on the custom Runtime with \texttt{eval/deepscaler} 0.69
-(per-rollout \texttt{raw\_reward} 0.72--0.91).
+\emph{(Formerly the separate \texttt{demo\_cpu\_customruntime}; merged
+into \texttt{demo\_cpu\_tasks} 2026-09-25 --- it ran the same trainer on
+the same DeepScaleR data.)} A backend comparison that has since grown
+into a real training run. AgentCore gives two ways to get a CPU sandbox
+--- the \textbf{managed Code Interpreter} (\texttt{SANDBOX=agentcore},
+zero-ops, but you take the environment AWS gives you) and \textbf{your
+own custom Runtime} (\texttt{SANDBOX=agentcore-runtime}, your OCI image,
+so you own every dependency, user, filesystem, and the VPC/IAM posture)
+--- and both expose the \emph{identical} \texttt{write\_file} /
+\texttt{exec} / \texttt{read\_file} contract. The
+\texttt{compare\_backends.py} probe still runs the \textbf{same episode}
+against both to make the punchline concrete (\textbf{the reward is
+identical; only the operational trade-offs differ}), and
+\texttt{DATASET=deepscaler} pointed at your Runtime's ARN is a full
+training run against it, so the angle doubles as a loop-verified
+training smoke. \emph{Exercises (§3):} not a task --- the
+\textbf{backend-choice decision} of §4, made concrete. \emph{Scenario:}
+deciding whether a rollout needs a custom image at all, or whether the
+managed microVM suffices. \emph{Run status:} smoke run (as
+\texttt{demo\_cpu\_customruntime}) reaches ckpt 10 on the custom Runtime
+with \texttt{eval/deepscaler} 0.69 (per-rollout \texttt{raw\_reward}
+0.72--0.91).
 
-\hypertarget{demo_cpu_imagepool-a-capability-routed-pool-of-prebuilt-images}{%
-\subsection{\texorpdfstring{\texttt{demo\_cpu\_imagepool} --- a
-capability-routed pool of prebuilt
-images}{demo\_cpu\_imagepool --- a capability-routed pool of prebuilt images}}\label{demo_cpu_imagepool-a-capability-routed-pool-of-prebuilt-images}}
+\hypertarget{demo_cpu_tasks-variantimagepool-a-capability-routed-pool-of-prebuilt-images}{%
+\subsection{\texorpdfstring{\texttt{demo\_cpu\_tasks}
+\texttt{VARIANT=imagepool} --- a capability-routed pool of prebuilt
+images}{demo\_cpu\_tasks VARIANT=imagepool --- a capability-routed pool of prebuilt images}}\label{demo_cpu_tasks-variantimagepool-a-capability-routed-pool-of-prebuilt-images}}
 
-Where \texttt{demo\_cpu\_tasks}' mixes share one generic image (plus,
-for \texttt{DATASET=mixed}, a single pandas image), this demo is the
+\emph{(Formerly the separate \texttt{demo\_cpu\_imagepool}; merged into
+\texttt{demo\_cpu\_tasks} 2026-09-25 as \texttt{VARIANT=imagepool} ---
+\texttt{DATASET=imagepool}, \texttt{eval/imagepool}, three Runtimes
+deployed by \texttt{deploy/deploy\_imagepool.py}.)} Where
+\texttt{demo\_cpu\_tasks}' other mixes share one generic image (plus,
+for \texttt{DATASET=mixed}, a single pandas image), this variant is the
 step the report calls a \emph{described design, not something the
 shipped demos do} --- realized: a genuine \textbf{capability-routed
 pool} where each family needs its \textbf{own} prebuilt image
@@ -4313,30 +4337,31 @@ regime --- the case §``\texttt{demo\_cpu\_tasks} mixes in depth'' flags
 as \emph{when you would route by family instead}. \emph{Scenario:} a
 mixed portfolio where families need genuinely different sandbox
 substrates, not just different task files. \emph{Run status:} a smoke
-run reaches \texttt{Job\ succeeded} at ckpt 10 driving the \textbf{real
-3-image ARN pool} (\texttt{datasci}/\texttt{scipy}/\texttt{sklearn}
-Runtimes routed per family from the runtime-env map),
-\texttt{eval/mixed} 1.0 --- the routing path is exercised end-to-end,
-short of convergence.
+run (as \texttt{demo\_cpu\_imagepool}) reaches \texttt{Job\ succeeded}
+at ckpt 10 driving the \textbf{real 3-image ARN pool}
+(\texttt{datasci}/\texttt{scipy}/\texttt{sklearn} Runtimes routed per
+family from the runtime-env map), held-out eval 1.0 (logged then as
+\texttt{eval/mixed}) --- the routing path is exercised end-to-end, short
+of convergence.
 
 \hypertarget{demo_cpu_terminalbench-a-per-task-image-pool-one-fresh-microvm-per-episode}{%
 \subsection{\texorpdfstring{\texttt{demo\_cpu\_terminalbench} --- a
 per-task image pool, one fresh microVM per
 episode}{demo\_cpu\_terminalbench --- a per-task image pool, one fresh microVM per episode}}\label{demo_cpu_terminalbench-a-per-task-image-pool-one-fresh-microvm-per-episode}}
 
-\texttt{demo\_cpu\_imagepool}'s routing at \textbf{task scale}.
-Terminal-Bench ships each task as its own container (a task
-\texttt{Dockerfile} plus a hidden pytest oracle), so this demo builds
-\textbf{one image → one AgentCore Runtime per task} (\textasciitilde229
-single-container tasks) and routes every episode strictly to its task's
-Runtime --- an unmapped task is an error, never a fallback onto another
-task's image. Because the tasks act on the whole OS (install packages,
-edit \texttt{/etc}, start services), every episode gets a
-\textbf{brand-new session --- one dedicated microVM, never reused} ---
-and the per-episode cold start (microVM allocation plus that task's
-image pull) is hidden by \textbf{pre-opening} sessions ahead of need.
-slime alone would only reveal the few episodes it has admitted from the
-current batch, so a \textbf{look-ahead data source}
+\texttt{demo\_cpu\_tasks} \texttt{VARIANT=imagepool}'s routing at
+\textbf{task scale}. Terminal-Bench ships each task as its own container
+(a task \texttt{Dockerfile} plus a hidden pytest oracle), so this demo
+builds \textbf{one image → one AgentCore Runtime per task}
+(\textasciitilde229 single-container tasks) and routes every episode
+strictly to its task's Runtime --- an unmapped task is an error, never a
+fallback onto another task's image. Because the tasks act on the whole
+OS (install packages, edit \texttt{/etc}, start services), every episode
+gets a \textbf{brand-new session --- one dedicated microVM, never
+reused} --- and the per-episode cold start (microVM allocation plus that
+task's image pull) is hidden by \textbf{pre-opening} sessions ahead of
+need. slime alone would only reveal the few episodes it has admitted
+from the current batch, so a \textbf{look-ahead data source}
 (\texttt{tb\_lookahead\_source.py}, wired with
 \texttt{-\/-data-source-path}) replays slime's deterministic prompt
 order and, on every draw, tells the pool the episodes of the
@@ -4427,7 +4452,8 @@ you}{demo\_gpu\_single custom-Runtime angle --- a GPU under the sandbox, which o
 into \texttt{demo\_gpu\_single} 2026-09-25 ---
 \texttt{gpu\_torch\_smoke.py}, plus \texttt{LOCAL\_GPU=1} for the on-box
 farm with a synchronous checkpoint save.)} The GPU sibling of
-\texttt{demo\_cpu\_customruntime}, grown from a capability probe into a
+\texttt{demo\_cpu\_tasks}' custom-Runtime angle
+(\texttt{compare\_backends.py}), grown from a capability probe into a
 real training run. The managed Code Interpreter has \textbf{no GPU}; if
 a task's checker needs CUDA, the sandbox must be \textbf{your own custom
 Runtime deployed on an AgentCore capacity-provider Instance} (a
@@ -4525,30 +4551,31 @@ measured smoke baselines and their shared bottleneck/plan; its mixes
 differ in a dimension worth their own short subsection --- the batch
 \emph{interleaves} families rather than pinning one --- so they get one
 (``\texttt{demo\_cpu\_tasks} mixes in depth''). The Ray-farm, the two
-resilience mechanisms (\texttt{demo\_cpu\_heartbeat} and
+resilience mechanisms (\texttt{HEARTBEAT=1} and
 \texttt{demo\_gpu\_single} \texttt{SNAPSHOT\_EVERY=1}), and the
 harness-scaling demo have a genuinely different topology and each
-carries its own diagram. The \textbf{three substrate-and-design
-variants} of §6 (\texttt{demo\_cpu\_customruntime},
-\texttt{demo\_cpu\_imagepool}, \texttt{demo\_cpu\_terminalbench}), the
-two merged angles (\texttt{demo\_cpu\_tasks} \texttt{VARIANT=bigimage},
-\texttt{demo\_gpu\_single}'s custom-Runtime angle) and the experimental
-\texttt{demo\_cpu\_branching} exercise AgentCore mechanics rather than
-adding a convergence curve --- and all but the blocked
-\texttt{demo\_cpu\_branching} carry a loop-verified ckpt-10 smoke:
-\texttt{demo\_cpu\_customruntime}, \texttt{demo\_cpu\_imagepool},
-\texttt{demo\_cpu\_terminalbench} (2026-09-23),
-\texttt{VARIANT=bigimage} (run as \texttt{demo\_cpu\_bigimage}, also
-carrying the measured warm-reuse result --- m5 boots 201 → 1) and, as of
-the 2026-09-21 GPU sweep, the custom-Runtime angle (run as
-\texttt{demo\_gpu\_customruntime}), now a real KernelBench run rather
-than only a capability probe --- and their measured status is given in
-the at-a-glance catalogue above rather than re-analyzed here; the
-fan-out mechanics of \texttt{demo\_cpu\_branching} in particular are
-worked through in §``When one episode becomes many samples''. Between
-them the per-demo subsections below cover the training demos, and the
-glance catalogue and that section together account for \textbf{all nine}
-demos.
+carries its own diagram. The \textbf{substrate-and-design variant} of §6
+(\texttt{demo\_cpu\_terminalbench}), the merged angles
+(\texttt{demo\_cpu\_tasks} \texttt{VARIANT=bigimage},
+\texttt{VARIANT=imagepool} and its custom-Runtime
+\texttt{compare\_backends.py} angle, \texttt{demo\_gpu\_single}'s
+custom-Runtime angle) and the experimental \texttt{demo\_cpu\_branching}
+exercise AgentCore mechanics rather than adding a convergence curve ---
+and all but the blocked \texttt{demo\_cpu\_branching} carry a
+loop-verified ckpt-10 smoke: the custom-Runtime angle (run as
+\texttt{demo\_cpu\_customruntime}), \texttt{VARIANT=imagepool} (run as
+\texttt{demo\_cpu\_imagepool}), \texttt{demo\_cpu\_terminalbench}
+(2026-09-23), \texttt{VARIANT=bigimage} (run as
+\texttt{demo\_cpu\_bigimage}, also carrying the measured warm-reuse
+result --- m5 boots 201 → 1) and, as of the 2026-09-21 GPU sweep, the
+custom-Runtime angle (run as \texttt{demo\_gpu\_customruntime}), now a
+real KernelBench run rather than only a capability probe --- and their
+measured status is given in the at-a-glance catalogue above rather than
+re-analyzed here; the fan-out mechanics of \texttt{demo\_cpu\_branching}
+in particular are worked through in §``When one episode becomes many
+samples''. Between them the per-demo subsections below cover the
+training demos, and the glance catalogue and that section together
+account for \textbf{all six} demos.
 
 A note on grounding: the numbers below are read from this project's own
 committed run artifacts (\texttt{train.csv}, the ablation CSVs under
@@ -4767,9 +4794,9 @@ episode carrying
 mixed-task run yields reward-by-family and a failure-mode histogram for
 free. The bespoke demos add their defining metric on the same channel:
 \texttt{demo\_cpu\_branching} logs per-task \texttt{fan\_out};
-\texttt{demo\_cpu\_heartbeat} logs one line per heartbeat fired
+\texttt{HEARTBEAT=1} logs one line per heartbeat fired in any demo
 (\textgreater0 with keep-warm on, 0 in the A/B baseline --- the whole
-point of the demo); \texttt{demo\_cpu\_scale\_lanes} logs the driving
+point of the knob); \texttt{demo\_cpu\_scale\_lanes} logs the driving
 \texttt{worker}, pull-\texttt{qdepth}, and its lane's \texttt{engine}
 and \texttt{sandbox\_session}; \texttt{demo\_gpu\_single} with
 \texttt{SNAPSHOT\_EVERY=1} logs files restored/saved at each episode
@@ -4831,9 +4858,9 @@ spans more weight-sync barriers) and more sandbox operations. Set it
 from the family's horizon: single-turn families (math, instruction
 following) → 1; iterative code/kernel/SQL → 3--5; long-horizon SWE / web
 / multi-agent → 15--50+, at which point a \textbf{warm, long-lived
-session} (§\texttt{demo\_cpu\_heartbeat}) becomes necessary. It is
-controlled per run as an env var in \texttt{run.sh}, threaded into the
-harness as \texttt{max\_turns} --- no redeploy needed. These demos use
+session} (§``\texttt{HEARTBEAT=1}'') becomes necessary. It is controlled
+per run as an env var in \texttt{run.sh}, threaded into the harness as
+\texttt{max\_turns} --- no redeploy needed. These demos use
 \texttt{EPISODE\_MAX\_TURNS=3} and rollout concurrency \texttt{CONC=4}.
 
 \hypertarget{experiment-plan-training-each-demo-to-convergence}{%
@@ -5309,11 +5336,11 @@ same \texttt{NR\ ≈\ 100–150} / \texttt{EVAL\_INTERVAL=10} protocol as
 per-episode reward at \textasciitilde half the GPUs (the packing win),
 \texttt{whole} at parity per GPU.
 
-\hypertarget{demo_cpu_heartbeat-and-demo_gpu_single-snapshot_every1-in-depth-surviving-the-pause-and-the-recycle}{%
-\subsection{\texorpdfstring{\texttt{demo\_cpu\_heartbeat} and
+\hypertarget{heartbeat1-and-demo_gpu_single-snapshot_every1-in-depth-surviving-the-pause-and-the-recycle}{%
+\subsection{\texorpdfstring{\texttt{HEARTBEAT=1} and
 \texttt{demo\_gpu\_single} \texttt{SNAPSHOT\_EVERY=1} in depth ---
 surviving the pause and the
-recycle}{demo\_cpu\_heartbeat and demo\_gpu\_single SNAPSHOT\_EVERY=1 in depth --- surviving the pause and the recycle}}\label{demo_cpu_heartbeat-and-demo_gpu_single-snapshot_every1-in-depth-surviving-the-pause-and-the-recycle}}
+recycle}{HEARTBEAT=1 and demo\_gpu\_single SNAPSHOT\_EVERY=1 in depth --- surviving the pause and the recycle}}\label{heartbeat1-and-demo_gpu_single-snapshot_every1-in-depth-surviving-the-pause-and-the-recycle}}
 
 \begin{figure}[htbp]
 \centering
@@ -5331,7 +5358,7 @@ recycle}{demo\_cpu\_heartbeat and demo\_gpu\_single SNAPSHOT\_EVERY=1 in depth -
   node distance=0.5cm,
 ]
 % heartbeat lane
-\node[ptitle] (h) at (-0.2,1.9) {\texttt{demo\_cpu\_heartbeat} --- heartbeat (CPU microVM)};
+\node[ptitle] (h) at (-0.2,1.9) {\texttt{HEARTBEAT=1} --- heartbeat (CPU microVM, any demo)};
 \node[cpu]               (hb0) at (0,1.1)  {sync begin};
 \node[focus, right=of hb0](hb1) {ping};
 \node[focus, right=of hb1](hb2) {ping};
@@ -5352,14 +5379,15 @@ recycle}{demo\_cpu\_heartbeat and demo\_gpu\_single SNAPSHOT\_EVERY=1 in depth -
 \caption{The two resilience levers. \textbf{Heartbeat} (top) keeps a \emph{live} session warm across the seconds-long weight-sync pause by resetting the idle clock --- no state is lost. \textbf{Application-level snapshot} (bottom) restores a \emph{lost} session after a genuine instance recycle by serializing the workspace to S3 and restoring it onto a fresh session --- because AgentCore offers no VM/EBS snapshot. Heartbeat prevents loss; snapshot recovers from it.}
 \end{figure}
 
-Neither demo trains a policy, so neither reports RL metrics; both run
+Neither probe trains a policy, so neither reports RL metrics; both run
 offline in seconds and demonstrate a mechanism the training demos would
 compose in production.
 
 \begin{itemize}
 \tightlist
 \item
-  \textbf{\texttt{demo\_cpu\_heartbeat}} --- the reusable
+  \textbf{\texttt{HEARTBEAT=1}} (formerly \texttt{demo\_cpu\_heartbeat};
+  probe \texttt{demo\_cpu\_tasks/heartbeat\_demo.py}) --- the reusable
   \texttt{SessionKeeper} (a process-wide registry + one background
   heartbeat loop driven by the trainer's
   \texttt{sync\_begin()}/\texttt{sync\_end()} barrier) and
@@ -5369,7 +5397,10 @@ compose in production.
   it warm across an arbitrarily long pause while the gate holds new
   invokes during sync; ACT 3 recover-by-reseed if a session dies anyway.
   The heartbeat lives \textbf{outside} the harness by design, so no
-  harness grows its own keepalive.
+  harness grows its own keepalive; with \texttt{HEARTBEAT=1} each demo's
+  \texttt{generate} wraps its sandbox in \texttt{KeptSandbox}
+  (\texttt{maybe\_keep\_warm}), and \texttt{demo\_cpu\_scale\_lanes}
+  also registers its persistent lane sessions.
 \item
   \textbf{\texttt{demo\_gpu\_single} \texttt{SNAPSHOT\_EVERY=1}}
   (formerly \texttt{demo\_gpu\_snapshot}) ---
@@ -5916,7 +5947,7 @@ Mitigations: \emph{async checkpointing}; \emph{worker heartbeats}
 \texttt{-\/-use-fault-tolerance} {[}9{]}); and \emph{sandbox recycling}
 with timeouts and rate limits so one bad tool call does not abort a
 rollout. \emph{The project's two resilience mechanisms
-(§\texttt{demo\_cpu\_heartbeat}, §\texttt{demo\_gpu\_single}
+(§``\texttt{HEARTBEAT=1}'', §\texttt{demo\_gpu\_single}
 \texttt{SNAPSHOT\_EVERY=1}) address the sandbox-side failure modes ---
 idle reclamation and instance recycle.}
 
@@ -6034,9 +6065,10 @@ demos already exercise.
   \texttt{write\_file}/\texttt{exec}/\texttt{read\_file}. That is the
   CPU runs of the 2026-09-18→19 smoke-plan batch (the other ten
   \texttt{DATASET=} variants of \texttt{demo\_cpu\_tasks}, including
-  \texttt{mixed}, plus \texttt{demo\_cpu\_heartbeat},
-  \texttt{demo\_cpu\_scale\_lanes}, \texttt{demo\_cpu\_customruntime},
-  \texttt{demo\_cpu\_imagepool}, and the now-experimental
+  \texttt{mixed}, plus its heartbeat, custom-Runtime and imagepool
+  angles --- run then as \texttt{demo\_cpu\_heartbeat},
+  \texttt{demo\_cpu\_customruntime}, \texttt{demo\_cpu\_imagepool} ---
+  and \texttt{demo\_cpu\_scale\_lanes}, and the now-experimental
   \texttt{demo\_cpu\_branching}), the CPU-Instance
   \texttt{demo\_cpu\_tasks} \texttt{VARIANT=bigimage} (run as
   \texttt{demo\_cpu\_bigimage}, which also carries the measured

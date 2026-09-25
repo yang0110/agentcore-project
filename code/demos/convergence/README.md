@@ -32,9 +32,9 @@ convergence/
   12_gpu_single.sh     <- GPU demos (KernelBench; CUDA sandbox; remote g6 or LOCAL_GPU=1)
   13_gpu_farm_fractional.sh  <- demo_gpu_farm FARM=fractional (local, GPU 6 shared 0.5+0.5)
   14_gpu_farm_whole.sh       <- demo_gpu_farm FARM=whole (local, GPUs 6,7, one GPU each)
-  15_cpu_heartbeat.sh    <- property demos, now real trainers (headline knob default-ON;
-  16_cpu_scale_lanes.sh    set it OFF => byte-identical to the plain single-substrate trainer)
-  17_cpu_customruntime.sh
+  15_cpu_tasks_heartbeat.sh  <- property runs, real trainers (headline knob default-ON;
+  16_cpu_scale_lanes.sh        set it OFF => byte-identical to the plain single-substrate trainer)
+  17_cpu_tasks_imagepool.sh  <- demo_cpu_tasks VARIANT=imagepool (pool of 3 images, routed per family)
   18_gpu_single_snapshot.sh  <- demo_gpu_single SNAPSHOT_EVERY=1 (was demo_gpu_snapshot)
 ```
 
@@ -128,7 +128,7 @@ Watch it live with:
 tail -f code/demos/demo_cpu_tasks/train.convergence_gsm8k_*.log | grep -E 'eval/|reward'
 ```
 
-## Property demos (15–19) — now trainable too
+## Property runs (15–18) — trainable too
 
 The five demos that were formerly offline sims / contract probes are now **real slime
 trainers** (each layers its distinctive operational property on top of the standard
@@ -140,29 +140,32 @@ property's effect on convergence:
 
 | # | wrapper | substrate | property (default-on knob) |
 |---|---------|-----------|-----------------------------|
-| 15 | `15_cpu_heartbeat.sh` | CPU sandbox (baked ARNs) | keep the session warm across the weight-sync barrier (`HEARTBEAT_KEEP_WARM=1`) |
+| 15 | `15_cpu_tasks_heartbeat.sh` | CPU sandbox (baked ARNs) | `demo_cpu_tasks DATASET=deepscaler` + keep the session warm across the weight-sync barrier (`HEARTBEAT=1`; was `demo_cpu_heartbeat`) |
 | 16 | `16_cpu_scale_lanes.sh` | CPU sandbox (baked ARNs) | 4×4×4 lanes: 4 warm harness workers : 4 SGLang engines : 4 persistent microVMs (`LANES`; MODE pinned to A) |
-| 17 | `17_cpu_customruntime.sh` | your **custom CPU** Runtime | training runs unchanged on a custom Runtime vs the managed Code Interpreter |
+| 17 | `17_cpu_tasks_imagepool.sh` | 3 custom CPU Runtimes (one per image) | `demo_cpu_tasks VARIANT=imagepool`: every episode routed to its family's image via `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` (was `demo_cpu_imagepool`) |
 | 18 | `18_gpu_single_snapshot.sh` | remote **g6** or `LOCAL_GPU=1` | `demo_gpu_single` with app-level workspace snapshot/resume every episode (`SNAPSHOT_EVERY=1`) |
 
 (The former `19_gpu_customruntime.sh` is gone: `demo_gpu_customruntime` was merged into
-`demo_gpu_single`, so `LOCAL_GPU=1 bash 12_gpu_single.sh` is the same run.)
+`demo_gpu_single`, so `LOCAL_GPU=1 bash 12_gpu_single.sh` is the same run. The former
+`17_cpu_customruntime.sh` is gone too: it was `05_cpu_deepscaler.sh` on a custom Runtime; the
+custom-vs-managed angle is now `demo_cpu_tasks/compare_backends.py`. `HEARTBEAT=1` works on
+every wrapper, not just 15.)
 
 The retained seconds-long **offline probes** (`heartbeat_demo.py`, `snapshot_demo.py`,
 `harness_scaling_demo.py`, `gpu_torch_smoke.py`) are NOT trainers — invoke them directly
 for a fast legibility check, not via these wrappers.
 
-> **Hardware status.** 19's `LOCAL_GPU=1` path is validated on this 8×L40S box; the two
-> remote-g6 paths (18, and 19 without `LOCAL_GPU`) are **UNVERIFIED on hardware** — treat
+> **Hardware status.** 12's `LOCAL_GPU=1` path is validated on this 8×L40S box; the two
+> remote-g6 paths (12/18 without `LOCAL_GPU`) are **UNVERIFIED on hardware** — treat
 > a first convergence run as a bring-up.
 
 ## Scope / what is NOT here
 
 Only **trainable** demos get a convergence script. Still excluded:
 
-- `convergence/` is not for **`demo_cpu_imagepool`** (needs a deployed image→ARN pool) or
-  **`demo_cpu_branching`** (needs a live CLI-capable sandbox + bring-up) — add wrappers
-  once those substrates are provisioned and smoke-verified.
+- `convergence/` is not for **`demo_cpu_branching`** (needs a live CLI-capable sandbox +
+  bring-up) — add a wrapper once it is unblocked and smoke-verified. `demo_cpu_terminalbench`
+  ships its own `train.sh`.
 
 ## Teardown
 
