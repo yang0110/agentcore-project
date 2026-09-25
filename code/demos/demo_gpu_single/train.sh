@@ -12,7 +12,7 @@
 #   SANDBOX_CONC  concurrent episodes (pipeline width).      -> run.sh CONC ; S = CONC*num_engines
 #
 # NOTE — "sandbox count" (K distinct Runtimes) does NOT apply here: the GPU sandbox is a SINGLE
-# GPU-backed AgentCore Runtime (AGENTCORE_SANDBOX_RUNTIME_ARN, singular), and demo_gpu_shared packs
+# GPU-backed AgentCore Runtime (AGENTCORE_SANDBOX_RUNTIME_ARN, singular), and demo_gpu_farm packs
 # many concurrent envs onto that one GPU via its Ray farm rather than across multiple Runtimes.
 # SANDBOX_CONC is therefore the only sandbox-width knob. Everything else (RB/NS/TEMP/LOCAL_GPU/
 # CKPT_BASE/AWS creds/…) passes straight through to run.sh.

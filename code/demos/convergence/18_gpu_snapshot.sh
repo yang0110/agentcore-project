@@ -39,7 +39,7 @@ DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_gpu_snapshot"
 if [ -z "${AGENTCORE_SANDBOX_RUNTIME_ARN:-}" ]; then
   echo "ERROR: demo_gpu_snapshot is REMOTE-ONLY — export AGENTCORE_SANDBOX_RUNTIME_ARN" >&2
   echo "       to a live g6 CUDA sandbox Runtime ARN. There is no on-box LOCAL_GPU path" >&2
-  echo "       for this demo; for an on-box GPU run use 14_gpu_local.sh or 19_gpu_customruntime.sh." >&2
+  echo "       for this demo; for an on-box GPU run use 14_gpu_farm_whole.sh or 19_gpu_customruntime.sh." >&2
   exit 1
 fi
 

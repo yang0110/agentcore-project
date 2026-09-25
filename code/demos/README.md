@@ -23,10 +23,12 @@ builds the Runtime images from it and `code/tests/` imports it.
 
 ## The demos
 
-**15 demos** — 9 CPU + 6 GPU. One of them, `demo_cpu_datasets`, is a single folder that trains
+**13 demos** — 9 CPU + 4 GPU. One of them, `demo_cpu_datasets`, is a single folder that trains
 **any of ~19 datasets** through a `DATASET=` selector (it replaces the ten former per-dataset
 folders `demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k` … `demo_cpu_mcp`, which differed only
-in their data).
+in their data). Likewise `demo_gpu_farm` picks its GPU split through `FARM=fractional|whole` (it
+replaces `demo_gpu_shared_single`, `demo_gpu_shared_multi` and `demo_gpu_local`, which differed
+only in the farm knobs).
 
 **Sandbox mode by substrate.** The **CPU** demos are **remote-only** — they run only on remote
 managed serverless AgentCore sandbox sessions (`SANDBOX=agentcore-runtime` default, or `agentcore`
@@ -48,9 +50,7 @@ silently fall off the AgentCore substrate (the serverless CPU sandbox is always 
 | **GPU Runtime instance** (g6 capacity provider) | [`demo_gpu_single/`](demo_gpu_single/) | KernelBench (level_1 CUDA); checker's GPU is the remote g6 sandbox Runtime, so the trainer box stays 4 train + 4 infer + 0 env |
 | | [`demo_gpu_customruntime/`](demo_gpu_customruntime/) | real KernelBench RL on YOUR custom GPU Runtime |
 | | [`demo_gpu_snapshot/`](demo_gpu_snapshot/) | **resilience** — application-level snapshot & resume across a GPU instance recycle |
-| **local GPU Ray farm** (this box's GPUs 6,7) | [`demo_gpu_local/`](demo_gpu_local/) | KernelBench on a local whole-GPU Ray farm |
-| | [`demo_gpu_shared_single/`](demo_gpu_shared_single/) | KernelBench + a Ray GPU-sharing farm on ONE local GPU (GPU 6), split 0.5 + 0.5 — two episodes share a single card |
-| | [`demo_gpu_shared_multi/`](demo_gpu_shared_multi/) | KernelBench + a Ray farm across TWO local GPUs (6,7) — one whole GPU per Ray session |
+| **local GPU Ray farm** (this box's GPUs 6,7) | [`demo_gpu_farm/`](demo_gpu_farm/) | KernelBench on a local Ray farm: `FARM=fractional` (default) packs two episodes onto ONE GPU (0.5 + 0.5); `FARM=whole` gives each episode a whole GPU across 6,7 |
 
 `demo_cpu_datasets` is one in-process-harness loop; each `DATASET` differs only in its seed rows +
 hidden RLVR checker, and gets its own `data/<name>_{train,eval}.jsonl`, `eval/<name>` metric and
@@ -75,11 +75,10 @@ in-process is the recommended path.
   the trainer box stays 4 train + 4 infer + 0 env. Trains on
   the real KernelBench (level_1, 100 single-op CUDA problems; 20 held-out level_2 fusions for eval).
   Defaults `RB=4/NS=8/NR=20`; keep `NR × RB ≤ 100` (see its README).
-- **`demo_gpu_shared_single` / `demo_gpu_shared_multi`** — the GPU-sharing pair, both driving a LOCAL
-  Ray farm on this box's GPUs 6,7 (two-step launch: start the host farm via
-  `run_local_gpu_runtime.sh shared_single|shared_multi`, then run the demo inside `agentcore_p4`).
-  `shared_single` packs two episodes onto ONE GPU (0.5 + 0.5); `shared_multi` gives each Ray session
-  a whole GPU across 6,7.
+- **`demo_gpu_farm`** — GPU sharing on a LOCAL Ray farm on this box's GPUs 6,7 (two-step launch:
+  start the host farm via `run_local_gpu_runtime.sh fractional|whole`, then run
+  `FARM=<same> bash run.sh` inside `agentcore_p4`). `fractional` packs two episodes onto ONE GPU
+  (0.5 + 0.5); `whole` gives each episode a whole GPU across 6,7.
 - **`demo_cpu_heartbeat` / `demo_gpu_snapshot`** — the two **resilience** demos (keeping a paused
   sandbox alive / recovering a lost one across the weight-sync barrier). Both run offline in seconds,
   no AWS or GPU. See [`../../docs/demos-program.md`](../../docs/demos-program.md).

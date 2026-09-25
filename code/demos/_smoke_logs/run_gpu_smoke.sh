@@ -18,7 +18,7 @@ NR="${NR:-11}"; EVAL_INTERVAL="${EVAL_INTERVAL:-10}"; EVAL_NS="${EVAL_NS:-2}"
 NS="${NS:-2}"
 # 3600s (60 min): a single farm GCS crash + docker restart + torch-reinstall recovery can burn
 # ~10-13 min in the trainer's 30s-capped retry backoff (all concurrent episodes wait it out). 2400s
-# left no headroom for even one crash on demo_gpu_local; 3600s survives one crash and still finishes.
+# left no headroom for even one crash on the whole-GPU farm demo; 3600s survives one crash and still finishes.
 TRAIN_TIMEOUT="${TRAIN_TIMEOUT:-3600}"
 mkdir -p "$LOGDIR"
 [ -f "$RES" ] || printf 'demo\tstatus\tsecs\tnote\n' > "$RES"
@@ -34,8 +34,10 @@ farm(){ # $1 = mode; (re)start only if mode changed
   CUR_MODE="$m"
 }
 
-run(){ # $1=demo  $2=farm-mode  $3..=extra KEY=VAL env for the trainer
-  local d="$1" mode="$2"; shift 2
+run(){ # $1=demo[:FARM]  $2=farm-mode  $3..=extra KEY=VAL env for the trainer
+  # demo_gpu_farm:<fractional|whole> runs demo_gpu_farm with FARM=<...>, logged as demo_gpu_farm-<...>.
+  local spec="$1" dir="${1%%:*}" d="${1/:/-}" mode="$2"; shift 2
+  [ "$dir" != "$spec" ] && set -- "FARM=${spec#*:}" "$@"
   echo "[gpu] === $d (farm=$mode ${*:-}) $(date -u +%TZ) ==="
   farm "$mode" || { row "$d" FAIL 0 "farm mode=$mode did not come up"; return; }
   # Two views of the same file via the /work mount: hlog = host path (host-side grep/test can read
@@ -43,7 +45,7 @@ run(){ # $1=demo  $2=farm-mode  $3..=extra KEY=VAL env for the trainer
   # the host `ubuntu` user — creates/overwrites the log; fixes the Permission-denied false FAIL).
   local hlog="$LOGDIR/$d.log" clog="/work/code/demos/_smoke_logs/$d.log" t0=$SECONDS
   docker exec $(for kv in "$@" NR="$NR" NS="$NS" EVAL_INTERVAL="$EVAL_INTERVAL" EVAL_NS="$EVAL_NS"; do printf -- '-e %s ' "$kv"; done) \
-    agentcore_p4 bash -lc "cd /work && timeout $TRAIN_TIMEOUT bash code/demos/$d/run.sh > $clog 2>&1"
+    agentcore_p4 bash -lc "cd /work && timeout $TRAIN_TIMEOUT bash code/demos/$dir/run.sh > $clog 2>&1"
   local rc=$?
   local save; save=$(grep -aoE -- "--save /[^ ]+" "$hlog" | head -1 | awk '{print $2}')
   local has_final=0
@@ -52,7 +54,7 @@ run(){ # $1=demo  $2=farm-mode  $3..=extra KEY=VAL env for the trainer
   # NOTE: must `cd /work` first — `bash -lc` starts in HOME (/root), so a repo-relative
   # `code/demos/...` path would resolve to /root/code/... and fail ("can't open file").
   docker exec agentcore_p4 bash -lc \
-      "cd /work && python3 code/demos/$d/metrics.py $clog --csv /work/code/demos/_smoke_logs/$d.csv --eval-csv /work/code/demos/_smoke_logs/$d.eval.csv --plot /work/code/demos/_smoke_logs/$d.png >> $clog 2>&1" \
+      "cd /work && python3 code/demos/$dir/metrics.py $clog --csv /work/code/demos/_smoke_logs/$d.csv --eval-csv /work/code/demos/_smoke_logs/$d.eval.csv --plot /work/code/demos/_smoke_logs/$d.png >> $clog 2>&1" \
       || echo "[gpu] metrics.py non-zero for $d"
   if grep -q "succeeded" "$hlog" && ! grep -qE "No space|CheckpointException|unexpected pos" "$hlog" && [ "$has_final" = 1 ]; then
     row "$d" PASS $((SECONDS-t0)) "succeeded; final ckpt $(docker exec agentcore_p4 cat "$save/latest_checkpointed_iteration.txt" 2>/dev/null)"
@@ -67,14 +69,12 @@ run(){ # $1=demo  $2=farm-mode  $3..=extra KEY=VAL env for the trainer
 }
 
 echo "[gpu] start $(date -u +%FT%TZ) NR=$NR"
-# local-mode farm group (whole-GPU on 6,7): native local demo + the three LOCAL_GPU=1 remote demos
-run demo_gpu_local          local
-run demo_gpu_customruntime  local  LOCAL_GPU=1
-run demo_gpu_single         local  LOCAL_GPU=1
-run demo_gpu_snapshot       local  LOCAL_GPU=1 SNAPSHOT_EVERY=1
-# whole-GPU shared framing
-run demo_gpu_shared_multi   shared_multi
-# fractional single-GPU farm
-run demo_gpu_shared_single  shared_single
+# whole-GPU farm group (6,7): demo_gpu_farm FARM=whole + the three LOCAL_GPU=1 remote demos
+run demo_gpu_farm:whole       whole
+run demo_gpu_customruntime    whole  LOCAL_GPU=1
+run demo_gpu_single           whole  LOCAL_GPU=1
+run demo_gpu_snapshot         whole  LOCAL_GPU=1 SNAPSHOT_EVERY=1
+# fractional single-GPU farm (GPU 6, 0.5 + 0.5)
+run demo_gpu_farm:fractional  fractional
 bash "$REPO/code/deploy/run_local_gpu_runtime.sh" stop >/dev/null 2>&1
 echo "[gpu] done $(date -u +%FT%TZ)"; cat "$RES"

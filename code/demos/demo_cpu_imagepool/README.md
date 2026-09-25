@@ -263,7 +263,7 @@ handled without special-casing:
 ### Splitting a single GPU into fractions to serve concurrent sessions
 
 This is a **GPU-substrate** concern (not exercised by this CPU demo, but the sibling GPU demos do
-it — see `demo_gpu_shared` / `demo_gpu_local`). The constraint: **one AgentCore session = one whole
+it — see `demo_gpu_farm`). The constraint: **one AgentCore session = one whole
 instance** (session→instance is 1:1), so you **cannot** point two `runtimeSessionId`s at the same
 box and get one GPU each — and one `runtimeSessionId` = one GPU means **no native cross-session
 time-slicing**. To pack several concurrent episodes onto one GPU you must run **one shared session**
@@ -295,7 +295,7 @@ instance**, because a session maps 1:1 to an instance and you cannot pin two `ru
 one box. The "8 concurrent sessions" are **8 per-episode `sub_session` slots** that the in-instance
 Ray farm hands out, each holding one whole GPU — *not* 8 AgentCore sessions. So you get 8-way GPU
 concurrency from **one** shared `runtimeSessionId` (`B4_SHARED_RUNTIME_SESSION`), which is exactly
-`demo_gpu_shared` / `demo_gpu_local` at `B4_FARM_GPUS=8, B4_GPU_FRACTION=1.0`. Because each episode
+`demo_gpu_farm` at `B4_FARM_GPUS=8, B4_GPU_FRACTION=1.0`. Because each episode
 owns a *whole* GPU, there is no time-slicing and no MIG needed — the non-MIG wedge caveat above does
 not apply. To instead have AgentCore place each session on its *own* instance (true 1 session : 1
 instance : 1 GPU), mint distinct `runtimeSessionId`s against a single-GPU-instance Runtime and let

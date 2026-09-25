@@ -36,10 +36,10 @@ set -euo pipefail
 # The custom GPU Runtime this demo trains on is normally a REMOTE g6 Instance (SANDBOX=agentcore-runtime,
 # needs an ARN). To smoke the SAME trainer on THIS 8xL40S box with no remote g6, set LOCAL_GPU=1: it
 # serves the custom GPU Runtime LOCALLY as a whole-GPU Ray farm on reserved GPUs 6,7 (SANDBOX=
-# agentcore-ray-farm, local endpoint :8080) and keeps slime on GPUs 0-5 — exactly like demo_gpu_local.
+# agentcore-ray-farm, local endpoint :8080) and keeps slime on GPUs 0-5 — exactly like demo_gpu_farm FARM=whole.
 # The local farm is still the SAME sandbox_server_agent GPU image, just run via docker on the host, so
 # it validates the custom-Runtime CUDA path end-to-end. Start the farm on the HOST first:
-#     bash code/deploy/run_local_gpu_runtime.sh local
+#     bash code/deploy/run_local_gpu_runtime.sh whole
 LOCAL_GPU="${LOCAL_GPU:-0}"
 if [ "$LOCAL_GPU" = "1" ]; then
   SANDBOX="${SANDBOX:-agentcore-ray-farm}"                 # local Ray-farm backend (RayFarmRuntimeSandbox)
@@ -96,7 +96,7 @@ HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a720891212
 # ---- GPU split + where the sandbox Runtime lives -------------------------------------------------
 # ALL 8 GPUs to slime (4 train + 4 infer); the KernelBench checker's GPU is REMOTE (the custom GPU
 # Runtime's g6), reached over invoke_agent_runtime. For an on-box GPU run with no remote g6, use
-# demo_gpu_local (a LOCAL whole-GPU Ray farm on this box's reserved GPUs 6,7) instead.
+# demo_gpu_farm (a LOCAL whole-GPU Ray farm on this box's reserved GPUs 6,7) instead.
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"                       # 4 train + 4 infer = 8; checker GPU is remote
 SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-8}"
@@ -104,7 +104,7 @@ SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-}"
 AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-}"
 # Remote path requires the g6 ARN; the LOCAL_GPU on-box path uses the local endpoint instead (no ARN).
 if [ "$LOCAL_GPU" != "1" ]; then
-  AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to your custom GPU sandbox Runtime ARN (a g6 Instance with CUDA — deploy_two_runtime.py / redeploy_gpu_sandbox.py). The managed Code Interpreter has no GPU; for an on-box GPU run with no remote g6, use LOCAL_GPU=1 (or demo_gpu_local)}"
+  AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to your custom GPU sandbox Runtime ARN (a g6 Instance with CUDA — deploy_two_runtime.py / redeploy_gpu_sandbox.py). The managed Code Interpreter has no GPU; for an on-box GPU run with no remote g6, use LOCAL_GPU=1 (or demo_gpu_farm)}"
 fi
 DATA="${DATA:-$DEMO_DIR/data/kernelbench_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"
@@ -136,7 +136,7 @@ CKPT_ARGS=(
 # --custom-megatron-init-path (see agentcore_slime_demo/megatron_init.py).
 # LOCAL_GPU on-box path saves SYNCHRONOUSLY instead: the local Ray-farm runtime container's seccomp
 # blocks pidfd_getfd (which the persistent async-ckpt child uses to grab CUDA storage fds), so async
-# save hangs on-box — matching demo_gpu_local's sync-save fix.
+# save hangs on-box — matching demo_gpu_farm's sync-save fix.
 if [ "$LOCAL_GPU" != "1" ]; then
    CKPT_ARGS+=(
       --async-save

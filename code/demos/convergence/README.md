@@ -30,8 +30,8 @@ convergence/
   10_cpu_mcp.sh
   11_cpu_mixtask.sh
   12_gpu_single.sh     <- GPU demos (KernelBench; CUDA sandbox)
-  13_gpu_shared.sh
-  14_gpu_local.sh
+  13_gpu_farm_fractional.sh  <- demo_gpu_farm FARM=fractional (local, GPU 6 shared 0.5+0.5)
+  14_gpu_farm_whole.sh       <- demo_gpu_farm FARM=whole (local, GPUs 6,7, one GPU each)
   15_cpu_heartbeat.sh    <- property demos, now real trainers (headline knob default-ON;
   16_cpu_scale_lanes.sh    set it OFF => byte-identical to the plain single-substrate trainer)
   17_cpu_customruntime.sh
@@ -62,24 +62,25 @@ docker exec -it agentcore_p4 bash -lc \
 (`AWS_BEARER_TOKEN_BEDROCK` / region). Override the endpoints with
 `AGENTCORE_SANDBOX_RUNTIME_ARNS` if yours differ.
 
-**GPU-single (12)** and **GPU-shared (13)** are **remote-only**: they *require*
-`AGENTCORE_SANDBOX_RUNTIME_ARN` pointing at a live **g6** CUDA sandbox Runtime
-(single ⇒ one dedicated GPU per session; shared ⇒ a Ray fractional-GPU farm baked into
-that g6 image). Without a real g6 ARN, use **GPU-local (14)** instead.
+**GPU-single (12)** is **remote-only**: it *requires* `AGENTCORE_SANDBOX_RUNTIME_ARN`
+pointing at a live **g6** CUDA sandbox Runtime (one dedicated GPU per session). Without a
+real g6 ARN, use the local farm runs (13/14) instead.
 
-**GPU-local (14)** serves the whole-GPU Ray farm on **this box's reserved GPUs 6,7**.
-You must first start the local runtime container **on the HOST** (not inside
-`agentcore_p4`):
+**GPU-farm (13, 14)** train `demo_gpu_farm` against a Ray farm on **this box's reserved
+GPUs** — 13 is `FARM=fractional` (GPU 6, two 0.5-GPU slots), 14 is `FARM=whole` (GPUs 6,7,
+one GPU each). You must first start the local runtime container **on the HOST** (not
+inside `agentcore_p4`) in the matching mode:
 
 ```bash
-bash code/deploy/run_local_gpu_runtime.sh local     # reserves GPUs 6,7, serves http://127.0.0.1:8080
+bash code/deploy/run_local_gpu_runtime.sh fractional   # for 13: reserves GPU 6
+bash code/deploy/run_local_gpu_runtime.sh whole        # for 14: reserves GPUs 6,7
 # then, inside agentcore_p4:
-bash code/demos/convergence/14_gpu_local.sh
+bash code/demos/convergence/13_gpu_farm_fractional.sh  # or 14_gpu_farm_whole.sh
 # tear down when finished:
 bash code/deploy/run_local_gpu_runtime.sh stop
 ```
 
-`14_gpu_local.sh` preflights the local `/ping` and refuses to start if the farm is down.
+Both preflight the local `/ping` and refuse to start if the farm is down.
 
 ## The convergence knobs (what changed vs the smoke)
 

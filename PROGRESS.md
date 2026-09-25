@@ -1,10 +1,19 @@
 # Progress / Handoff — AgentCore + slime demos
 
-_Last updated: 2026-09-23. Branch: `master`._
+_Last updated: 2026-09-25. Branch: `master`._
 
 This file tracks the current work session so it can be picked up later. It has three
 sections: **Done**, **In progress**, **Next steps (to run)**.
 
+> **2026-09-25 — GPU farm demos merged + scale_sandboxes folded in (13 demos now: 9 CPU + 4 GPU).**
+> `demo_gpu_shared_single`, `demo_gpu_shared_multi` and `demo_gpu_local` are now ONE demo,
+> `demo_gpu_farm` (a `git mv` of `demo_gpu_shared_single`), selected with `FARM=fractional` (default;
+> GPU 6, 0.5 + 0.5) or `FARM=whole` (GPUs 6,7, one GPU each — shared_multi and local had identical
+> config). Host launcher modes are now `run_local_gpu_runtime.sh fractional|whole` (old names still
+> aliased); convergence `13_gpu_farm_fractional.sh` / `14_gpu_farm_whole.sh`. The uncommitted
+> `demo_cpu_scale_sandboxes` copy was folded into `demo_cpu_scale_lanes` (its only new files,
+> `build_deepcoder.py` + `data/deepcoder_probe.csv`; DeepCoder checker not wired yet).
+>
 > **2026-09-23 — dataset demos merged (15 demos now).** The ten per-dataset CPU folders
 > (`demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k`, `demo_cpu_math500`, `demo_cpu_deepscaler`,
 > `demo_cpu_humaneval`, `demo_cpu_gretelsql`, `demo_cpu_hotpotqa`, `demo_cpu_xlam`, `demo_cpu_mcp`)

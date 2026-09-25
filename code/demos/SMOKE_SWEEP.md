@@ -1,5 +1,9 @@
 # Smoke-sweep experiment plan — all 17 demos, end-to-end
 
+> **2026-09-25:** `demo_gpu_shared_single`, `demo_gpu_shared_multi` and `demo_gpu_local` were merged into
+> `demo_gpu_farm` (`FARM=fractional|whole`; launcher modes `fractional|whole`, old names still aliased).
+> The log below keeps the names the runs used.
+
 > **Historical plan (pre-2026-09-23).** Written when the set had 17 demos. The ten per-dataset CPU
 > folders (`demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k` … `demo_cpu_mcp`) have since been
 > merged into ONE demo, `demo_cpu_datasets`, selected with `DATASET=`. The set is now **15 demos**

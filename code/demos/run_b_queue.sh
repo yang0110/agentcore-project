@@ -1,15 +1,14 @@
 #!/bin/bash
 # Sequential B-demo queue: waits for the in-flight gpu_single to finish, then runs the
-# two LOCAL shared-farm demos. Each demo's run.sh blocks until its ray job exits.
+# LOCAL demo_gpu_farm (one FARM mode per host-farm start). Each demo's run.sh blocks until its ray job exits.
 #
-# NOTE: demo_gpu_shared_single and demo_gpu_shared_multi are LOCAL two-step-launch demos
-# — they need the matching host farm container running on GPUs 6,7 (started OUTSIDE this
-# queue, on the HOST). Because the two use DIFFERENT server-side farm partitions
-# (shared_single: FARM_GPUS=1 on GPU 6, fraction 0.5; shared_multi: FARM_GPUS=2 on 6,7,
-# fraction 1.0), the host farm must be (re)started in the matching mode before each:
-#   bash code/deploy/run_local_gpu_runtime.sh shared_single   # before demo_gpu_shared_single
-#   bash code/deploy/run_local_gpu_runtime.sh shared_multi    # before demo_gpu_shared_multi
-# So this queue is best used ONE demo at a time (comment out the other), not both back to
+# NOTE: demo_gpu_farm is a LOCAL two-step-launch demo — it needs the matching host farm
+# container running (started OUTSIDE this queue, on the HOST). FARM=fractional (FARM_GPUS=1 on
+# GPU 6, fraction 0.5) and FARM=whole (FARM_GPUS=2 on 6,7, fraction 1.0) use DIFFERENT server-side
+# partitions, so the host farm must be (re)started in the matching mode before each:
+#   bash code/deploy/run_local_gpu_runtime.sh fractional   # before FARM=fractional
+#   bash code/deploy/run_local_gpu_runtime.sh whole        # before FARM=whole
+# So this queue is best used ONE mode at a time (comment out the other), not both back to
 # back, unless you restart the host farm in between.
 set -uo pipefail
 BASE=/work/code/demos
@@ -36,7 +35,7 @@ run_demo(){
   sleep 45
 }
 
-run_demo demo_gpu_shared_single
-# run_demo demo_gpu_shared_multi   # uncomment AFTER restarting the host farm in shared_multi mode
+run_demo demo_gpu_farm FARM=fractional
+# run_demo demo_gpu_farm FARM=whole   # uncomment AFTER restarting the host farm in whole mode
 
 log "QUEUE DONE."

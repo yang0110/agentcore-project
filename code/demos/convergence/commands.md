@@ -23,15 +23,15 @@ bash code/demos/convergence/10_cpu_mcp.sh         # MCP tool-use
 bash code/demos/convergence/11_cpu_mixtask.sh     # mixed families
 
 # ---- GPU demos (KernelBench; CUDA sandbox) ----
-# 12/13 are REMOTE-ONLY: export a live g6 sandbox ARN first.
+# 12 is REMOTE-ONLY: export a live g6 sandbox ARN first.
 AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/<g6> \
   bash code/demos/convergence/12_gpu_single.sh    # one dedicated g6 GPU per session
-AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/<g6-farm> \
-  bash code/demos/convergence/13_gpu_shared.sh    # fractional Ray farm (B4_GPU_FRACTION=0.5)
 
-# 14 is LOCAL: start the farm on the HOST first, then run inside the container.
-#   (host)      bash code/deploy/run_local_gpu_runtime.sh local
-bash code/demos/convergence/14_gpu_local.sh        # whole-GPU farm on GPUs 6,7
+# 13/14 are LOCAL (demo_gpu_farm): start the farm on the HOST first, in the matching mode.
+#   (host)      bash code/deploy/run_local_gpu_runtime.sh fractional
+bash code/demos/convergence/13_gpu_farm_fractional.sh   # FARM=fractional: GPU 6 shared 0.5+0.5
+#   (host)      bash code/deploy/run_local_gpu_runtime.sh whole
+bash code/demos/convergence/14_gpu_farm_whole.sh        # FARM=whole: one GPU each on 6,7
 #   (host)      bash code/deploy/run_local_gpu_runtime.sh stop   # teardown
 
 # ---- Property demos, now real trainers (headline knob default-ON) ----
@@ -57,8 +57,9 @@ SAVE_INTERVAL=1000000 bash code/demos/convergence/02_cpu_math.sh
 # Bigger batch / more exploration:
 RB=16 TEMP=1.1 bash code/demos/convergence/05_cpu_deepscaler.sh
 
-# GPU-shared: push fraction up if the non-MIG GPU wedges:
-B4_GPU_FRACTION=1.0 bash code/demos/convergence/13_gpu_shared.sh
+# GPU-farm: if the fractional (non-MIG) GPU wedges, switch to the whole-GPU farm
+#   (host: run_local_gpu_runtime.sh whole):
+bash code/demos/convergence/14_gpu_farm_whole.sh
 ```
 
 ## Watch convergence live

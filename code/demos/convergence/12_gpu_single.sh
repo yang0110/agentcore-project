@@ -18,7 +18,7 @@
 #                  Save is SYNC (this sandbox image's seccomp blocks async-ckpt pidfd).
 # PREREQS        : run INSIDE agentcore_p4. REMOTE-ONLY — you MUST export
 #                  AGENTCORE_SANDBOX_RUNTIME_ARN pointing at a live g6 CUDA sandbox
-#                  Runtime. No on-box path here; for a local GPU use 14_gpu_local.sh.
+#                  Runtime. No on-box path here; for a local GPU use 14_gpu_farm_whole.sh.
 # RUNTIME/CKPT   : ~100 steps (GPU is slow/costly => NR=101 default); ckpt ~56 GB.
 # ----------------------------------------------------------------------------
 # Overridable, e.g.:  NR=201 CONC=8 bash 12_gpu_single.sh
@@ -30,7 +30,7 @@ DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_gpu_single"
 
 if [ -z "${AGENTCORE_SANDBOX_RUNTIME_ARN:-}" ]; then
   echo "ERROR: demo_gpu_single is REMOTE-ONLY — export AGENTCORE_SANDBOX_RUNTIME_ARN" >&2
-  echo "       to a live g6 CUDA sandbox Runtime ARN, or use 14_gpu_local.sh for an" >&2
+  echo "       to a live g6 CUDA sandbox Runtime ARN, or use 14_gpu_farm_whole.sh for an" >&2
   echo "       on-box GPU run (Ray whole-GPU farm on GPUs 6,7)." >&2
   exit 1
 fi

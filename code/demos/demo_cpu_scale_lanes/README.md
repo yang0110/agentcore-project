@@ -196,6 +196,27 @@ Watch `rollout/raw_reward` (learning signal), `eval/deepscaler` (held-out solve-
 `harness_worker` metadata (which of the `W` workers ran it) so you can confirm the pull-queue spread
 work evenly.
 
+## Next: DeepCoder for the 256-sandbox run (data prep only)
+
+The 256-sandbox plan (4 lanes × 64 workers, one microVM per worker) needs a task whose *check* is
+expensive enough to load the sandbox tier, which DeepScaleR's single numeric assert is not.
+[`agentcore_slime_demo/build_deepcoder.py`](agentcore_slime_demo/build_deepcoder.py) prepares one from
+DeepCoder (`agentica-org/DeepCoder-Preview-Dataset`, `primeintellect` subset): it runs a gold Python
+solution over every hidden stdin/stdout test and keeps only problems that pass, recording how long the
+full suite takes.
+
+```bash
+docker exec agentcore_p4 bash -lc 'cd /work/code/demos/demo_cpu_scale_lanes && \
+    python3 agentcore_slime_demo/build_deepcoder.py --probe 1500'          # -> data/deepcoder_probe.csv
+docker exec agentcore_p4 bash -lc 'cd /work/code/demos/demo_cpu_scale_lanes && \
+    python3 agentcore_slime_demo/build_deepcoder.py --train 512 --eval 64 --min-suite-s 8'
+```
+
+`data/deepcoder_probe.csv` is the committed 1500-problem probe: 74 % pass with the gold solution,
+gold suite p50 4.2 s, median 101 tests per problem; the run keeps the ≥ 8 s tail (13 % of passing problems). **Not wired into
+training yet:** the rows carry `family: "deepcoder"`, but no `DeepCoderTask` checker exists in the
+vendored `task.py`, so `FAMILY=deepcoder` does not run until that lands.
+
 ## Folder layout (self-contained)
 
 - `agentcore_slime_demo/` — vendored shared library; **this demo adds** `harness_pool.py` (the warm
@@ -204,7 +225,7 @@ work evenly.
   can reuse its warm `aiohttp` session across episodes.
 - `harness_scaling_demo.py` — the **offline** scaling-law demo (step 2; no AWS/GPU)
 - `deploy/Dockerfile.sandbox.cpu` — the CPU sandbox Runtime image
-- `data/` — `deepscaler_train.jsonl` / `deepscaler_eval.jsonl`
+- `data/` — `deepscaler_train.jsonl` / `deepscaler_eval.jsonl`; `deepcoder_probe.csv` (DeepCoder probe, see above)
 - `prepare_data.sh` — build the dataset (step 1) · `run.sh` — the RL run (step 3) · `metrics.py`
 
 Shared by reference (NOT vendored): the base Megatron checkpoint

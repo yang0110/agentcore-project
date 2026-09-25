@@ -15,7 +15,7 @@
 #   * REMOTE (default): export AGENTCORE_SANDBOX_RUNTIME_ARN -> your g6 CUDA Runtime.
 #   * ON-BOX (LOCAL_GPU=1): serve the SAME GPU sandbox image LOCALLY as a whole-GPU Ray
 #     farm on THIS box's reserved GPUs 6,7 (endpoint :8080), slime on GPUs 0-5. Start the
-#     farm on the HOST first:  bash code/deploy/run_local_gpu_runtime.sh local
+#     farm on the HOST first:  bash code/deploy/run_local_gpu_runtime.sh whole
 # BOTTLENECK     : nvcc compile + kernel run in the (remote or local) GPU sandbox.
 # CONVERGENCE    : eval/kernelbench mean reward (compile-pass AND allclose) rises then
 #                  plateaus; watch compile-pass rate climb first.
@@ -41,7 +41,7 @@ if [ "$LOCAL_GPU" = "1" ]; then
   if ! curl -fsS "${ENDPOINT}/ping" >/dev/null 2>&1; then
     echo "ERROR: LOCAL_GPU=1 but the local GPU farm is not reachable at ${ENDPOINT}/ping." >&2
     echo "       Start it FIRST on the HOST (not inside agentcore_p4):" >&2
-    echo "         bash code/deploy/run_local_gpu_runtime.sh local" >&2
+    echo "         bash code/deploy/run_local_gpu_runtime.sh whole" >&2
     exit 1
   fi
 elif [ -z "${AGENTCORE_SANDBOX_RUNTIME_ARN:-}" ]; then

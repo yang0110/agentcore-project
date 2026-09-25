@@ -21,7 +21,7 @@ microVM), which is cheaper, faster, and perfectly isolated for free. Reuse only 
 **Instances** compute type — a capacity-provider EC2 box that takes **~60–80 s to cold-boot** — and
 that applies to **both** Instance flavours:
 
-- the **GPU `g6`** (`demo_gpu_shared` / `demo_gpu_local`), and
+- the **GPU `g6`** (`demo_gpu_farm`), and
 - the **CPU `m5`** (`demo_cpu_bigimage`, the big-image demo this doc ships with).
 
 Both use the *same* shared-session + `sub_session` mechanism below; they differ only in what the

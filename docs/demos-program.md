@@ -54,7 +54,7 @@ AgentCore **Code Interpreter** microVM (CPU); the harness is in-process.
 > `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, plus the synthetic `math`
 > `swe` `tool_use` `sql` `ctf` `rag` `regex` `planning` `config` `data`). It replaced the ten
 > per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`, …) that differed only in data. The full set is
-> 15 demos (9 CPU + 6 GPU); see `code/demos/README.md`.
+> 13 demos (9 CPU + 4 GPU, after the 2026-09-25 `demo_gpu_farm` merge); see `code/demos/README.md`.
 
 \* *Hypothesis only — Tier 3 replaces it with a measurement.* Note most cheap-checker CPU tasks are
 expected to be **generation-bound**; the clear **sandbox-bound** case is CUDA (Tier 2). That
@@ -68,7 +68,7 @@ instance** (a `g6`, x86_64/amd64); the trainer box keeps all its GPUs for policy
 | Demo folder | Task | Notes |
 |---|---|---|
 | `demo_gpu_kernelbench` | KernelBench (level_1 CUDA) | checker = allclose vs torch ref, on `cuda` |
-| `demo_gpu_shared_single` / `demo_gpu_shared_multi` | KernelBench + Ray pack-many farm | many envs share one GPU (bursty, memory-bound); split 2026-09-21 into 0.5+0.5 on one GPU vs one whole GPU per session (the old `demo_gpu_shared`) |
+| `demo_gpu_farm` (`FARM=fractional` \| `whole`) | KernelBench + Ray pack-many farm | many envs share one GPU (bursty, memory-bound); `fractional` = 0.5+0.5 on one GPU, `whole` = one whole GPU per session (merged 2026-09-25 from `demo_gpu_shared_single` / `demo_gpu_shared_multi` / `demo_gpu_local`) |
 
 ### Tier 3 — Advanced: scale the *measured* bottleneck
 

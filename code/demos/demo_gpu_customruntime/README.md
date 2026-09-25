@@ -26,7 +26,7 @@ are byte-identical to `demo_gpu_single`; only the *substrate* the checker lands 
 > setting (`SANDBOX=agentcore-ray-farm`): all episodes invoke the custom Runtime under **one shared
 > `runtimeSessionId`** (`B4_SHARED_RUNTIME_SESSION`) + a per-episode `sub_session`, so they reuse **one
 > warm g6** and a self-managed in-instance Ray farm hands each episode a fresh isolated env on a whole
-> GPU (`B4_GPU_FRACTION=1.0`) — the same mechanism as `demo_gpu_shared_multi` / `demo_gpu_local`. Set
+> GPU (`B4_GPU_FRACTION=1.0`) — the same mechanism as `demo_gpu_farm FARM=whole`. Set
 > `SANDBOX=agentcore-runtime` for the legacy one-dedicated-instance-per-session path.
 
 ## What runs (real trainer)

@@ -24,9 +24,9 @@
 set -euo pipefail
 
 # ON-BOX SMOKE (no remote g6): LOCAL_GPU=1 serves the SAME sandbox_server_agent GPU image as a LOCAL
-# whole-GPU Ray farm on this box's reserved GPUs 6,7 (identical to demo_gpu_local), with slime on GPUs
-# 0-5. Two-step, exactly like demo_gpu_local / demo_gpu_customruntime:
-#     bash code/deploy/run_local_gpu_runtime.sh local     # start the farm on 6,7 (host)
+# whole-GPU Ray farm on this box's reserved GPUs 6,7 (identical to demo_gpu_farm FARM=whole), with slime on GPUs
+# 0-5. Two-step, exactly like demo_gpu_farm FARM=whole / demo_gpu_customruntime:
+#     bash code/deploy/run_local_gpu_runtime.sh whole     # start the farm on 6,7 (host)
 #     LOCAL_GPU=1 bash code/demos/demo_gpu_single/run.sh   # then run this (inside agentcore_p4)
 #     bash code/deploy/run_local_gpu_runtime.sh stop       # tear down after
 # The farm speaks the SAME warm-shared contract this demo already defaults to (agentcore-ray-farm +
@@ -90,7 +90,7 @@ HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a720891212
 # ---- GPU split + where the sandbox Runtime lives -------------------------------------------------
 # ALL 8 GPUs to slime (4 train + 4 infer); the KernelBench checker's GPU is REMOTE (the sandbox
 # Runtime #2 g6), reached over invoke_agent_runtime. For an on-box GPU run with no remote g6, use
-# demo_gpu_local (a LOCAL whole-GPU Ray farm on this box's reserved GPUs 6,7) instead.
+# demo_gpu_farm (a LOCAL whole-GPU Ray farm on this box's reserved GPUs 6,7) instead.
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"                       # 4 train + 4 infer = 8; checker GPU is remote
 SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-8}"
@@ -98,7 +98,7 @@ SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-}"
 AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-}"
 # Remote path requires the g6 ARN; the LOCAL_GPU on-box path uses the local endpoint instead (no ARN).
 if [ "$LOCAL_GPU" != "1" ]; then
-  AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU sandbox Runtime #2 ARN — for an on-box GPU run with no remote g6, use LOCAL_GPU=1 (or demo_gpu_local)}"
+  AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU sandbox Runtime #2 ARN — for an on-box GPU run with no remote g6, use LOCAL_GPU=1 (or demo_gpu_farm)}"
 fi
 DATA="${DATA:-$DEMO_DIR/data/kernelbench_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"
