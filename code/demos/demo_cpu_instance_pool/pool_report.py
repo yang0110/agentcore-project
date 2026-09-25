@@ -5,7 +5,8 @@ Reads the per-episode ``[demo]`` lines (pool_slot / instance / open_ms / cold / 
 harness from RayFarmRuntimeSandbox.demo_fields) and the per-op ``[sbx-op]`` lines, and prints:
 
   * episodes per pool member and per instance (boot_id) — the spread across the pool,
-  * cold boots (opens >= COLD_BOOT_MS, default 5000 ms) — ideally one per pool member,
+  * cold opens (>= COLD_BOOT_MS, default 5000 ms) and the distinct instances they waited on — ideally
+    one boot per pool member (several episodes opened in the first seconds all wait on the same boot),
   * warm-op latency p50 / p95 (every op under COLD_BOOT_MS) and the cold-open latencies,
   * mean reward per pool member (isolation check: no member should look systematically different).
 
@@ -20,7 +21,7 @@ import sys
 from collections import Counter, defaultdict
 
 COLD_BOOT_MS = float(os.environ.get("COLD_BOOT_MS", "5000"))
-KV = re.compile(r"(\w+)=(\S+)")
+KV = re.compile(r"(\w+)=([^\s\[]+)")   # stop at "[": interleaved ray lines can glue a "[sbx-op]" on
 
 
 def pct(xs: list[float], q: float) -> float:
@@ -61,8 +62,9 @@ def main(path: str) -> int:
         print(f"  {s}: {by_slot[s]:4d} episodes  instances={sorted(slot_inst[s])}  "
               f"mean_reward={statistics.mean(r):.3f}")
     print(f"distinct instances (boot_id): {len(by_inst)}  {dict(by_inst)}")
-    print(f"cold boots (open >= {COLD_BOOT_MS:.0f} ms): {len(cold)}  "
-          f"{', '.join(f'{c / 1000:.1f}s' for c in cold)}")
+    cold_inst = {e.get("instance", "?") for e in eps if e.get("cold") == "1"}
+    print(f"cold opens (open >= {COLD_BOOT_MS:.0f} ms): {len(cold)} episodes waited on "
+          f"{len(cold_inst)} instance boot(s)  {', '.join(f'{c / 1000:.1f}s' for c in cold)}")
     print(f"warm ops: {len(warm)}  p50={pct(warm, 0.5):.0f} ms  p95={pct(warm, 0.95):.0f} ms")
     errs = Counter(st for _, _, st in ops if st != "ok")
     if errs:

@@ -1,9 +1,20 @@
 # demo_cpu_branching — one episode → many training samples ("fan-out")
 
-> **EXPERIMENTAL / BLOCKED — not part of the main 8-demo set.** The in-sandbox Claude Code CLI exits 1
-> before it makes any model call, so every episode has `fan_out=0` and produces no trajectories; the
-> demo cannot train yet. The empty-group crash this used to cause is fixed (18ccb91 / 3ecddc9), and
-> that fix is what exposed the CLI failure. The deploy path below works; the training run does not.
+> **EXPERIMENTAL — not part of the main 7-demo set; fixes pending a live re-run.** History of the blockers:
+> 1. *CLI exits 1 before any model call* (`fan_out=0`): the CLI refuses `--permission-mode
+>    bypassPermissions` as root. Fixed by `IS_SANDBOX=1` (confirmed on the sandbox 2026-09-19; the empty-group
+>    crash it exposed is fixed in 18ccb91 / 3ecddc9).
+> 2. *One turn, reward 0* (`exit=0 fan_out=1`, no `solution.py`, the 2026-09-19 smoke): `run.sh` had no
+>    `--sglang-tool-call-parser`, so the adapter returned Qwen3's `<tool_call>` text as a plain `end_turn`
+>    reply and the CLI stopped. Fixed 2026-09-25: `--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3`
+>    (the A3/B3 fix terminalbench/scale_lanes already carry).
+> 3. *CLI `exit=1` "response exceeded the output token maximum"*: a turn that hit the 1024-token per-turn cap
+>    came back as `stop_reason=max_tokens`, which the CLI treats as fatal. Now `MAX_RESPONSE_LEN` (default 2048).
+>
+> Checked 2026-09-25 without a trainer: the Runtime starts a session, the CLI (2.1.278) runs as root with
+> `IS_SANDBOX=1`, the sandbox dials back to `PRIVATE-IP-f99864bc:18021`, the qwen25 parser turns a Qwen3
+> `<tool_call>` into a tool call, and the checker scores no/buggy/fixed `solution.py` 0 / 0 / 1. Whether the
+> policy now reaches sub-agents / compaction (`fan_out>1`) needs the RL smoke.
 
 Every other demo treats one episode as one training sample. This one does not. It runs the **real
 Claude Code CLI** as the harness and deliberately provokes the two CLI behaviors that split a single
@@ -106,7 +117,7 @@ bash 3_push_ecr.sh         # 3. -> ECR acs-sandbox-cli (deploy/images.env)
 bash 4_deploy_runtime.sh   # 4. deploy/deploy_branching.py: VPC-mode Runtime acs_sandbox_cli + one SG->SG ingress rule
                            #    (TCP ADAPTER_PORT on the host SG, source = the runtime SG)
                            #    -> deploy/runtime.env: AGENTCORE_SANDBOX_RUNTIME_ARN + ADAPTER_PUBLIC_HOST
-bash 5_run.sh              # 5. container: MODE=A train + eval (BLOCKED: fan_out=0, see the banner)
+bash 5_run.sh              # 5. container: MODE=A train + eval (see the banner for the fixes)
 bash 6_cleanup.sh          # 6. delete the Runtime and revoke the SG ingress rule (deploy_branching.py --cleanup)
 ```
 
@@ -131,8 +142,10 @@ episode inherits it.
 | `TEMP` | 1.0 | rollout sampling temperature |
 | `BRANCHING_FORK_THRESHOLD` | 512 | lower ⇒ record more compactions as forks (more fan-out) |
 | `AGENT_TIME_BUDGET_SEC` | 900 | per-episode wall-clock budget for the CLI |
+| `MAX_RESPONSE_LEN` | 2048 | per-turn token cap; a turn that hits it ends the CLI with `exit=1` (keep it above Qwen3's `<think>`) |
 | `EVAL_INTERVAL` / `EVAL_NS` | 10 / 2 | held-out eval cadence / samples |
 | `SAVE_INTERVAL` | 1000000 | save-only-at-end (final rollout is force-saved) |
+| `SLIME_CUDA_VISIBLE` / `SLIME_NUM_GPUS` | unset / 8 | pin ray to a GPU subset on a shared box (e.g. `2,3,4,5,6,7` / `6` with `ROLLOUT_GPUS=2`) |
 
 ## What to watch
 `rollout/raw_reward` (per-episode learning signal), `eval/swe` (held-out solve rate), and the

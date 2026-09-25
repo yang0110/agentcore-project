@@ -11,46 +11,46 @@ and because a harness is persistent/warm while a sandbox is ad-hoc per episode, 
 harness" does NOT mean "make it ad-hoc": it means run a fixed set of WARM workers and route
 episodes to them.
 
-The three replicated tiers scale AND load-balance DIFFERENTLY — this is the whole point of
-the demo, and the asymmetry is deliberate:
+DECOUPLED TIERS. The three tiers are sized independently and joined only PER EPISODE — no worker
+owns an engine or a microVM. The default is 4 SGLang engines : 256 harness workers : 256 microVM
+sessions. When an episode starts, it gets:
 
-  LANES. The default topology binds the three tiers into W fixed 1:1:1 LANES — worker w is pinned
-  to SGLang engine w % E and to its own persistent microVM — so with W = E = 4 the rollout runs on
-  4 harness workers : 4 engines : 4 microVMs. Each episode logs one `[demo] lane=...` record
-  (worker -> engine -> sandbox session) that metrics.py checks, so the 4x4x4 is verifiable.
+  * harness    (W = HARNESS_WORKERS warm asyncio workers, default 256) — whichever worker is free
+        PULLS the episode off one shared asyncio.Queue. Pull/work-stealing balances by AVAILABILITY,
+        which is robust to the wide, variable latency of multi-turn agentic episodes.
+  * inference  (E SGLang engines, E = ROLLOUT_GPUS / GPUS_PER_ENGINE, default 4) — the engine with
+        the fewest in-flight episodes, via that engine's AnthropicAdapter (one per engine). The
+        episode stays on it for all its turns (prefix-cache locality), but the next episode that
+        worker drives can land on any engine.
+  * sandbox    (M = SANDBOX_SESSIONS persistent AgentCore sessions = microVMs, default 256) — any
+        FREE session from a shared pool, spread over the K Runtime ARNs as ARN[slot % K]. The
+        pool opens all M sessions at start (rate-limited to SANDBOX_OPEN_RATE/s, under AgentCore's
+        25 new sessions/s), and each episode borrows one for its whole life in a FRESH workdir
+        (/workspace/ep-<hex>, deleted when the episode returns the session). SANDBOX_SESSIONS=0 =
+        a fresh session per episode, round-robined over the K ARNs (make_sandbox).
 
+Because W and M are separate knobs, either can bind: W < M leaves microVMs idle (harness-bound);
+M < W makes workers wait for a free session (`sandbox_wait_ms` > 0, sandbox-bound). Every episode
+logs one `[demo] worker=… engine=… sandbox_slot=… sandbox_session=… sandbox_wait_ms=…` record and
+one `[router]` record; metrics.py checks each episode stayed on one engine + one session + one
+Runtime and reports how the workers and sessions were mixed (the decoupling).
 
-  * inference  (E SGLang engines)  — STATELESS per request. slime's SGLang ROUTER load-balances
-        every `/generate` call across the E engines (cache-aware). A single episode's turns may
-        land on different engines. LB granularity = per REQUEST.
-  * sandbox    (W microVMs)        — STATEFUL per episode: a sandbox holds the episode's files
-        (solution.py, run_checks.py). In LANE mode (the default, LANE_SANDBOX=1, SANDBOX=
-        agentcore-runtime) each worker owns ONE persistent AgentCore session (= one microVM) on
-        Runtime ARN[w % K], opened once and reused for every episode that worker drives; each
-        episode gets its own fresh workdir under it (/workspace/ep-<hex>, deleted after). So W
-        workers => exactly W concurrent microVMs, and an episode is sticky to its worker's microVM.
-        LANE_SANDBOX=0 restores the old shape: a fresh session per episode, round-robined across
-        the K ARNs (make_sandbox -> _next_runtime_arn).
-  * harness    (W warm workers)    — STATELESS but WARM. A shared asyncio.Queue; whichever worker
-        is free PULLS the next episode. Pull/work-stealing balances by AVAILABILITY, which is
-        robust to the wide, variable per-episode latency of multi-turn agentic rollouts (a push /
-        hash assignment would hot-spot a worker stuck on a slow episode). LB granularity = per
-        EPISODE, by pull. A worker holds its episode start->finish (it owns the aiohttp session and
-        the adapter session id), so an episode is sticky to its worker just as it is to its sandbox.
+Isolation: a pooled session is reused by episodes ONE AT A TIME (checked out, then returned), each in
+its own fresh workdir. That is safe for this demo's DeepScaleR checker, which only reads the
+episode's workdir; tasks that change the OS need SANDBOX_SESSIONS=0 (a fresh microVM each).
 
-Placement is IN-PROCESS (asyncio workers in the trainer process — the demo's chosen design).
-Honest ceiling note: in-process workers lift the IO-CONCURRENCY ceiling — episodes spend almost
-all wall-clock AWAITING (LLM turns over HTTP to the adapter, tool exec over HTTP to the sandbox
-Runtime), which asyncio overlaps well. They do NOT lift the CPU ceiling: the GIL still serialises
-the CPU-bound bits (tokenisation / trajectory flattening in the adapter's finish_session). Lifting
-THAT needs separate processes or dedicated harness Runtimes — a different placement, out of scope
-for this demo (see docs/harness-scaling.md).
+Placement is IN-PROCESS (asyncio workers in the trainer's rollout process — the demo's chosen
+design). Honest ceiling note: in-process workers lift the IO-CONCURRENCY ceiling — episodes spend
+almost all wall-clock AWAITING (LLM turns over HTTP to the adapter, tool exec over HTTP to the
+sandbox Runtime), which asyncio overlaps well. They do NOT lift the CPU ceiling: the GIL still
+serialises the CPU-bound bits (tokenisation / trajectory flattening in the adapter). Lifting THAT
+needs separate processes or dedicated harness Runtimes (see docs/harness-scaling.md).
 
 The harness itself is the SAME MiniClaudeHarness (the "mimic Claude Code" agent): it speaks the
 Anthropic Messages API to slime's in-process AnthropicAdapter (which serves completions from the
 policy under training and records the trajectory), and runs its tools in the remote sandbox
 Runtime. So this demo also exercises the adapter / tool-parser path (needs --sglang-tool-call-parser
-qwen25 + --sglang-reasoning-parser qwen3) that the in-process run_episode harness sidesteps.
+qwen25 + --sglang-reasoning-parser qwen3).
 """
 
 from __future__ import annotations
@@ -67,6 +67,19 @@ import time
 logger = logging.getLogger(__name__)
 
 _POOL: "HarnessPool | None" = None
+
+
+class _NoWait:
+    """Adapts a per-episode sandbox to the pooled `(sandbox, wait_ms)` context shape."""
+
+    def __init__(self, sb) -> None:
+        self._sb = sb
+
+    async def __aenter__(self):
+        return await self._sb.__aenter__(), 0.0
+
+    async def __aexit__(self, *exc):
+        return await self._sb.__aexit__(*exc)
 _POOL_LOCK = threading.Lock()
 
 
@@ -79,52 +92,50 @@ def get_pool(args) -> "HarnessPool":
     return _POOL
 
 
-class HarnessPool:
-    """W warm in-process harness workers fed by one shared asyncio.Queue.
 
-    One shared AnthropicAdapter (localhost, in-process) fronts SGLang for all workers; each
-    worker owns a warm aiohttp session it reuses across episodes and a fresh remote sandbox
-    session per episode.
-    """
+
+class HarnessPool:
+    """W warm in-process harness workers, E per-engine adapters and M pooled sandbox sessions, all
+    sized independently and joined per episode (see the module docstring)."""
 
     def __init__(self, args) -> None:
         self.args = args
-        # THE scaling knob. Default 4 to sit symmetric with the demo's 4 inference engines and
-        # 4 sandbox Runtimes (throughput = min over the three tiers; all-4 is the balanced point).
-        self.num_workers = int(os.environ.get("HARNESS_WORKERS", "4"))
+        self.num_workers = int(os.environ.get("HARNESS_WORKERS", "256"))
         self.max_turns = int(os.environ.get("EPISODE_MAX_TURNS", "4"))
         self.max_tokens = int(os.environ.get("EPISODE_MAX_TOKENS", "1024"))
         self.region = os.environ.get("AGENTCORE_REGION", os.environ.get("AWS_REGION", "us-west-2"))
         self.sandbox_kind = os.environ.get("SANDBOX", "agentcore-runtime")
+        # The sandbox tier: M persistent sessions shared by all workers (only for the Runtime backend).
+        self.num_sessions = (
+            int(os.environ.get("SANDBOX_SESSIONS", "256"))
+            if self.sandbox_kind in ("agentcore-runtime", "runtime") else 0
+        )
+        self.open_rate = float(os.environ.get("SANDBOX_OPEN_RATE", "20"))
         self._queue: asyncio.Queue | None = None
         self._workers: list[asyncio.Task] = []
-        self._sessions: list = []          # per-worker warm aiohttp sessions
-        # PER-WORKER adapters, one each, so a worker's episodes are PINNED to one SGLang engine
-        # (see _ensure_started). Was one shared adapter; per-worker pinning makes inference sticky
-        # per episode (an episode is sticky to its worker => sticky to that worker's engine).
-        self._adapters: list = []          # AnthropicAdapter per worker
-        self._adapter_urls: list[str] = [] # its in-thread endpoint URL, per worker
-        self._engine_urls: list[str] = []  # the SGLang engine each worker is pinned to, per worker
-        # LANE mode: one persistent sandbox session (= one microVM) per worker, reused across that
-        # worker's episodes with a fresh per-episode workdir. Only for the AgentCore Runtime backend.
-        self.lane_sandbox = (
-            os.environ.get("LANE_SANDBOX", "1") not in ("0", "false", "no")
-            and self.sandbox_kind in ("agentcore-runtime", "runtime")
-        )
-        self._lane_sbx: dict[int, object] = {}      # wid -> its open AgentCoreRuntimeSandbox
-        self._lane_episodes: dict[int, int] = {}    # wid -> episodes driven on that microVM
+        self._http = None                  # ONE warm aiohttp session shared by every worker
+        self._adapters: list = []          # AnthropicAdapter per ENGINE
+        self._adapter_urls: list[str] = [] # its in-thread endpoint URL, per engine
+        self._engine_urls: list[str] = []  # engine base URL, per engine
+        self._inflight: list[int] = []     # episodes currently on each engine
+        self._free: asyncio.Queue | None = None     # free pooled sandbox sessions
+        self._pool_sbx: list = []                   # every opened pooled session
+        self._slot_episodes: dict[int, int] = {}    # slot -> episodes it has served
+        self._opener: asyncio.Task | None = None
         self._harness = None
         self._started = False
         self._start_lock = asyncio.Lock()
 
     # ---- lifecycle -----------------------------------------------------------
     async def _ensure_started(self) -> None:
-        """Stand up the adapter + the W warm workers exactly once, on the calling loop."""
+        """Stand up the adapters, the W workers and the session pool exactly once, on the calling loop."""
         if self._started:
             return
         async with self._start_lock:
             if self._started:
                 return
+            import concurrent.futures
+
             import aiohttp
 
             from slime.agent.adapters import AnthropicAdapter
@@ -134,21 +145,23 @@ class HarnessPool:
             from . import router_trace
             from .mini_agent import MiniClaudeHarness
 
+            # Every sandbox op is a blocking boto3 call run via asyncio.to_thread, i.e. on this loop's
+            # default executor, which holds min(32, cpus+4) threads. With 256 episodes in flight that
+            # would quietly cap the sandbox tier at ~32 concurrent ops, so size it to the pool.
+            asyncio.get_running_loop().set_default_executor(
+                concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max(self.num_workers, self.num_sessions) + 32,
+                    thread_name_prefix="sbx-op",
+                )
+            )
+
+            # ONE adapter per SGLang engine (not per worker): its sglang_url is that single engine,
+            # so all turns of an episode opened on it hit that engine. Uses only the adapter's
+            # PUBLIC sglang_url arg — no slime patch. Falls back to the router if discovery fails.
             router_url = f"http://{self.args.sglang_router_ip}:{self.args.sglang_router_port}"
-            # Discover the E SGLang engines behind the router ONCE, then PIN worker w to engine
-            # w % E. slime's router normally load-balances /generate per request across engines;
-            # by giving each worker its OWN adapter whose sglang_url is a single engine, every turn
-            # of every episode that worker drives hits that one engine — inference becomes sticky
-            # per episode (episode is sticky to its worker). Falls back to the router if discovery
-            # fails (unpinned, still recorded). Uses only the adapter's PUBLIC sglang_url arg — no
-            # slime patch.
             engines = router_trace.engine_urls(router_url)
             tokenizer = load_tokenizer(self.args.hf_checkpoint, trust_remote_code=True)
-
-            # PER-WORKER adapter, each on its own localhost thread/port. Workers dial 127.0.0.1, so
-            # no security group / public port is needed (unlike the harness-Runtime variant).
-            for wid in range(self.num_workers):
-                engine = engines[wid % len(engines)]
+            for i, engine in enumerate(engines):
                 adapter = AnthropicAdapter(
                     tokenizer=tokenizer,
                     sglang_url=engine,
@@ -156,26 +169,31 @@ class HarnessPool:
                     reasoning_parser=getattr(self.args, "sglang_reasoning_parser", None) or None,
                 )
                 handle = run_app_in_thread(
-                    adapter.app, host="127.0.0.1", port=0,
-                    thread_name=f"anthropic-adapter-w{wid}",
+                    adapter.app, host="127.0.0.1", port=0, thread_name=f"anthropic-adapter-e{i}",
                 )
                 self._adapters.append(adapter)
                 self._adapter_urls.append(f"http://127.0.0.1:{handle.port}")
                 self._engine_urls.append(engine)
+            self._inflight = [0] * len(engines)
+
+            if self.num_sessions > 0:
+                self._free = asyncio.Queue()
+                self._opener = asyncio.create_task(self._open_sessions())
+                atexit.register(self._close_sessions_sync)
 
             self._harness = MiniClaudeHarness(max_turns=self.max_turns)
             self._queue = asyncio.Queue()
+            # One warm, unlimited connector for all workers (the default caps at 100 connections).
+            self._http = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0))
             for wid in range(self.num_workers):
-                sess = aiohttp.ClientSession()   # created on THIS loop; reused across episodes (warm)
-                self._sessions.append(sess)
-                self._workers.append(asyncio.create_task(self._worker_loop(wid, sess)))
+                self._workers.append(asyncio.create_task(self._worker_loop(wid)))
             self._started = True
             logger.info(
-                "[harness_pool] started W=%d warm workers over E=%d engines (pinned w->w%%E), sandbox=%s",
-                self.num_workers, len(engines), self.sandbox_kind,
+                "[harness_pool] started W=%d workers, E=%d engines, M=%d pooled sessions (decoupled), sandbox=%s",
+                self.num_workers, len(engines), self.num_sessions, self.sandbox_kind,
             )
 
-    async def _worker_loop(self, wid: int, http) -> None:
+    async def _worker_loop(self, wid: int) -> None:
         assert self._queue is not None
         while True:
             job = await self._queue.get()
@@ -184,7 +202,7 @@ class HarnessPool:
                 return
             task, sampling_params, base_sample, fut = job
             try:
-                result = await self._run_episode(wid, http, task, sampling_params, base_sample)
+                result = await self._run_episode(wid, task, sampling_params, base_sample)
                 if not fut.done():
                     fut.set_result(result)
             except Exception as exc:  # noqa: BLE001 — never let one episode kill the worker
@@ -194,62 +212,110 @@ class HarnessPool:
             finally:
                 self._queue.task_done()
 
-    # ---- lanes: one persistent microVM per worker ------------------------------
-    async def _lane_sandbox(self, wid: int):
-        """This worker's persistent sandbox session, opened on first use (the one cold start)."""
-        sb = self._lane_sbx.get(wid)
-        if sb is not None:
-            return sb
+    # ---- inference tier: least-loaded engine per episode ---------------------------
+    @contextlib.contextmanager
+    def _engine(self):
+        # Least in-flight engine; ties rotate so an idle start doesn't pile onto engine 0.
+        n = len(self._inflight)
+        self._rr = (getattr(self, "_rr", -1) + 1) % n
+        i = min(range(n), key=lambda j: (self._inflight[j], (j - self._rr) % n))
+        self._inflight[i] += 1
+        try:
+            yield i
+        finally:
+            self._inflight[i] -= 1
+
+    # ---- sandbox tier: M pooled microVM sessions, shared by all workers -----------
+    async def _open_sessions(self) -> None:
+        """Open the M pooled sessions (the one cold start each), paced under the new-session rate."""
+        import boto3
+        from botocore.config import Config
+
         from . import router_trace
         from .agentcore_runtime_sandbox import AgentCoreRuntimeSandbox
         from .sandbox import _runtime_arns
-
-        arns = _runtime_arns() or [os.environ.get("AGENTCORE_SANDBOX_RUNTIME_ARN", "")]
-        arn = arns[wid % len(arns)] or None
-        # >=33 chars for AgentCore runtimeSessionId (token_hex(16)=32 + prefix clears it).
-        sb = AgentCoreRuntimeSandbox(runtime_arn=arn, region=self.region,
-                                     session_id=f"lane{wid}-{secrets.token_hex(16)}")
-        t0 = time.perf_counter()
-        await sb.__aenter__()
-        sb._lane_root = sb._workdir
-        self._lane_sbx[wid] = sb
-        self._lane_episodes[wid] = 0
-        # HEARTBEAT=1: this microVM lives for the whole run, so it is exactly what the weight-sync
-        # stall can idle-reclaim. Register it once with the process-wide keeper (raw no-op pinger);
-        # real episode ops bypass the keeper's clock, so it simply pings every
-        # HEARTBEAT_PING_FRACTION*HEARTBEAT_IDLE seconds (one cheap no-op every few minutes).
         from .session_keeper import get_keeper, heartbeat_enabled, heartbeat_idle
-        if heartbeat_enabled():
-            async def _ping(s=sb) -> None:
-                await s.exec("true", timeout=30)
-            (await get_keeper()).register(sb._session_id, _ping, heartbeat_idle())
-        if len(self._lane_sbx) == 1:
-            atexit.register(self._close_lanes_sync)
-        print(f"[demo] lane_open=1 lane={wid} engine={self._engine_urls[wid]} "
-              f"sandbox_session={sb._session_id} runtime_arn={router_trace.arn_tail(arn)} "
-              f"open_ms={(time.perf_counter() - t0) * 1000.0:.1f}", flush=True)
-        return sb
+
+        assert self._free is not None
+        arns = _runtime_arns() or [os.environ.get("AGENTCORE_SANDBOX_RUNTIME_ARN", "")]
+        # ONE thread-safe boto3 client for the whole pool, with a connection pool as wide as the
+        # number of ops that can be in flight (the botocore default of 10 would serialise them).
+        client = boto3.client(
+            "bedrock-agentcore", region_name=self.region,
+            config=Config(read_timeout=int(os.environ.get("INVOKE_READ_TIMEOUT", "900")),
+                          connect_timeout=60, retries={"max_attempts": 0},
+                          max_pool_connections=max(self.num_workers, self.num_sessions) + 16),
+        )
+
+        async def _open(slot: int) -> None:
+            await asyncio.sleep(slot / max(self.open_rate, 0.1))
+            arn = arns[slot % len(arns)] or None
+            # >=33 chars for AgentCore runtimeSessionId (token_hex(16)=32 + prefix clears it).
+            sb = AgentCoreRuntimeSandbox(runtime_arn=arn, region=self.region, client=client,
+                                         session_id=f"pool{slot}-{secrets.token_hex(16)}")
+            t0 = time.perf_counter()
+            try:
+                await sb.__aenter__()
+            except Exception as exc:  # noqa: BLE001 — a failed slot shrinks the pool, not the run
+                logger.warning("[harness_pool] sandbox slot %d failed to open: %s", slot, exc)
+                return
+            sb._pool_root, sb._pool_slot = sb._workdir, slot
+            self._pool_sbx.append(sb)
+            self._slot_episodes[slot] = 0
+            # HEARTBEAT=1: a pooled microVM lives for the whole run, so it is exactly what the
+            # weight-sync stall can idle-reclaim. Register it once with the process-wide keeper.
+            if heartbeat_enabled():
+                async def _ping(s=sb) -> None:
+                    await s.exec("true", timeout=30)
+                (await get_keeper()).register(sb._session_id, _ping, heartbeat_idle())
+            print(f"[demo] session_open=1 sandbox_slot={slot} sandbox_session={sb._session_id} "
+                  f"runtime_arn={router_trace.arn_tail(arn)} "
+                  f"open_ms={(time.perf_counter() - t0) * 1000.0:.1f}", flush=True)
+            self._free.put_nowait(sb)
+
+        await asyncio.gather(*(_open(i) for i in range(self.num_sessions)))
+        print(f"[demo] session_pool_ready={len(self._pool_sbx)} of={self.num_sessions}", flush=True)
+        if not self._pool_sbx:
+            self._free.put_nowait(None)   # wakes waiters; _checkout re-queues it and raises
 
     @contextlib.asynccontextmanager
-    async def _lane_episode(self, wid: int):
-        """Borrow the worker's microVM for one episode, in a FRESH workdir that is removed after."""
-        sb = await self._lane_sandbox(wid)
-        root = sb._lane_root
+    async def _checkout(self):
+        """Borrow ANY free pooled session for one episode, in a FRESH workdir removed on return."""
+        assert self._free is not None
+        t0 = time.perf_counter()
+        sb = await self._free.get()
+        if sb is None:
+            self._free.put_nowait(None)
+            raise RuntimeError("no sandbox session could be opened (see the slot warnings above)")
+        wait_ms = (time.perf_counter() - t0) * 1000.0
+        root = sb._pool_root
         sb._workdir = f"{root}/ep-{secrets.token_hex(6)}"   # server mkdirs it on the first op
-        self._lane_episodes[wid] += 1
+        self._slot_episodes[sb._pool_slot] += 1
         try:
-            yield sb
+            yield sb, wait_ms
         finally:
             ep_dir, sb._workdir = sb._workdir, root
             with contextlib.suppress(Exception):
                 await sb.exec(f"rm -rf {ep_dir}", timeout=60)
+            self._free.put_nowait(sb)
 
-    def _close_lanes_sync(self) -> None:
-        """Process exit: stop every lane session so its microVM is reclaimed now, not at idle timeout."""
-        for sb in list(self._lane_sbx.values()):
+    def _close_sessions_sync(self) -> None:
+        """Process exit: stop every pooled session so its microVM is reclaimed now, not at idle timeout."""
+        sbxs, self._pool_sbx = list(self._pool_sbx), []
+        if not sbxs:
+            return
+
+        async def _close_all() -> None:
+            await asyncio.gather(*(sb.__aexit__(None, None, None) for sb in sbxs), return_exceptions=True)
+
+        def _run() -> None:
             with contextlib.suppress(Exception):
-                asyncio.run(sb.__aexit__(None, None, None))
-        self._lane_sbx.clear()
+                asyncio.run(_close_all())
+
+        # Own thread + own loop: works at interpreter exit and while the rollout loop is still running.
+        t = threading.Thread(target=_run, name="sbx-pool-close")
+        t.start()
+        t.join(timeout=120)
 
     # ---- the episode --------------------------------------------------------
     def _problem_text(self, task) -> str:
@@ -265,88 +331,88 @@ class HarnessPool:
         "command exits 0."
     )
 
-    async def _run_episode(self, wid: int, http, task, sampling_params, base_sample):
+    async def _run_episode(self, wid: int, task, sampling_params, base_sample):
         from . import router_trace
         from .sandbox import make_sandbox
-
-        adapter = self._adapters[wid]
-        adapter_url = self._adapter_urls[wid]
-        engine = self._engine_urls[wid]
 
         # Adapter Bearer session id == the trajectory key; AgentCore runtimeSessionId needs len>=33.
         sid = getattr(base_sample, "session_id", None)
         if not sid or len(sid) < 33:
             sid = f"hs-{task.task_id}-{secrets.token_hex(16)}"
         base_sample.session_id = sid
-        adapter.open_session(sid, sampling_defaults=sampling_params)
 
-        # LANE mode: this worker's own persistent microVM, fresh workdir per episode. Otherwise a
-        # fresh sandbox session per episode, round-robined across the K ARNs by make_sandbox.
-        # Either way the sandbox is sticky for the episode's life (it holds the episode's files).
-        if self.lane_sandbox:
-            sandbox = self._lane_episode(wid)
+        # Sandbox FIRST (any free pooled session, fresh workdir; or a fresh session per episode when
+        # SANDBOX_SESSIONS=0), so an episode waiting for a session does not count as engine load.
+        # Either way the sandbox is sticky for the episode's life (it holds the files).
+        if self.num_sessions > 0:
+            sandbox = self._checkout()
         else:
             from .session_keeper import maybe_keep_warm
-            sandbox = await maybe_keep_warm(make_sandbox(self.sandbox_kind, region=self.region))
-        try:
-            async with sandbox as sb:
-                # ONE [router] record per episode: the join that ties this episode's sandbox
-                # session (also stamped on every [sbx-op]) to the worker that drove it and the
-                # engine it was pinned to. metrics.py checks these are all sticky per episode.
-                router_trace.emit(
-                    task_id=task.task_id,
-                    rollout_id=getattr(base_sample, "index", "?"),
-                    harness_worker=wid,
-                    engine=engine,
-                    engine_pinned=int(len(self._engine_urls) > 0 and engine != ""),
-                    adapter_session=sid,
-                    sandbox_id=getattr(sb, "sandbox_id", "?"),
-                    sandbox_session=getattr(sb, "_session_id", getattr(sb, "_sub", "?")),
-                    runtime_arn=router_trace.arn_tail(getattr(sb, "_arn", None)),
-                    lane=wid if self.lane_sandbox else None,
-                )
-                # DEMO-SPECIFIC metric ([demo] channel): which warm worker drove this episode +
-                # the shared queue depth at pickup time. metrics.py value-counts `worker` (per-worker
-                # episode counts = utilization: the pull-queue balances by availability, no hot-spot)
-                # and aggregates `qdepth` (backlog waiting on harness capacity). This episode does not
-                # go through harness.run_episode, so this is its only [demo] record.
-                # In LANE mode the same record also carries the lane mapping (worker -> engine ->
-                # microVM session) and how many episodes that microVM has served so far.
-                lane = (f" lane={wid} engine={engine} sandbox_session={sb._session_id} "
-                        f"lane_episode={self._lane_episodes[wid]}" if self.lane_sandbox else "")
-                print(f"[demo] worker={wid} qdepth={self._queue.qsize() if self._queue else 0}{lane}",
-                      flush=True)
+            sandbox = _NoWait(await maybe_keep_warm(make_sandbox(self.sandbox_kind, region=self.region)))
+        async with sandbox as (sb, wait_ms):
+            with self._engine() as e:
+                adapter = self._adapters[e]
+                adapter_url = self._adapter_urls[e]
+                engine = self._engine_urls[e]
+                adapter.open_session(sid, sampling_defaults=sampling_params)
+                try:
+                    slot = getattr(sb, "_pool_slot", None)
+                    # ONE [router] record per episode: the join that ties this episode's sandbox
+                    # session (also stamped on every [sbx-op]) to the worker that drove it and the
+                    # engine it ran on. metrics.py checks each episode is sticky to all three.
+                    router_trace.emit(
+                        task_id=task.task_id,
+                        rollout_id=getattr(base_sample, "index", "?"),
+                        harness_worker=wid,
+                        engine=engine,
+                        engine_pinned=int(engine != ""),
+                        adapter_session=sid,
+                        sandbox_id=getattr(sb, "sandbox_id", "?"),
+                        sandbox_session=getattr(sb, "_session_id", getattr(sb, "_sub", "?")),
+                        sandbox_slot=slot,
+                        runtime_arn=router_trace.arn_tail(getattr(sb, "_arn", None)),
+                    )
+                    # DEMO-SPECIFIC metric ([demo] channel): which worker, engine and pooled session
+                    # this episode drew, how long it waited for a free session (sandbox-bound when
+                    # > 0) and the harness queue depth at pickup (harness-bound when > 0).
+                    pooled = (f" sandbox_slot={slot} session_episode={self._slot_episodes[slot]}"
+                              if slot is not None else "")
+                    print(f"[demo] worker={wid} engine={e} engine_inflight={self._inflight[e]} "
+                          f"sandbox_session={getattr(sb, '_session_id', '?')}{pooled} "
+                          f"sandbox_wait_ms={wait_ms:.1f} "
+                          f"qdepth={self._queue.qsize() if self._queue else 0}", flush=True)
 
-                # Seed the workspace exactly like run_episode: family files, then the checker,
-                # then PROBLEM.md — all RELATIVE paths (resolved against the sandbox workdir).
-                for name, content in getattr(task, "setup_files", lambda: {})().items():
-                    await sb.write_file(name, content)
-                await sb.write_file("run_checks.py", task.runner_source())
-                await sb.write_file("PROBLEM.md", self._problem_text(task))
+                    # Seed the workspace exactly like run_episode: family files, then the checker,
+                    # then PROBLEM.md — all RELATIVE paths (resolved against the sandbox workdir).
+                    for name, content in getattr(task, "setup_files", lambda: {})().items():
+                        await sb.write_file(name, content)
+                    await sb.write_file("run_checks.py", task.runner_source())
+                    await sb.write_file("PROBLEM.md", self._problem_text(task))
 
-                # The WARM harness drives the write->run->fix loop, reusing this worker's session.
-                await self._harness.run(
-                    sb,
-                    session_id=sid,
-                    adapter_url=adapter_url,
-                    prompt=self._AGENT_PROMPT,
-                    max_tokens=self.max_tokens,
-                    http=http,
-                )
+                    # The WARM harness drives the write->run->fix loop over the shared http session.
+                    await self._harness.run(
+                        sb,
+                        session_id=sid,
+                        adapter_url=adapter_url,
+                        prompt=self._AGENT_PROMPT,
+                        max_tokens=self.max_tokens,
+                        http=self._http,
+                    )
 
-                # Score with the SAME checker (RLVR — reward from verification, no LLM judge).
-                exit_code, _out, _err = await sb.exec(
-                    getattr(task, "check_command", "python3 run_checks.py"), timeout=120,
-                )
-                reward = task.reward(int(exit_code))
+                    # Score with the SAME checker (RLVR — reward from verification, no LLM judge).
+                    exit_code, _out, _err = await sb.exec(
+                        getattr(task, "check_command", "python3 run_checks.py"), timeout=120,
+                    )
+                    reward = task.reward(int(exit_code))
 
-            # Drain the adapter-captured trajectory into loss-masked GRPO samples (a LIST).
-            return await adapter.finish_session(
-                sid, base_sample=base_sample, reward=float(reward),
-                extra_metadata={"task_id": task.task_id, "solved": reward == 1.0, "harness_worker": wid},
-            )
-        finally:
-            await adapter.drop_session(sid, wait_timeout=30)
+                    # Drain the adapter-captured trajectory into loss-masked GRPO samples (a LIST).
+                    return await adapter.finish_session(
+                        sid, base_sample=base_sample, reward=float(reward),
+                        extra_metadata={"task_id": task.task_id, "solved": reward == 1.0,
+                                        "harness_worker": wid, "engine": e, "sandbox_slot": slot},
+                    )
+                finally:
+                    await adapter.drop_session(sid, wait_timeout=30)
 
     # ---- public entry point -------------------------------------------------
     async def submit(self, task, sampling_params, base_sample):

@@ -30,18 +30,20 @@ The two are architecturally different, and conflating them is the trap:
   mean "spin one up per episode" (that would pay warm-up cost every episode and defeat the point). It
   means run a **fixed pool of W warm workers** and **route** episodes to them.
 
-So the harness tier is `W = HARNESS_WORKERS` warm workers, defaulting to 4 to sit symmetric with the
-demo's 4 inference engines and 4 microVMs — the balanced point of the `min(...)`.
+So the harness tier is `W = HARNESS_WORKERS` warm workers (default **256**), sized **independently**
+of the demo's 4 inference engines and its `M = SANDBOX_SESSIONS` = 256 persistent microVMs.
 
-> **The demo's default: 4 × 4 × 4 lanes (2026-09-23).** `demo_cpu_scale_lanes` (formerly
-> `demo_cpu_harness_scale`) now makes that balance literal: `LANES=4` gives **4 warm workers : 4
-> SGLang engines (TP1, one GPU each on rollout GPUs 4–7) : 4 persistent AgentCore microVMs**, strictly
-> 1:1:1 — worker `w` pins its inference to engine `w` and drives all its episodes on its own sandbox
-> session (opened once, kept for the run, on ARN `w % 2`, fresh `ep-<hex>` workdir per episode).
-> `LANE_SANDBOX=0` restores the per-episode sticky/round-robin sandbox described below, and the
-> per-request router LB below is what you get without the engine pin. `metrics.py`'s
-> `check_stickiness` verifies the lanes are 1:1:1. Verified offline only so far (sweep + a
-> fake-microVM lane test), not yet on AWS.
+> **The demo's default: decoupled tiers, 4 : 256 : 256 (2026-09-25).** `demo_cpu_scale_lanes` runs
+> **4 SGLang engines (TP1, rollout GPUs 4–7) : 256 in-process harness workers : 256 persistent
+> AgentCore microVM sessions**, and none of them is pinned to another. Each episode is joined from
+> three pools when it starts: a free worker pulls it, borrows **any free microVM** from a free-list
+> (fresh `/workspace/ep-<hex>` workdir, `rm -rf` on return, one episode per session at a time), and
+> picks the **least-loaded engine**, which then serves all of that episode's turns. `SANDBOX_SESSIONS=0`
+> falls back to a fresh session per episode. `metrics.py`'s `check_stickiness` reports how freely the
+> tiers mixed (sessions per worker, engines per worker, workers per session). Until 2026-09-25 the
+> demo pinned 4 × 4 × 4 "lanes" (worker `w` : engine `w` : its own microVM); that topology passed an AWS
+> smoke on 2026-09-23. The decoupled pool was verified live at W = M = 64 without a trainer (1280 ops
+> ok, engines 48/48/47/49). [PENDING: 4 : 256 : 256 RL smoke.]
 
 ## The three tiers route and load-balance differently
 
@@ -50,16 +52,18 @@ reaches a replica* differs by tier because their **state** differs:
 
 | Tier | Replicas | State | Load-balancer | Granularity |
 |---|---|---|---|---|
-| **inference** | `E` SGLang engines | **stateless** per request | slime's SGLang **router**, cache-aware | per **request** |
-| **sandbox** | `K` Runtimes | **stateful** (episode's files) | `make_sandbox` **round-robin**, one fresh session/episode | per **episode**, sticky |
+| **inference** | `E` SGLang engines | **stateless** per request (prefix cache per engine) | the episode picks the **least-loaded** engine (ties rotate); without it, slime's router balances per request | per **episode** (per request via the router) |
+| **sandbox** | `M` pooled sessions on `K` Runtimes | **stateful** (episode's files) | a **free-list** of sessions; `SANDBOX_SESSIONS=0`: `make_sandbox` round-robin, fresh session/episode | per **episode**, sticky |
 | **harness** | `W` warm workers | **warm** (conn + trajectory) | shared `asyncio.Queue`, free worker **pulls** | per **episode**, by availability |
 
-- **Inference is per-request LB.** Because an engine holds no episode state, the router is free to
-  send each `/generate` call to the least-loaded / best-cache engine. A single episode's turns can
-  span multiple engines. Finest granularity, most flexible.
+- **Inference can be per-request LB.** Because an engine holds no episode state, slime's router is
+  free to send each `/generate` call to the least-loaded / best-cache engine, so one episode's turns
+  can span engines. The demo instead picks the least-loaded engine once per episode and keeps it,
+  so the growing prompt stays in one engine's prefix cache.
 - **Sandbox is per-episode sticky LB.** A sandbox *does* hold state (the files the agent wrote), so it
-  must stay pinned for the episode's life. We balance by round-robining **which** sandbox a new
-  episode opens on across the `K` ARNs (`_next_runtime_arn`). Coarser granularity, forced by state.
+  must stay pinned for the episode's life. With the pool, an episode borrows any free session and
+  returns it when done; slot `s` lives on `ARN[s % K]`. Without the pool, each episode opens a fresh
+  session round-robined across the `K` ARNs (`_next_runtime_arn`). Coarser granularity, forced by state.
 - **Harness is per-episode pull LB.** A worker is warm but holds no *cross-episode* state, so any free
   worker can take any episode — but only whole episodes (it owns the connection + trajectory for the
   run). We use a **pull** queue (work-stealing), not push/hash, because multi-turn agentic episodes

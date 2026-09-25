@@ -22,7 +22,7 @@ BUILDX_BUILDER="${BUILDX_BUILDER:-acsbuilder}"
 # shellcheck disable=SC1091
 VARIANT="${VARIANT:-}"
 source "$HERE/deploy/demo.env"
-# VARIANT (optional, demo-specific; e.g. demo_cpu_tasks VARIANT=bigimage) keeps its own env files.
+# VARIANT (optional, demo-specific image/env variant) keeps its own env files.
 IMAGES_ENV="$HERE/deploy/images${VARIANT:+.$VARIANT}.env"    # written by 3_push_ecr.sh
 RUNTIME_ENV="$HERE/deploy/runtime${VARIANT:+.$VARIANT}.env"  # written by 4_deploy_runtime.sh
 
@@ -30,7 +30,7 @@ log() { printf '\n>>> [%s] %s\n' "$DEMO" "$*"; }
 die() { printf '!! [%s] %s\n' "$DEMO" "$*" >&2; exit 1; }
 
 # Env vars forwarded into the container (run knobs + everything the sandbox/farm reads).
-PASS_RE='^(NR|RB|NS|CONC|TEMP|MODE|DATASET|VARIANT|FAMILY|FARM|LOCAL_GPU|LANES|LANE_SANDBOX|FAMILIES|BALANCED|INFER_CONC|HARNESS_WORKERS|SLIME_CUDA_VISIBLE|SLIME_NUM_GPUS|SANDBOX|EVAL_INTERVAL|EVAL_NS|SAVE_INTERVAL|SAVE|ACTOR_GPUS|ROLLOUT_GPUS|CKPT_BASE|LIMIT|REPEAT|REBUILD|AWS_REGION|AWS_BEARER_TOKEN_BEDROCK|AGENTCORE_[A-Z0-9_]+|B4_[A-Z0-9_]+|TB_[A-Z0-9_]+|SNAPSHOT_[A-Z0-9_]+|RECYCLE_[A-Z0-9_]+|HEARTBEAT|HEARTBEAT_[A-Z0-9_]+|ADAPTER_[A-Z0-9_]+|SANDBOX_[A-Z0-9_]+)$'
+PASS_RE='^(NR|RB|NS|CONC|TEMP|MODE|DATASET|VARIANT|FAMILY|FARM|LOCAL_GPU|FAMILIES|BALANCED|INFER_CONC|MAX_RESPONSE_LEN|HARNESS_WORKERS|SLIME_CUDA_VISIBLE|SLIME_NUM_GPUS|SANDBOX|EVAL_INTERVAL|EVAL_NS|SAVE_INTERVAL|SAVE|ACTOR_GPUS|ROLLOUT_GPUS|CKPT_BASE|LIMIT|REPEAT|REBUILD|AWS_REGION|AWS_BEARER_TOKEN_BEDROCK|AGENTCORE_[A-Z0-9_]+|B4_[A-Z0-9_]+|TB_[A-Z0-9_]+|SNAPSHOT_[A-Z0-9_]+|RECYCLE_[A-Z0-9_]+|HEARTBEAT|HEARTBEAT_[A-Z0-9_]+|ADAPTER_[A-Z0-9_]+|SANDBOX_[A-Z0-9_]+)$'
 
 inside_container() { [ -d "$C_DEMO_DIR" ] && ! command -v docker >/dev/null 2>&1; }
 

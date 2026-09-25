@@ -190,7 +190,7 @@ Demos}
 \protect\hypertarget{purpose-and-thesis}{}
 A \textbf{hands-on guide for AWS customers doing agentic RL}, grounded
 in a working \textbf{slime + AgentCore} project, the \textbf{official
-AgentCore docs} {[}D1{]} and \textbf{6 runnable demos}.
+AgentCore docs} {[}D1{]} and \textbf{7 runnable demos + 1 experimental}.
 
 \begin{itemize}
 \tightlist
@@ -445,7 +445,8 @@ compute unit per session.}
 \end{enumerate}
 
 Every demo wraps these as \texttt{2\_build\_image.sh} →
-\texttt{3\_push\_ecr.sh} → \texttt{4\_deploy\_runtime.sh} (§4).
+\texttt{3\_push\_ecr.sh} → \texttt{4\_deploy\_runtime.sh} (§4);
+\texttt{demo\_cpu\_tasks} needs none of them.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{The GPU limit --- one whole GPU per session}
@@ -537,41 +538,18 @@ Used by
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-\texttt{agentcore} & managed Code Interpreter microVM & offline
-comparisons \\
-\texttt{agentcore-runtime} & custom Runtime, one session per episode &
-CPU demos \\
-\texttt{agentcore-ray-farm} & one shared \texttt{runtimeSessionId} + a
-per-episode \texttt{sub\_session} & \texttt{demo\_gpu\_single},
-\texttt{VARIANT=bigimage} \\
+\texttt{agentcore} & managed Code Interpreter microVM, no image &
+\texttt{demo\_cpu\_tasks} (\textbf{default}) \\
+\texttt{agentcore-runtime} & your own Runtime, one fresh session per
+episode & \texttt{demo\_cpu\_terminalbench},
+\texttt{demo\_cpu\_scale\_lanes}, tasks opt-in \\
+\texttt{agentcore-ray-farm} & shared \texttt{runtimeSessionId}(s) + a
+per-episode \texttt{sub\_session} & \texttt{demo\_cpu\_instance\_pool},
+\texttt{demo\_gpu\_single} \\
 local farm (\texttt{:8080}) & same contract on local GPUs 6,7 &
-\texttt{demo\_gpu\_farm}, \texttt{LOCAL\_GPU=1} \\
+\texttt{demo\_gpu\_farm\_fractional}, \texttt{demo\_gpu\_farm\_whole} \\
 \bottomrule\noalign{}
 \end{longtable}
-\end{frame}
-
-\begin{frame}[fragile,allowframebreaks]{Warm reuse on Instances}
-\protect\hypertarget{warm-reuse-on-instances}{}
-The Instances substrate cold-boots in \textasciitilde60--80 s, so a
-fresh instance per episode lets boot time dominate. Instead:
-
-\begin{itemize}
-\tightlist
-\item
-  \textbf{All episodes share one \texttt{runtimeSessionId}} → one warm
-  instance, cold boot paid \textbf{once per run}.
-\item
-  \textbf{Each episode gets a \texttt{sub\_session}} with a fresh
-  isolated working dir (CPU isolates caches too; GPU keeps the CUDA
-  kernel cache warm).
-\item
-  microVMs boot in \textasciitilde1--2 s, so they are \textbf{not}
-  reused: one fresh microVM per episode.
-\end{itemize}
-
-\textbf{Measured (m5, \texttt{VARIANT=bigimage}):} cold boots
-\textbf{201 → 1}; 1626 warm ops at \textasciitilde120--350 ms vs
-\textasciitilde65--73 s cold.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{Networking --- pull, don't expose}
@@ -592,313 +570,1188 @@ tcp/\texttt{ADAPTER\_PORT}, source = the runtime SG, under
 create with a \textbf{null reason}.
 \end{frame}
 
-\hypertarget{demos}{%
-\section{4 · Demos}\label{demos}}
+\hypertarget{the-demos-one-storyline}{%
+\section{4 · The demos --- one
+storyline}\label{the-demos-one-storyline}}
 
-\begin{frame}[fragile,allowframebreaks]{Demo catalogue --- 6 demos}
-\protect\hypertarget{demo-catalogue-6-demos}{}
-\textbf{3 CPU + 2 GPU + 1 experimental.} Run any demo with
-\texttt{cd\ code/demos/\textless{}demo\textgreater{}} then
-\texttt{1\_prepare\_data.sh} \ldots{} \texttt{6\_cleanup.sh} on the
-host. Numbers are 10-step smokes, not convergence.
+\begin{frame}[fragile,allowframebreaks]{Storyline --- 7 demos + 1 experimental}
+\protect\hypertarget{storyline-7-demos-1-experimental}{}
+Each demo runs as \texttt{cd\ code/demos/\textless{}demo\textgreater{}}
+then \texttt{1\_prepare\_data.sh} \ldots{} \texttt{6\_cleanup.sh}.
+Numbers are 10-step smokes (\texttt{NR=11}), not convergence.
 
 \scriptsize
 
 \begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2941}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2059}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5000}}@{}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.4583}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2083}}@{}}
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
+Question
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 Demo
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 Substrate
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Use case
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-\texttt{demo\_cpu\_tasks} & microVM (\texttt{bigimage}: m5) &
-\textbf{Reference:} RLVR on \textasciitilde19 datasets or a mix \\
-\texttt{demo\_cpu\_terminalbench} & microVM, \textasciitilde229 images &
-one Runtime per task, fresh VM, pre-opened \\
-\texttt{demo\_cpu\_scale\_lanes} & 4 microVMs & 4 harness : 4 engines :
-4 VMs, 1:1:1 \\
-\texttt{demo\_gpu\_single} & \texttt{g6} Instance & KernelBench on one
-warm g6 (+ snapshot) \\
-\texttt{demo\_gpu\_farm} & local Ray farm & GPU sharing:
-\texttt{FARM=fractional} or \texttt{whole} \\
-\emph{\texttt{demo\_cpu\_branching}} & microVM + CLI &
-\textbf{experimental, blocked:} fan-out \\
+Which tasks does the literature use? & task table (§5) & --- \\
+Do most train on the \textbf{default} runtime? &
+\texttt{demo\_cpu\_tasks} & Code Interpreter \\
+\textbf{Custom images} in large numbers? &
+\texttt{demo\_cpu\_terminalbench} & \textasciitilde229 Runtimes \\
+Cut \textbf{launch cost} (pre-open, heartbeat)? &
+\texttt{…terminalbench/warmstart/} & microVM \\
+Big image, warm pool, \textbf{isolated} sessions? &
+\texttt{demo\_cpu\_instance\_pool} & m5 Instances \\
+\textbf{Scale} the tiers independently? &
+\texttt{demo\_cpu\_scale\_lanes} & 256 microVMs \\
+GPU: one warm GPU Instance & \texttt{demo\_gpu\_single} & g6 Instance \\
+GPU: \textbf{one GPU split} by Ray &
+\texttt{demo\_gpu\_farm\_fractional} & 1 GPU, 0.5 + 0.5 \\
+GPU: \textbf{one whole GPU} per session &
+\texttt{demo\_gpu\_farm\_whole} & GPUs 6,7 \\
+\emph{Experimental:} episode → many samples &
+\emph{\texttt{demo\_cpu\_branching}} & microVM + CLI \\
 \bottomrule\noalign{}
 \end{longtable}
-
-\texttt{demo\_cpu\_tasks} also covers \texttt{VARIANT=imagepool} (3
-images), \texttt{compare\_backends.py} (custom vs managed Runtime);
-\texttt{HEARTBEAT=1} works in every demo (all merged 2026-09-25).
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_tasks} --- the reference}
-\protect\hypertarget{demo_cpu_tasks-the-reference}{}
-\textbf{Use case.} RLVR on any dataset through one selector: real HF
-\texttt{mbpp} (default) \texttt{gsm8k} \texttt{math500}
-\texttt{deepscaler} \texttt{humaneval} \texttt{gretelsql}
-\texttt{hotpotqa} \texttt{xlam} \texttt{mcp}, the synthetic family zoo
-(\texttt{math} \texttt{sql} \texttt{ctf} \texttt{rag} \ldots), a comma
-list, or \texttt{mixed}.
+\hypertarget{sandbox-tasks-from-the-literature}{%
+\section{5 · Sandbox tasks from the
+literature}\label{sandbox-tasks-from-the-literature}}
 
-\textbf{Knobs.} \texttt{DATASET=} ·
-\texttt{VARIANT=bigimage\textbar{}imagepool} · \texttt{HEARTBEAT=1} ·
-\texttt{NR} / \texttt{RB} / \texttt{NS} · \texttt{K} (Runtimes
-round-robin) · \texttt{CONC}.
+\begin{frame}[fragile,allowframebreaks]{Literature tasks that need no custom image}
+\protect\hypertarget{literature-tasks-that-need-no-custom-image}{}
+Every row is self-describing:
+\texttt{metadata.task\ =\ \{family,\ task\_id,\ spec,\ …\}} rebuilds its
+seed files, hidden checker and reward, so one harness trains all of
+them.
 
+\scriptsize
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2821}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5128}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2051}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Task (\texttt{DATASET=})
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Dataset (Hugging Face)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Checker deps
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+code: \texttt{mbpp}, \texttt{humaneval} & google-research-datasets/mbpp
+· openai/openai\_humaneval & stdlib \\
+math: \texttt{gsm8k}, \texttt{math500} & openai/gsm8k ·
+HuggingFaceH4/MATH-500 & stdlib \\
+math: \texttt{deepscaler} & agentica-org/DeepScaleR-Preview-Dataset &
+stdlib \\
+text-to-SQL: \texttt{gretelsql} & gretelai/synthetic\_text\_to\_sql &
+\texttt{sqlite3} \\
+RAG / multi-hop: \texttt{hotpotqa} & hotpotqa/hotpot\_qa (distractor) &
+files in \texttt{./docs} \\
+tool calling: \texttt{xlam}, \texttt{mcp} &
+minpeter/xlam-function-calling-60k-parsed · Team-ACE/ToolACE & stdlib \\
+synthetic zoo (swe, ctf, regex, planning, config, data, toolcall) &
+built in (\texttt{task\_families.py}) & stdlib \\
+data science: \texttt{libs} (pandas / scipy / sklearn) & built in &
+preinstalled in the Code Interpreter \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Literature tasks that do need a custom image}
+\protect\hypertarget{literature-tasks-that-do-need-a-custom-image}{}
+The default sandbox has \textbf{no git and no internet}, so nothing can
+be \texttt{pip\ install}-ed at run time. A custom image is needed only
+when the \textbf{environment} differs. A missing package is one more
+reason: bake it into your own Runtime image
+(\texttt{SANDBOX=agentcore-runtime}). Everything else runs on the
+default with \textbf{no Dockerfile, no ECR push, no Runtime to deploy}.
+
+\small
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2245}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2449}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2449}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2857}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Task
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Source
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Why
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Where
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Terminal-Bench (terminal / SWE) & laude-institute/terminal-bench
+(\textasciitilde229) & each task pins its own OS + tools &
+\texttt{demo\_cpu\_terminalbench} \\
+big stack (torch + scientific) & any task & \textasciitilde4 GB image
+\textgreater{} \textasciitilde2 GB microVM cap &
+\texttt{demo\_cpu\_instance\_pool} (m5) \\
+CUDA kernels: KernelBench {[}7{]} & ScalingIntelligence / KernelBench &
+CUDA only on GPU Instances & \texttt{demo\_gpu\_*} (g6 / local) \\
+agent fan-out (experimental) & real Claude Code CLI & node + CLI in the
+sandbox & \texttt{demo\_cpu\_branching} \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\hypertarget{most-tasks-train-on-the-default-agentcore-runtime}{%
+\section{6 · Most tasks train on the default AgentCore
+runtime}\label{most-tasks-train-on-the-default-agentcore-runtime}}
+
+\begin{frame}[fragile,allowframebreaks]{The default sandbox --- what is inside (probed
+live)}
+\protect\hypertarget{the-default-sandbox-what-is-inside-probed-live}{}
+\texttt{SANDBOX=agentcore} = the managed \textbf{AgentCore Code
+Interpreter} {[}D6{]}: one isolated microVM session per episode
+(\texttt{StartCodeInterpreterSession} → \texttt{InvokeCodeInterpreter}
+per op → stop). No ARN, no IAM execution role.
+
+\textbf{Live probe, us-west-2, 2026-09-25:}
+
+\begin{itemize}
+\tightlist
+\item
+  Python 3.12.13 on aarch64.
+\item
+  numpy 1.26.4, pandas 2.3.1, scipy 1.16.0, scikit-learn 1.5.0, sympy,
+  torch 2.3.0 (CPU), statsmodels, networkx, matplotlib, requests,
+  sqlite3.
+\item
+  gcc 11.5, node v24. \textbf{No} git, \textbf{no} internet.
+\end{itemize}
+
+\textbf{All 13 task families} scored reward \textbf{1.0} on it with a
+MockPolicy episode
+(\texttt{SANDBOX=agentcore\ python3\ smoke\_remote\_families.py}),
+including the data-science families that used to need 3 custom images.
+
+\textbf{Op latency (4 concurrent opens):} start\_session 0.87--2.0 s ·
+write \textasciitilde82 ms · exec \textasciitilde251 ms · read
+\textasciitilde75 ms · stop \textasciitilde92 ms.
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Why most tasks need no image}
+\protect\hypertarget{why-most-tasks-need-no-image}{}
+\begin{itemize}
+\tightlist
+\item
+  \textbf{The sandbox contract is task-agnostic:} \texttt{write\_file} /
+  \texttt{exec} / \texttt{read\_file}. The task's \emph{seed files and
+  checker travel with the episode}; they are written into the session at
+  episode start, not baked into an image.
+\item
+  \textbf{The checker needs only what the environment already has.}
+  Math, code, SQL, RAG and tool-call checkers are stdlib Python (plus
+  \texttt{sqlite3}); the data-science checkers need
+  pandas/scipy/sklearn, which are preinstalled.
+\item
+  \textbf{Nothing persists between episodes}, so there is no environment
+  to build: each session starts clean and is stopped when its episode
+  ends.
+\item
+  \textbf{An image only encodes the environment}, never the task. You
+  need one only when the environment itself differs (see the previous
+  slide).
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Image routing --- how an episode finds its
+sandbox}
+\protect\hypertarget{image-routing-how-an-episode-finds-its-sandbox}{}
 \begin{Shaded}
 \begin{Highlighting}[]
-\FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 3\_push\_ecr.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh}
-\VariableTok{DATASET}\OperatorTok{=}\NormalTok{gsm8k }\FunctionTok{bash}\NormalTok{ 5\_run.sh        }\CommentTok{\# or DATASET=gsm8k,gretelsql,hotpotqa / DATASET=mixed}
-\FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
+\NormalTok{task }\OperatorTok{=}\NormalTok{ task\_from\_dict(sample.metadata[}\StringTok{"task"}\NormalTok{])        }\CommentTok{\# family + spec from the data row}
+\NormalTok{image }\OperatorTok{=}\NormalTok{ task.image                                    }\CommentTok{\# ClassVar per family: "cpu", "datasci", "tb{-}\textless{}task\textgreater{}", ...}
+\ControlFlowTok{async} \ControlFlowTok{with}\NormalTok{ make\_sandbox(os.environ[}\StringTok{"SANDBOX"}\NormalTok{], image}\OperatorTok{=}\NormalTok{image) }\ImportTok{as}\NormalTok{ sb: ...}
+\CommentTok{\# SANDBOX=agentcore{-}runtime only:}
+\KeywordTok{def}\NormalTok{ \_runtime\_arn\_for\_image(image):}
+\NormalTok{    arn }\OperatorTok{=}\NormalTok{ json.loads(os.environ.get(}\StringTok{"AGENTCORE\_SANDBOX\_RUNTIME\_ARN\_BY\_IMAGE"}\NormalTok{, }\StringTok{"}\SpecialCharTok{\{\}}\StringTok{"}\NormalTok{)).get(image)}
+    \ControlFlowTok{return}\NormalTok{ arn }\KeywordTok{or}\NormalTok{ \_next\_runtime\_arn()                 }\CommentTok{\# else round{-}robin over ...\_ARNS}
 \end{Highlighting}
 \end{Shaded}
 
-\textbf{Metrics (held-out eval).} \texttt{mbpp} \textbf{trained}
-(convergence curve + ablation), smoke 0.69 · \texttt{math} 1.00 ·
-\texttt{gsm8k} 0.90 · \texttt{math500} 0.89 · \texttt{deepscaler} 0.78 ·
-\texttt{humaneval} 0.85 · \texttt{gretelsql} 0.60 · \texttt{hotpotqa}
-0.65 · \texttt{xlam} 1.00 · \texttt{mcp} 1.00 · \texttt{mixed} 0.67.
+\begin{itemize}
+\tightlist
+\item
+  \texttt{metadata.task} → \texttt{task.image} →
+  \texttt{make\_sandbox(image=)} → \texttt{\_runtime\_arn\_for\_image} →
+  Runtime ARN.
+\item
+  \textbf{AgentCore never sees the task.} It sees one ARN (an image) and
+  one session id. \textbf{Runtimes track images, not tasks.}
+\item
+  On the default Code Interpreter the tag is ignored: every task shares
+  the one managed environment.
+\item
+  Terminal-Bench is the same mechanism at scale (a
+  \textasciitilde229-entry map), but \textbf{strict}: an unmapped task
+  is an error, never a fallback.
+\end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_tasks}
-\texttt{VARIANT=bigimage} --- side note}
-\protect\hypertarget{demo_cpu_tasks-variantbigimage-side-note}{}
-\textbf{Use case.} A \textasciitilde4 GB sandbox image, over the 2 GB
-microVM cap, on a warm \textbf{m5} CPU capacity-provider Instance
-(amd64). Same trainer, warm-shared session, fresh env per episode.
+\begin{frame}[fragile,allowframebreaks]{What \texttt{acs\_tasks\_cpu} is --- the opt-in
+own Runtime}
+\protect\hypertarget{what-acs_tasks_cpu-is-the-opt-in-own-runtime}{}
+\texttt{acs\_tasks\_cpu} is the Runtime that \texttt{demo\_cpu\_tasks}
+deploys \textbf{only if you opt in} with
+\texttt{SANDBOX=agentcore-runtime}:
+
+\begin{itemize}
+\tightlist
+\item
+  image \texttt{acs-tasks-cpu} = \texttt{python:3.12-slim} + the sandbox
+  server \texttt{sandbox\_server\_agent.py} (stdlib only);
+\item
+  one fresh microVM session per episode, reached with
+  \texttt{invoke\_agent\_runtime};
+\item
+  \texttt{AGENTCORE\_SANDBOX\_RUNTIME\_ARNS} fans episodes out
+  round-robin over K Runtimes (the Runtime-count ablation).
+\end{itemize}
 
 \begin{Shaded}
 \begin{Highlighting}[]
-\VariableTok{VARIANT}\OperatorTok{=}\NormalTok{bigimage }\FunctionTok{bash}\NormalTok{ 2\_build\_image.sh }\KeywordTok{\&\&} \VariableTok{VARIANT}\OperatorTok{=}\NormalTok{bigimage }\FunctionTok{bash}\NormalTok{ 3\_push\_ecr.sh}
-\VariableTok{VARIANT}\OperatorTok{=}\NormalTok{bigimage }\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh   }\CommentTok{\# {-}\textgreater{} deploy/runtime.bigimage.env}
-\VariableTok{VARIANT}\OperatorTok{=}\NormalTok{bigimage }\FunctionTok{bash}\NormalTok{ 5\_run.sh}
-\VariableTok{VARIANT}\OperatorTok{=}\NormalTok{bigimage }\VariableTok{DELETE\_CP}\OperatorTok{=}\NormalTok{1 }\FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
+\FunctionTok{bash}\NormalTok{ 5\_run.sh                      }\CommentTok{\# default: Code Interpreter, 2/3/4/6 no{-}ops}
+\VariableTok{SANDBOX}\OperatorTok{=}\NormalTok{agentcore{-}runtime }\FunctionTok{bash}\NormalTok{ 2\_build\_image.sh   }\CommentTok{\# then 3\_push\_ecr, 4\_deploy}
+\VariableTok{SANDBOX}\OperatorTok{=}\NormalTok{agentcore{-}runtime }\FunctionTok{bash}\NormalTok{ 5\_run.sh     }\CommentTok{\# then 6\_cleanup}
 \end{Highlighting}
 \end{Shaded}
 
-\textbf{Metrics.} Trained on m5, \texttt{eval} \textbf{0.76}. Cold boots
-\textbf{201 → 1} (8 first-wave opens share one boot within 7.9 s; 215
-\texttt{open}/\texttt{close} pairs, each wiping its own dir).
+\textbf{Why you would:} extra packages, your own server logic, or a
+longer idle timeout. It is stdlib-only, so \texttt{DATASET=libs} scores
+0 there unless you add the libraries. \texttt{compare\_backends.py}
+shows the same episode gives the same reward on both backends.
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_tasks}
-\texttt{VARIANT=imagepool} --- a pool of images}
-\protect\hypertarget{demo_cpu_tasks-variantimagepool-a-pool-of-images}{}
-\textbf{Use case.} Mixed-task RL where families need different software:
-a pool of 3 custom images (pandas / scipy / sklearn), one Runtime each,
-and each episode routed to its family's image. (Was
-\texttt{demo\_cpu\_imagepool}.)
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_tasks} --- use case · why ·
+design}
+\protect\hypertarget{demo_cpu_tasks-use-case-why-design}{}
+\small
 
-\textbf{Knobs.} \texttt{AGENTCORE\_SANDBOX\_RUNTIME\_ARN\_BY\_IMAGE}
-(JSON image → ARN, written by step 4) · \texttt{IMAGES=} (which images
-to build) · \texttt{DATASET=imagepool} (set by the variant).
+\textbf{Use case covered}
+
+\begin{itemize}
+\tightlist
+\item
+  RLVR on literature datasets: code, math, text-to-SQL, RAG, tool
+  calling, data science (\texttt{DATASET=}).
+\end{itemize}
+
+\textbf{Why this demo}
+
+\begin{itemize}
+\tightlist
+\item
+  Most tasks need \textbf{no image}: the Code Interpreter already has
+  the checker deps. The lowest-ops entry point; every later demo adds
+  one thing the default can't do.
+\end{itemize}
+
+\textbf{Design considerations}
+
+\begin{itemize}
+\tightlist
+\item
+  Code Interpreter default: steps 2/3/4/6 are no-ops (no build, deploy
+  or cleanup); own Runtime is opt-in
+  (\texttt{SANDBOX=agentcore-runtime}).
+\item
+  One harness for all tasks: self-describing rows + \texttt{task.image}
+  routing. \texttt{DATASET=a,b,c} mixes; GRPO normalizes per group, so
+  reward scales never mix.
+\item
+  Heartbeat is a no-op here → the lever is the session timeout; the
+  invoke-rate quota (30/s) binds first.
+\item
+  Rejected: a 3-image pool for pandas / scipy / sklearn (the old
+  imagepool); the Code Interpreter has them.
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_tasks} --- train on the
+default runtime}
+\protect\hypertarget{demo_cpu_tasks-train-on-the-default-runtime}{}
+One selector: \texttt{DATASET=mbpp} (default) · \texttt{gsm8k} ·
+\texttt{math500} · \texttt{deepscaler} · \texttt{humaneval} ·
+\texttt{gretelsql} · \texttt{hotpotqa} · \texttt{xlam} · \texttt{mcp} ·
+\texttt{libs} · zoo · \texttt{a,b,c} · \texttt{mixed}.
 
 \begin{Shaded}
 \begin{Highlighting}[]
-\BuiltInTok{cd}\NormalTok{ code/demos/demo\_cpu\_tasks}
-\BuiltInTok{export} \VariableTok{VARIANT}\OperatorTok{=}\NormalTok{imagepool}
-\FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh    }\CommentTok{\# 3 arm64 images}
-\FunctionTok{bash}\NormalTok{ 3\_push\_ecr.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh     }\CommentTok{\# {-}\textgreater{} ARN\_BY\_IMAGE map}
+\FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh}
+\VariableTok{DATASET}\OperatorTok{=}\NormalTok{gsm8k }\FunctionTok{bash}\NormalTok{ 5\_run.sh                    }\CommentTok{\# no build, no push, no deploy}
+\VariableTok{DATASET}\OperatorTok{=}\NormalTok{libs  }\FunctionTok{bash}\NormalTok{ 5\_run.sh                    }\CommentTok{\# pandas/scipy/sklearn, no image}
+\end{Highlighting}
+\end{Shaded}
+
+\textbf{Metrics on the Code Interpreter (2026-09-25):}
+
+\begin{itemize}
+\tightlist
+\item
+  \texttt{gsm8k}: \texttt{raw\_reward} 0.81--1.0 per step;
+  \textbf{\texttt{eval/gsm8k} 0.90}; 425 sessions, \textbf{0 infra
+  errors}.
+\item
+  \texttt{libs}: \texttt{raw\_reward} ≈ 1.0; \textbf{\texttt{eval/libs}
+  1.0}; 1883 sandbox ops, all ok; step \textasciitilde45--53 s.
+\item
+  Open p50 \textasciitilde1.8 s / p95 \textasciitilde3.5 s (largest
+  cost); \texttt{write\_file} 69 ms; \texttt{libs} exec 1.34 s. Both
+  near-saturated: proves the path, not a curve.
+\end{itemize}
+
+\textbf{Earlier, own CPU Runtime} (09-18/19): \texttt{mbpp} 0.69
+(trained) · \texttt{math} 1.00 · \texttt{math500} 0.89 ·
+\texttt{deepscaler} 0.78 · \texttt{humaneval} 0.85 · \texttt{gretelsql}
+0.60 · \texttt{hotpotqa} 0.65 · \texttt{xlam} 1.00 · \texttt{mcp} 1.00 ·
+\texttt{mixed} 0.67.
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Quotas and concurrency on the default runtime}
+\protect\hypertarget{quotas-and-concurrency-on-the-default-runtime}{}
+\begin{itemize}
+\tightlist
+\item
+  The \textbf{invoke rate binds first}: at \textasciitilde8 ops and
+  \textasciitilde20 s per episode, 30/s allows \textasciitilde75
+  episodes in flight. Raise it before \texttt{CONC\ ≳\ 32}.
+\item
+  \textbf{Session timeout, not heartbeat:} a Code Interpreter session
+  ends at the \texttt{sessionTimeoutSeconds} set at start, whatever
+  traffic it gets. The demo sets
+  \texttt{AGENTCORE\_CI\_SESSION\_TIMEOUT=3600} (max 8 h); sessions stop
+  at episode end, so it costs nothing. \texttt{HEARTBEAT=1} is a warned
+  no-op here.
+\end{itemize}
+
+\small
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3939}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1818}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1212}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3030}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Quota (us-west-2 default)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Code
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Default
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+This demo
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Concurrent Code Interpreter sessions & L-CAF6F552 & 1000 &
+\texttt{CONC\ ×\ engines} = 4 × 2 = \textbf{8} \\
+StartCodeInterpreterSession rate & L-6B09F374 & 30/s & about one per
+episode \\
+InvokeCodeInterpreter rate & L-04A719E9 & 30/s & \textasciitilde6--10
+per episode \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\hypertarget{custom-images-at-scale-terminal-bench}{%
+\section{7 · Custom images at scale ---
+Terminal-Bench}\label{custom-images-at-scale-terminal-bench}}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_terminalbench} --- use case ·
+why · design}
+\protect\hypertarget{demo_cpu_terminalbench-use-case-why-design}{}
+\small
+
+\textbf{Use case covered}
+
+\begin{itemize}
+\tightlist
+\item
+  Terminal / SWE agents where each task pins its \textbf{own OS image}
+  (Terminal-Bench, \textasciitilde229 single-container tasks).
+\end{itemize}
+
+\textbf{Why this demo}
+
+\begin{itemize}
+\tightlist
+\item
+  Custom images \textbf{at scale}: one image + Runtime per task, strict
+  routing. Not in \texttt{demo\_cpu\_tasks}: there tasks share one
+  environment; here the environment \emph{is} the task.
+\end{itemize}
+
+\textbf{Design considerations}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Fresh microVM per episode:} tasks mutate the whole OS, so the
+  session is the isolation boundary; never reused.
+\item
+  Oracle validation (null FAILS, reference PASSES) drops broken tasks:
+  218 deployed → 166 usable.
+\item
+  Look-ahead pre-open hides the cold start at the price of idle microVMs
+  (\texttt{TB\_PREOPEN\_BATCHES}); always-on heartbeat keeps them alive.
+\item
+  Single-container tasks only; 64 ahead ≪ the 5000-session quota.
+  \texttt{warmstart/} probes both mechanisms without a GPU.
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_terminalbench} --- one image +
+Runtime per task}
+\protect\hypertarget{demo_cpu_terminalbench-one-image-runtime-per-task}{}
+Terminal/SWE agents on \textbf{Terminal-Bench}: each task pins its own
+OS, so each gets its \textbf{own image + Runtime} (\textasciitilde229)
+and every episode a \textbf{brand-new microVM}.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Strict routing:} \texttt{task.image} →
+  \texttt{tasks/arn\_by\_image.json}; an unmapped task is an error.
+\item
+  \textbf{Oracle check first:} the null solution must FAIL and the
+  reference must PASS on the deployed image.
+\item
+  \textbf{Stop on exit:} \texttt{StopRuntimeSession} frees the quota
+  slot when the episode ends.
+\end{itemize}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh  }\CommentTok{\# one image per task}
+\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh }\KeywordTok{\&\&} \ExtensionTok{python3}\NormalTok{ validate\_oracle.py }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh}
 \FunctionTok{bash}\NormalTok{ 5\_run.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
 \end{Highlighting}
 \end{Shaded}
 
-\textbf{Metrics.} Smoke (as \texttt{demo\_cpu\_imagepool}) held-out eval
-\textbf{1.0} (now \texttt{eval/imagepool}); all 3 images routed from one
-batch.
+\textbf{Metrics.} 218/229 Runtimes deployed, \textbf{166 usable} (135
+train + 31 eval). Smoke (2026-09-23): 382 episodes, \textbf{0 infra
+errors}, 100 \% warm hit; reward sparse (4/382 solves, eval 0.0).
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_terminalbench}}
-\protect\hypertarget{demo_cpu_terminalbench}{}
-\textbf{Use case.} Terminal/SWE agents on \textbf{Terminal-Bench}: one
-image + Runtime per task (\textasciitilde229), a \textbf{brand-new
-microVM per episode} (tasks change the whole OS), and a look-ahead data
-source that \textbf{pre-opens} the next 2 batches' sessions to hide the
-cold start.
+\hypertarget{cutting-launch-cost-pre-open-and-heartbeat}{%
+\section{8 · Cutting launch cost --- pre-open and
+heartbeat}\label{cutting-launch-cost-pre-open-and-heartbeat}}
 
-\textbf{Knobs.} \texttt{TB\_PREOPEN\_BATCHES} (default 2 → 64 sessions
-booted ahead) · \texttt{HARNESS\_WORKERS} · \texttt{TB\_EXEC\_TIMEOUT}.
+\begin{frame}[fragile,allowframebreaks]{Pre-open --- boot the next batches while this one
+runs}
+\protect\hypertarget{pre-open-boot-the-next-batches-while-this-one-runs}{}
+slime hands the pool only the current batch, so the pool alone cannot
+look ahead. A \textbf{look-ahead data source}
+(\texttt{tb\_lookahead\_source.py}, via \texttt{-\/-data-source-path})
+replays slime's deterministic prompt order and tells the pool the
+episodes of the \textbf{next \texttt{TB\_PREOPEN\_BATCHES} rollouts}:
+
+\begin{itemize}
+\tightlist
+\item
+  \texttt{TB\_PREOPEN\_BATCHES=2} (default) → \texttt{2\ ×\ RB\ ×\ NS} =
+  \textbf{64} sessions kept booted ahead; \texttt{1} → 32; \texttt{0} →
+  off.
+\item
+  \texttt{TerminalBenchPool.\_refill} boots per-task sessions; a worker
+  takes any ready session for its task.
+\item
+  \texttt{{[}demo{]}\ open\_wait\_ms} = the cold start still on the
+  critical path; \texttt{preopen\_idle\_ms} = the price.
+\end{itemize}
+
+\textbf{Smoke:} \texttt{open\_wait\_ms} p95 \textbf{0} (boot fully
+hidden), open p50 0.66 s, but \texttt{preopen\_idle\_ms} p50 7.3 min vs
+episode p50 21 s → \textbf{\textasciitilde95 \% of pre-opened microVM
+time idle}. Next: \texttt{TB\_PREOPEN\_BATCHES=1}.
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Warm-start probe
+(\texttt{terminalbench/warmstart/})}
+\protect\hypertarget{warm-start-probe-terminalbenchwarmstart}{}
+Host-only, \textasciitilde7 min: 24 MockPolicy \texttt{sql} episodes in
+batches of 6, \textbf{cold} (open at episode start) vs \textbf{preopen}
+(next batch booted during this one); all rewards 1.0.
+\texttt{BACKENDS=runtime,codeinterpreter\ bash\ warmstart/run\_warmstart.sh}.
+
+\textbf{Reading:} pre-open takes the boot off the critical path; only
+the first batch waits. The price is idle held session time, the same
+trade-off as \texttt{preopen\_idle\_ms} at full scale.
+
+\small
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.2368}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1579}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1316}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1579}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1316}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1842}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Backend
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Mode
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Wait p50
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Waited for boot
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Idle held
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Makespan
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+own Runtime & cold & 774 ms & 24/24 & 0 s & 31.9 s \\
+own Runtime & preopen & \textbf{5 ms} & 8/24 & 75 s & 25.5 s
+(\textbf{−20 \%}) \\
+Code Interpreter & cold & 1715 ms & 24/24 & 0 s & 28.7 s \\
+Code Interpreter & preopen & \textbf{0 ms} & 6/24 & 70 s & 24.3 s
+(\textbf{−15 \%}) \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Heartbeat --- surviving the weight-sync stall}
+\protect\hypertarget{heartbeat-surviving-the-weight-sync-stall}{}
+While slime syncs weights no ops reach the sandbox, and \textbf{your own
+Runtime} reclaims an idle session after its idle timeout. A
+\texttt{SessionKeeper} outside the harness pings any session idle past
+\texttt{fraction\ ×\ timeout} with \texttt{exec("true")}. Probe: 3
+sessions idle \textbf{150 s} against a \textbf{60 s} timeout.
+
+\textbf{Silent reclaim is the trap:} the id still answers, nothing
+errors, the files are gone. Terminal-Bench's keeper is always on; other
+demos opt in with \texttt{HEARTBEAT=1}; on the Code Interpreter, set a
+long session timeout.
+
+\small
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2093}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2093}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1163}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.4651}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Backend
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Heartbeat
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Survived
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Resume
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+own Runtime & on (14 pings) & \textbf{3/3} & 104 ms, files intact \\
+own Runtime & off & 0/3 & \textbf{silently reclaimed}: same id, empty
+sandbox \\
+Code Interpreter & on / off & 0/3 & expires at
+\texttt{sessionTimeoutSeconds} \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\hypertarget{cpu-instances-a-warm-pool-shared-by-isolated-sessions}{%
+\section{9 · CPU Instances --- a warm pool shared by isolated
+sessions}\label{cpu-instances-a-warm-pool-shared-by-isolated-sessions}}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_instance\_pool} --- use case ·
+why · design}
+\protect\hypertarget{demo_cpu_instance_pool-use-case-why-design}{}
+\small
+
+\textbf{Use case covered}
+
+\begin{itemize}
+\tightlist
+\item
+  Big (\textgreater{} 2 GB) or heavy-dependency sandbox images (torch +
+  scientific stack) on a CPU Instance (m5).
+\end{itemize}
+
+\textbf{Why this demo}
+
+\begin{itemize}
+\tightlist
+\item
+  An Instance cold-boots in \textasciitilde80 s, too costly per episode
+  → a \textbf{warm pool shared by sessions}; shows how far isolation
+  holds on a shared host.
+\end{itemize}
+
+\textbf{Design considerations}
+
+\begin{itemize}
+\tightlist
+\item
+  \texttt{SANDBOX\_POOL=N} shared session ids, least-loaded placement;
+  boots paid N times per run.
+\item
+  Per-episode \texttt{sub\_session} with per-slot uid isolation, private
+  \texttt{0700} dir, rlimits, kill + wipe on close.
+\item
+  Limits: kernel, network, CPU/RAM stay shared → microVM per session for
+  a kernel boundary.
+\item
+  Rejected: a fresh \texttt{runtimeSessionId} per episode (375 m5 boots
+  in 10 steps).
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_instance\_pool} --- why an
+Instance, and why a pool}
+\protect\hypertarget{demo_cpu_instance_pool-why-an-instance-and-why-a-pool}{}
+A \textasciitilde4 GB sandbox image (torch + scientific stack) exceeds
+the \textasciitilde2 GB microVM cap, so it runs on a CPU
+\textbf{capacity-provider Instance} (\texttt{m5.xlarge}, amd64).
+Instances cold-boot in \textbf{\textasciitilde60--83 s}, and one
+\texttt{runtimeSessionId} = one Instance.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Per-episode sessions (old run):} \textasciitilde32 cold boots
+  per step, 375 over 10 steps, sandbox wait ratio \textgreater{} 0.97;
+  \texttt{eval/deepscaler} 0.7625.
+\item
+  \textbf{Warm pool:} \texttt{SANDBOX\_POOL=N} (default 2) shared
+  session ids \texttt{cpupool-\textless{}run\textgreater{}-m0k} →
+  \textbf{N warm m5s}; each episode opens on the \textbf{least-loaded}
+  member with its own \texttt{sub\_session}. The boot is paid N times
+  per run, not per episode.
+\end{itemize}
 
 \begin{Shaded}
 \begin{Highlighting}[]
-\FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh            }\CommentTok{\# fetch Terminal{-}Bench tasks}
-\FunctionTok{bash}\NormalTok{ 2\_build\_image.sh             }\CommentTok{\# one image per task (also pushes)}
-\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh          }\CommentTok{\# one Runtime per task {-}\textgreater{} tasks/arn\_by\_image.json}
-\FunctionTok{bash}\NormalTok{ 5\_run.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
+\FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 3\_push\_ecr.sh}
+\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh     }\CommentTok{\# CPU capacity provider + Runtime}
+\VariableTok{SANDBOX\_POOL}\OperatorTok{=}\NormalTok{2 }\FunctionTok{bash}\NormalTok{ 5\_run.sh }\CommentTok{\# SANDBOX=agentcore{-}ray{-}farm}
+\VariableTok{DELETE\_CP}\OperatorTok{=}\NormalTok{1 }\FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
 \end{Highlighting}
 \end{Shaded}
 
-\textbf{Metrics.} 218/229 Runtimes deployed, 166 usable after the oracle
-check. First smoke (2026-09-23) passed to ckpt 10: boot fully hidden
-(\texttt{open\_wait\_ms} p95 0), but \textasciitilde95 \% of pre-opened
-microVM time idle and reward sparse (4/382 solves, eval 0.0). Key
-signals: \texttt{{[}demo{]}\ open\_wait\_ms},
-\texttt{preopen\_idle\_ms}.
+\textbf{Metrics.} RL smoke (2026-09-25, 10 steps): 406 episodes on 2
+Instances, \textbf{2 cold boots} in the whole run, warm op p50
+\textbf{117 ms}, step time 38--219 s (was \textasciitilde730 s),
+\textbf{\texttt{eval/deepscaler} 0.7875}.
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_tasks} --- custom Runtime and
-\texttt{HEARTBEAT=1}}
-\protect\hypertarget{demo_cpu_tasks-custom-runtime-and-heartbeat1}{}
-\textbf{Custom vs managed Runtime.}
-\texttt{python3\ compare\_backends.py} runs the same episode against the
-managed Code Interpreter and \textbf{your own} CPU Runtime: same reward,
-only operations differ. Real RL on your Runtime is just
-\texttt{AGENTCORE\_SANDBOX\_RUNTIME\_ARNS=\textless{}yours\textgreater{}\ DATASET=deepscaler\ bash\ 5\_run.sh}.
-Smoke (as \texttt{demo\_cpu\_customruntime}) \texttt{eval/deepscaler}
-\textbf{0.69}.
+\begin{frame}[fragile,allowframebreaks]{Isolation on a shared Instance (1/3) --- what is
+guaranteed, and by what}
+\protect\hypertarget{isolation-on-a-shared-instance-13-what-is-guaranteed-and-by-what}{}
+The pool gives up the VM boundary for warm reuse. The farm
+(\texttt{sandbox\_cpu\_farm.py}, root server) puts back as much
+isolation as one kernel allows:
 
-\textbf{Heartbeat, \texttt{HEARTBEAT=1} (any demo).} During the
-weight-sync barrier no ops reach the sandbox, and the 15-min idle
-timeout can kill it. A \texttt{SessionKeeper} heartbeat, outside the
-harness, keeps the session warm. Knobs: \texttt{HEARTBEAT\_IDLE} (600 s)
-· \texttt{HEARTBEAT\_PING\_FRACTION} (0.5).
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\BuiltInTok{cd}\NormalTok{ code/demos/demo\_cpu\_tasks}
-\ExtensionTok{python3}\NormalTok{ compare\_backends.py    }\CommentTok{\# managed vs custom, same reward}
-\ExtensionTok{python3}\NormalTok{ heartbeat\_demo.py      }\CommentTok{\# offline, seconds}
-\VariableTok{DATASET}\OperatorTok{=}\NormalTok{deepscaler }\VariableTok{HEARTBEAT}\OperatorTok{=}\NormalTok{1 }\FunctionTok{bash}\NormalTok{ 5\_run.sh}
-\end{Highlighting}
-\end{Shaded}
-
-Smoke (as \texttt{demo\_cpu\_heartbeat}) \texttt{eval/deepscaler}
-\textbf{0.71} with the keeper live; the offline probe shows the recovery
-arc.
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Own unprivileged uid per episode:} each \texttt{sub\_session}
+  leases uid/gid \texttt{20000+slot}, no supplementary groups → no
+  ptrace, no signals, no
+  \texttt{/proc/\textless{}pid\textgreater{}/environ} of another
+  episode.
+\item
+  \textbf{Private filesystem:} session dir \texttt{0700} owned by that
+  uid, farm root \texttt{0711} (not listable), \texttt{umask\ 077}; HOME
+  / TMPDIR / caches inside the dir.
+\item
+  \textbf{No path escapes via the server:} \texttt{read\_file} /
+  \texttt{write\_file} refuse \texttt{..}, absolute and symlink paths;
+  session ids are validated.
+\item
+  \textbf{Resource caps:} \texttt{prlimit} NPROC=256 (a fork bomb stops
+  at its own cap), FSIZE=1 GiB, CORE=0; per-op timeout kills the whole
+  process tree.
+\item
+  \textbf{Clean close:} SIGKILL every process of the uid (setsid'd
+  daemons too), reap zombies, delete the dir and the uid's files in
+  \texttt{/tmp}, \texttt{/var/tmp}, \texttt{/dev/shm}, free the slot.
+\item
+  \textbf{No secrets leak:} the server's \texttt{AWS\_*} env is not
+  passed to episodes; the session id (the key to the farm API) stays off
+  every command line.
+\end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_scale\_lanes}}
-\protect\hypertarget{demo_cpu_scale_lanes}{}
-\textbf{Use case.} Makes
-\texttt{throughput\ =\ min(inference,\ sandbox,\ harness)} concrete:
-\textbf{4 × 4 × 4 lanes} --- 4 harness workers : 4 TP1 SGLang engines :
-4 persistent microVMs, pinned 1:1:1. DeepScaleR, fixed.
+\begin{frame}[fragile,allowframebreaks]{Isolation on a shared Instance (2/3) --- what is
+still shared}
+\protect\hypertarget{isolation-on-a-shared-instance-23-what-is-still-shared}{}
+\textbf{Good enough for RLVR}, including the reward hacks a policy can
+stumble into (reading a sibling's answer, killing a neighbour's checker,
+leaving a daemon). \textbf{Not a boundary against a kernel exploit}: for
+that, or for tasks that mutate the whole OS, use a \textbf{microVM per
+session} (\texttt{SANDBOX=agentcore} / \texttt{agentcore-runtime}).
 
-\textbf{Knobs.} \texttt{LANES} (4) · \texttt{HARNESS\_WORKERS} ·
-\texttt{GPUS\_PER\_ENGINE} (1) · \texttt{LANE\_SANDBOX} (1).
+\scriptsize
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.1579}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3158}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5263}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+microVM per session (AgentCore)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+shared m5 \texttt{sub\_session}
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Filesystem & own root fs, discarded & own \texttt{0700} dir; system dirs
+shared read-only \\
+Process / user & own PID namespace & own uid, but \textbf{one PID
+namespace} (\texttt{ps} lists others) \\
+CPU / RAM & own allocation & \textbf{no per-episode cgroup}: one episode
+can starve or OOM others \\
+Network & own interface & \textbf{one netns}: server port and instance
+metadata reachable \\
+Kernel & own guest kernel & \textbf{one kernel}: an exploit breaks all
+of the above \\
+Blast radius & one session & one Instance and all its episodes \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Isolation on a shared Instance (3/3) --- how it
+is verified}
+\protect\hypertarget{isolation-on-a-shared-instance-33-how-it-is-verified}{}
+\texttt{isolation\_probe.py}: episode A plants a secret file, a
+\texttt{/tmp} file and a detached process; episode B, on the same
+Instance, tries to reach them.
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Offline (root farm, in the container and inside the built
+  image): 16/16 checks pass.} A and B run as uids 20000 / 20001; B's
+  \texttt{ls} of the root and of A's dir → Permission denied; reading
+  A's secret by explicit path and via \texttt{../} → denied; the
+  server's file ops refuse \texttt{../\textless{}A\textgreater{}}; A's
+  \texttt{/tmp} file unreadable; \texttt{kill\ -0} of A's pid → not
+  permitted; \texttt{AWS\_*} not inherited; limits in force; after A
+  closes, its daemon and \texttt{/tmp} file are gone.
+\item
+  \textbf{Also:} a 400-way fork loop stops at EAGAIN; a 2 GB write stops
+  at 1 GiB; a timed-out exec leaves no process alive; numpy/torch
+  checkers run unchanged as the uid.
+\item
+  \textbf{Live, two \texttt{sub\_session}s on one warm m5:} {[}PENDING:
+  isolation\_probe.py --live result on m5{]}. The uid layer needs a root
+  server \textbf{with} CAP\_SETUID / SETGID; the AgentCore g6 container
+  has none (next section), so the live m5 probe decides whether the uid
+  rows hold on AgentCore or the farm falls back to dir + env isolation
+  (\texttt{uid\_isolation:\ false}).
+\item
+  \textbf{Before the hardening} (first live probe, same day): both ran
+  as root, and B could
+  \texttt{cat\ ../\textless{}A\textgreater{}/marker.txt}. That is why
+  the uid layer exists.
+\end{itemize}
+\end{frame}
+
+\hypertarget{scaling-the-tiers-independently}{%
+\section{10 · Scaling the tiers
+independently}\label{scaling-the-tiers-independently}}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_scale\_lanes} --- use case ·
+why · design}
+\protect\hypertarget{demo_cpu_scale_lanes-use-case-why-design}{}
+\small
+
+\textbf{Use case covered}
+
+\begin{itemize}
+\tightlist
+\item
+  High-throughput rollout: 256 episodes in flight across 4 inference
+  engines and 256 sandboxes.
+\end{itemize}
+
+\textbf{Why this demo}
+
+\begin{itemize}
+\tightlist
+\item
+  Shows \texttt{throughput\ =\ min(inference,\ sandbox,\ harness)} with
+  the three tiers as \textbf{independent pools}.
+\item
+  Harness workers and microVMs scale for different reasons (Python
+  concurrency vs quota and cost), so they are two knobs, not one.
+\end{itemize}
+
+\textbf{Design considerations}
+
+\begin{itemize}
+\tightlist
+\item
+  Per episode: a free worker pulls it, borrows \textbf{any free
+  microVM}, then takes the \textbf{least-loaded engine} (sticky for its
+  turns). Nothing is pinned.
+\item
+  256 sessions open once at 20/s (quota 25/s); client pools sized to 256
+  (boto3 default 10, executor ≤ 32).
+\item
+  The log names the binding tier: \texttt{qdepth} (harness),
+  \texttt{sandbox\_wait\_ms} (sandbox), \texttt{engine\_inflight}
+  (inference).
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_scale\_lanes} --- 4 engines :
+256 workers : 256 microVMs}
+\protect\hypertarget{demo_cpu_scale_lanes-4-engines-256-workers-256-microvms}{}
+\textbf{Knobs.} \texttt{HARNESS\_WORKERS} (256) ·
+\texttt{SANDBOX\_SESSIONS} (256; 0 = fresh session per episode) ·
+\texttt{ROLLOUT\_GPUS} (4) · \texttt{SANDBOX\_OPEN\_RATE} (20/s) ·
+\texttt{RB\ ×\ NS} = 32 × 8 = 256 episodes/step.
 
 \begin{Shaded}
 \begin{Highlighting}[]
 \ExtensionTok{python3}\NormalTok{ harness\_scaling\_demo.py   }\CommentTok{\# offline throughput sweep}
 \FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 3\_push\_ecr.sh}
-\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh }\KeywordTok{\&\&} \VariableTok{LANES}\OperatorTok{=}\NormalTok{4 }\FunctionTok{bash}\NormalTok{ 5\_run.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
+\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 5\_run.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
 \end{Highlighting}
 \end{Shaded}
 
-\textbf{Metrics.} Offline sweep + fake-microVM lane test pass; \textbf{4
-× 4 × 4 not yet run on AWS}. The earlier smoke (0.33) used the old
-single-engine topology.
+\textbf{Isolation.} A session serves \textbf{one episode at a time} from
+a free-list, in a fresh \texttt{ep-\textless{}hex\textgreater{}} dir
+that is \texttt{rm\ -rf}'d before the session is handed out again;
+different sessions are different microVMs. \texttt{/tmp}, packages and
+stray processes are \emph{not} reset, which is safe for DeepScaleR
+(writes only its workdir); OS-level tasks use
+\texttt{SANDBOX\_SESSIONS=0}.
+
+\textbf{Metrics.} Live pool check, no trainer (W = M = 64, 192 episodes,
+real Runtimes): 1280 ops ok; engines 48 / 48 / 47 / 49; a worker used up
+to 2 sessions and a session served up to 2 workers (the tiers mix).
+{[}PENDING: 4 : 256 : 256 RL smoke{]}. The old 4 × 4 × 4 lane topology
+passed on AWS (2026-09-23, eval/deepscaler 0.358).
+\end{frame}
+
+\hypertarget{gpu-demos}{%
+\section{11 · GPU demos}\label{gpu-demos}}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_gpu\_single} --- use case · why ·
+design}
+\protect\hypertarget{demo_gpu_single-use-case-why-design}{}
+\small
+
+\textbf{Use case covered}
+
+\begin{itemize}
+\tightlist
+\item
+  GPU-in-the-loop verification: the checker compiles and runs CUDA
+  kernels (KernelBench).
+\end{itemize}
+
+\textbf{Why this demo}
+
+\begin{itemize}
+\tightlist
+\item
+  GPUs exist only on AgentCore \textbf{Instances} (not microVMs, not the
+  Code Interpreter): the simplest GPU sandbox.
+\end{itemize}
+
+\textbf{Design considerations}
+
+\begin{itemize}
+\tightlist
+\item
+  g6 capacity provider + custom Runtime; \textbf{warm-shared} session
+  (one g6 per run, per-episode \texttt{sub\_session}).
+\item
+  \texttt{SNAPSHOT\_EVERY=1}: app-level workspace snapshot/resume; there
+  is no usable VM/GPU snapshot on AgentCore.
+\item
+  \texttt{LOCAL\_GPU=1} runs the same image as a local farm when no g6
+  is available.
+\item
+  Rejected: one g6 per episode (a \textasciitilde207 s cold boot each).
+\end{itemize}
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{\texttt{demo\_gpu\_single} --- KernelBench on one
 warm g6}
 \protect\hypertarget{demo_gpu_single-kernelbench-on-one-warm-g6}{}
-\textbf{Use case.} The policy writes a CUDA \texttt{ModelNew}; the
-checker runs \texttt{allclose} + speedup on \texttt{cuda} in your custom
-GPU Runtime on a \textbf{g6} Instance. All episodes share \textbf{one
-warm g6} (\texttt{agentcore-ray-farm}), each on a fresh
-\texttt{sub\_session}. Train \texttt{level\_1} (100), eval 20
-\texttt{level\_2} fusions.
+The policy writes a CUDA \texttt{ModelNew}; the checker runs
+\texttt{allclose} + speedup on \texttt{cuda} in your custom GPU Runtime
+on a \textbf{g6} Instance. The Code Interpreter has no GPU
+(\texttt{cuda\_available=False}), so a custom Runtime is the only way.
+All episodes share \textbf{one warm g6} (\texttt{agentcore-ray-farm}),
+each on a fresh \texttt{sub\_session}. Train \texttt{level\_1} (100),
+eval 20 \texttt{level\_2} fusions.
 
-\textbf{Knobs.} \texttt{SANDBOX} · \texttt{B4\_FARM\_MAX\_CONCURRENT} ·
-\texttt{LOCAL\_GPU=1} (on-box farm on GPUs 6,7, no g6) ·
-\texttt{SNAPSHOT\_EVERY=1}.
+\textbf{Knobs.} \texttt{B4\_FARM\_MAX\_CONCURRENT} ·
+\texttt{LOCAL\_GPU=1} (on-box farm, no g6) · \texttt{SNAPSHOT\_EVERY=1}
+(app-level snapshot/resume at the episode's EXIT, the quiescent point
+before weight sync).
 
 \begin{Shaded}
 \begin{Highlighting}[]
 \FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 3\_push\_ecr.sh}
-\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh          }\CommentTok{\# Runtime on the g6 capacity provider   (LOCAL\_GPU=1: local farm)}
+\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh          }\CommentTok{\# Runtime on the g6 capacity provider}
 \FunctionTok{bash}\NormalTok{ 5\_run.sh                     }\CommentTok{\# SNAPSHOT\_EVERY=1 for snapshot/resume}
 \VariableTok{DELETE\_CP}\OperatorTok{=}\NormalTok{1 }\FunctionTok{bash}\NormalTok{ 6\_cleanup.sh     }\CommentTok{\# the g6 is the real cost}
 \end{Highlighting}
 \end{Shaded}
 
 \textbf{Metrics.} \textbf{Trained} (committed convergence curve); smoke
-\texttt{eval/kernelbench} \textbf{0.525}.
+\texttt{eval/kernelbench} \textbf{0.525}; custom-Runtime probe 0.65;
+snapshot smoke (local farm) 0.625, live g6 + store round trip
+unverified. 2026-09-25 re-run: g6 cold boot 207 s, warm opens 150--190
+ms; {[}PENDING: 2026-09-25 remote g6 smoke outcome{]}.
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_gpu\_single} --- custom-Runtime and
-snapshot angles}
-\protect\hypertarget{demo_gpu_single-custom-runtime-and-snapshot-angles}{}
-\textbf{Custom Runtime = the only GPU.}
-\texttt{python3\ gpu\_torch\_smoke.py}: the managed Code Interpreter
-reports \texttt{cuda\_available=False}; only your Runtime on a g6 has
-CUDA, through the same
-\texttt{write\_file}/\texttt{exec}/\texttt{read\_file} contract. Smoke
-(former \texttt{demo\_gpu\_customruntime}) \textbf{0.65}.
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_gpu\_farm\_fractional} --- use case
+· why · design}
+\protect\hypertarget{demo_gpu_farm_fractional-use-case-why-design}{}
+\small
 
-\textbf{Snapshot/resume, \texttt{SNAPSHOT\_EVERY=1}.} AgentCore has no
-VM/GPU snapshot, so the harness does it at app level:
+\textbf{Use case covered}
 
 \begin{itemize}
 \tightlist
 \item
-  \texttt{maybe\_restore} at episode ENTER writes the saved workspace
-  back.
-\item
-  \texttt{maybe\_snapshot} at EXIT captures it; EXIT is the quiescent
-  point just before weight sync.
-\item
-  Store: \texttt{SNAPSHOT\_DIR} (local) or
-  \texttt{SNAPSHOT\_S3\_BUCKET}.
+  Many light GPU episodes (small kernels, short checks) on one card.
 \end{itemize}
 
-Smoke (former \texttt{demo\_gpu\_snapshot}, local farm) \textbf{0.625},
-3 files saved + restored per episode. The live g6 + store round trip is
-\textbf{unverified}. Offline animation:
-\texttt{python3\ snapshot\_demo.py}.
-\end{frame}
-
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_gpu\_farm} --- GPU sharing on this
-box}
-\protect\hypertarget{demo_gpu_farm-gpu-sharing-on-this-box}{}
-\textbf{Use case.} GPU sharing with no AWS GPU: a local Ray farm on GPUs
-6,7 serves the same \texttt{/invocations} contract; slime uses the other
-GPUs.
+\textbf{Why this demo}
 
 \begin{itemize}
 \tightlist
 \item
-  \texttt{FARM=fractional} (default): two episodes on \textbf{one} GPU,
-  0.5 + 0.5.
-\item
-  \texttt{FARM=whole}: one whole GPU per episode across GPUs 6,7.
+  GPU utilization and cost: one episode rarely fills a GPU, so pack two
+  per card.
 \end{itemize}
 
-\textbf{Knobs.} \texttt{FARM} · \texttt{B4\_GPU\_FRACTION} ·
-\texttt{B4\_FARM\_GPUS} · \texttt{B4\_FARM\_MAX\_CONCURRENT}.
+\textbf{Design considerations}
+
+\begin{itemize}
+\tightlist
+\item
+  Ray fractional actors (\texttt{num\_gpus=0.5}, 0.5 + 0.5), one warm
+  CUDA context each.
+\item
+  Cooperative memory cap (\texttt{B4\_PER\_SANDBOX\_MEM\_FRACTION}, via
+  \texttt{sitecustomize.py}), not driver-enforced.
+\item
+  No MIG on L4 / L40S → the card is one fault domain for both episodes.
+\item
+  Wedge risk: more co-tenants ⇒ more nvcc load on one non-MIG card,
+  which can wedge it; 2 slots at 0.5 is the default, 0.25
+  (\texttt{CONC=4}) is opt-in.
+\item
+  Client open gate == server slot count
+  (\texttt{B4\_FARM\_MAX\_CONCURRENT}); keep \texttt{CONC\ ≤\ 2}.
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_gpu\_farm\_fractional} --- two
+episodes share one GPU}
+\protect\hypertarget{demo_gpu_farm_fractional-two-episodes-share-one-gpu}{}
+GPU \textbf{sharing} with no AWS GPU: a local sandbox Runtime container
+owns host GPU 6; a Ray farm inside it runs two long-lived, warm-CUDA
+actors with \texttt{num\_gpus=0.5}. Two KernelBench episodes compile and
+run on the same card at once. No MIG on L40S / L4, so each actor caps
+itself to \textasciitilde half the VRAM
+(\texttt{B4\_PER\_SANDBOX\_MEM\_FRACTION=0.5}).
+
+\begin{itemize}
+\tightlist
+\item
+  One shared \texttt{runtimeSessionId} + a per-episode
+  \texttt{sub\_session} keyed to its actor (AgentCore maps 1 session → 1
+  instance).
+\item
+  slime keeps GPUs 0--5; the farm has GPU 6.
+\end{itemize}
 
 \begin{Shaded}
 \begin{Highlighting}[]
 \FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh}
-\VariableTok{FARM}\OperatorTok{=}\NormalTok{fractional }\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh     }\CommentTok{\# starts the local farm (no ECR push needed)}
-\VariableTok{FARM}\OperatorTok{=}\NormalTok{fractional }\FunctionTok{bash}\NormalTok{ 5\_run.sh}
-\FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
+\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh     }\CommentTok{\# starts the local farm (fractional, GPU 6)}
+\FunctionTok{bash}\NormalTok{ 5\_run.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
 \end{Highlighting}
 \end{Shaded}
 
-\textbf{Metrics.} \texttt{fractional} smoke \textbf{0.775};
-\texttt{whole} smokes \textbf{0.65 / 0.70}. Balanced
-\texttt{open}==\texttt{close} (no leaked leases);
-\texttt{demo/boot\_attempts} p50 = 1.
+\textbf{Metrics (2026-09-25 smoke).} Job succeeded (\textasciitilde83
+min); \texttt{raw\_reward} 0.19--0.75; \textbf{\texttt{eval/kernelbench}
+0.65} (0.775 on 2026-09-21). 359 episodes split \textbf{181 / 178}
+across the two actors on GPU 6, lease wait always 0; exec p50 9.0 s /
+p95 19.8 s; open 4.2 ms; gen p50 2.2 s.
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_branching} --- EXPERIMENTAL,
-blocked}
-\protect\hypertarget{demo_cpu_branching-experimental-blocked}{}
-\textbf{Use case.} One episode → \textbf{many training samples}
-(fan-out), with the real \textbf{Claude Code CLI} as the in-sandbox
-agent. Each model call dials back to the harness's proxy
-(\texttt{ADAPTER\_PORT} 18021, VPC mode), and every fragment carries a
-shared \texttt{rollout\_id} for grouping. In Agent Lightning only 36\%
-of rollouts stay one sample {[}1{]}.
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_gpu\_farm\_whole} --- use case ·
+why · design}
+\protect\hypertarget{demo_gpu_farm_whole-use-case-why-design}{}
+\small
+
+\textbf{Use case covered}
+
+\begin{itemize}
+\tightlist
+\item
+  One full GPU per episode on a multi-GPU instance.
+\end{itemize}
+
+\textbf{Why this demo}
+
+\begin{itemize}
+\tightlist
+\item
+  AgentCore session = whole instance, so the native API cannot give one
+  GPU per session → the Ray farm assigns one GPU per
+  \texttt{sub\_session}.
+\item
+  Kept apart from \texttt{fractional}: opposite trade-off (isolation of
+  the card vs packing).
+\end{itemize}
+
+\textbf{Design considerations}
+
+\begin{itemize}
+\tightlist
+\item
+  \texttt{B4\_GPU\_FRACTION=1.0}: capacity = GPU count (2 on GPUs 6,7).
+\item
+  \texttt{CONC} gating: keep \texttt{CONC\ ≤} slots (2) and the client
+  open gate == the server slot count, so episodes never block on
+  checkout.
+\item
+  No software VRAM guard needed; a GPU fault stays on one card.
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_gpu\_farm\_whole} --- one whole GPU
+per session}
+\protect\hypertarget{demo_gpu_farm_whole-one-whole-gpu-per-session}{}
+The same farm, partitioned the other way: GPUs 6,7 with
+\texttt{B4\_GPU\_FRACTION=1.0} → \textbf{one whole GPU per episode}, N
+episodes ↔ N GPUs. This is the pattern for ``one 2-GPU box, one GPU
+each'': AgentCore can't point two \texttt{runtimeSessionId}s at one
+instance, so one shared session plus an in-instance farm does it.
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\FunctionTok{bash}\NormalTok{ 1\_prepare\_data.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh}
+\FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh     }\CommentTok{\# starts the local farm (whole, GPUs 6,7)}
+\FunctionTok{bash}\NormalTok{ 5\_run.sh }\KeywordTok{\&\&} \FunctionTok{bash}\NormalTok{ 6\_cleanup.sh}
+\end{Highlighting}
+\end{Shaded}
+
+\textbf{Knobs.} \texttt{B4\_FARM\_GPUS} · \texttt{B4\_GPU\_FRACTION} ·
+\texttt{B4\_FARM\_MAX\_CONCURRENT}.
+
+\textbf{Metrics.} Smokes (2026-09-21, same config under earlier names)
+\texttt{eval/kernelbench} \textbf{0.65 / 0.70}; balanced \texttt{open}
+== \texttt{close}, no leaked leases. Re-run since the split: {[}PENDING:
+demo\_gpu\_farm\_whole smoke{]}.
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Isolation on a shared GPU Instance}
+\protect\hypertarget{isolation-on-a-shared-gpu-instance}{}
+The GPU farm (\texttt{sandbox\_ray\_farm.py}) applies the \textbf{same
+uid + \texttt{0700} dir + path-confinement + kill-on-close layer} as the
+CPU pool, plus:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Separate CUDA contexts} per actor: no reading another
+  episode's device memory (driver-enforced).
+\item
+  \textbf{Cooperative memory cap:}
+  \texttt{B4\_PER\_SANDBOX\_MEM\_FRACTION} is applied in-process
+  (\texttt{sitecustomize.py}), not by the driver.
+\item
+  \textbf{Per-uid warm caches:} no slot can plant a kernel another slot
+  loads; \texttt{SANDBOX\_ISOLATE\_HOME=1} makes them per episode.
+\item
+  \textbf{No MIG on L4 / L40S:} a GPU fault or wedge hits every
+  co-tenant on the card; \texttt{whole} confines it to one GPU.
+\item
+  \textbf{Where the uid layer applies:} it needs CAP\_SETUID / SETGID /
+  CHOWN / KILL. The local farm's Docker root has them; \textbf{the
+  AgentCore g6 container is uid 0 with no capabilities}, so it falls
+  back to one shared uid (dirs, path confinement, kill still apply);
+  \texttt{ping} / \texttt{open} report \texttt{uid\_isolation}. Live
+  check: {[}PENDING: GPU farm uid-isolation live check result{]}.
+\item
+  Must not share a kernel or GPU? One \texttt{runtimeSessionId} per
+  episode, one Instance each.
+\end{itemize}
+\end{frame}
+
+\hypertarget{experimental-and-summary}{%
+\section{12 · Experimental and summary}\label{experimental-and-summary}}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_branching} (experimental) ---
+use case · why · design}
+\protect\hypertarget{demo_cpu_branching-experimental-use-case-why-design}{}
+\small
+
+\textbf{Use case covered}
+
+\begin{itemize}
+\tightlist
+\item
+  A real Claude Code CLI harness whose episode fans out into sub-agents
+  and compactions.
+\end{itemize}
+
+\textbf{Why this demo}
+
+\begin{itemize}
+\tightlist
+\item
+  Multi-trajectory episodes: one rollout → many samples, which every
+  other demo treats as one.
+\end{itemize}
+
+\textbf{Design considerations}
+
+\begin{itemize}
+\tightlist
+\item
+  Rollout-level GRPO: fragments share a \texttt{rollout\_id} and are
+  grouped per rollout.
+\item
+  CLI in the sandbox (node + CLI image), model calls dial back to the
+  harness proxy (VPC mode).
+\item
+  The CLI needs the tool-call parser (\texttt{qwen25}) and a per-turn
+  cap above Qwen3's \texttt{\textless{}think\textgreater{}} (2048);
+  without them it stops after one turn or exits 1.
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_branching} --- EXPERIMENTAL}
+\protect\hypertarget{demo_cpu_branching-experimental}{}
+One episode → \textbf{many training samples} (fan-out), with the real
+\textbf{Claude Code CLI} as the in-sandbox agent. Each model call dials
+back to the harness's proxy (\texttt{ADAPTER\_PORT} 18021, VPC mode),
+and every fragment carries a shared \texttt{rollout\_id} for grouping.
+In Agent Lightning only 36\% of rollouts stay one sample {[}1{]}.
 
 \textbf{Knobs.} \texttt{BRANCHING\_FORK\_THRESHOLD} (512) ·
 \texttt{AGENT\_TIME\_BUDGET\_SEC} (900) · \texttt{ADAPTER\_PORT}.
@@ -911,9 +1764,78 @@ of rollouts stay one sample {[}1{]}.
 \end{Highlighting}
 \end{Shaded}
 
-\textbf{Status.} \textbf{Blocked:} the in-sandbox CLI exits 1 before any
-model call, so there are no trajectories and no reward signal yet. The
-empty-group crash is fixed; the CLI failure is still open.
+\textbf{Status.} Three blockers found and fixed: the CLI's root guard
+(\texttt{IS\_SANDBOX=1}), the missing \texttt{qwen25} tool parser (every
+episode ended after one turn, reward 0), and CLI \texttt{exit=1} at the
+1024-token per-turn cap (now 2048). Sandbox, CLI, dial-back, parser and
+checker verified without a trainer. {[}PENDING: branching RL smoke
+fan\_out and reward{]}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Summary --- 7 demos + 1 experimental}
+\protect\hypertarget{summary-7-demos-1-experimental}{}
+\scriptsize
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3529}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2157}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2157}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2157}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Demo
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Shows
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Isolation unit
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Smoke headline
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\texttt{demo\_cpu\_tasks} & literature tasks on the \textbf{default}
+runtime & microVM per episode & gsm8k 0.90; libs 1.0 \\
+\texttt{demo\_cpu\_terminalbench} & \textasciitilde229 images; pre-open
++ heartbeat & fresh microVM per episode & wait p95 0; pre-open −15--20
+\% \\
+\texttt{demo\_cpu\_instance\_pool} & \textgreater{} 2 GB image, warm m5
+pool & uid + \texttt{0700} dir, shared kernel & 2 boots per run; opens
+121--328 ms \\
+\texttt{demo\_cpu\_scale\_lanes} & 4 engines : 256 workers : 256
+microVMs, decoupled & pooled microVM, one episode at a time, fresh
+workdir & pool check ok; {[}PENDING: RL smoke{]} \\
+\texttt{demo\_gpu\_single} & KernelBench on one warm g6 &
+\texttt{sub\_session} on a shared g6 & trained; smoke 0.525 \\
+\texttt{demo\_gpu\_farm\_fractional} & one GPU split 0.5 + 0.5 & own
+CUDA context, shared card & eval 0.65; 181 / 178 split \\
+\texttt{demo\_gpu\_farm\_whole} & one whole GPU per session & own GPU &
+eval 0.65 / 0.70 \\
+\emph{\texttt{demo\_cpu\_branching}} & CLI fan-out (experimental) &
+microVM & fixes in; RL re-run pending \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Takeaways}
+\protect\hypertarget{takeaways}{}
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Start on the Code Interpreter.} Most literature tasks need no
+  image: no Dockerfile, no ECR, no Runtime.
+\item
+  \textbf{Add an image only when the environment differs}: a pinned OS,
+  \textgreater{} 2 GB, CUDA, or a missing package. Route by
+  \texttt{task.image}; AgentCore only ever sees an image and a session.
+\item
+  \textbf{Hide boots with pre-open, bridge stalls with heartbeat} on
+  your own Runtimes; on the Code Interpreter, set the session timeout.
+\item
+  \textbf{Share an Instance only with the isolation layer} (own uid,
+  private dir, caps, kill-on-close), and know what stays shared: kernel,
+  network, CPU/RAM, GPU faults. \textbf{Need a kernel boundary? One
+  microVM or Instance per session.}
+\end{itemize}
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{References}
@@ -952,6 +1874,20 @@ empty-group crash is fixed; the CLI failure is still open.
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html}
 · {[}D13{]} Observability
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability.html}
+
+\textbf{Tasks.} MBPP
+\url{https://huggingface.co/datasets/google-research-datasets/mbpp} ·
+HumanEval \url{https://huggingface.co/datasets/openai/openai_humaneval}
+· GSM8K \url{https://huggingface.co/datasets/openai/gsm8k} · MATH-500
+\url{https://huggingface.co/datasets/HuggingFaceH4/MATH-500} ·
+DeepScaleR
+\url{https://huggingface.co/datasets/agentica-org/DeepScaleR-Preview-Dataset}
+· Gretel SQL
+\url{https://huggingface.co/datasets/gretelai/synthetic_text_to_sql} ·
+HotpotQA \url{https://huggingface.co/datasets/hotpotqa/hotpot_qa} · xLAM
+\url{https://huggingface.co/datasets/minpeter/xlam-function-calling-60k-parsed}
+· ToolACE \url{https://huggingface.co/datasets/Team-ACE/ToolACE} ·
+Terminal-Bench \url{https://github.com/laude-institute/terminal-bench}
 
 \textbf{Repo.} \texttt{code/demos/README.md} (catalogue + step scripts)
 · \texttt{docs/report/agentcore\_slime\_report.md} (full results) ·

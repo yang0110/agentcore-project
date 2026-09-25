@@ -184,7 +184,22 @@ per-Instance split, the cold boots and the warm-op p50/p95.
 
 **RL smoke** (`SANDBOX_POOL=2`, NR=11): see below.
 
-<!-- SMOKE_RESULTS -->
+`logs/smoke_pool2_20260925_113657.*`, 2026-09-25, `SANDBOX_POOL=2`, NR=11, the pre-hardening image. The
+ray job succeeded (10 steps).
+
+| | this run (pool of 2 warm Instances) | old run (Instance per episode) |
+|---|---|---|
+| Instances used | **2** (m0 → `i-827f10d4`, 210 ep; m1 → `i-4bb897a8`, 196 ep) | ~375 |
+| cold boots | **2** (4 episodes waited 63.1 s, all in step 1); `perf/sandbox_coldboot_count` = 4, 0, 0, … | ~32 per step |
+| warm ops | 3169, p50 **117 ms**, p95 261 ms (per-step p50 110–120 ms, p95 227–608 ms) | p50 ~150 ms |
+| `perf/step_time` | 38–219 s (step 1: 159 s, including the boot) | ~715–753 s |
+| `perf/wait_time_ratio` | 0.50–0.93 | 0.97 |
+| `raw_reward` (steps 1–10) | 1.0, 0.81, 0.72, 0.94, 0.91, 0.75, 0.91, 0.72, 0.94, 0.91 | 0.66–0.97 |
+| `eval/deepscaler` (step 9) | **0.7875** | 0.7625 |
+
+Per-instance mean reward: m0 0.843, m1 0.832, so neither Instance is a bad host. Checkers: PASSED
+n=400 (mean 0.8475) and IMPORT_ERROR n=5 (reward 0). `python3 pool_report.py logs/<tag>.log`
+prints the per-instance split.
 
 **Old per-episode-Instance run** (`logs/bigimage/`, 2026-09-21, `SANDBOX=agentcore-runtime`, before the
 pool):

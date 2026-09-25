@@ -339,7 +339,7 @@ def parse_log(path: Path):
                    "adapter_session": kv.get("adapter_session", "?"),
                    "sandbox_session": kv.get("sandbox_session", "?"),
                    "runtime_arn": kv.get("runtime_arn", "?"),
-                   "lane": kv.get("lane", ""),
+                   "sandbox_slot": kv.get("sandbox_slot", ""),
                    "sandbox_image": kv.get("sandbox_image", ""),
                    "family": kv.get("family", "")}
             router_records.append(rec)
@@ -424,11 +424,11 @@ def check_stickiness(router_records: list[dict], op_records: list[dict]) -> bool
         (the sandbox is stateful/sticky for the episode's life). This is the real cross-check: it
         JOINS the raw per-op records to the episode via `session`.
 
-    A harness-scale-style run (WARM workers each pinned to one engine) is also handled: when the
-    [router] records carry a harness_worker, we additionally assert no worker used >1 engine.
-    In LANE mode ([router] carries lane=) each worker also owns ONE persistent sandbox session, so
-    we assert worker -> exactly one session, no session shared by two workers, and print the
-    worker -> engine -> session lane table (the WxExW topology, e.g. 4x4x4).
+    When the [router] records carry a harness_worker (this demo's DECOUPLED pool), we also report how
+    the three tiers were mixed: the worker / engine / pooled-session counts, how many distinct
+    sessions and engines each worker used and how many workers each session served. No worker owns
+    an engine or a session, so a worker spanning several sessions (and a session several workers)
+    is the expected, decoupled shape; the only violation is an episode seen on two runtimes.
 
     Returns True if all invariants hold (or there is nothing to check)."""
     if not router_records:
@@ -456,34 +456,29 @@ def check_stickiness(router_records: list[dict], op_records: list[dict]) -> bool
     print("\nrouter stickiness ([router] episodes joined to [sbx-op] by sandbox session):")
 
     if has_workers:
-        engines_by_worker: dict[str, set[str]] = {}
-        for rec in router_records:
-            engines_by_worker.setdefault(rec["harness_worker"], set()).add(rec["engine"])
-        for w, engs in engines_by_worker.items():
-            if len(engs) > 1:
-                violations.append(f"worker {w} used {len(engs)} engines {sorted(engs)} — inference NOT pinned")
-        workers = sorted(engines_by_worker)
-        lanes = any(str(r.get("lane", "")) not in ("", "?") for r in router_records)
-        sessions_by_worker: dict[str, set[str]] = {}
-        for rec in router_records:
-            sessions_by_worker.setdefault(rec["harness_worker"], set()).add(rec["sandbox_session"])
-        print(f"  episodes={len(router_records)}  workers={len(workers)}  engines={len(engines)}"
-              + (f"  microVM sessions={len({s for v in sessions_by_worker.values() for s in v})}"
-                 if lanes else ""))
-        for w in workers:
-            eps = sum(1 for r in router_records if r["harness_worker"] == w)
-            print(f"    worker {w} -> engine(s) {sorted(engines_by_worker.get(w, set()))}"
-                  + (f" -> session(s) {sorted(sessions_by_worker[w])}  ({eps} episodes)" if lanes else ""))
-        ok_msg = "  ✓ every episode sticky to one worker + one engine + one runtime"
-        if lanes:
-            owner: dict[str, str] = {}
-            for w, sess in sessions_by_worker.items():
-                if len(sess) > 1:
-                    violations.append(f"lane {w} used {len(sess)} sandbox sessions — microVM NOT persistent")
-                for s_ in sess:
-                    if owner.setdefault(s_, w) != w:
-                        violations.append(f"sandbox session {s_} shared by workers {owner[s_]} and {w}")
-            ok_msg = "  ✓ every lane is 1:1:1 — one worker, one engine, one persistent microVM session"
+        def _spread(key_a: str, key_b: str) -> list[int]:
+            by: dict[str, set[str]] = {}
+            for rec in router_records:
+                by.setdefault(rec[key_a], set()).add(rec[key_b])
+            return sorted(len(v) for v in by.values())
+
+        def _fmt(xs: list[int]) -> str:
+            return f"min={xs[0]} p50={xs[len(xs) // 2]} max={xs[-1]}" if xs else "n/a"
+
+        workers = {r["harness_worker"] for r in router_records}
+        sessions = {r["sandbox_session"] for r in router_records}
+        eng_dist = Counter(r["engine"] for r in router_records)
+        print(f"  episodes={len(router_records)}  workers={len(workers)}  engines={len(engines)}  "
+              f"sandbox sessions={len(sessions)}  unpinned={unpinned}")
+        for e in engines:
+            print(f"    engine {e} <- {eng_dist[e]} episode(s)")
+        print(f"    sessions per worker: {_fmt(_spread('harness_worker', 'sandbox_session'))}")
+        print(f"    engines  per worker: {_fmt(_spread('harness_worker', 'engine'))}")
+        print(f"    workers per session: {_fmt(_spread('sandbox_session', 'harness_worker'))}")
+        mixed = max(_spread("harness_worker", "sandbox_session"), default=0) > 1
+        ok_msg = ("  ✓ every episode sticky to one worker + one engine + one sandbox session + one runtime"
+                  + ("; workers and sessions are decoupled (a worker used several sessions)" if mixed
+                     else "; (no worker used 2 sessions yet: too few episodes per worker to show mixing)"))
     else:
         dist = Counter(r["engine"] for r in router_records)
         print(f"  episodes={len(router_records)}  engines={len(engines)}  unpinned={unpinned}")
@@ -678,7 +673,7 @@ def main() -> int:
         router_out = Path(args.router_csv) if args.router_csv else log.with_suffix(".router.csv")
         write_raw_csv(router_records, router_out,
                       ["ts", "step", "rollout_id", "task_id", "harness_worker", "engine",
-                       "engine_pinned", "adapter_session", "sandbox_session", "runtime_arn", "lane",
+                       "engine_pinned", "adapter_session", "sandbox_session", "runtime_arn", "sandbox_slot",
                        "sandbox_image", "family"])
         print(f"wrote {len(router_records)} per-episode router records -> {router_out}")
         check_stickiness(router_records, op_records)

@@ -36,7 +36,7 @@ bash code/demos/convergence/14_gpu_farm_whole.sh        # demo_gpu_farm_whole: o
 
 # ---- Property demos, now real trainers (headline knob default-ON) ----
 bash code/demos/convergence/15_cpu_tasks_heartbeat.sh  # demo_cpu_tasks deepscaler + keep-warm (HEARTBEAT=1, own Runtime)
-bash code/demos/convergence/16_cpu_scale_lanes.sh  # 4x4x4 lanes: 4 workers : 4 engines : 4 microVMs (LANES=4, MODE=A)
+bash code/demos/convergence/16_cpu_scale_lanes.sh  # decoupled: 4 engines : 256 workers : 256 microVMs (MODE=A)
 bash code/demos/convergence/17_cpu_tasks_libs.sh       # DATASET=libs (pandas/scipy/sklearn, Code Interpreter)
 bash code/demos/convergence/19_cpu_instance_pool.sh    # warm m5 pool, SANDBOX_POOL=2 (needs demo_cpu_instance_pool deploy/runtime.env)
 # 18 = demo_gpu_single + snapshot/resume; REMOTE (g6 ARN) or on-box (LOCAL_GPU=1, farm up on 6,7):

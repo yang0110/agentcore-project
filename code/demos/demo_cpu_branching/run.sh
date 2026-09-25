@@ -145,7 +145,10 @@ ROLLOUT_ARGS=(
    --num-rollout "$NR"
    --rollout-batch-size "$RB"
    --n-samples-per-prompt "$NS"
-   --rollout-max-response-len 1024
+   # Per-TURN cap (the adapter clamps the CLI's max_tokens to it). A turn that hits it comes back as
+   # stop_reason=max_tokens, which the CLI treats as fatal ("exceeded the output token maximum",
+   # exit=1). Qwen3's <think> alone often fills 1024, hence 2048.
+   --rollout-max-response-len "${MAX_RESPONSE_LEN:-2048}"
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
    # The real Claude Code CLI harness. Returns list[Sample] (the fan-out) per episode.
@@ -201,6 +204,11 @@ SGLANG_ARGS=(
    # Episode concurrency S = CONC * num_engines (num_engines = ROLLOUT_GPUS/per-engine = 2). Each
    # episode opens its OWN remote sandbox session AND its own adapter session (multiplexed by sid).
    --sglang-server-concurrency "${CONC:-4}"
+   # The A3/B3 dead-reward fix, same as terminalbench/scale_lanes: without a tool-call parser the
+   # AnthropicAdapter returns Qwen3's <tool_call> text as a plain end_turn reply, the CLI treats the
+   # task as done after ONE turn (exit=0, fan_out=1), never writes solution.py, and reward is 0.
+   --sglang-tool-call-parser qwen25
+   --sglang-reasoning-parser qwen3
 )
 
 MISC_ARGS=(
@@ -212,7 +220,9 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 \
+# Shared box only: SLIME_CUDA_VISIBLE=2,3,4,5,6,7 SLIME_NUM_GPUS=6 pins ray to a subset (default: all 8).
+[ -n "${SLIME_CUDA_VISIBLE:-}" ] && export CUDA_VISIBLE_DEVICES="$SLIME_CUDA_VISIBLE"
+ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${SLIME_NUM_GPUS:-8}" \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 RUNTIME_ENV_JSON="{

@@ -133,15 +133,15 @@
 \IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
 \urlstyle{same}
 \hypersetup{
-  pdftitle={Scaling lanes on AgentCore: harness, inference and sandbox scaled together},
+  pdftitle={Scaling the rollout on AgentCore: harness, inference and sandbox as decoupled tiers},
   pdfauthor={Kaige Yang --- Senior Applied Scientist, AWS},
   hidelinks,
   pdfcreator={LaTeX via pandoc}}
 
-\title[Scaling lanes on AgentCore]{Scaling lanes on AgentCore: harness, inference and sandbox scaled
-together}
+\title[Scaling the rollout on AgentCore]{Scaling the rollout on AgentCore: harness, inference and sandbox
+as decoupled tiers}
 \author[Kaige Yang, AWS]{Kaige Yang --- Senior Applied Scientist, AWS}
-\date{September 24, 2026}
+\date{September 25, 2026}
 
 \setbeamertemplate{frametitle continuation}[from second]
 \begin{document}
@@ -157,14 +157,16 @@ together}
 \endfirsthead
 \endhead
 \textbf{Goal} & Scale an agentic-RL rollout by scaling harness,
-inference and sandbox \textbf{together} \\
+inference and sandbox \textbf{independently} \\
 \textbf{Challenge} & Throughput = \textbf{min(inference, sandbox,
 harness)}; by default the three tiers are balanced independently \\
-\textbf{Solution} & \textbf{Lanes:} 1 harness worker : 1 SGLang engine :
-1 persistent AgentCore microVM \\
-\textbf{Result} & Lanes verified on AWS; \textbf{4 session opens instead
-of 400}; sandbox p95 \textbf{431 → 120 ms}. Rollout time unchanged: the
-task is inference-bound \\
+\textbf{Solution} & \textbf{Decoupled tiers:} 4 SGLang engines : 256
+in-process harness workers : 256 persistent AgentCore microVMs, joined
+per episode \\
+\textbf{Result} & Pool verified live at 64 × 64 (1280 ops ok, engines
+48/48/47/49, tiers mix freely). Earlier 4 × 4 × 4 lanes on AWS:
+\textbf{4 opens instead of 400}, sandbox p95 \textbf{431 → 120 ms}.
+{[}PENDING: 4 : 256 : 256 RL smoke{]} \\
 \bottomrule\noalign{}
 \end{longtable}
 \end{frame}
@@ -202,17 +204,19 @@ loop.}}
 \end{itemize}
 \end{frame}
 
-\begin{frame}{A session can be fresh per episode, or kept per lane}
-\protect\hypertarget{a-session-can-be-fresh-per-episode-or-kept-per-lane}{}
+\begin{frame}{A session can be fresh per episode, or kept and reused}
+\protect\hypertarget{a-session-can-be-fresh-per-episode-or-kept-and-reused}{}
 \centerline{\includegraphics[width=0.86\textwidth,height=\textheight]{figures/lanes_fig04_session-use.pdf}}
 
-\centerline{\emph{Figure 3: fresh per episode vs persistent per lane.}}
+\centerline{\emph{Figure 3: fresh per episode vs persistent (then per lane, now
+pooled).}}
 
 \begin{itemize}
 \tightlist
 \item
   \textbf{Fresh} for OS-level tasks (Terminal-Bench). \textbf{Persistent
-  + fresh workdir} for file-level tasks (this deck).
+  + fresh workdir, one episode at a time} for file-level tasks (this
+  deck).
 \item
   A kept session must stay active: AgentCore reclaims it after
   \textbf{15 min idle} {[}D3{]}.
@@ -236,35 +240,113 @@ loop.}}
 \end{itemize}
 \end{frame}
 
-\hypertarget{the-solution-lanes}{%
-\section{3 · The solution: lanes}\label{the-solution-lanes}}
+\hypertarget{the-solution-decoupled-tiers}{%
+\section{3 · The solution: decoupled
+tiers}\label{the-solution-decoupled-tiers}}
 
-\begin{frame}{One lane = one worker : one engine : one microVM}
-\protect\hypertarget{one-lane-one-worker-one-engine-one-microvm}{}
-\centerline{\includegraphics[width=0.9\textwidth,height=\textheight]{figures/lanes_fig01_lanes.pdf}}
+\begin{frame}[fragile]{4 engines : 256 workers : 256 microVMs, joined
+per episode}
+\protect\hypertarget{engines-256-workers-256-microvms-joined-per-episode}{}
+\centerline{\includegraphics[width=0.64\textwidth,height=\textheight]{figures/lanes_fig12_decoupled.pdf}}
 
-\centerline{\emph{Figure 5: LANES = 4 → 4 × 4 × 4.}}
+\centerline{\emph{Figure 5: each tier is its own pool; nothing is pinned.}}
 
 \begin{itemize}
 \tightlist
 \item
-  Workers \textbf{pull} whole episodes; slime admits 2W, so a worker
-  never waits for work.
+  Free worker → any free microVM (fresh
+  \texttt{ep-\textless{}hex\textgreater{}/}) → least-loaded engine.
+  \texttt{RB\ ×\ NS} = \textbf{256 episodes/step}.
 \end{itemize}
 \end{frame}
 
-\begin{frame}{One episode inside a lane}
-\protect\hypertarget{one-episode-inside-a-lane}{}
-\centerline{\includegraphics[width=0.96\textwidth,height=\textheight]{figures/lanes_fig05_episode.pdf}}
+\begin{frame}[fragile]{Why decoupled: each tier is sized on its own}
+\protect\hypertarget{why-decoupled-each-tier-is-sized-on-its-own}{}
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2471}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.1882}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.5647}}@{}}
+\caption{One knob per tier; the log names the tier that
+binds}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Knob
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Tier
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+It binds when
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Knob
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Tier
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+It binds when
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\texttt{HARNESS\_WORKERS} (256) & harness & \texttt{qdepth}
+\textgreater{} 0: episodes wait for a worker \\
+\texttt{SANDBOX\_SESSIONS} (256) & sandbox & \texttt{sandbox\_wait\_ms}
+\textgreater{} 0: workers wait for a microVM \\
+\texttt{ROLLOUT\_GPUS} (4) & inference & \texttt{engine\_inflight} and
+\texttt{sglang\_gen\_ms} climb \\
+\bottomrule\noalign{}
+\end{longtable}
 
-\centerline{\emph{Figure 6: every turn stays on one engine and one microVM.}}
+\begin{itemize}
+\tightlist
+\item
+  Harness and sandbox scale for \textbf{different reasons} (Python
+  concurrency vs microVM quota and cost), so they are two numbers, not
+  one.
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Isolation of a reused microVM}
+\protect\hypertarget{isolation-of-a-reused-microvm}{}
+\begin{itemize}
+\tightlist
+\item
+  One session serves \textbf{one episode at a time}; a free-list hands
+  it out, and it comes back only after \texttt{rm\ -rf} of the episode's
+  workdir.
+\item
+  Different sessions are different microVMs (AgentCore's isolation
+  boundary).
+\item
+  Not reset between episodes of one session: \texttt{/tmp}, packages,
+  stray processes. Safe for DeepScaleR (writes only its workdir);
+  OS-level tasks need \texttt{SANDBOX\_SESSIONS=0} (a fresh session per
+  episode).
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Opening 256 microVMs, and the client limits}
+\protect\hypertarget{opening-256-microvms-and-the-client-limits}{}
+\begin{itemize}
+\tightlist
+\item
+  All sessions open once at start, paced at \textbf{20/s} (quota 25
+  new/s {[}Q2{]}): ready in ≈ 13 s + one boot (≈ 5 s).
+\item
+  Data-plane invokes: ≈ 100/s at 256 episodes vs a 1000/s quota. Active
+  sessions: 256 vs 5000.
+\item
+  Client side: boto3 \texttt{max\_pool\_connections} = 272 (default 10)
+  and a 288-thread executor (default ≤ 32), or the harness process
+  becomes the ceiling.
+\end{itemize}
 \end{frame}
 
 \begin{frame}{The step pipeline: training hides behind the rollout}
 \protect\hypertarget{the-step-pipeline-training-hides-behind-the-rollout}{}
 \centerline{\includegraphics[width=0.88\textwidth,height=\textheight]{figures/lanes_fig06_pipeline.pdf}}
 
-\centerline{\emph{Figure 7: slime's async driver overlaps train N with rollout N+1.}}
+\centerline{\emph{Figure 6: slime's async driver overlaps train N with rollout N+1.}}
 
 \begin{itemize}
 \tightlist
@@ -281,19 +363,20 @@ loop.}}
 \protect\hypertarget{offline-tiers-must-scale-together}{}
 \centerline{\includegraphics[width=0.88\textwidth,height=\textheight]{figures/lanes_fig07_sweep.pdf}}
 
-\centerline{\emph{Figure 8: harness alone plateaus; all three tiers scale
+\centerline{\emph{Figure 7: harness alone plateaus; all three tiers scale
 near-linearly.}}
 \end{frame}
 
-\begin{frame}{On AWS: lanes hold, 4 opens instead of 400}
-\protect\hypertarget{on-aws-lanes-hold-4-opens-instead-of-400}{}
+\begin{frame}[fragile]{Live pool check: the tiers mix freely}
+\protect\hypertarget{live-pool-check-the-tiers-mix-freely}{}
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.3977}}
   >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.6023}}@{}}
-\caption{4 × 4 × 4, 10 steps + eval, Qwen3-4B}\tabularnewline
+\caption{2026-09-25; no trainer. {[}PENDING: 4 : 256 : 256 RL
+smoke{]}}\tabularnewline
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
-Metric (smoke run, 2026-09-23)
+Metric (W = 64, M = 64, 192 episodes, fake inference, real Runtimes)
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 Value
 \end{minipage} \\
@@ -301,7 +384,39 @@ Value
 \endfirsthead
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
-Metric (smoke run, 2026-09-23)
+Metric (W = 64, M = 64, 192 episodes, fake inference, real Runtimes)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Value
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Sandbox ops & \textbf{1280}, all ok; 64 opens, 64 stops \\
+Episodes per engine & 48 / 48 / 47 / 49 \\
+Sessions per worker (max) · engines per worker (p50) · workers per
+session (max) & 2 · 2 · 2 \\
+\texttt{open\_ms} p50 · \texttt{sandbox\_wait\_ms} p50 / p95 & 5.45 s ·
+0 / 11.8 s (opening ramp only) \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}{Earlier on AWS: 4 × 4 × 4 lanes, 4 opens instead of 400}
+\protect\hypertarget{earlier-on-aws-4-4-4-lanes-4-opens-instead-of-400}{}
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.3977}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.6023}}@{}}
+\caption{4 × 4 × 4, 10 steps + eval, Qwen3-4B}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Metric (smoke run, 2026-09-23, old pinned-lane topology)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Value
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Metric (smoke run, 2026-09-23, old pinned-lane topology)
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 Value
 \end{minipage} \\
@@ -321,7 +436,7 @@ Reward (train) / eval & 0.36 / \textbf{0.358} \\
 \protect\hypertarget{the-sandbox-got-faster-the-rollout-didnt}{}
 \centerline{\includegraphics[width=0.72\textwidth,height=\textheight]{figures/lanes_fig09_before-after.pdf}}
 
-\centerline{\emph{Figure 9: AWS smoke, same task and harness (engines differ: 2 ×
+\centerline{\emph{Figure 8: AWS smoke, same task and harness (engines differ: 2 ×
 TP2 vs 4 × TP1).}}
 
 \begin{itemize}
@@ -332,9 +447,9 @@ TP2 vs 4 × TP1).}}
 \end{itemize}
 \end{frame}
 
-\hypertarget{next-256-sandboxes-on-4-engines}{%
-\section{5 · Next: 256 sandboxes on 4
-engines}\label{next-256-sandboxes-on-4-engines}}
+\hypertarget{next-a-sandbox-heavy-task-for-256-microvms}{%
+\section{5 · Next: a sandbox-heavy task for 256
+microVMs}\label{next-a-sandbox-heavy-task-for-256-microvms}}
 
 \begin{frame}{Pick a task where the sandbox does the work}
 \protect\hypertarget{pick-a-task-where-the-sandbox-does-the-work}{}
@@ -344,7 +459,7 @@ measure).
 
 \centerline{\includegraphics[width=0.98\textwidth,height=\textheight]{figures/lanes_fig10_task-time.pdf}}
 
-\centerline{\emph{Figure 10: DeepCoder: every check runs the full hidden suite.}}
+\centerline{\emph{Figure 9: DeepCoder: every check runs the full hidden suite.}}
 
 \begin{itemize}
 \tightlist
@@ -352,21 +467,6 @@ measure).
   \textbf{Probe} (1500 problems): 74 \% pass with the gold solution;
   suite p50 \textbf{4.2 s}, 101 tests. Keep the \textbf{≥ 8 s} tail (13
   \%).
-\end{itemize}
-\end{frame}
-
-\begin{frame}{Harness: 256 workers, 4 engines}
-\protect\hypertarget{harness-256-workers-4-engines}{}
-\centerline{\includegraphics[width=0.7\textwidth,height=\textheight]{figures/lanes_fig11_256.pdf}}
-
-\centerline{\emph{Figure 11: 4 lanes × 64: one worker per microVM, 64 workers per
-engine.}}
-
-\begin{itemize}
-\tightlist
-\item
-  \textbf{Proof:} sweep N = 32 → 256 at 4 engines; throughput rises
-  while SGLang latency stays flat.
 \end{itemize}
 \end{frame}
 
@@ -378,8 +478,9 @@ engine.}}
   \textbf{AgentCore = the sandbox tier:} Runtime = environment, session
   = episode, microVM = isolation.
 \item
-  \textbf{Lanes work:} 1 : 1 : 1 verified on AWS, 100× fewer opens, 3.6×
-  lower sandbox p95.
+  \textbf{Decouple the tiers:} harness workers, microVMs and engines are
+  three pools joined per episode; persistent microVMs gave 100× fewer
+  opens and 3.6× lower sandbox p95.
 \item
   \textbf{Scale the bottleneck:} math is inference-bound; the
   256-sandbox demo needs a sandbox-heavy task.
@@ -420,7 +521,7 @@ Supports
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}
 & Session = dedicated microVM; 15-min idle, 8 h max \\
 Code & \texttt{demo\_cpu\_scale\_lanes/}: \texttt{harness\_pool.py},
-\texttt{harness\_scaling\_demo.py} & Lanes, sweep \\
+\texttt{harness\_scaling\_demo.py} & Decoupled pool, sweep \\
 Logs & \texttt{\_smoke\_logs/lanes\_tb\_0923/},
 \texttt{\_smoke\_logs/demo\_cpu\_harness\_scale.*} & Measured numbers \\
 \bottomrule\noalign{}

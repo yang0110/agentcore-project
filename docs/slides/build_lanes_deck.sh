@@ -16,10 +16,10 @@ MD="$BASE.md"
 TEX="$BASE.tex"
 PDF="$BASE.pdf"
 
-TITLE="Scaling lanes on AgentCore: harness, inference and sandbox scaled together"
+TITLE="Scaling the rollout on AgentCore: harness, inference and sandbox as decoupled tiers"
 # ASCII author on purpose: avoids needing a CJK font just for the header line.
 AUTHOR="Kaige Yang --- Senior Applied Scientist, AWS"
-DATE="September 24, 2026"
+DATE="September 25, 2026"
 
 TMP="$(mktemp _build_meta.XXXXXX.md)"
 trap 'rm -f "$TMP" '"$BASE"'.{aux,log,nav,out,snm,toc,vrb}' EXIT
@@ -59,7 +59,7 @@ PREAMBLE
 #    table. Every slide of this deck is sized to fit one frame instead.
 
 # Short title/author for the footline (the full title overflows Madrid's footer boxes).
-sed -i -e 's/^\\title{/\\title[Scaling lanes on AgentCore]{/' -e 's/^\\author{/\\author[Kaige Yang, AWS]{/' "$TEX"
+sed -i -e 's/^\\title{/\\title[Scaling the rollout on AgentCore]{/' -e 's/^\\author{/\\author[Kaige Yang, AWS]{/' "$TEX"
 
 # Centre every figure and its "Figure N:" line (pandoc leaves a height-limited image flush left).
 # Tables are already centred (longtable default) and span the text width.

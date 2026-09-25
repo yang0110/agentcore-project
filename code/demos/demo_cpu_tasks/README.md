@@ -22,7 +22,7 @@ This folder also absorbed several former demos:
 - `VARIANT=bigimage`: moved out to `demo_cpu_instance_pool`. Custom images at scale are in
   `demo_cpu_terminalbench`.
 
-To scale the rollout as N 1:1:1 lanes (harness worker : SGLang engine : persistent sandbox session),
+To scale the rollout on decoupled tiers (4 SGLang engines : 256 harness workers : 256 pooled sandbox sessions),
 see the standalone `demo_cpu_scale_lanes`.
 
 ## 1. The tasks: dataset, source, environment, image
@@ -211,8 +211,8 @@ The harness is in-process, so both latency splits are fully present in the log.
 - `run.sh`: the RL run. `train.sh`: the convergence wrapper. `metrics.py`: parsing, CSVs, PNG, stickiness.
 - Probes: `compare_backends.py`, `heartbeat_demo.py` (+ `agentcore_idle_sim.py`),
   `smoke_remote_families.py`.
-- `logs/{imagepool,heartbeat,customruntime}/`: logs from the merged folders.
-  `logs/bigimage/` is moving to `demo_cpu_instance_pool`.
+- `logs/{imagepool,heartbeat,customruntime}/`: logs from the merged folders. The `bigimage` logs
+  now live in `demo_cpu_instance_pool/logs/bigimage/`.
 
 Prereqs: the `agentcore_p4` container (repo at `/work/code`), `AWS_REGION=us-west-2` and AWS creds,
 the base checkpoint `code/p4_slime_train/ckpt/Qwen3-4B_torch_dist` (`CKPT_BASE`), and the Qwen3-4B HF

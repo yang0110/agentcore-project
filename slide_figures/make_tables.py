@@ -61,23 +61,24 @@ def render(filename, title, columns, rows, col_widths):
     print("wrote", path)
 
 
-# ---- Table 1: Canonical ----
+# ---- Table 1: Canonical storyline (CPU) ----
 render(
     "1_canonical.png",
-    "Canonical — the core story",
+    "Storyline — CPU demos (default runtime → custom images → Instances)",
     ["#", "Demo", "Use case it demonstrates"],
     [
-        ["1", "demo_cpu_tasks", "Reference — RL on verifiable tasks in a CPU microVM; DATASET= picks or mixes the data"],
-        ["2", "demo_gpu_single", "KernelBench CUDA on one warm g6; + SNAPSHOT_EVERY=1 snapshot/resume, custom-Runtime angle"],
-        ["3", "demo_gpu_farm", "GPU packing on a local Ray farm — FARM=fractional (2 episodes, 1 GPU) | whole (1 GPU each)"],
+        ["1", "demo_cpu_tasks", "Literature RLVR tasks on the DEFAULT managed Code Interpreter — no image, no Runtime"],
+        ["2", "demo_cpu_terminalbench", "Custom images at scale — one image + Runtime per task (~229), fresh microVM per episode"],
+        ["", "  + warmstart/ probe", "Pre-open (boot next batch ahead) + heartbeat (survive weight-sync idle), cold vs warm"],
+        ["3", "demo_cpu_instance_pool", "> 2 GB image on warm m5 Instances (SANDBOX_POOL=N), per-episode isolated sub_session"],
     ],
-    [0.04, 0.20, 0.76],
+    [0.04, 0.24, 0.72],
 )
 
 # ---- Table 2: Real datasets (one demo, DATASET= selector — not separate demos) ----
 render(
     "2_datasets.png",
-    "demo_cpu_tasks — DATASET= (one, a,b,c, mixed) + variants",
+    "demo_cpu_tasks — DATASET= (one, a,b,c, mixed, libs) on the Code Interpreter",
     ["DATASET", "Use case"],
     [
         ["mbpp (default)", "Python code repair against hidden asserts"],
@@ -90,35 +91,37 @@ render(
         ["hotpotqa", "Multi-hop retrieval / RAG QA"],
         ["xlam", "Function / tool calling"],
         ["mcp", "MCP tool-use (agent calling sandbox tools)"],
+        ["libs", "pandas / scipy / sklearn tasks — preinstalled in the Code Interpreter, no image"],
         ["a,b,c", "Round-robin mix of any datasets above (eval/mix)"],
-        ["mixed", "Math + SQL + CTF + datasci, one batch (was demo_cpu_mixtask)"],
-        ["VARIANT=bigimage", "~4 GB image on a warm CPU Instance (was demo_cpu_bigimage)"],
-        ["VARIANT=imagepool", "3 images (pandas/scipy/sklearn), per family (was demo_cpu_imagepool)"],
-        ["compare_backends.py", "Managed CI vs. your own Runtime (was demo_cpu_customruntime)"],
-        ["HEARTBEAT=1", "Any demo: warm across weight sync (was demo_cpu_heartbeat)"],
+        ["mixed", "Math + SQL + CTF + datasci, one batch"],
+        ["SANDBOX=agentcore-runtime", "Opt-in: your own Runtime (acs_tasks_cpu, stdlib-only image)"],
+        ["compare_backends.py", "Same episode, same reward: Code Interpreter vs. your own Runtime"],
+        ["HEARTBEAT=1", "Own Runtime only: warm across weight sync (no-op on the Code Interpreter)"],
     ],
-    [0.27, 0.73],
+    [0.33, 0.67],
 )
 
 # ---- Table 3: Scaling ----
 render(
     "3_scaling.png",
-    "Scaling a new dimension",
+    "Scaling the tiers together",
     ["#", "Demo", "Use case"],
     [
-        ["4", "demo_cpu_scale_lanes", "Scaling as 4 × 4 × 4 lanes — harness worker : SGLang engine : microVM (was harness_scale)"],
+        ["4", "demo_cpu_scale_lanes", "Scaling as 4 × 4 × 4 lanes — harness worker : SGLang engine : microVM, strictly 1:1:1"],
     ],
     [0.05, 0.26, 0.69],
 )
 
-# ---- Table 4: Substrate & design variants ----
+# ---- Table 4: GPU demos (+ experimental) ----
 render(
     "4_variants.png",
-    "Substrate & design variant (+ experimental)",
+    "GPU demos (+ experimental)",
     ["#", "Demo", "Use case"],
     [
-        ["5", "demo_cpu_terminalbench", "Terminal-Bench as a large image pool — one Runtime per task (~229), fresh microVM per episode"],
+        ["5", "demo_gpu_single", "KernelBench CUDA on one warm g6; + SNAPSHOT_EVERY=1, LOCAL_GPU=1"],
+        ["6", "demo_gpu_farm_fractional", "Two episodes share ONE GPU — local Ray farm, 0.5 + 0.5 (GPU 6)"],
+        ["7", "demo_gpu_farm_whole", "One whole GPU per episode — local Ray farm, GPUs 6,7"],
         ["exp", "demo_cpu_branching", "EXPERIMENTAL / blocked — real Claude Code CLI fan-out; CLI exits 1 before any model call"],
     ],
-    [0.04, 0.22, 0.74],
+    [0.05, 0.25, 0.70],
 )

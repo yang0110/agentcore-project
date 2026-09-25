@@ -32,13 +32,16 @@ RUN pip install --no-cache-dir \
 # CPU shared-instance FARM (sandbox_cpu_farm + its fresh-env helper): with SANDBOX_FARM=cpu, episodes
 # invoked under one shared runtimeSessionId (SANDBOX=agentcore-ray-farm on the client) all reuse this
 # ONE warm instance — paying the ~60-80 s cold-boot ONCE — while each per-episode sub_session still
-# gets a FRESH environment (own workdir + HOME/TMPDIR/caches, wiped on close) run as its OWN
-# unprivileged uid (20000+slot, 0700 dir, prlimit caps). The server must stay root (no USER line) to
-# switch uids; prlimit comes from util-linux (Essential in Debian, so present in python:3.12-slim).
+# gets a FRESH environment (own workdir + HOME/TMPDIR/caches, wiped on close), and every exec runs in
+# sandbox_farm_jail.py: a Landlock domain (own dir only, no TCP, signals scoped) + a subreaper that
+# kills the episode's whole process tree (and caps its process count / RSS). AgentCore drops every
+# capability, so the extra per-episode-uid layer only switches on where CAP_SETUID/CHOWN exist (local
+# docker); prlimit for it comes from util-linux (Essential in Debian, so present in python:3.12-slim).
 WORKDIR /app
 COPY agentcore_slime_demo/sandbox_server_agent.py /app/sandbox_server_agent.py
 COPY agentcore_slime_demo/sandbox_cpu_farm.py /app/sandbox_cpu_farm.py
 COPY agentcore_slime_demo/sandbox_farm_env.py /app/sandbox_farm_env.py
+COPY agentcore_slime_demo/sandbox_farm_jail.py /app/sandbox_farm_jail.py
 
 # Select the CPU shared-instance farm (fresh env per sub_session). Baked into the image so a plain
 # CreateAgentRuntime picks it up; still overridable via the runtime's environmentVariables.

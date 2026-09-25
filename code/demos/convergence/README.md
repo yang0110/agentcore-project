@@ -145,7 +145,7 @@ property's effect on convergence:
 | # | wrapper | substrate | property (default-on knob) |
 |---|---------|-----------|-----------------------------|
 | 15 | `15_cpu_tasks_heartbeat.sh` | your own CPU Runtime (`SANDBOX=agentcore-runtime`, baked ARNs) | `demo_cpu_tasks DATASET=deepscaler` + keep the session warm across the weight-sync barrier (`HEARTBEAT=1`; was `demo_cpu_heartbeat`). Not on the Code Interpreter, where pings don't extend a session |
-| 16 | `16_cpu_scale_lanes.sh` | CPU sandbox (baked ARNs) | 4×4×4 lanes: 4 warm harness workers : 4 SGLang engines : 4 persistent microVMs (`LANES`; MODE pinned to A) |
+| 16 | `16_cpu_scale_lanes.sh` | CPU sandbox (baked ARNs) | decoupled tiers: 4 SGLang engines : 256 warm harness workers (`HARNESS_WORKERS`) : 256 pooled microVMs (`SANDBOX_SESSIONS`); MODE pinned to A |
 | 17 | `17_cpu_tasks_libs.sh` | default Code Interpreter | `demo_cpu_tasks DATASET=libs`: the pandas / scipy / sklearn families that once needed three custom images (was `17_cpu_tasks_imagepool.sh` / `demo_cpu_imagepool`) |
 | 18 | `18_gpu_single_snapshot.sh` | remote **g6** or `LOCAL_GPU=1` | `demo_gpu_single` with app-level workspace snapshot/resume every episode (`SNAPSHOT_EVERY=1`) |
 | 19 | `19_cpu_instance_pool.sh` | warm pool of `SANDBOX_POOL` m5 Instances | `demo_cpu_instance_pool`: ~4 GB image, each episode an isolated sub_session (own uid) on the least-loaded warm instance |

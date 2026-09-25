@@ -96,6 +96,30 @@ actor served it and its `cuda_visible`.
 Not re-run since the split into its own folder or the isolation hardening (the farm code is identical
 to `demo_gpu_farm_fractional`, where the hardened code was probed live).
 
+## Isolation guarantees
+
+All episodes run in ONE local runtime container (one shared `runtimeSessionId`, per-episode `sub_session`). The left column is what you would get with one AgentCore session per episode (the VM boundary; `demo_gpu_single SANDBOX=agentcore-runtime` on a g6):
+
+| | session per instance (VM boundary) | shared sub_session (this demo: 1 GPU per slot on GPUs 6,7) |
+|---|---|---|
+| **Filesystem** | Separate instance and disk; nothing shared. | Each episode gets `…/actor-<slot>/<sub_session>/`, owned by the slot's uid, mode 0700; the farm and actor roots are 0711, so a neighbour can neither read nor list it. The server's `read_file`/`write_file` are realpath-confined to the episode dir (`../`, absolute and symlink escapes are refused). The dir is `rmtree`d on close. Still shared: the image FS, world-writable `/tmp` and `/dev/shm`, and the per-uid HOME/caches (below). |
+| **Process / user** | Separate kernel, PID space and users. | Each slot's commands run as their own non-root uid `20000+slot` (subprocess `user=`/`group=`/`extra_groups=[]`, umask 077; no Python `preexec_fn` in the threaded Ray actor), so a neighbour's processes cannot be signalled or ptraced. Same PID namespace: `ps` shows every slot's command lines. On close the farm SIGKILLs the exec's process group and then every process of the uid, which also catches `setsid`/`nohup` escapees. Episodes that reuse a slot later reuse its uid. |
+| **GPU memory** | Whole GPU per instance. | **No GPU-memory sharing:** one whole GPU per actor. Separation is by `CUDA_VISIBLE_DEVICES`, which is an env var, not a device cgroup: the container sees both GPUs 6 and 7, so a checker that resets the variable can open the other episode's card. Contexts are still separate and driver-enforced (no reading another context's memory). |
+| **GPU fault blast radius** | One GPU per VM; an Xid stays in that instance. | Mostly per-GPU: an Xid on GPU 6 does not take down GPU 7. But both sit behind one host NVIDIA driver and one container, so a driver hang or a container crash (the 2026-09-19 run lost the whole farm mid-run) hits both episodes. |
+| **Compute interference** | None (dedicated). | No SM sharing. Host CPU (nvcc, Python) is shared, so compile-heavy neighbours still slow each other and add noise to the speedup reward. |
+| **RAM / CPU** | Per instance. | **Shared, no per-slot limit.** One checker can exhaust the container's RAM and get every actor killed; this happened on the g6 (a 12 GB `run_checks.py` on a 16 GB g6.xlarge killed both actors, 2026-09-25, see `demo_gpu_single`). A per-slot `RLIMIT_AS` / cgroup `memory.max` would contain it; not implemented. |
+| **Network** | Own instance network stack; VPC/SG policy is set per Runtime. | **Shared network namespace.** Slots can connect to each other's listening ports and to the farm server itself on `localhost:8080`. Sub_session ids are 128-bit random and not listable, so driving another episode needs a leaked id, but nothing else stops it. Blocking uids `20000+` from `:8080` (iptables owner match) would close this; not done. |
+| **Kernel** | Separate guest kernel (the VM boundary). | **Shared kernel** (and, on the g6, one container with one seccomp profile). A kernel or NVIDIA-driver exploit crosses slots. uid separation is ordinary Unix DAC, not a security boundary against a determined attacker. |
+
+**Caches and poisoning.** By default each slot uid has its own HOME under `/var/tmp/b4-home/uid-<N>` (0700), with `XDG_CACHE_HOME` and `TORCH_EXTENSIONS_DIR` inside it, so compiled torch extensions are reused warm across episodes. The risk: episodes that later run on the SAME slot share that cache, so one episode can plant a poisoned `.so` or pip/pycache entry that a later episode loads. `SANDBOX_ISOLATE_HOME=1` removes it: HOME and every cache move into the per-episode dir (`sandbox_farm_env.fresh_env(isolate_caches=True)`) and are wiped on close, at the cost of recompiling every extension per episode. The nvcc serialization lock `/dev/shm/b4-nvcc.lock` is created 0644 by the actor and opened read-only by the checker (flock works on a read-only fd); if it cannot be opened the build just runs unserialized.
+
+**Verification.** The farm code is byte-identical to `demo_gpu_farm_fractional`, where it was probed
+live on GPU 6 on 2026-09-25 (per-slot uids 20000/20001, cross-read denied, confinement, separate CUDA
+contexts, clean close; see `demo_gpu_farm_fractional/logs/isolation_probe_20260925.log`). The whole-GPU
+layout itself was **not** re-probed: the one-GPU-per-slot claim rests on Ray's `CUDA_VISIBLE_DEVICES`
+placement, which the 2026-09-21 smoke logs show, not on a new test.
+
+
 ## Folder layout (self-contained)
 - `agentcore_slime_demo/` — vendored shared library (this demo imports ONLY this copy;
   `/work/code` is not on `PYTHONPATH`). Includes `sandbox_ray_farm.py`, `sandbox_farm_env.py`,

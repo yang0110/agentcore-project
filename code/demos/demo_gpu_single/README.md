@@ -9,7 +9,9 @@ g6**, so the instance count does not scale with concurrency.
 > **Merged 2026-09-25.** This one demo now covers what used to be three:
 > `demo_gpu_single` (the default path), `demo_gpu_snapshot` (now `SNAPSHOT_EVERY=1`) and
 > `demo_gpu_customruntime` (the "why a custom Runtime" angle plus `gpu_torch_smoke.py`). All three had
-> the same trainer, the same KernelBench data and the same g6 image.
+> the same trainer, the same KernelBench data and the same g6 image. The on-box Ray-farm demos are
+> separate: `demo_gpu_farm_fractional` (two episodes share one local GPU) and `demo_gpu_farm_whole`
+> (one whole local GPU per episode) run the same image locally.
 
 | Angle | How | What it shows |
 |---|---|---|
@@ -85,17 +87,54 @@ container. `STEPS` maps to `NR=STEPS+1`. Keep `STEPS × RB ≤ 100`.
 | `NR` / `RB` / `NS` / `TEMP` | 11 / 4 / 8 / 1.0 | 10 train + 1 eval; keep `NR × RB ≤ 100` |
 | `EVAL_INTERVAL` / `EVAL_NS` | 10 / 2 | held-out eval cadence / samples |
 | `INVOKE_MAX_RETRIES` | 8 | retries on transient invoke 5xx (cold g6) |
-| `HEARTBEAT` / `HEARTBEAT_IDLE` / `HEARTBEAT_PING_FRACTION` | 0 / 600 / 0.5 | `1` = a `SessionKeeper` pings a sandbox session idle past `fraction × idle` s, so the warm g6 session survives the weight-sync stall (was `demo_cpu_heartbeat`; opt-in knob of every demo) |
+| `HEARTBEAT` / `HEARTBEAT_IDLE` / `HEARTBEAT_PING_FRACTION` | 0 / 600 / 0.5 | `1` = a `SessionKeeper` pings a sandbox session idle past `fraction × idle` s, so the warm g6 session survives the weight-sync stall (was `demo_cpu_heartbeat`; opt-in knob of every demo). Helps only our own Runtimes (the g6 here); it does **not** extend a managed Code Interpreter session, and the `LOCAL_GPU=1` farm has no idle timeout |
 
 ## Key metrics
 `rollout/raw_reward` (the RL signal) and `eval/kernelbench` (held-out solve rate). Latency:
 `perf/sandbox_ms_{mean,p50,p95}` (remote checker round-trips) vs `perf/sglang_gen_ms_{mean,p50,p95}`,
 plus the cold/warm open split. `5_run.sh` writes `logs/<tag>.{csv,eval.csv,png}` via `metrics.py`.
 
+## Results
+| run | config | outcome | `eval/kernelbench` | raw_reward by step | latency | notes |
+|---|---|---|---|---|---|---|
+| 2026-09-18 `smoke_run.log` | earlier smoke (config in the log) | Job succeeded | 0.15 | — | — | pre-merge artifact |
+| 2026-09-25 remote smoke `logs/smoke-remote_20260925_113622.*` | NR=11, g6 Runtime (image baked `B4_GPU_FRACTION=0.5` ⇒ 2 actors on the L4, client gate 1), env override `SLIME_CUDA_VISIBLE=2..7 ACTOR_GPUS=4 ROLLOUT_GPUS=2` (GPUs 0,1 busy) | **Job failed at step 5** (rc=1), no eval | — | 0.53 0.47 0.25 0.56 | cold open 207 s (one `Insufficient EC2 capacity g6.xlarge`, retried); warm open p50 153 ms / p95 224 ms; write p50 119 ms; exec p50 5.4 s / p95 17.0 s; close 110 ms (gen p50 2.1 s / p95 6.6 s) | 136 episodes (69/68 across `b4-sbx-0/1`); checker PASSED 93 (mean 0.71), SETUP_ERROR 27, IMPORT_ERROR 16. Cause: host-RAM OOM, one `run_checks.py` at 12.09 GB on the 16 GB g6.xlarge, Ray killed both actors, next exec HTTP 500 (see Isolation guarantees) |
+
+The 09-25 Runtime and its ECR repo were deleted after the run; the capacity provider `acs_gpu_cp` was
+kept. Note the mismatch this run exposed: `run.sh` describes one WHOLE L4 per episode, but
+`deploy/demo.env` bakes `B4_GPU_FRACTION=0.5`, so the g6 holds two warm actors (two CUDA contexts and
+two sets of Ray worker RAM) while the client gate only ever uses one at a time.
+
+## Isolation guarantees
+
+The default `SANDBOX=agentcore-ray-farm` puts every episode in ONE warm g6 (one shared `runtimeSessionId`, per-episode `sub_session`). `SANDBOX=agentcore-runtime` gives each episode its own instance, i.e. the left column. Be clear about what the right column does and does not give you:
+
+| | session per instance (VM boundary) | shared sub_session (this demo's default: Ray farm in one g6) |
+|---|---|---|
+| **Filesystem** | Separate instance and disk; nothing shared. | Fresh `…/actor-<slot>/<sub_session>/` per episode, realpath-confined `read_file`/`write_file`, `rmtree` on close. **On the g6 all slots share one uid** (see next row), so a command run inside the sandbox can read a co-resident episode's files; the 0700/0711 modes only bite on the local farm. |
+| **Process / user** | Separate kernel, PID space and users. | **Not available on the g6.** The AgentCore Runtime container runs as uid 0 with **zero capabilities** (CapEff/CapPrm/CapBnd = 0, NoNewPrivs=1, seccomp filter; probed live 2026-09-25), so setuid is impossible and the farm falls back to one shared uid (`ping`/`open` report `uid_isolation: false`). Left: path confinement for `read_file`/`write_file`, a fresh dir per episode, and a kill of the exec's process group. A `setsid` escapee survives close and can read the next episode's files. The per-slot uid works on the local farm (`LOCAL_GPU=1`), where docker root keeps CHOWN/KILL/SETGID/SETUID. |
+| **GPU memory** | Whole GPU per instance. | Separate CUDA contexts per slot with **driver-enforced address spaces** (one slot cannot read another's device memory). The per-process **fraction cap is cooperative**: `sitecustomize.py` calls `torch.cuda.set_per_process_memory_fraction`, which only limits torch's caching allocator. A checker that raises the fraction, or allocates through raw CUDA / another library, can take the whole card and OOM its co-tenant. |
+| **GPU fault blast radius** | One GPU per VM; an Xid or wedge stays in that instance. | **Shared.** There is no MIG on L4/L40S, so an Xid, a hung kernel or a wedged context hits every co-tenant on that GPU. We saw the g6's L4 wedge under sustained nvcc load with fractional sharing; a lower packing (FRAC=0.5) made it rarer but does not remove it. |
+| **Compute interference** | None (dedicated). | Time-sliced SMs with no MPS or priorities: a heavy kernel slows the other slot's kernels and skews its measured speedup (reward noise). CPU for nvcc is shared too. |
+| **RAM / CPU** | Per instance (16 GB on g6.xlarge). | **Shared, no per-slot limit.** Observed 2026-09-25 on the g6 (`logs/smoke-remote_20260925_113622.log`): one checker (`run_checks.py`) grew to 12.09 GB of the g6.xlarge's 16 GB, Ray's memory monitor killed BOTH farm actors, the next exec returned HTTP 500 and the job failed at step 5. A per-slot `RLIMIT_AS` or cgroup `memory.max` would contain it; not implemented (and cgroup writes are unavailable inside the zero-capability Runtime). |
+| **Network** | Own instance network stack; VPC/SG policy is set per Runtime. | **Shared network namespace.** Slots can connect to each other's listening ports and to the farm server itself on `localhost:8080`. Sub_session ids are 128-bit random and not listable, so driving another episode needs a leaked id, but nothing else stops it. Blocking uids `20000+` from `:8080` (iptables owner match) would close this; not done. |
+| **Kernel** | Separate guest kernel (the VM boundary). | **Shared kernel** (and, on the g6, one container with one seccomp profile). A kernel or NVIDIA-driver exploit crosses slots. uid separation is ordinary Unix DAC, not a security boundary against a determined attacker. |
+
+**Caches and poisoning.** By default each slot uid has its own HOME under `/var/tmp/b4-home/uid-<N>` (0700), with `XDG_CACHE_HOME` and `TORCH_EXTENSIONS_DIR` inside it, so compiled torch extensions are reused warm across episodes. The risk: episodes that later run on the SAME slot share that cache, so one episode can plant a poisoned `.so` or pip/pycache entry that a later episode loads (on the g6 every slot shares one HOME, so the risk spans all episodes). `SANDBOX_ISOLATE_HOME=1` removes it: HOME and every cache move into the per-episode dir (`sandbox_farm_env.fresh_env(isolate_caches=True)`) and are wiped on close, at the cost of recompiling every extension per episode. The nvcc serialization lock `/dev/shm/b4-nvcc.lock` is created 0644 by the actor and opened read-only by the checker (flock works on a read-only fd); if it cannot be opened the build just runs unserialized.
+
+**What was verified.** On the g6 (2026-09-25, a plain exec on the deployed image): uid 0 with
+CapInh/CapPrm/CapEff/CapBnd/CapAmb all 0, NoNewPrivs=1, Seccomp=2, 4 vCPU, one L4. So on this demo's
+default path the farm runs in its shared-uid fallback. The per-slot-uid mode was probed live on the
+local farm (`demo_gpu_farm_fractional/logs/isolation_probe_20260925.log`), which is what
+`LOCAL_GPU=1` gets. **g6 image rebuild: pending.** The hardened farm code has not been deployed to a
+g6; the next `2_build_image.sh` + `4_deploy_runtime.sh` picks it up. It was not rebuilt now because,
+given the measured capabilities, it could only show the fallback.
+
+
 ## Folder layout (self-contained)
 - `1_…6_*.sh` + `deploy/` (`steps_common.sh`, `demo.env`, `agentcore_deploy.py`, `local_gpu_runtime.sh`,
   `Dockerfile.sandbox.gpu.shared`; `Dockerfile.sandbox.gpu` = the older flat server, non-farm)
 - `run.sh` (trainer), `train.sh` (convergence wrapper), `metrics.py`, `prepare_data.sh`, `build_dataset.py`, `data/`
 - `gpu_torch_smoke.py`, `snapshot_demo.py` (+ `agentcore_idle_sim.py`): offline probes
-- `agentcore_slime_demo/`: vendored library (incl. `app_snapshot.py`, `snapshot_store.py`, `session_keeper.py`)
+- `agentcore_slime_demo/`: vendored library (incl. `sandbox_ray_farm.py`, `sandbox_farm_env.py`, `app_snapshot.py`, `snapshot_store.py`, `session_keeper.py`)
 - `logs/snapshot/`: smoke log from the former `demo_gpu_snapshot`

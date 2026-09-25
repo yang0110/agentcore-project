@@ -1,8 +1,8 @@
-# Scaling lanes on AgentCore
+# Scaling the rollout on AgentCore: three decoupled tiers
 
 **Kaige Yang** — Senior Applied Scientist, AWS
 
-September 24, 2026
+September 25, 2026
 
 ---
 
@@ -10,10 +10,10 @@ September 24, 2026
 
 | | |
 |--------------|------------------------------------------------------------------------------|
-| **Goal** | Scale an agentic-RL rollout by scaling harness, inference and sandbox **together** |
+| **Goal** | Scale an agentic-RL rollout by scaling harness, inference and sandbox **independently** |
 | **Challenge** | Throughput = **min(inference, sandbox, harness)**; by default the three tiers are balanced independently |
-| **Solution** | **Lanes:** 1 harness worker : 1 SGLang engine : 1 persistent AgentCore microVM |
-| **Result** | Lanes verified on AWS; **4 session opens instead of 400**; sandbox p95 **431 → 120 ms**. Rollout time unchanged: the task is inference-bound |
+| **Solution** | **Decoupled tiers:** 4 SGLang engines : 256 in-process harness workers : 256 persistent AgentCore microVMs, joined per episode |
+| **Result** | Pool verified live at 64 × 64 (1280 ops ok, engines 48/48/47/49, tiers mix freely). Earlier 4 × 4 × 4 lanes on AWS: **4 opens instead of 400**, sandbox p95 **431 → 120 ms**. [PENDING: 4 : 256 : 256 RL smoke] |
 
 : The deck in one table
 
@@ -35,13 +35,13 @@ September 24, 2026
 
 - No "create session" call: the **first invoke** with a new id boots the VM. `StopRuntimeSession` ends it.
 
-## A session can be fresh per episode, or kept per lane
+## A session can be fresh per episode, or kept and reused
 
 ![](figures/lanes_fig04_session-use.pdf){width=86%}
 
-*Figure 3: fresh per episode vs persistent per lane.*
+*Figure 3: fresh per episode vs persistent (then per lane, now pooled).*
 
-- **Fresh** for OS-level tasks (Terminal-Bench). **Persistent + fresh workdir** for file-level tasks (this deck).
+- **Fresh** for OS-level tasks (Terminal-Bench). **Persistent + fresh workdir, one episode at a time** for file-level tasks (this deck).
 - A kept session must stay active: AgentCore reclaims it after **15 min idle** [D3].
 
 # 2 · The challenge
@@ -54,27 +54,45 @@ September 24, 2026
 
 - **Harness** is a hidden ceiling: add engines and VMs and throughput still flat-lines.
 
-# 3 · The solution: lanes
+# 3 · The solution: decoupled tiers
 
-## One lane = one worker : one engine : one microVM
+## 4 engines : 256 workers : 256 microVMs, joined per episode
 
-![](figures/lanes_fig01_lanes.pdf){width=90%}
+![](figures/lanes_fig12_decoupled.pdf){width=64%}
 
-*Figure 5: LANES = 4 → 4 × 4 × 4.*
+*Figure 5: each tier is its own pool; nothing is pinned.*
 
-- Workers **pull** whole episodes; slime admits 2W, so a worker never waits for work.
+- Free worker → any free microVM (fresh `ep-<hex>/`) → least-loaded engine. `RB × NS` = **256 episodes/step**.
 
-## One episode inside a lane
+## Why decoupled: each tier is sized on its own
 
-![](figures/lanes_fig05_episode.pdf){width=96%}
+| Knob | Tier | It binds when |
+|---------------------|----------------|------------------------------------------------|
+| `HARNESS_WORKERS` (256) | harness | `qdepth` > 0: episodes wait for a worker |
+| `SANDBOX_SESSIONS` (256) | sandbox | `sandbox_wait_ms` > 0: workers wait for a microVM |
+| `ROLLOUT_GPUS` (4) | inference | `engine_inflight` and `sglang_gen_ms` climb |
 
-*Figure 6: every turn stays on one engine and one microVM.*
+: One knob per tier; the log names the tier that binds
+
+- Harness and sandbox scale for **different reasons** (Python concurrency vs microVM quota and cost), so they are two numbers, not one.
+
+## Isolation of a reused microVM
+
+- One session serves **one episode at a time**; a free-list hands it out, and it comes back only after `rm -rf` of the episode's workdir.
+- Different sessions are different microVMs (AgentCore's isolation boundary).
+- Not reset between episodes of one session: `/tmp`, packages, stray processes. Safe for DeepScaleR (writes only its workdir); OS-level tasks need `SANDBOX_SESSIONS=0` (a fresh session per episode).
+
+## Opening 256 microVMs, and the client limits
+
+- All sessions open once at start, paced at **20/s** (quota 25 new/s [Q2]): ready in ≈ 13 s + one boot (≈ 5 s).
+- Data-plane invokes: ≈ 100/s at 256 episodes vs a 1000/s quota. Active sessions: 256 vs 5000.
+- Client side: boto3 `max_pool_connections` = 272 (default 10) and a 288-thread executor (default ≤ 32), or the harness process becomes the ceiling.
 
 ## The step pipeline: training hides behind the rollout
 
 ![](figures/lanes_fig06_pipeline.pdf){width=88%}
 
-*Figure 7: slime's async driver overlaps train N with rollout N+1.*
+*Figure 6: slime's async driver overlaps train N with rollout N+1.*
 
 - Weight sync waits for the rollout to finish, so rollouts are **one step off-policy**.
 
@@ -84,11 +102,22 @@ September 24, 2026
 
 ![](figures/lanes_fig07_sweep.pdf){width=88%}
 
-*Figure 8: harness alone plateaus; all three tiers scale near-linearly.*
+*Figure 7: harness alone plateaus; all three tiers scale near-linearly.*
 
-## On AWS: lanes hold, 4 opens instead of 400
+## Live pool check: the tiers mix freely
 
-| Metric (smoke run, 2026-09-23) | Value |
+| Metric (W = 64, M = 64, 192 episodes, fake inference, real Runtimes) | Value |
+|-----------------------------------|-----------------------------------------------------|
+| Sandbox ops | **1280**, all ok; 64 opens, 64 stops |
+| Episodes per engine | 48 / 48 / 47 / 49 |
+| Sessions per worker (max) · engines per worker (p50) · workers per session (max) | 2 · 2 · 2 |
+| `open_ms` p50 · `sandbox_wait_ms` p50 / p95 | 5.45 s · 0 / 11.8 s (opening ramp only) |
+
+: 2026-09-25; no trainer. [PENDING: 4 : 256 : 256 RL smoke]
+
+## Earlier on AWS: 4 × 4 × 4 lanes, 4 opens instead of 400
+
+| Metric (smoke run, 2026-09-23, old pinned-lane topology) | Value |
 |-----------------------------------|-----------------------------------------------------|
 | Lanes 1 : 1 : 1 | ✓ all 400 episodes on their lane's engine **and** VM |
 | Episodes per lane | 103 / 101 / 99 / 97 |
@@ -102,11 +131,11 @@ September 24, 2026
 
 ![](figures/lanes_fig09_before-after.pdf){width=72%}
 
-*Figure 9: AWS smoke, same task and harness (engines differ: 2 × TP2 vs 4 × TP1).*
+*Figure 8: AWS smoke, same task and harness (engines differ: 2 × TP2 vs 4 × TP1).*
 
 - An episode takes ≈ 8 s; the sandbox part is ≈ **0.65 s**. **≈ 90 % is generation**: this task is inference-bound.
 
-# 5 · Next: 256 sandboxes on 4 engines
+# 5 · Next: a sandbox-heavy task for 256 microVMs
 
 ## Pick a task where the sandbox does the work
 
@@ -114,22 +143,14 @@ The engines keep up only if **N · G / T ≤ C**: N sandboxes, G tokens per epis
 
 ![](figures/lanes_fig10_task-time.pdf){width=98%}
 
-*Figure 10: DeepCoder: every check runs the full hidden suite.*
+*Figure 9: DeepCoder: every check runs the full hidden suite.*
 
 - **Probe** (1500 problems): 74 % pass with the gold solution; suite p50 **4.2 s**, 101 tests. Keep the **≥ 8 s** tail (13 %).
-
-## Harness: 256 workers, 4 engines
-
-![](figures/lanes_fig11_256.pdf){width=70%}
-
-*Figure 11: 4 lanes × 64: one worker per microVM, 64 workers per engine.*
-
-- **Proof:** sweep N = 32 → 256 at 4 engines; throughput rises while SGLang latency stays flat.
 
 ## Takeaways
 
 - **AgentCore = the sandbox tier:** Runtime = environment, session = episode, microVM = isolation.
-- **Lanes work:** 1 : 1 : 1 verified on AWS, 100× fewer opens, 3.6× lower sandbox p95.
+- **Decouple the tiers:** harness workers, microVMs and engines are three pools joined per episode; persistent microVMs gave 100× fewer opens and 3.6× lower sandbox p95.
 - **Scale the bottleneck:** math is inference-bound; the 256-sandbox demo needs a sandbox-heavy task.
 
 ## References
@@ -138,7 +159,7 @@ The engines keep up only if **N · G / T ≤ C**: N sandboxes, G tokens per epis
 |------|------------------------------------------------------------|--------------------------------------------|
 | [Q2] | `aws service-quotas list-service-quotas --service-code bedrock-agentcore` (us-west-2, 2026-09-23) | Active sessions 5000 · new sessions 25/s |
 | [D3] | <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html> | Session = dedicated microVM; 15-min idle, 8 h max |
-| Code | `demo_cpu_scale_lanes/`: `harness_pool.py`, `harness_scaling_demo.py` | Lanes, sweep |
+| Code | `demo_cpu_scale_lanes/`: `harness_pool.py`, `harness_scaling_demo.py` | Decoupled pool, sweep |
 | Logs | `_smoke_logs/lanes_tb_0923/`, `_smoke_logs/demo_cpu_harness_scale.*` | Measured numbers |
 
 : References

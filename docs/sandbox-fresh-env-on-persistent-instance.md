@@ -21,9 +21,13 @@ microVM), which is cheaper, faster, and perfectly isolated for free. Reuse only 
 **Instances** compute type — a capacity-provider EC2 box that takes **~60–80 s to cold-boot** — and
 that applies to **both** Instance flavours:
 
-- the **GPU `g6`** (`demo_gpu_farm`), and
-- the **CPU `m5`** (`demo_cpu_tasks` `VARIANT=bigimage`, the big-image variant this doc ships with; formerly the
-  separate `demo_cpu_bigimage`).
+- the **GPU `g6`** (`demo_gpu_farm_fractional` / `demo_gpu_farm_whole`, the local form of the remote farm), and
+- the **CPU `m5`** (`demo_cpu_instance_pool`, the big-image demo this doc ships with; formerly
+  `demo_cpu_tasks` `VARIANT=bigimage`, and before that the separate `demo_cpu_bigimage`). It keeps a warm pool
+  of `SANDBOX_POOL` (default 2) shared sessions and runs each `sub_session` under its own slot uid
+  (0700 dir, rlimits, path-escape refusal, every uid process killed and `/tmp` wiped on close;
+  `isolation_probe.py` checks it offline). The episodes still share the kernel, network namespace and
+  CPU/RAM, so use a microVM per session when you need a hard boundary.
 
 Both use the *same* shared-session + `sub_session` mechanism below; they differ only in what the
 `sub_session` multiplexes (a fractional-GPU actor vs. an isolated CPU env) and the cache policy.
@@ -104,8 +108,8 @@ per-episode freshness.
 
 ## Related
 
-- [`demo_cpu_tasks/README.md`](../code/demos/demo_cpu_tasks/README.md) — its `VARIANT=bigimage`
-  section carries this farm (formerly `demo_cpu_bigimage`).
+- [`demo_cpu_instance_pool/README.md`](../code/demos/demo_cpu_instance_pool/README.md) — carries this farm
+  and its isolation guarantees (formerly `demo_cpu_tasks` `VARIANT=bigimage` / `demo_cpu_bigimage`).
 - [`sandbox-concurrency-ablation.md`](sandbox-concurrency-ablation.md) — the CONC sweep the shared
   instance makes cheap to run.
 - [`gpu-snapshot.md`](gpu-snapshot.md) — why we reuse a *live* warm instance rather than snapshot one.

@@ -5,7 +5,48 @@ _Last updated: 2026-09-25. Branch: `master`._
 This file tracks the current work session so it can be picked up later. It has three
 sections: **Done**, **In progress**, **Next steps (to run)**.
 
-> **2026-09-25 — heartbeat / customruntime / imagepool folded into `demo_cpu_tasks` (6 demos now).**
+> **2026-09-25 — storyline restructure → 7 demos + 1 experimental.** In storyline order:
+> 1. `demo_cpu_tasks`: every literature task on the **DEFAULT managed Code Interpreter** (`SANDBOX=agentcore`,
+>    no image / Runtime; steps 2/3/4/6 are no-ops). The CI has pandas/scipy/sklearn/torch-cpu/gcc/node (no git,
+>    no internet); all 13 families pass on it, and `DATASET=gsm8k` scored eval 0.90 on it. `VARIANT=imagepool` →
+>    **`DATASET=libs`** on the CI (the 3 custom images are gone); `VARIANT=bigimage` moved out (item 3).
+>    `HEARTBEAT=1` is a no-op on the CI (sessions end at `AGENTCORE_CI_SESSION_TIMEOUT`, default 3600 s);
+>    it only helps `SANDBOX=agentcore-runtime`.
+> 2. `demo_cpu_terminalbench`: one image + Runtime per task, look-ahead pre-open (`TB_PREOPEN_BATCHES=2`),
+>    always-on heartbeat. It now carries the **`warmstart/` probe** (`bash warmstart/run_warmstart.sh`, results
+>    in its README): pre-open cuts wait p50 774 → 5 ms (own Runtime) / 1715 → 0 ms (CI), makespan −20 % / −15 %,
+>    only the first batch waits; heartbeat on keeps 3/3 own-Runtime sessions past a 60 s idle timeout (resume
+>    104 ms), off → all silently reclaimed; the CI expires at its session timeout regardless. The short-lived
+>    `demo_cpu_warmstart` folder was deleted with its Runtime/ECR.
+> 3. `demo_cpu_instance_pool` (formerly `demo_cpu_tasks VARIANT=bigimage` / `demo_cpu_bigimage`): ~4 GB image on
+>    one m5 capacity-provider Instance, warm pool `SANDBOX_POOL=N` (default 2) of shared sessions, each episode
+>    a sub_session under its own slot uid (0700 dir, umask 077, NPROC/FSIZE/CORE rlimits, process-tree kill on
+>    timeout, uid kill + dir//tmp//dev/shm wipe on close, path-escape refusal, `AWS_*` stripped). Still shared:
+>    kernel, network namespace, CPU/RAM, `ps`. Offline `isolation_probe.py` 16/16; image
+>    `acs-sandbox-bigcpu:uidiso-20260925` pushed; **live check on the m5 pending**.
+> 4. `demo_cpu_scale_lanes`: now **decoupled tiers**, 4 SGLang engines : `HARNESS_WORKERS`=256 in-process workers :
+>    `SANDBOX_SESSIONS`=256 pooled persistent microVMs (was 4 × 4 × 4 pinned lanes; `LANES`/`LANE_SANDBOX` removed).
+>    Per episode: free worker pulls → borrows any free session (fresh `ep-<hex>`, `rm -rf` on return) → least-loaded
+>    engine. Sessions open once at `SANDBOX_OPEN_RATE`=20/s; boto3 pool + executor sized to 256; `RB`=32 so 256
+>    episodes/step. Live pool check (W=M=64, fake inference, real Runtimes): 1280 ops ok, engines 48/48/47/49, tiers
+>    mix. RL smoke pending (needs 8 GPUs, or pin + `ACTOR_GPUS=2`).
+> 5. `demo_gpu_single`.
+> 6. `demo_gpu_farm_fractional` (GPU 6, 0.5 + 0.5; smoke eval/kernelbench 0.65) and
+> 7. `demo_gpu_farm_whole` (GPUs 6,7, one GPU per session): `demo_gpu_farm FARM=…` split into two folders, each
+>    hard-setting its mode; launcher `code/deploy/run_local_gpu_runtime.sh fractional|whole|stop`.
+> - Experimental: `demo_cpu_branching`: the reward-0 cause was a missing `--sglang-tool-call-parser qwen25` (+ CLI `exit=1` on the 1024 per-turn cap); both fixed in `run.sh` 2026-09-25, RL re-run pending.
+> - Convergence: 01–11 now say Code Interpreter; 13/14 point at the farm folders (no `FARM`); 15 pins
+>   `SANDBOX=agentcore-runtime`; `17_cpu_tasks_imagepool.sh` → **`17_cpu_tasks_libs.sh`**; new
+>   **`19_cpu_instance_pool.sh`** (`SANDBOX_POOL=2`, ARN from `deploy/runtime.env`).
+> - Smoke drivers: trainers `demo_cpu_tasks:libs`, `demo_cpu_tasks:deepscaler+HEARTBEAT=1+SANDBOX=agentcore-runtime`;
+>   `run_smoke_plan.sh` PHASE=2 = `demo_cpu_instance_pool` (was `demo_cpu_tasks+VARIANT=imagepool`);
+>   `run_gpu_smoke.sh` / `run_b_queue.sh` use the two farm folders; offline probes `demo_cpu_terminalbench:warmstart`,
+>   `demo_cpu_instance_pool:isolation`.
+> - Decided (user, 2026-09-25: keep): the env-only `SLIME_CUDA_VISIBLE` / `SLIME_NUM_GPUS` pin runs the trainer on
+>   a GPU subset of the shared box; unset = the unchanged hardcoded 8-GPU placement. Read by the run.sh of
+>   tasks, instance_pool, branching, scale_lanes and the 3 GPU demos (terminalbench doesn't read it yet).
+>
+> **2026-09-25 — heartbeat / customruntime / imagepool folded into `demo_cpu_tasks` (6 demos at the time).**
 > The set is **5 main demos** (3 CPU: `demo_cpu_tasks`, `demo_cpu_terminalbench`, `demo_cpu_scale_lanes`;
 > 2 GPU: `demo_gpu_single`, `demo_gpu_farm`) **plus `demo_cpu_branching`, EXPERIMENTAL/blocked**. Merges:
 > - `demo_cpu_heartbeat` → the opt-in **`HEARTBEAT=1`** knob of every demo (`session_keeper.maybe_keep_warm`

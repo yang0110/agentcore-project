@@ -96,6 +96,50 @@ Watch for the non-MIG wedge (more co-tenants ⇒ more nvcc load on one card) and
 The two 0.775 / 0.65 evals are 1 eval × 20 problems × 2 samples each on a smoke-sized run — noise, not
 a regression. Both runs predate the isolation hardening below (see the live probe for that).
 
+## Isolation guarantees
+
+All episodes run in ONE local runtime container (one shared `runtimeSessionId`, per-episode `sub_session`). The left column is what you would get with one AgentCore session per episode (the VM boundary; `demo_gpu_single SANDBOX=agentcore-runtime` on a g6):
+
+| | session per instance (VM boundary) | shared sub_session (this demo: 2 slots on GPU 6) |
+|---|---|---|
+| **Filesystem** | Separate instance and disk; nothing shared. | Each episode gets `…/actor-<slot>/<sub_session>/`, owned by the slot's uid, mode 0700; the farm and actor roots are 0711, so a neighbour can neither read nor list it. The server's `read_file`/`write_file` are realpath-confined to the episode dir (`../`, absolute and symlink escapes are refused). The dir is `rmtree`d on close. Still shared: the image FS, world-writable `/tmp` and `/dev/shm`, and the per-uid HOME/caches (below). |
+| **Process / user** | Separate kernel, PID space and users. | Each slot's commands run as their own non-root uid `20000+slot` (subprocess `user=`/`group=`/`extra_groups=[]`, umask 077; no Python `preexec_fn` in the threaded Ray actor), so a neighbour's processes cannot be signalled or ptraced. Same PID namespace: `ps` shows every slot's command lines. On close the farm SIGKILLs the exec's process group and then every process of the uid, which also catches `setsid`/`nohup` escapees. Episodes that reuse a slot later reuse its uid. |
+| **GPU memory** | Whole GPU per instance. | Separate CUDA contexts per slot with **driver-enforced address spaces** (one slot cannot read another's device memory). The per-process **fraction cap is cooperative**: `sitecustomize.py` calls `torch.cuda.set_per_process_memory_fraction`, which only limits torch's caching allocator. A checker that raises the fraction, or allocates through raw CUDA / another library, can take the whole card and OOM its co-tenant. |
+| **GPU fault blast radius** | One GPU per VM; an Xid or wedge stays in that instance. | **Shared.** There is no MIG on L4/L40S, so an Xid, a hung kernel or a wedged context hits every co-tenant on that GPU. We saw the g6's L4 wedge under sustained nvcc load with fractional sharing; a lower packing (FRAC=0.5) made it rarer but does not remove it. |
+| **Compute interference** | None (dedicated). | Time-sliced SMs with no MPS or priorities: a heavy kernel slows the other slot's kernels and skews its measured speedup (reward noise). CPU for nvcc is shared too. |
+| **RAM / CPU** | Per instance. | **Shared, no per-slot limit.** One checker can exhaust the container's RAM and get every actor killed; this happened on the g6 (a 12 GB `run_checks.py` on a 16 GB g6.xlarge killed both actors, 2026-09-25, see `demo_gpu_single`). A per-slot `RLIMIT_AS` / cgroup `memory.max` would contain it; not implemented. |
+| **Network** | Own instance network stack; VPC/SG policy is set per Runtime. | **Shared network namespace.** Slots can connect to each other's listening ports and to the farm server itself on `localhost:8080`. Sub_session ids are 128-bit random and not listable, so driving another episode needs a leaked id, but nothing else stops it. Blocking uids `20000+` from `:8080` (iptables owner match) would close this; not done. |
+| **Kernel** | Separate guest kernel (the VM boundary). | **Shared kernel** (and, on the g6, one container with one seccomp profile). A kernel or NVIDIA-driver exploit crosses slots. uid separation is ordinary Unix DAC, not a security boundary against a determined attacker. |
+
+**Caches and poisoning.** By default each slot uid has its own HOME under `/var/tmp/b4-home/uid-<N>` (0700), with `XDG_CACHE_HOME` and `TORCH_EXTENSIONS_DIR` inside it, so compiled torch extensions are reused warm across episodes. The risk: episodes that later run on the SAME slot share that cache, so one episode can plant a poisoned `.so` or pip/pycache entry that a later episode loads. `SANDBOX_ISOLATE_HOME=1` removes it: HOME and every cache move into the per-episode dir (`sandbox_farm_env.fresh_env(isolate_caches=True)`) and are wiped on close, at the cost of recompiling every extension per episode. The nvcc serialization lock `/dev/shm/b4-nvcc.lock` is created 0644 by the actor and opened read-only by the checker (flock works on a read-only fd); if it cannot be opened the build just runs unserialized.
+
+**Verified live** on this demo's local farm (2026-09-25, `bash 4_deploy_runtime.sh` = fractional on
+GPU 6, then `python3 isolation_probe.py`; output `logs/isolation_probe_20260925.log`):
+- slots run as uid 20000 / 20001 (`groups=` only their own gid); A's dir is `drwx------ 20000`, the
+  actor/farm roots `drwx--x--x root`.
+- B's `cat` / `ls` of A's file, A's dir, the actor root, the farm root and A's HOME all give
+  *Permission denied*; a symlink B plants to A's dir is also denied.
+- B's `read_file` of `../../actor-0/…`, the absolute path and the symlink are refused. (In that run the
+  refusal surfaced as an HTTP 500; it now returns `{"text": "", "error": "… outside this sub_session"}`
+  so the client does not retry it. That change was re-checked offline as root, not re-run live.)
+- CUDA, both slots at once: each process sees the L40S as `cuda:0`; host `nvidia-smi` on GPU 6 shows
+  **4 separate compute contexts** (2 warm actors at 496 MiB + the 2 checkers at 14 GiB each).
+  Allocating 0.3 × total succeeds and a further 0.3 × total raises `CUDA out of memory` in **both**
+  slots, so the 0.5 cap is applied per process (cooperatively, see the table).
+- nvcc lock: `/dev/shm/b4-nvcc.lock` is `-rw-r--r-- root` and readable by uid 20000; the
+  `load_inline` wrapper in `sitecustomize.py` ran under the uid. The actual build then stopped at
+  *Ninja is required*: this image ships neither ninja nor nvcc, so a real compile under the uid was
+  **not** exercised.
+- close: a timed-out exec is killed (exit 124); close A reports `killed=3, left_procs=0`, A's dir is
+  gone, and the next episode on slot 0 (same uid 20000) starts with only `sitecustomize.py` + `tmp/`.
+  A `setsid nohup sleep` escapee is killed by the uid sweep (checked offline as root; the live run
+  could not list processes because the image has no `ps`).
+
+**g6 image rebuild: pending.** The hardened farm is not in any deployed g6 image (the 09-25 Runtime was
+deleted). It was not rebuilt because the g6 container has zero capabilities, so it would only exercise
+the shared-uid fallback that `demo_gpu_single` documents.
+
+
 ## Folder layout (self-contained)
 - `agentcore_slime_demo/` — vendored shared library (this demo imports ONLY this copy;
   `/work/code` is not on `PYTHONPATH`). Includes `sandbox_ray_farm.py`, `sandbox_farm_env.py`,
@@ -103,7 +147,7 @@ a regression. Both runs predate the isolation hardening below (see the live prob
 - `deploy/Dockerfile.sandbox.gpu.shared` — the shared-GPU sandbox image (bakes `ray`, runs
   `python -m agentcore_slime_demo.sandbox_server_agent`); used by the local farm (GPU 6, fractional).
 - `1_…6_*.sh` + `deploy/` (`demo.env`, `steps_common.sh`, `local_gpu_runtime.sh` = the farm launcher).
-- `build_dataset.py`, `prepare_data.sh`, `data/`, `run.sh`, `metrics.py`, `logs/`.
+- `build_dataset.py`, `prepare_data.sh`, `data/`, `run.sh`, `metrics.py`, `isolation_probe.py`, `logs/`.
 
 Shared by path (NOT vendored): the base checkpoint (`/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist`),
 the `agentcore_p4` container and `/root/slime`.

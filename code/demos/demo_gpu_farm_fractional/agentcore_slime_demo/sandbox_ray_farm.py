@@ -340,7 +340,10 @@ class _SandboxActorImpl:
             return {"exit_code": 124, "stdout": out or "", "stderr": "timeout"}
 
     def write_file(self, session_id: str, path: str, text: str) -> dict:
-        dst = self._abs(session_id, path)
+        try:
+            dst = self._abs(session_id, path)
+        except PermissionError as e:              # an error result, not a 500 the client would retry
+            return {"ok": False, "error": str(e)}
         parent = os.path.dirname(dst)
         if not os.path.isdir(parent):
             os.makedirs(parent, exist_ok=True)
@@ -358,6 +361,8 @@ class _SandboxActorImpl:
                 return {"text": f.read()}
         except FileNotFoundError:
             return {"text": "", "error": "not found"}
+        except PermissionError as e:
+            return {"text": "", "error": str(e)}
 
     def _kill_session_procs(self, session_id: str) -> int:
         """SIGKILL everything the episode started: each exec's process group, then (when the slot has

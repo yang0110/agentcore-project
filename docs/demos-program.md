@@ -55,14 +55,17 @@ AgentCore **Code Interpreter** microVM (CPU); the harness is in-process.
 > `swe` `tool_use` `sql` `ctf` `rag` `regex` `planning` `config` `data`). It replaced the ten
 > per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`, …) that differed only in data. Mixed-task
 > batches are the same demo: `DATASET=a,b,c` (interleaved) or `DATASET=mixed` (math+sql+ctf+datasci,
-> formerly `demo_cpu_mixtask`). `VARIANT=bigimage` (formerly `demo_cpu_bigimage`) runs the same trainer
-> on a ~4 GB image on a CPU capacity-provider Instance, and `VARIANT=imagepool` (formerly
-> `demo_cpu_imagepool`) routes a datasci/scipy/sklearn batch over a pool of 3 custom images. The
-> heartbeat (formerly `demo_cpu_heartbeat`) is now the opt-in `HEARTBEAT=1` knob of every demo, and the
-> custom-vs-managed Runtime check (formerly `demo_cpu_customruntime`) is `demo_cpu_tasks/compare_backends.py`.
-> The full set is 6 demos after the 2026-09-25 merges: 5 main (3 CPU `demo_cpu_tasks`,
-> `demo_cpu_terminalbench`, `demo_cpu_scale_lanes` + 2 GPU `demo_gpu_single`, `demo_gpu_farm`) plus the
-> experimental, blocked `demo_cpu_branching`. Every demo runs
+> formerly `demo_cpu_mixtask`). All of them run on the DEFAULT managed Code Interpreter
+> (`SANDBOX=agentcore`): no image, no Runtime. The pandas/scipy/sklearn tasks (formerly `demo_cpu_imagepool`,
+> 3 custom images) are `DATASET=libs` there, since the Code Interpreter already has those libraries. The
+> heartbeat (formerly `demo_cpu_heartbeat`) is the opt-in `HEARTBEAT=1` knob (own Runtime only; a no-op on the
+> Code Interpreter), and the custom-vs-managed Runtime check (formerly `demo_cpu_customruntime`) is
+> `demo_cpu_tasks/compare_backends.py`. The ~4 GB image on a CPU capacity-provider Instance (formerly
+> `demo_cpu_bigimage`, then `demo_cpu_tasks VARIANT=bigimage`) is its own demo, `demo_cpu_instance_pool`
+> (warm pool `SANDBOX_POOL=2`, per-slot-uid isolation). After the 2026-09-25 restructure the set is
+> 7 demos in storyline order: `demo_cpu_tasks`, `demo_cpu_terminalbench` (with its `warmstart/` probe),
+> `demo_cpu_instance_pool`, `demo_cpu_scale_lanes`, `demo_gpu_single`, `demo_gpu_farm_fractional`,
+> `demo_gpu_farm_whole`, plus the experimental, blocked `demo_cpu_branching`. Every demo runs
 > the same six step scripts (`1_prepare_data.sh` … `6_cleanup.sh`); see `code/demos/README.md`.
 
 \* *Hypothesis only — Tier 3 replaces it with a measurement.* Note most cheap-checker CPU tasks are
@@ -77,7 +80,8 @@ instance** (a `g6`, x86_64/amd64); the trainer box keeps all its GPUs for policy
 | Demo folder | Task | Notes |
 |---|---|---|
 | `demo_gpu_kernelbench` → built as `demo_gpu_single` | KernelBench (level_1 CUDA) | checker = allclose vs torch ref, on `cuda`; one warm g6. Also carries the custom-Runtime angle (`gpu_torch_smoke.py`, `LOCAL_GPU=1`) and `SNAPSHOT_EVERY=1` (merged 2026-09-25 from `demo_gpu_customruntime` / `demo_gpu_snapshot`) |
-| `demo_gpu_farm` (`FARM=fractional` \| `whole`) | KernelBench + Ray pack-many farm | many envs share one GPU (bursty, memory-bound); `fractional` = 0.5+0.5 on one GPU, `whole` = one whole GPU per session (merged 2026-09-25 from `demo_gpu_shared_single` / `demo_gpu_shared_multi` / `demo_gpu_local`) |
+| `demo_gpu_farm_fractional` | KernelBench + Ray pack-many farm | many envs share one GPU (bursty, memory-bound): 0.5+0.5 on GPU 6 (formerly `demo_gpu_farm FARM=fractional`; before that `demo_gpu_shared_single`) |
+| `demo_gpu_farm_whole` | KernelBench + Ray farm | one whole GPU per session on GPUs 6,7 (formerly `demo_gpu_farm FARM=whole`; before that `demo_gpu_shared_multi` / `demo_gpu_local`) |
 
 ### Tier 3 — Advanced: scale the *measured* bottleneck
 
@@ -100,11 +104,11 @@ Decision procedure:
 There is a **third** tier hiding behind those two: the **harness** that drives the episodes. Rollout
 throughput is `min(inference, sandbox, harness)`, so even after inference + sandbox are scaled, a
 single-process harness can cap everything. [`demo_cpu_scale_lanes`](../code/demos/demo_cpu_scale_lanes/)
-isolates that tier — one task, **4 × 4 × 4 lanes** by default (4 warm mini-Claude harness workers :
-4 SGLang engines : 4 persistent microVMs, strictly 1:1:1; renamed from `demo_cpu_harness_scale`
-2026-09-23) — and shows the knee
+isolates that tier — one task, **decoupled tiers** by default (4 SGLang engines : 256 warm mini-Claude
+harness workers : 256 pooled persistent microVMs, joined per episode, none pinned to another; renamed
+from `demo_cpu_harness_scale` 2026-09-23, 4 × 4 × 4 pinned lanes until 2026-09-25) — and shows the knee
 (throughput rises ~linearly with `W`, then plateaus at `min(inference, sandbox)`) plus how the three
-tiers route/load-balance differently (per-request router vs per-episode sticky sandbox vs per-episode
+tiers route/load-balance differently (least-loaded engine vs free-list of sandbox sessions vs per-episode
 pull queue). Full write-up: [harness-scaling.md](harness-scaling.md).
 
 This is why disaggregation matters: each component is sized to its own bottleneck, per task.

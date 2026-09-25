@@ -202,6 +202,7 @@ class AgentCoreRuntimeSandbox:
         workdir: str = "/workspace",
         session_id: str | None = None,
         read_timeout: int | None = None,
+        client=None,
     ) -> None:
         self.sandbox_id = f"acrt-{uuid.uuid4().hex}"
         self._arn = runtime_arn or os.environ.get("AGENTCORE_SANDBOX_RUNTIME_ARN")
@@ -211,7 +212,9 @@ class AgentCoreRuntimeSandbox:
         self._session_id = session_id or f"sbx-{uuid.uuid4().hex}"
         self._read_timeout = read_timeout or int(os.environ.get("INVOKE_READ_TIMEOUT", "900"))
         self._local_url = _local_endpoint()  # local AgentCore runtime container, if any
-        self._client = None
+        # Optional shared boto3 client (thread-safe): a pool of hundreds of sessions passes one client
+        # sized to the pool instead of building one per session.
+        self._client = client
 
     async def __aenter__(self) -> "AgentCoreRuntimeSandbox":
         if self._local_url:
@@ -230,10 +233,11 @@ class AgentCoreRuntimeSandbox:
 
         # Wide read timeout: the first invoke on a GPU capacity provider can cold-launch the
         # instance (minutes), exactly like gpu_deploy.py `invoke`.
-        cfg = Config(read_timeout=self._read_timeout, connect_timeout=60, retries={"max_attempts": 0})
-        self._client = await asyncio.to_thread(
-            boto3.client, "bedrock-agentcore", region_name=self._region, config=cfg
-        )
+        if self._client is None:
+            cfg = Config(read_timeout=self._read_timeout, connect_timeout=60, retries={"max_attempts": 0})
+            self._client = await asyncio.to_thread(
+                boto3.client, "bedrock-agentcore", region_name=self._region, config=cfg
+            )
         # Best-effort workspace init + liveness check (also warms a cold GPU instance).
         await self._invoke({"op": "ping", "workdir": self._workdir})
         return self

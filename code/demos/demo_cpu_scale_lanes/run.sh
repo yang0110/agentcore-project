@@ -1,15 +1,16 @@
 #!/bin/bash
-# demo_cpu_scale_lanes — REAL slime CPU trainer that scales the rollout as W 1:1:1 LANES (default
-# 4 harness workers : 4 SGLang engines : 4 AgentCore microVMs). Worker w is pinned to engine w and to
-# its OWN persistent microVM session (opened once, reused across its episodes, fresh workdir per
-# episode), so LANES=N scales all three tiers together. Formerly demo_cpu_harness_scale.
+# demo_cpu_scale_lanes — REAL slime CPU trainer whose rollout runs on THREE DECOUPLED tiers (default
+# 4 SGLang engines : 256 in-process harness workers : 256 persistent AgentCore microVM sessions). No
+# worker owns an engine or a microVM: each episode takes a free worker, the least-loaded engine and any
+# free pooled session (fresh workdir), and keeps them for its life. Formerly demo_cpu_harness_scale.
 #
 # Same async/decoupled
 # training shape as demo_cpu_tasks, but the custom-generate hook hands every episode to a WARM
 # in-process harness worker pool (agentcore_slime_demo.harness_pool.HarnessPool) instead of driving
-# one run_episode inline. The pool owns W = HARNESS_WORKERS warm workers + one shared AnthropicAdapter;
-# a free worker PULLS the next episode off a shared asyncio.Queue (work-stealing), runs the
-# MiniClaudeHarness loop (LLM via the adapter, tools in a fresh remote CPU sandbox Runtime), scores
+# one run_episode inline. The pool owns W = HARNESS_WORKERS warm workers, one AnthropicAdapter per
+# engine and M = SANDBOX_SESSIONS pooled sessions; a free worker PULLS the next episode off a shared
+# asyncio.Queue (work-stealing), runs the MiniClaudeHarness loop (LLM via the adapter, tools in a
+# borrowed remote CPU sandbox session), scores
 # it (RLVR numeric check, tol 1e-4), and finish_session drains the trajectory into loss-masked GRPO
 # samples. This dir owns its data/ + ckpt/ and imports its own vendored agentcore_slime_demo copy.
 # Runs INSIDE the persistent container agentcore_p4 (slimerl/slime).
@@ -34,8 +35,8 @@
 # reward is structurally 0. Do not remove them.
 #
 # Sandbox backend (SANDBOX): agentcore-runtime -> remote AgentCore Runtime sandbox (default; K=2
-# pinned CPU ARNs; lane w's persistent session lives on ARN[w % K]); agentcore -> AWS Code
-# Interpreter microVM (no lanes: fresh session per episode).
+# pinned CPU ARNs; pooled session slot s lives on ARN[s % K]); agentcore -> AWS Code
+# Interpreter microVM (no pool: fresh session per episode).
 # SANDBOX=local is DISABLED for CPU demos (remote-only; guard below).
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop runs
@@ -59,22 +60,24 @@ AGENTCORE_SANDBOX_RUNTIME_ARNS="${AGENTCORE_SANDBOX_RUNTIME_ARNS:-arn:aws:bedroc
 if [ "$SANDBOX" = "agentcore-runtime" ] && [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
    AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN (or ..._ARNS) to the CPU sandbox Runtime ARN (sandbox_server_agent.py)}"
 fi
-RB="${RB:-4}"          # prompts per rollout step
+RB="${RB:-32}"         # prompts per rollout step; RB*NS = 256 episodes per step, so the stock driver
+                       # (one batch in flight) can actually keep 256 workers / 256 sessions busy
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
 NR="${NR:-11}"         # num-rollout; real training steps = NR-1 (see NOTE) => 10 train + 1 eval.
-                       # Keep the train set >= NR*RB prompts (deepscaler pool is 400 >= 11*4).
+                       # Keep the train set >= NR*RB prompts (deepscaler pool is 400 >= 11*32).
 TEMP="${TEMP:-1.0}"    # rollout sampling temperature (higher => more intra-group diversity)
 GBS=$(( RB * NS ))     # global batch = all samples, 1 optimizer step per rollout
 
-# ---- THE LANES --------------------------------------------------------------------------------------
-# LANES = N sets all three tiers at once: N warm harness workers, N SGLang engines (1 GPU each), and
-# N persistent microVMs (one AgentCore session per worker). 8 GPUs = 4 train + up to 4 inference, so
-# LANES <= 4 (LANES=1,2,4 is the scaling sweep). Each tier can still be overridden on its own
-# (HARNESS_WORKERS / ROLLOUT_GPUS / LANE_SANDBOX=0 for a fresh session per episode) to unbalance it
-# and watch throughput = min(inference, sandbox, harness) bind on the scarce tier.
-LANES="${LANES:-4}"
-HARNESS_WORKERS="${HARNESS_WORKERS:-$LANES}"
-LANE_SANDBOX="${LANE_SANDBOX:-1}"   # 1 => one persistent microVM per worker; 0 => fresh session per episode
+# ---- THE THREE TIERS (sized independently) -------------------------------------------------------
+# inference: E = ROLLOUT_GPUS / GPUS_PER_ENGINE SGLang engines (default 4 x TP1), least-loaded per episode.
+# harness:   HARNESS_WORKERS warm asyncio workers in the rollout process (default 256), pull-balanced.
+# sandbox:   SANDBOX_SESSIONS persistent AgentCore sessions = microVMs (default 256), any free one per
+#            episode, opened once at start at SANDBOX_OPEN_RATE/s (AgentCore allows 25 new sessions/s);
+#            0 => a fresh session per episode. Set HARNESS_WORKERS != SANDBOX_SESSIONS (or fewer rollout
+#            GPUs) to make one tier the ceiling of throughput = min(inference, sandbox, harness).
+HARNESS_WORKERS="${HARNESS_WORKERS:-256}"
+SANDBOX_SESSIONS="${SANDBOX_SESSIONS:-256}"
+SANDBOX_OPEN_RATE="${SANDBOX_OPEN_RATE:-20}"
 EPISODE_MAX_TURNS="${EPISODE_MAX_TURNS:-4}"
 EPISODE_MAX_TOKENS="${EPISODE_MAX_TOKENS:-1024}"
 
@@ -99,17 +102,17 @@ HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a720891212
 
 # ---- placement ------------------------------------------------------------------------------------
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
-ROLLOUT_GPUS="${ROLLOUT_GPUS:-$LANES}"
+ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 GPUS_PER_ENGINE="${GPUS_PER_ENGINE:-1}"   # Qwen3-4B fits one L40S at TP1 => one engine per GPU
-# num_engines E = ROLLOUT_GPUS / GPUS_PER_ENGINE (= LANES by default); worker w is pinned to engine
-# w % E. Admission S = CONC*E: default CONC = ceil(2W / E) => W episodes running (one per lane) plus
-# W queued for the next free worker, so a lane never idles waiting on slime to admit its next episode.
+# num_engines E = ROLLOUT_GPUS / GPUS_PER_ENGINE (default 4). Admission S = CONC*E: default
+# CONC = ceil(W / E) => S = W, one admitted episode per harness worker (a step's batch is RB*NS = 256
+# episodes, so admitting more than W would only queue them inside the pool).
 NENG=$(( ROLLOUT_GPUS / GPUS_PER_ENGINE ))
 if [ $(( ACTOR_GPUS + ROLLOUT_GPUS )) -gt 8 ]; then
-   echo "ACTOR_GPUS($ACTOR_GPUS) + ROLLOUT_GPUS($ROLLOUT_GPUS) > 8 GPUs — use LANES<=4 with 4 train GPUs." >&2
+   echo "ACTOR_GPUS($ACTOR_GPUS) + ROLLOUT_GPUS($ROLLOUT_GPUS) > 8 GPUs." >&2
    exit 1
 fi
-CONC="${CONC:-$(( (2 * HARNESS_WORKERS + NENG - 1) / NENG ))}"
+CONC="${CONC:-$(( (HARNESS_WORKERS + NENG - 1) / NENG ))}"
 
 # Task family. One task, end-to-end: DeepScaleR math (coding-shape: solution.py sets a module-level
 # `answer`; hidden run_checks.py numeric-asserts it, tol 1e-4). data/ ships populated.
@@ -228,7 +231,9 @@ MISC_ARGS=(
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 # Give ray ALL 8 physical GPUs. slime's placement reserves (ACTOR_GPUS + ROLLOUT_GPUS) of them.
-ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 \
+# Shared box only: SLIME_CUDA_VISIBLE=2,3,4,5,6,7 SLIME_NUM_GPUS=6 pins ray to a subset (default: all 8).
+[ -n "${SLIME_CUDA_VISIBLE:-}" ] && export CUDA_VISIBLE_DEVICES="$SLIME_CUDA_VISIBLE"
+ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${SLIME_NUM_GPUS:-8}" \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 # HARNESS_WORKERS / EPISODE_MAX_* are read by HarnessPool INSIDE the rollout process, so they MUST be
@@ -253,7 +258,8 @@ RUNTIME_ENV_JSON="{
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"HARNESS_WORKERS\": \"${HARNESS_WORKERS}\",
-    \"LANE_SANDBOX\": \"${LANE_SANDBOX}\",
+    \"SANDBOX_SESSIONS\": \"${SANDBOX_SESSIONS}\",
+    \"SANDBOX_OPEN_RATE\": \"${SANDBOX_OPEN_RATE}\",
     \"EPISODE_MAX_TURNS\": \"${EPISODE_MAX_TURNS}\",
     \"EPISODE_MAX_TOKENS\": \"${EPISODE_MAX_TOKENS}\",
     \"INFER_CONC\": \"${INFER_CONC:-0}\"

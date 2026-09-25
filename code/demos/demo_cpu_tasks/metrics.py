@@ -551,7 +551,7 @@ def summarize_demo(demo_records: list[dict]) -> None:
 
     # Mean reward grouped by each categorical key — the generic way a demo whose batch spans
     # categories reads out per-category learnability from ONE channel: `family` -> per-family reward
-    # (mixed-task), `image` -> per-image correctness (imagepool), `checker` -> reward per outcome class.
+    # (mixed-task), `image` -> per-image correctness (image routing), `checker` -> reward per outcome class.
     if "reward" in numeric:
         for k in sorted(categorical):
             if k in numeric or k == "task":
