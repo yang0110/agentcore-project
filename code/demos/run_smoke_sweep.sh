@@ -15,9 +15,9 @@ TRAIN_TIMEOUT="${TRAIN_TIMEOUT:-1800}"
 
 # Phase lists (override via env to resume a subset).
 OFFLINE_DEMOS="${OFFLINE_DEMOS:-demo_cpu_heartbeat demo_gpu_snapshot demo_cpu_scale_lanes}"
-# Entries are <demo> or <demo>:<DATASET> — demo_cpu_datasets is ONE folder that trains many datasets,
+# Entries are <demo> or <demo>:<DATASET> — demo_cpu_tasks is ONE folder that trains many datasets,
 # so each dataset is its own entry (run with DATASET=<name>; logged/reported as <demo>-<name>).
-CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_datasets:mbpp demo_cpu_datasets:math demo_cpu_mixtask demo_cpu_datasets:gsm8k demo_cpu_datasets:math500 demo_cpu_datasets:deepscaler demo_cpu_datasets:humaneval demo_cpu_datasets:gretelsql demo_cpu_datasets:hotpotqa demo_cpu_datasets:xlam demo_cpu_datasets:mcp demo_cpu_heartbeat demo_cpu_scale_lanes demo_cpu_customruntime}"
+CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_tasks:mbpp demo_cpu_tasks:math demo_cpu_tasks:mixed demo_cpu_tasks:gsm8k demo_cpu_tasks:math500 demo_cpu_tasks:deepscaler demo_cpu_tasks:humaneval demo_cpu_tasks:gretelsql demo_cpu_tasks:hotpotqa demo_cpu_tasks:xlam demo_cpu_tasks:mcp demo_cpu_heartbeat demo_cpu_scale_lanes demo_cpu_customruntime}"
 
 # Each offline demo's RETAINED probe script (run directly; run.sh is now the trainer). Args match the
 # pre-conversion run.sh so the behavior markers below still appear.
@@ -111,7 +111,7 @@ for entry in $CPU_TRAINERS; do
   rc=$?
   # This run's ACTUAL save dir, parsed from the launched --save arg (NOT a newest-mtime guess:
   # a demo dir can hold stale sibling ckpts, and an overwritten iter_* subdir does not bump the
-  # parent dir mtime, so "newest" is unreliable — that gave demo_cpu_mbpp (now demo_cpu_datasets) a false FAIL).
+  # parent dir mtime, so "newest" is unreliable — that gave demo_cpu_mbpp (now demo_cpu_tasks) a false FAIL).
   save=$(grep -aoE -- "--save /[^ ]+" "$log" | head -1 | awk '{print $2}')
   has_final=0
   [ -n "$save" ] && [ -f "$save/latest_checkpointed_iteration.txt" ] && has_final=1

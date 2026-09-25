@@ -2,7 +2,7 @@
 
 ## The question
 
-Demo 1 ([`demo_cpu_datasets`](../code/demos/demo_cpu_datasets/) — in-process mini harness, run against a
+Demo 1 ([`demo_cpu_tasks`](../code/demos/demo_cpu_tasks/) — in-process mini harness, run against a
 **local** sandbox or a **remote** AgentCore Code-Interpreter sandbox) splits the box **4 GPUs trainer
 + 4 GPUs inference**. The harness is always in-process; the one thing we change to make the sandbox
 stage slow and realistic is **where the sandbox runs** (local vs a remote `invoke_agent_runtime`).
@@ -173,7 +173,7 @@ reward curve.
 
 **Independent variable:** episode/sandbox concurrency `S`. In the runner this is realized by
 `CONC` (`--sglang-server-concurrency`, per engine × 2 engines): `S = CONC × 2`. Sweep e.g.
-**`S ∈ {2, 4, 8, 16, 32, 64}`** (`CONC ∈ {1,2,4,8,16,32}`; `demo_cpu_datasets` today runs `CONC=4` ⇒ `S=8`).
+**`S ∈ {2, 4, 8, 16, 32, 64}`** (`CONC ∈ {1,2,4,8,16,32}`; `demo_cpu_tasks` today runs `CONC=4` ⇒ `S=8`).
 
 **Decoupling inference concurrency `I` from sandbox count `S` (`INFER_CONC`).** By default slime's
 one semaphore ties both together, so raising `S` also raises how many episodes decode at once. To
@@ -194,9 +194,9 @@ half of the study). Run enough steps per point that the metrics reach steady sta
 or two are warm-up; the smoke `NR=11` is fine for a quick pass, longer for publishable curves).
 
 **Two sandbox regimes, on purpose (same in-process harness, different sandbox location):**
-- **`demo_cpu_datasets` with `SANDBOX=local`** — cheapest, cleanest isolation of the knob; fast
+- **`demo_cpu_tasks` with `SANDBOX=local`** — cheapest, cleanest isolation of the knob; fast
   iteration, near-zero sandbox latency.
-- **`demo_cpu_datasets` with `SANDBOX=agentcore` (remote Code-Interpreter microVM), or `demo_gpu_single`
+- **`demo_cpu_tasks` with `SANDBOX=agentcore` (remote Code-Interpreter microVM), or `demo_gpu_single`
   (remote GPU Runtime)** — has the **realistic sandbox latency** (remote `invoke_agent_runtime` per
   tool call), which is exactly what makes the low-`C` starvation regime real. This is where `C*`
   actually matters operationally.

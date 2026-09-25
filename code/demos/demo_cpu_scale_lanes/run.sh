@@ -5,7 +5,7 @@
 # episode), so LANES=N scales all three tiers together. Formerly demo_cpu_harness_scale.
 #
 # Same async/decoupled
-# training shape as demo_cpu_datasets, but the custom-generate hook hands every episode to a WARM
+# training shape as demo_cpu_tasks, but the custom-generate hook hands every episode to a WARM
 # in-process harness worker pool (agentcore_slime_demo.harness_pool.HarnessPool) instead of driving
 # one run_episode inline. The pool owns W = HARNESS_WORKERS warm workers + one shared AnthropicAdapter;
 # a free worker PULLS the next episode off a shared asyncio.Queue (work-stealing), runs the
@@ -26,7 +26,7 @@
 # Samples (finish_session's fan-out shape). slime's stock async rollout handles the fan-out; the
 # fully-async (Mode B) driver's sort key chokes on the nested list, so this demo pins MODE=A and
 # REJECTS MODE=B (guard below). Eval therefore uses slime's stock sync rollout (no fully-async worker
-# to quiesce). This is the one structural difference from demo_cpu_datasets (which defaults Mode B).
+# to quiesce). This is the one structural difference from demo_cpu_tasks (which defaults Mode B).
 #
 # ADAPTER TOOL PARSER (the A3/B3 dead-reward fix): SGLANG_ARGS bakes in
 # --sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3. Without them the AnthropicAdapter

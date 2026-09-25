@@ -5,7 +5,17 @@ _Last updated: 2026-09-25. Branch: `master`._
 This file tracks the current work session so it can be picked up later. It has three
 sections: **Done**, **In progress**, **Next steps (to run)**.
 
-> **2026-09-25 — GPU farm demos merged + scale_sandboxes folded in (13 demos now: 9 CPU + 4 GPU).**
+> **2026-09-25 — single-dataset + mixed-task demos merged (12 demos now: 8 CPU + 4 GPU).**
+> `demo_cpu_datasets` and `demo_cpu_mixtask` are now ONE demo, **`demo_cpu_tasks`** (a `git mv` of
+> `demo_cpu_datasets`): a single dataset is the one-element mix. `DATASET=mbpp` etc. works as before;
+> `DATASET=a,b,c` interleaves those datasets round-robin (`eval/mix`); `DATASET=mixed` is the old
+> mixtask data (math+sql+ctf+datasci, `eval/mixed`, datasci routed via
+> `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE`). The vendored lib took mixtask's superset
+> (`generate/sandbox/task/task_families.py`); every data row dispatches (3191/3191) and
+> `tests/test_smoke.py` passes. Convergence `11_cpu_mixtask.sh` → `11_cpu_mixed.sh`; smoke entry
+> `demo_cpu_mixtask` → `demo_cpu_tasks:mixed`.
+>
+> **2026-09-25 — GPU farm demos merged + scale_sandboxes folded in (13 demos at the time: 9 CPU + 4 GPU).**
 > `demo_gpu_shared_single`, `demo_gpu_shared_multi` and `demo_gpu_local` are now ONE demo,
 > `demo_gpu_farm` (a `git mv` of `demo_gpu_shared_single`), selected with `FARM=fractional` (default;
 > GPU 6, 0.5 + 0.5) or `FARM=whole` (GPUs 6,7, one GPU each — shared_multi and local had identical
@@ -14,10 +24,10 @@ sections: **Done**, **In progress**, **Next steps (to run)**.
 > `demo_cpu_scale_sandboxes` copy was folded into `demo_cpu_scale_lanes` (its only new files,
 > `build_deepcoder.py` + `data/deepcoder_probe.csv`; DeepCoder checker not wired yet).
 >
-> **2026-09-23 — dataset demos merged (15 demos at the time; 13 since the 2026-09-25 `demo_gpu_farm` merge).** The ten per-dataset CPU folders
+> **2026-09-23 — dataset demos merged (15 demos at the time; 12 since the 2026-09-25 merges).** The ten per-dataset CPU folders
 > (`demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k`, `demo_cpu_math500`, `demo_cpu_deepscaler`,
 > `demo_cpu_humaneval`, `demo_cpu_gretelsql`, `demo_cpu_hotpotqa`, `demo_cpu_xlam`, `demo_cpu_mcp`)
-> are now ONE demo, `demo_cpu_datasets` (a `git mv` of `demo_cpu_mbpp`), selected with
+> are now ONE demo, `demo_cpu_datasets` (a `git mv` of `demo_cpu_mbpp`; since 2026-09-25 `demo_cpu_tasks`), selected with
 > `DATASET=<name>` (default `mbpp`; `FAMILY` still works as an alias). The set is 9 CPU + 6 GPU;
 > see `code/demos/README.md`. Old folder names below are kept as history.
 >
@@ -73,7 +83,7 @@ sections: **Done**, **In progress**, **Next steps (to run)**.
 
 ### 4. Checkpoint cleanup (disk) — DONE 2026-09-18
 - Deleted output checkpoints (~370G freed, 58% → 39% used):
-  - `code/demos/demo_cpu_mbpp/ckpt/` (that folder is now `demo_cpu_datasets/`; its `ckpt/` holds only `.gitkeep`): Qwen3-4B_{ctf,gretelsql,rag,sql,tool_use}_async
+  - `code/demos/demo_cpu_mbpp/ckpt/` (that folder is now `demo_cpu_tasks/`; its `ckpt/` holds only `.gitkeep`): Qwen3-4B_{ctf,gretelsql,rag,sql,tool_use}_async
   - `code/p4_slime_train/ckpt/`: Qwen3-4B_mbpp_grpo, Qwen3-4B_mbpp_learn
 - **PRESERVED (do NOT delete):** `code/p4_slime_train/ckpt/Qwen3-4B_torch_dist` (7.5G) — the
   base Megatron checkpoint every run trains from (`CKPT_BASE`). Deleting it breaks all reruns.
@@ -106,9 +116,8 @@ Host launch dies on the `/root/slime` model-source permission error.
 
 ### Trainable demos
 CPU (`SANDBOX=agentcore-runtime`; need AWS creds + CPU sandbox ARN, defaulted in each `run.sh`):
-- demo_cpu_datasets, once per `DATASET=` gsm8k, math, math500, deepscaler, humaneval,
-  gretelsql, hotpotqa, mcp, xlam, mbpp (formerly one folder each)
-- demo_cpu_mixtask
+- demo_cpu_tasks, once per `DATASET=` gsm8k, math, math500, deepscaler, humaneval,
+  gretelsql, hotpotqa, mcp, xlam, mbpp, mixed (formerly one folder each; `mixed` was demo_cpu_mixtask)
 
 GPU:
 - demo_gpu_local  → start local farm first: `bash code/deploy/run_local_gpu_runtime.sh local`

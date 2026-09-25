@@ -1,6 +1,6 @@
 """The agentic-RL task-family zoo — one harness, many tasks (Demo A, generalized).
 
-`demo_cpu_datasets`'s in-process `run_episode` harness is task-agnostic: it seeds a workspace, asks
+`demo_cpu_tasks`'s in-process `run_episode` harness is task-agnostic: it seeds a workspace, asks
 the policy for a submission, runs a hidden checker in the sandbox, and turns the checker's
 exit code into a deterministic reward (RLVR — reward from verification, no LLM judge). MBPP
 (coding) is just the first family. This module plugs the rest of the agentic-RL task zoo
@@ -24,7 +24,7 @@ checker asserts over it. SQL is the one exception — it runs the submitted quer
 throwaway SQLite DB and compares the result set — so it overrides `runner_source`.
 
 All checkers are pure-CPU, stdlib-only, and fully offline (no network, no GPU), so every
-family runs on the same CPU Code-Interpreter microVM demo_cpu_datasets uses, and the whole loop is
+family runs on the same CPU Code-Interpreter microVM demo_cpu_tasks uses, and the whole loop is
 exercisable with `SANDBOX=local` + MockPolicy (see tests/test_smoke.py). The seed datasets
 here are demo-scale (hand-authored / templated, ~10 tasks/family); they are meant to prove
 the scaffold and give GRPO real reward variance, not to be benchmark-sized corpora.
@@ -969,7 +969,7 @@ class ScipyTask(EpisodicTask):
 
     The agent must use `scipy` to solve a small numerical problem (a linear system, a determinant,
     numerical integration, root finding) and store the result in a module-level float `answer`. This
-    is the point of demo_cpu_imagepool: unlike demo_cpu_mixtask (one custom image), here EACH family
+    is the point of demo_cpu_imagepool: unlike demo_cpu_tasks:mixed (one custom image), here EACH family
     carries a DIFFERENT `image` tag ("scipy" here, "datasci"/pandas and "sklearn" elsewhere), so the
     batch is heterogeneous in the *container image* it needs. Route an episode to the wrong image and
     solution.py's `import scipy` raises ModuleNotFoundError, the checker fails, reward = 0 — only the

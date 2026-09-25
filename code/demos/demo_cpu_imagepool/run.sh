@@ -1,7 +1,7 @@
 #!/bin/bash
 # demo_cpu_imagepool — MIXED-TASK RL over a POOL OF PREBUILT IMAGES: every rollout step's batch of
 # prompts spans SEVERAL task families (datasci + scipy + sklearn by default), and — unlike
-# demo_cpu_mixtask, which mixes families on ONE image — EACH family here needs its OWN prebuilt
+# demo_cpu_tasks DATASET=mixed, which mixes families on ONE image — EACH family here needs its OWN prebuilt
 # sandbox image (pandas / scipy / scikit-learn). Each episode is ROUTED to the image its family
 # needs (capability-routing by family). REMOTE-sandbox, OUR multi-turn run_episode harness. REAL
 # slime training, ASYNC (decoupled) mode. This dir owns its data/ + ckpt/, and imports the
@@ -16,7 +16,7 @@
 # families' reward scales never need reconciling. See README.md.
 #
 # THE POINT — a pool of images, one per family (report §"One image per Runtime, but a different env
-# per row", Option B). demo_cpu_mixtask proved a mixed batch is transparent to the harness/sandbox
+# per row", Option B). demo_cpu_tasks:mixed proved a mixed batch is transparent to the harness/sandbox
 # when one generic image serves every family. This demo takes the next step the report calls a
 # "described design, not [something] the shipped demos do": genuine CAPABILITY-ROUTING BY FAMILY.
 # Every family here needs a library ABSENT from the generic CPU image — datasci=pandas, scipy=scipy,
@@ -25,7 +25,7 @@
 # AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE (below). Route to the wrong image and solution.py's import
 # fails, the checker errors, reward = 0 — so correct routing is what makes the run learnable.
 #
-# Harness/sandbox split (SAME decoupled shape as demo_cpu_datasets): the run_episode harness runs
+# Harness/sandbox split (SAME decoupled shape as demo_cpu_tasks): the run_episode harness runs
 # IN-PROCESS on this box inside generate.generate, and the sandbox (write_file / exec / read_file) is
 # a remote AgentCore Runtime (sandbox_server_agent.py), reached over invoke_agent_runtime. Here there
 # are SEVERAL sandbox Runtimes — one per image in the pool — and generate routes each episode to the

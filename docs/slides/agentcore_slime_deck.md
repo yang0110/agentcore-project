@@ -16,9 +16,9 @@ This deck is a **hands-on guide for AWS customers doing agentic RL**. It is grou
 - **What AgentCore can and cannot do** as an RL sandbox (and, optionally, as the harness host).
 - **How to wire it into a trainer** — one `generate` hook into slime, no fork.
 - **How to build and customize** a Runtime — CPU (Code Interpreter microVM) and GPU (Instances).
-- **What it costs and what it proves** — lifecycle, latency, scaling, and 13 demos of measured evidence.
+- **What it costs and what it proves** — lifecycle, latency, scaling, and 12 demos of measured evidence.
 
-**One thesis.** In agentic RL the loop has two execution seams — the **harness** (the agent loop) and the **sandbox** (where untrusted model output runs and the reward is computed). This project keeps the harness **in-process** and puts **AgentCore in the sandbox seam**; the only thing that varies across all 13 demos is the *sandbox substrate* and the *task*.
+**One thesis.** In agentic RL the loop has two execution seams — the **harness** (the agent loop) and the **sandbox** (where untrusted model output runs and the reward is computed). This project keeps the harness **in-process** and puts **AgentCore in the sandbox seam**; the only thing that varies across all 12 demos is the *sandbox substrate* and the *task*.
 
 # 1 · The problem and the thesis
 
@@ -34,9 +34,9 @@ Policy is always **Qwen3-4B**, trained by **slime**, harness **in-process**, **A
 
 | | CPU sandbox — MBPP | GPU sandbox — KernelBench |
 |---|---|---|
-| in-process harness | `demo_cpu_datasets` (`DATASET=mbpp`) | `demo_gpu_single` |
+| in-process harness | `demo_cpu_tasks` (`DATASET=mbpp`) | `demo_gpu_single` |
 
-**13 demos on this one design** (9 CPU + 4 GPU), in three layers: **5 canonical** anchors — one of them, `demo_cpu_datasets`, trains any of ~19 RLVR datasets via a `DATASET=` selector (it replaces the ten former per-dataset folders), and `demo_gpu_farm` picks its GPU split via `FARM=fractional|whole` (it replaces `demo_gpu_shared_single`/`_multi`/`demo_gpu_local`) · **2** that scale a new dimension (harness / mixed-family batch) · **6 substrate-and-design variants**. The rest of the deck walks the architecture, the AgentCore mechanics, and then these demos with numbers.
+**12 demos on this one design** (8 CPU + 4 GPU), in three layers: **5 canonical** anchors — one of them, `demo_cpu_tasks`, trains any of ~19 RLVR datasets via a `DATASET=` selector — alone, as a comma-list mix, or `DATASET=mixed` (it replaces the ten former per-dataset folders and `demo_cpu_mixtask`), and `demo_gpu_farm` picks its GPU split via `FARM=fractional|whole` (it replaces `demo_gpu_shared_single`/`_multi`/`demo_gpu_local`) · **1** that scales a new dimension (harness lanes) · **6 substrate-and-design variants**. The rest of the deck walks the architecture, the AgentCore mechanics, and then these demos with numbers.
 
 # 2 · Agentic-RL reference architecture
 
@@ -123,7 +123,7 @@ reward = task.reward(0 if solved else 1)                   # 1.0 / 0.0
 
 ## Datasets — build once, seed per episode
 
-Builders (`demos/demo_cpu_datasets/`): `build_dataset.py` (MBPP/KernelBench) and `build_family_datasets.py` (ten families, `--eval-frac 0.25`). Uniform row schema:
+Builders (`demos/demo_cpu_tasks/`): `build_dataset.py` (MBPP/KernelBench) and `build_family_datasets.py` (ten families, `--eval-frac 0.25`). Uniform row schema:
 
 ```json
 {"prompt": "…task text…", "label": "mbpp_601",
@@ -268,7 +268,7 @@ Torch is installed **at `CMD`, not baked** — the CUDA wheel exceeds the 2 GB i
 
 # 6 · Demos and measured results
 
-## The demo set — one design, three layers, 13 demos
+## The demo set — one design, three layers, 12 demos
 
 ::: columns
 :::: column
@@ -279,27 +279,26 @@ Torch is installed **at `CMD`, not baked** — the CUDA wheel exceeds the 2 GB i
 ::::
 :::
 
-Same harness both sides; **only the sandbox ARN differs**. Evidence tiering: **2** demos carry committed **convergence-shaped** curves (`demo_cpu_datasets` `DATASET=mbpp`, `demo_gpu_single`); the rest are **loop-verified 10-step hardware smokes** (`Job succeeded`, ckpt 10, real rewards) — **CPU: 6 demos, 15 runs (`demo_cpu_datasets` ×10 `DATASET=` values + 5 other CPU demos) + 6 GPU runs (4 GPU demos; `demo_gpu_farm` in both modes, `whole` twice) pass**. One caveat: `demo_cpu_branching` runs but earns reward 0.
+Same harness both sides; **only the sandbox ARN differs**. Evidence tiering: **2** demos carry committed **convergence-shaped** curves (`demo_cpu_tasks` `DATASET=mbpp`, `demo_gpu_single`); the rest are **loop-verified 10-step hardware smokes** (`Job succeeded`, ckpt 10, real rewards) — **CPU: 5 demos, 15 runs (`demo_cpu_tasks` ×11 `DATASET=` values incl. `mixed` + 4 other CPU demos) + 6 GPU runs (4 GPU demos; `demo_gpu_farm` in both modes, `whole` twice) pass**. One caveat: `demo_cpu_branching` runs but earns reward 0.
 
 ## Demo set at a glance (1/2) — canonical + scale
 
 | Demo | Substrate | Task | Result |
 |---|---|---|---|
 | *— canonical (5) —* | | | |
-| `demo_cpu_datasets` | CPU microVM | `DATASET=` selector (default MBPP) | `mbpp` **trained** + ablation; `math` smoke 1.00 |
+| `demo_cpu_tasks` | CPU microVM | `DATASET=` selector (default MBPP; comma list or `mixed` = math+SQL+CTF+datasci) | `mbpp` **trained** + ablation; `math` smoke 1.00; `mixed` smoke `eval/mixed` 0.67 |
 | `demo_gpu_single` | GPU g6 / local farm | KernelBench CUDA | **trained**; farm smoke 0.525 |
 | `demo_gpu_farm` | GPU, local Ray farm (`FARM=`) | KernelBench CUDA | `fractional` (0.5+0.5, one GPU) smoke 0.775; `whole` (one GPU each) smokes 0.65 / 0.70 |
 | `demo_cpu_heartbeat` | CPU microVM | heartbeat / quiesce | smoke 0.71; + offline probe |
 | `demo_gpu_snapshot` | GPU, local farm | snapshot / resume | smoke 0.625; 3 files/ep saved+restored |
-| *— scale a new dimension (2) —* | | | |
+| *— scale a new dimension (1) —* | | | |
 | `demo_cpu_scale_lanes` (was `harness_scale`) | CPU microVM | DeepScaleR (fixed); 4 × 4 × 4 lanes (4 harness workers : 4 TP1 SGLang engines : 4 persistent microVMs, 1:1:1) | reworked, offline-verified; earlier smoke 0.33 was the pre-rework single-engine topology |
-| `demo_cpu_mixtask` | CPU microVM | mixed: math+SQL+CTF+tools | smoke, `eval/mixed` 0.67 |
 
 ## Demo set at a glance (2/2) — datasets + variants
 
 | Demo | Substrate | Task | Result |
 |---|---|---|---|
-| *— `demo_cpu_datasets` real-HF `DATASET=` runs (not separate demos) —* | | | |
+| *— `demo_cpu_tasks` real-HF `DATASET=` runs (not separate demos) —* | | | |
 | `DATASET=gsm8k` | CPU microVM | GSM8K | smoke 0.90 |
 | `DATASET=math500` | CPU microVM | MATH-500 | smoke 0.89 |
 | `DATASET=deepscaler` | CPU microVM | DeepScaleR | smoke 0.78 |
@@ -332,8 +331,8 @@ Same harness both sides; **only the sandbox ARN differs**. Evidence tiering: **2
 
 ## Results — what's proven, read honestly
 
-- **Two convergence-shaped curves.** `demo_cpu_datasets` `DATASET=mbpp` (CPU microVM) and `demo_gpu_single` (remote g6 GPU) — full 10-step runs with an eval curve; the MBPP run also carries an ablation sweep.
-- **The rest are loop-verified smokes** — `NR=11` ⇒ 10 train steps + 1 held-out eval + final ckpt 10, real `invoke_agent_runtime` → `write_file`/`exec`/`read_file`, real rewards. **15 CPU smoke runs from 6 demos** (2026-09-18→19 batch; 10 of them `demo_cpu_datasets` `DATASET=` variants, run as separate folders before the merge) **+ 6 GPU runs** (2026-09-21 sweep; all 4 GPU demos, `demo_gpu_farm` in both `FARM` modes) pass, with balanced sandbox `open`==`close` counts (no leased-actor leak).
+- **Two convergence-shaped curves.** `demo_cpu_tasks` `DATASET=mbpp` (CPU microVM) and `demo_gpu_single` (remote g6 GPU) — full 10-step runs with an eval curve; the MBPP run also carries an ablation sweep.
+- **The rest are loop-verified smokes** — `NR=11` ⇒ 10 train steps + 1 held-out eval + final ckpt 10, real `invoke_agent_runtime` → `write_file`/`exec`/`read_file`, real rewards. **15 CPU smoke runs from 5 demos** (2026-09-18→19 batch; 11 of them `demo_cpu_tasks` `DATASET=` variants incl. `mixed`, run as separate folders before the merges) **+ 6 GPU runs** (2026-09-21 sweep; all 4 GPU demos, `demo_gpu_farm` in both `FARM` modes) pass, with balanced sandbox `open`==`close` counts (no leased-actor leak).
 - **Read them as baselines the plumbing produces, not learned plateaus** — eval numbers are noisy over 10 steps. This is a **capability** demonstration of the sandbox seam, not a convergence study.
 - **Two honest caveats.** `demo_cpu_branching`'s real-CLI SWE reward is still **0** (loop runs, no learning signal); the fractional-GPU farm is proven on the **local L40S** fallback, so the *remote*-GPU claim rests on `demo_gpu_single`.
 
@@ -386,7 +385,7 @@ Principle: **pull, don't expose.** Every Runtime is **reached** by a SigV4 `invo
 - **Can:** isolated per-session sandbox for untrusted output (CPU default), in-account (IAM/SigV4, VPC), long sessions, BYO container, **GPU on Instances**, and a clean one-hook slime integration with the harness in-process.
 - **Cannot:** microVM GPU; cross-session GPU fractioning (no MIG on L4); exceed the microVM 8 h cap without Instances (14 d).
 - **How to run:** build a sandbox image → deploy a Runtime / GPU capacity provider → seed a task → `invoke_agent_runtime` per tool call → the in-sandbox checker gives the reward → slime trains via one `generate` hook. **CPU↔GPU is one env var.**
-- **Proven:** 2 convergence curves + loop-verified smokes for 12 of the 13 demos (15 CPU + 6 GPU runs) on real hardware; warm-reuse m5 boots 201 → 1. Caveats: `demo_cpu_branching` reward 0; fractional GPU farm on local L40S.
+- **Proven:** 2 convergence curves + loop-verified smokes for 11 of the 12 demos (15 CPU + 6 GPU runs) on real hardware; warm-reuse m5 boots 201 → 1. Caveats: `demo_cpu_branching` reward 0; fractional GPU farm on local L40S.
 
 ## References — papers & models
 

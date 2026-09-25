@@ -44,9 +44,9 @@ Each run tees full stdout/stderr to `/work/code/demos/_smoke_logs/<demo>.log` an
 ### The per-run recipe (identical for every demo)
 
 ```bash
-DEMO=<demo>                       # e.g. demo_cpu_datasets — any dir under code/demos/
-DS=                               # demo_cpu_datasets only: DATASET name, e.g. gsm8k (else leave empty)
-TAG=$DEMO${DS:+-$DS}              # log label, e.g. demo_cpu_datasets-gsm8k
+DEMO=<demo>                       # e.g. demo_cpu_tasks — any dir under code/demos/
+DS=                               # demo_cpu_tasks only: DATASET name, e.g. gsm8k (else leave empty)
+TAG=$DEMO${DS:+-$DS}              # log label, e.g. demo_cpu_tasks-gsm8k
 LOG=/work/code/demos/_smoke_logs/$TAG.log
 EXTRA_ENV=()                      # per-demo env from the "Needs" column, e.g. (-e AGENTCORE_SANDBOX_RUNTIME_ARN="$ARN")
 
@@ -76,8 +76,7 @@ docker exec agentcore_p4 python3 /work/code/demos/$DEMO/metrics.py $LOG \
 
 | Demo (standalone dir) | Substrate | Needs before running |
 |---|---|---|
-| `demo_cpu_datasets` (one run per `DATASET`: mbpp gsm8k math math500 deepscaler humaneval gretelsql hotpotqa xlam mcp) | CPU sandbox (baked ARNs) | — (set `DS=<dataset>`; replaces the ten former `demo_cpu_<ds>` folders, merged 2026-09-23 — older `_smoke_logs/demo_cpu_<ds>.*` files are those runs) |
-| `demo_cpu_mixtask` | CPU sandbox (baked ARNs) | — |
+| `demo_cpu_tasks` (one run per `DATASET`: mbpp gsm8k math math500 deepscaler humaneval gretelsql hotpotqa xlam mcp mixed) | CPU sandbox (baked ARNs) | — (set `DS=<dataset>`; replaces the ten former `demo_cpu_<ds>` folders, merged 2026-09-23 as `demo_cpu_datasets`, and `demo_cpu_mixtask` = `DS=mixed`, merged 2026-09-25 — older `_smoke_logs/demo_cpu_<ds>.*` / `demo_cpu_datasets-*` / `demo_cpu_mixtask.*` files are those runs) |
 | `demo_cpu_heartbeat` | CPU sandbox (baked ARNs) | — (heartbeat on by default: `HEARTBEAT_KEEP_WARM=1`) |
 | `demo_cpu_scale_lanes` (formerly `demo_cpu_harness_scale`) | CPU sandbox (baked ARNs), 4 persistent microVMs | — (`LANES=4`: 4 workers : 4 TP1 engines on rollout GPUs 4–7 : 4 microVMs; the old smoke ran the pre-rework topology) |
 | `demo_cpu_customruntime` | your custom CPU Runtime (`SANDBOX=agentcore-runtime`) | — (baked custom-Runtime ARN) |
@@ -124,7 +123,7 @@ have provisioned, then the g6 GPU demos if a live g6 is available.
 - **Exactly 1 eval:** one `eval/<name>` block near step 10.
 - **~10 weight syncs:** one weight update/sync per rollout step in the async driver.
 - **Sane learning signal:** `rollout/raw_reward` present and non-degenerate (not identically 0 — a
-  stuck-at-0 family in `imagepool`/`mixtask` means a mis-mapped image ARN; in `branching` it can mean
+  stuck-at-0 family in `imagepool`/`DATASET=mixed` means a mis-mapped image ARN; in `branching` it can mean
   the CLI harness isn't producing valid submissions).
 - **Latency split recorded:** `perf/sandbox_ms_*` vs `perf/sglang_gen_ms_*` columns populated
   (in-process harness demos); confirms the remote sandbox round-trips.

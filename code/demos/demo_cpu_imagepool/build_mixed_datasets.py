@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a MIXED-task slime dataset for demo_cpu_imagepool.
 
-The other CPU demos pin one task family per run; demo_cpu_mixtask mixes families but on ONE image
+The other CPU demos pin one task family per run; demo_cpu_tasks:mixed mixes families but on ONE image
 (plus a single pandas add-on). This demo goes further: it interleaves families each of which needs
 its OWN prebuilt sandbox image, into ONE `mixed_train.jsonl` / `mixed_eval.jsonl`, so every GRPO
 rollout step draws a batch of prompts that spans multiple tasks AND multiple *container images*

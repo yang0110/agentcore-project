@@ -23,10 +23,11 @@ builds the Runtime images from it and `code/tests/` imports it.
 
 ## The demos
 
-**13 demos** — 9 CPU + 4 GPU. One of them, `demo_cpu_datasets`, is a single folder that trains
-**any of ~19 datasets** through a `DATASET=` selector (it replaces the ten former per-dataset
-folders `demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k` … `demo_cpu_mcp`, which differed only
-in their data). Likewise `demo_gpu_farm` picks its GPU split through `FARM=fractional|whole` (it
+**12 demos** — 8 CPU + 4 GPU. One of them, `demo_cpu_tasks`, is a single folder that trains
+**any of ~19 datasets, or any mix of them,** through a `DATASET=` selector (`DATASET=mbpp`,
+`DATASET=gsm8k,gretelsql`, or the prebuilt `DATASET=mixed`). It replaces the ten former
+per-dataset folders `demo_cpu_mbpp` … `demo_cpu_mcp` and the mixed-task `demo_cpu_mixtask`, which
+differed only in their data — a single dataset is the one-element mix. Likewise `demo_gpu_farm` picks its GPU split through `FARM=fractional|whole` (it
 replaces `demo_gpu_shared_single`, `demo_gpu_shared_multi` and `demo_gpu_local`, which differed
 only in the farm knobs).
 
@@ -38,8 +39,7 @@ silently fall off the AgentCore substrate (the serverless CPU sandbox is always 
 
 | Substrate | Demo | Task / point |
 |---|---|---|
-| **CPU serverless microVM** | [`demo_cpu_datasets/`](demo_cpu_datasets/) | the reference — ONE demo, many RLVR datasets via `DATASET=`: real HF `mbpp` (default) `gsm8k` `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, plus the synthetic task-family zoo (`math` `swe` `sql` `ctf` `rag` `tool_use` …); 4 train + 4 infer + 0 env |
-| | [`demo_cpu_mixtask/`](demo_cpu_mixtask/) | **mixed-task** — every rollout step's batch spans several families at once (math+sql+ctf+tool_use) |
+| **CPU serverless microVM** | [`demo_cpu_tasks/`](demo_cpu_tasks/) | the reference — ONE demo, many RLVR datasets via `DATASET=`: real HF `mbpp` (default) `gsm8k` `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, plus the synthetic task-family zoo (`math` `swe` `sql` `ctf` `rag` `tool_use` …); **mixed-task** batches via a comma list or `DATASET=mixed` (math+sql+ctf+datasci); 4 train + 4 infer + 0 env |
 | | [`demo_cpu_imagepool/`](demo_cpu_imagepool/) | mixed-task RL over a pool of prebuilt images (one image → one Runtime per task family) |
 | | [`demo_cpu_terminalbench/`](demo_cpu_terminalbench/) | a LARGE image pool (one image per Terminal-Bench task, ~229), one isolated microVM per episode, pre-opened to hide the cold start |
 | | [`demo_cpu_branching/`](demo_cpu_branching/) | one episode → many training samples ("fan-out") |
@@ -52,9 +52,11 @@ silently fall off the AgentCore substrate (the serverless CPU sandbox is always 
 | | [`demo_gpu_snapshot/`](demo_gpu_snapshot/) | **resilience** — application-level snapshot & resume across a GPU instance recycle |
 | **local GPU Ray farm** (this box's GPUs 6,7) | [`demo_gpu_farm/`](demo_gpu_farm/) | KernelBench on a local Ray farm: `FARM=fractional` (default) packs two episodes onto ONE GPU (0.5 + 0.5); `FARM=whole` gives each episode a whole GPU across 6,7 |
 
-`demo_cpu_datasets` is one in-process-harness loop; each `DATASET` differs only in its seed rows +
+`demo_cpu_tasks` is one in-process-harness loop; each `DATASET` differs only in its seed rows +
 hidden RLVR checker, and gets its own `data/<name>_{train,eval}.jsonl`, `eval/<name>` metric and
-`ckpt/Qwen3-4B_<name>_async` (see its README for the dataset table).
+`ckpt/Qwen3-4B_<name>_async` (see its README for the dataset table). Because every row names its own
+task, a comma list (`DATASET=a,b,c`, interleaved by `run.sh`, `eval/mix`) or the prebuilt
+`DATASET=mixed` (`eval/mixed`) trains one batch across families with no harness change.
 
 The demos above vary the **sandbox**; `demo_cpu_scale_lanes` is the exception — it fixes the task
 and scales the **rollout tiers themselves** as 1:1:1 lanes (default 4 harness workers : 4 SGLang
@@ -69,8 +71,9 @@ in-process is the recommended path.
 
 ## Which to run
 
-- **`demo_cpu_datasets`** — the reference. `DATASET=<name> bash run.sh` on remote AWS CPU microVMs
+- **`demo_cpu_tasks`** — the reference. `DATASET=<name> bash run.sh` on remote AWS CPU microVMs
   (`SANDBOX=agentcore-runtime`, or `agentcore` Code Interpreter). Most battle-tested.
+  `DATASET=a,b,c` or `DATASET=mixed` for a mixed-task batch.
 - **`demo_gpu_single`** — GPU-sandbox path; the KernelBench checker's GPU is the remote g6 sandbox Runtime, so
   the trainer box stays 4 train + 4 infer + 0 env. Trains on
   the real KernelBench (level_1, 100 single-op CUDA problems; 20 held-out level_2 fusions for eval).

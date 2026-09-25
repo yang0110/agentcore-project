@@ -128,7 +128,7 @@ def _retry_invoke(call, *, what: str = "invoke"):
     raise last  # unreachable, keeps type-checkers happy
 
 
-# --- Sandbox response-time instrumentation (see demos/demo_cpu_datasets/metrics.py + the ablation) ---------
+# --- Sandbox response-time instrumentation (see demos/demo_cpu_tasks/metrics.py + the ablation) ---------
 # Every sandbox op is one invoke_agent_runtime round-trip; nothing else in this file times it, so
 # rollout latency lumped the sandbox cost in with SGLang decode inside slime's perf/rollout_time.
 # _timed_invoke wraps the (retrying) call, measures the WHOLE round-trip the rollout actually paid

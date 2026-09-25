@@ -18,7 +18,7 @@ convergence/
   README.md            <- you are here (the runbook)
   commands.md          <- copy-paste cheat-sheet, one line per demo
   01_cpu_mbpp.sh       <- CPU demos (managed remote AgentCore sandbox, SANDBOX=agentcore-runtime);
-                          01–10 all train demo_cpu_datasets, one DATASET each (mbpp … mcp)
+                          01–10 all train demo_cpu_tasks, one DATASET each (mbpp … mcp)
   02_cpu_math.sh
   03_cpu_gsm8k.sh
   04_cpu_math500.sh
@@ -28,7 +28,7 @@ convergence/
   08_cpu_hotpotqa.sh
   09_cpu_xlam.sh
   10_cpu_mcp.sh
-  11_cpu_mixtask.sh
+  11_cpu_mixed.sh      <- demo_cpu_tasks DATASET=mixed (the multi-family batch)
   12_gpu_single.sh     <- GPU demos (KernelBench; CUDA sandbox)
   13_gpu_farm_fractional.sh  <- demo_gpu_farm FARM=fractional (local, GPU 6 shared 0.5+0.5)
   14_gpu_farm_whole.sh       <- demo_gpu_farm FARM=whole (local, GPUs 6,7, one GPU each)
@@ -126,7 +126,7 @@ the console and to wandb (if configured). You are converged when:
 Watch it live with:
 
 ```bash
-tail -f code/demos/demo_cpu_datasets/train.convergence_gsm8k_*.log | grep -E 'eval/|reward'
+tail -f code/demos/demo_cpu_tasks/train.convergence_gsm8k_*.log | grep -E 'eval/|reward'
 ```
 
 ## Property demos (15–19) — now trainable too
@@ -136,7 +136,7 @@ trainers** (each layers its distinctive operational property on top of the stand
 trainer as env-gated glue that stays live during the run). They therefore get
 convergence wrappers like everything else. Each demo's **headline knob defaults ON**;
 setting it to its off value makes the run byte-identical to the plain single-substrate
-trainer (`demo_cpu_datasets` / `demo_gpu_single`), so the wrapper doubles as an A/B for the
+trainer (`demo_cpu_tasks` / `demo_gpu_single`), so the wrapper doubles as an A/B for the
 property's effect on convergence:
 
 | # | wrapper | substrate | property (default-on knob) |

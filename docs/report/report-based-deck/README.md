@@ -29,20 +29,19 @@ the trainer. The agent loop plugs into slime's **custom generation hook** — on
 `invoke_agent_runtime` to the sandbox, the in-sandbox checker gives the reward. **CPU↔GPU
 is one env var** (`SANDBOX=`). See the deck for the call path, TITO, and the key code.
 
-## The demos — 13, one design
+## The demos — 12, one design
 
 Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), AgentCore the
 **sandbox**; only the *substrate* and *task* vary. Each demo below is a **self-contained,
 standalone recipe** — its own dir with a `README.md`, vendored `agentcore_slime_demo/`, own
 `deploy/`, `run.sh`, and `train.sh`. Links go to each demo's own README.
 
-### CPU (9)
+### CPU (8)
 
 | Demo | Task | Real use case |
 |---|---|---|
-| [cpu_datasets](../../../code/demos/demo_cpu_datasets/README.md) | `DATASET=` mbpp (default) · math · gsm8k · math500 · deepscaler · humaneval · gretelsql · hotpotqa · xlam · mcp | the reference demo: coding, math, SQL, RAG and tool-use agents from one folder |
+| [cpu_tasks](../../../code/demos/demo_cpu_tasks/README.md) | `DATASET=` mbpp (default) · math · gsm8k · math500 · deepscaler · humaneval · gretelsql · hotpotqa · xlam · mcp · a comma list (`gsm8k,gretelsql`) · `mixed` (math+SQL+CTF+datasci) | the reference demo: coding, math, SQL, RAG and tool-use agents from one folder, alone or mixed into one generalist stream |
 | [cpu_scale_lanes](../../../code/demos/demo_cpu_scale_lanes/README.md) | DeepScaleR (fixed) | 4 × 4 × 4 lanes: harness worker : SGLang engine : microVM (was `cpu_harness_scale`) |
-| [cpu_mixtask](../../../code/demos/demo_cpu_mixtask/README.md) | math+SQL+CTF+tool | one generalist policy across many families |
 | [cpu_imagepool](../../../code/demos/demo_cpu_imagepool/README.md) | datasci (pandas/scipy/sklearn) | data-science agent with heavy, incompatible deps → per-image Runtimes |
 | [cpu_terminalbench](../../../code/demos/demo_cpu_terminalbench/README.md) | Terminal-Bench (~229 task images) | terminal / DevOps agent; one Runtime per task, fresh microVM per episode |
 | [cpu_branching](../../../code/demos/demo_cpu_branching/README.md) | Claude Code CLI | RL on a **real production coding agent** (subagents + summarization) |
@@ -50,8 +49,9 @@ standalone recipe** — its own dir with a `README.md`, vendored `agentcore_slim
 | [cpu_bigimage](../../../code/demos/demo_cpu_bigimage/README.md) | DeepScaleR, ~4 GB image | an image past the microVM cap, on a warm CPU Instance |
 | [cpu_heartbeat](../../../code/demos/demo_cpu_heartbeat/README.md) | heartbeat | keep a warm sandbox alive across the weight-sync pause |
 
-`cpu_datasets` replaces ten per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`,
-`demo_cpu_gsm8k` … `demo_cpu_mcp`) that differed only in their data (merged 2026-09-23).
+`cpu_tasks` replaces ten per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`,
+`demo_cpu_gsm8k` … `demo_cpu_mcp`, merged 2026-09-23) and `demo_cpu_mixtask` (now
+`DATASET=mixed`, merged 2026-09-25) — they differed only in their data.
 
 ### GPU (4)
 
@@ -62,6 +62,6 @@ standalone recipe** — its own dir with a `README.md`, vendored `agentcore_slim
 | [gpu_snapshot](../../../code/demos/demo_gpu_snapshot/README.md) | snapshot | survive a GPU-instance recycle (app-level S3 snapshot) |
 | [gpu_farm](../../../code/demos/demo_gpu_farm/README.md) | KernelBench (Ray farm) | `FARM=fractional`: two episodes share ONE GPU (0.5 + 0.5); `FARM=whole`: one whole GPU per episode across two GPUs |
 
-**Status (honest):** only `cpu_datasets` (`DATASET=mbpp`) and `gpu_single` carry ~10-step
+**Status (honest):** only `cpu_tasks` (`DATASET=mbpp`) and `gpu_single` carry ~10-step
 training curves; the rest are 10-step (`NR=11`) smoke runs or ready-to-run recipes
 (`cpu_terminalbench` has no run yet). See each demo's README for specifics.

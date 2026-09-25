@@ -49,12 +49,14 @@ AgentCore **Code Interpreter** microVM (CPU); the harness is in-process.
 | `demo_cpu_config`  | config edits | `config` | generation |
 | `demo_cpu_data`    | data transforms | `data` | generation |
 
-> **As built (2026-09-23):** the per-task folders above are NOT separate demos. They are all ONE
-> demo, `code/demos/demo_cpu_datasets`, selected with `DATASET=<name>` (real HF `mbpp` (default) `gsm8k`
+> **As built (2026-09-25):** the per-task folders above are NOT separate demos. They are all ONE
+> demo, `code/demos/demo_cpu_tasks`, selected with `DATASET=<name>` (real HF `mbpp` (default) `gsm8k`
 > `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, plus the synthetic `math`
 > `swe` `tool_use` `sql` `ctf` `rag` `regex` `planning` `config` `data`). It replaced the ten
-> per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`, …) that differed only in data. The full set is
-> 13 demos (9 CPU + 4 GPU, after the 2026-09-25 `demo_gpu_farm` merge); see `code/demos/README.md`.
+> per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`, …) that differed only in data. Mixed-task
+> batches are the same demo: `DATASET=a,b,c` (interleaved) or `DATASET=mixed` (math+sql+ctf+datasci,
+> formerly `demo_cpu_mixtask`). The full set is 12 demos (8 CPU + 4 GPU, after the 2026-09-25 merges);
+> see `code/demos/README.md`.
 
 \* *Hypothesis only — Tier 3 replaces it with a measurement.* Note most cheap-checker CPU tasks are
 expected to be **generation-bound**; the clear **sandbox-bound** case is CUDA (Tier 2). That

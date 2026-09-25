@@ -207,14 +207,14 @@ is exercised by runnable demos with measured results.
   Interpreter microVM) and GPU (Instances).
 \item
   \textbf{What it costs and what it proves} --- lifecycle, latency,
-  scaling, and 13 demos of measured evidence.
+  scaling, and 12 demos of measured evidence.
 \end{itemize}
 
 \textbf{One thesis.} In agentic RL the loop has two execution seams ---
 the \textbf{harness} (the agent loop) and the \textbf{sandbox} (where
 untrusted model output runs and the reward is computed). This project
 keeps the harness \textbf{in-process} and puts \textbf{AgentCore in the
-sandbox seam}; the only thing that varies across all 13 demos is the
+sandbox seam}; the only thing that varies across all 12 demos is the
 \emph{sandbox substrate} and the \emph{task}.
 \end{frame}
 
@@ -261,20 +261,21 @@ GPU sandbox --- KernelBench
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-in-process harness & \texttt{demo\_cpu\_datasets}
-(\texttt{DATASET=mbpp}) & \texttt{demo\_gpu\_single} \\
+in-process harness & \texttt{demo\_cpu\_tasks} (\texttt{DATASET=mbpp}) &
+\texttt{demo\_gpu\_single} \\
 \bottomrule\noalign{}
 \end{longtable}
 
-\textbf{13 demos on this one design} (9 CPU + 4 GPU), in three layers:
-\textbf{5 canonical} anchors --- one of them,
-\texttt{demo\_cpu\_datasets}, trains any of \textasciitilde19 RLVR
-datasets via a \texttt{DATASET=} selector (it replaces the ten former
-per-dataset folders), and \texttt{demo\_gpu\_farm} picks its GPU split
-via \texttt{FARM=fractional\textbar{}whole} (it replaces
+\textbf{12 demos on this one design} (8 CPU + 4 GPU), in three layers:
+\textbf{5 canonical} anchors --- one of them, \texttt{demo\_cpu\_tasks},
+trains any of \textasciitilde19 RLVR datasets via a \texttt{DATASET=}
+selector --- alone, as a comma-list mix, or \texttt{DATASET=mixed} (it
+replaces the ten former per-dataset folders and
+\texttt{demo\_cpu\_mixtask}), and \texttt{demo\_gpu\_farm} picks its GPU
+split via \texttt{FARM=fractional\textbar{}whole} (it replaces
 \texttt{demo\_gpu\_shared\_single}/\texttt{\_multi}/\texttt{demo\_gpu\_local})
-· \textbf{2} that scale a new dimension (harness / mixed-family batch) ·
-\textbf{6 substrate-and-design variants}. The rest of the deck walks the
+· \textbf{1} that scales a new dimension (harness lanes) · \textbf{6
+substrate-and-design variants}. The rest of the deck walks the
 architecture, the AgentCore mechanics, and then these demos with
 numbers.
 \end{frame}
@@ -494,10 +495,9 @@ the reward source.}
 
 \begin{frame}[fragile,allowframebreaks]{Datasets --- build once, seed per episode}
 \protect\hypertarget{datasets-build-once-seed-per-episode}{}
-Builders (\texttt{demos/demo\_cpu\_datasets/}):
-\texttt{build\_dataset.py} (MBPP/KernelBench) and
-\texttt{build\_family\_datasets.py} (ten families,
-\texttt{-\/-eval-frac\ 0.25}). Uniform row schema:
+Builders (\texttt{demos/demo\_cpu\_tasks/}): \texttt{build\_dataset.py}
+(MBPP/KernelBench) and \texttt{build\_family\_datasets.py} (ten
+families, \texttt{-\/-eval-frac\ 0.25}). Uniform row schema:
 
 \begin{Shaded}
 \begin{Highlighting}[]
@@ -836,9 +836,9 @@ GPU kernel / CUDA (KernelBench) {[}7{]} & ◑ & Instances only; 1 session
 \section{6 · Demos and measured
 results}\label{demos-and-measured-results}}
 
-\begin{frame}[fragile,allowframebreaks]{The demo set --- one design, three layers, 13
+\begin{frame}[fragile,allowframebreaks]{The demo set --- one design, three layers, 12
 demos}
-\protect\hypertarget{the-demo-set-one-design-three-layers-13-demos}{}
+\protect\hypertarget{the-demo-set-one-design-three-layers-12-demos}{}
 \begin{columns}[T]
 \begin{column}{0.48\textwidth}
 \begin{figure}
@@ -859,13 +859,14 @@ demos}
 
 Same harness both sides; \textbf{only the sandbox ARN differs}. Evidence
 tiering: \textbf{2} demos carry committed \textbf{convergence-shaped}
-curves (\texttt{demo\_cpu\_datasets} \texttt{DATASET=mbpp},
+curves (\texttt{demo\_cpu\_tasks} \texttt{DATASET=mbpp},
 \texttt{demo\_gpu\_single}); the rest are \textbf{loop-verified 10-step
 hardware smokes} (\texttt{Job\ succeeded}, ckpt 10, real rewards) ---
-\textbf{CPU: 6 demos, 15 runs (\texttt{demo\_cpu\_datasets} ×10
-\texttt{DATASET=} values + 5 other CPU demos) + 6 GPU runs (4 GPU demos;
-\texttt{demo\_gpu\_farm} in both modes, \texttt{whole} twice) pass}. One
-caveat: \texttt{demo\_cpu\_branching} runs but earns reward 0.
+\textbf{CPU: 5 demos, 15 runs (\texttt{demo\_cpu\_tasks} ×11
+\texttt{DATASET=} values incl.~\texttt{mixed} + 4 other CPU demos) + 6
+GPU runs (4 GPU demos; \texttt{demo\_gpu\_farm} in both modes,
+\texttt{whole} twice) pass}. One caveat: \texttt{demo\_cpu\_branching}
+runs but earns reward 0.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{Demo set at a glance (1/2) --- canonical + scale}
@@ -888,9 +889,10 @@ Result
 \midrule\noalign{}
 \endhead
 \emph{--- canonical (5) ---} & & & \\
-\texttt{demo\_cpu\_datasets} & CPU microVM & \texttt{DATASET=} selector
-(default MBPP) & \texttt{mbpp} \textbf{trained} + ablation;
-\texttt{math} smoke 1.00 \\
+\texttt{demo\_cpu\_tasks} & CPU microVM & \texttt{DATASET=} selector
+(default MBPP; comma list or \texttt{mixed} = math+SQL+CTF+datasci) &
+\texttt{mbpp} \textbf{trained} + ablation; \texttt{math} smoke 1.00;
+\texttt{mixed} smoke \texttt{eval/mixed} 0.67 \\
 \texttt{demo\_gpu\_single} & GPU g6 / local farm & KernelBench CUDA &
 \textbf{trained}; farm smoke 0.525 \\
 \texttt{demo\_gpu\_farm} & GPU, local Ray farm (\texttt{FARM=}) &
@@ -900,14 +902,12 @@ KernelBench CUDA & \texttt{fractional} (0.5+0.5, one GPU) smoke 0.775;
 smoke 0.71; + offline probe \\
 \texttt{demo\_gpu\_snapshot} & GPU, local farm & snapshot / resume &
 smoke 0.625; 3 files/ep saved+restored \\
-\emph{--- scale a new dimension (2) ---} & & & \\
+\emph{--- scale a new dimension (1) ---} & & & \\
 \texttt{demo\_cpu\_scale\_lanes} (was \texttt{harness\_scale}) & CPU
 microVM & DeepScaleR (fixed); 4 × 4 × 4 lanes (4 harness workers : 4 TP1
 SGLang engines : 4 persistent microVMs, 1:1:1) & reworked,
 offline-verified; earlier smoke 0.33 was the pre-rework single-engine
 topology \\
-\texttt{demo\_cpu\_mixtask} & CPU microVM & mixed: math+SQL+CTF+tools &
-smoke, \texttt{eval/mixed} 0.67 \\
 \bottomrule\noalign{}
 \end{longtable}
 \end{frame}
@@ -932,8 +932,8 @@ Result
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-\emph{--- \texttt{demo\_cpu\_datasets} real-HF \texttt{DATASET=} runs
-(not separate demos) ---} & & & \\
+\emph{--- \texttt{demo\_cpu\_tasks} real-HF \texttt{DATASET=} runs (not
+separate demos) ---} & & & \\
 \texttt{DATASET=gsm8k} & CPU microVM & GSM8K & smoke 0.90 \\
 \texttt{DATASET=math500} & CPU microVM & MATH-500 & smoke 0.89 \\
 \texttt{DATASET=deepscaler} & CPU microVM & DeepScaleR & smoke 0.78 \\
@@ -1015,7 +1015,7 @@ five steps}
 \begin{itemize}
 \tightlist
 \item
-  \textbf{Two convergence-shaped curves.} \texttt{demo\_cpu\_datasets}
+  \textbf{Two convergence-shaped curves.} \texttt{demo\_cpu\_tasks}
   \texttt{DATASET=mbpp} (CPU microVM) and \texttt{demo\_gpu\_single}
   (remote g6 GPU) --- full 10-step runs with an eval curve; the MBPP run
   also carries an ablation sweep.
@@ -1024,12 +1024,13 @@ five steps}
   train steps + 1 held-out eval + final ckpt 10, real
   \texttt{invoke\_agent\_runtime} →
   \texttt{write\_file}/\texttt{exec}/\texttt{read\_file}, real rewards.
-  \textbf{15 CPU smoke runs from 6 demos} (2026-09-18→19 batch; 10 of
-  them \texttt{demo\_cpu\_datasets} \texttt{DATASET=} variants, run as
-  separate folders before the merge) \textbf{+ 6 GPU runs} (2026-09-21
-  sweep; all 4 GPU demos, \texttt{demo\_gpu\_farm} in both \texttt{FARM}
-  modes) pass, with balanced sandbox \texttt{open}==\texttt{close}
-  counts (no leased-actor leak).
+  \textbf{15 CPU smoke runs from 5 demos} (2026-09-18→19 batch; 11 of
+  them \texttt{demo\_cpu\_tasks} \texttt{DATASET=} variants
+  incl.~\texttt{mixed}, run as separate folders before the merges)
+  \textbf{+ 6 GPU runs} (2026-09-21 sweep; all 4 GPU demos,
+  \texttt{demo\_gpu\_farm} in both \texttt{FARM} modes) pass, with
+  balanced sandbox \texttt{open}==\texttt{close} counts (no leased-actor
+  leak).
 \item
   \textbf{Read them as baselines the plumbing produces, not learned
   plateaus} --- eval numbers are noisy over 10 steps. This is a
@@ -1193,8 +1194,8 @@ DAPO/GSPO as scale grows; turn-level credit for long-horizon families.}
   tool call → the in-sandbox checker gives the reward → slime trains via
   one \texttt{generate} hook. \textbf{CPU↔GPU is one env var.}
 \item
-  \textbf{Proven:} 2 convergence curves + loop-verified smokes for 12 of
-  the 13 demos (15 CPU + 6 GPU runs) on real hardware; warm-reuse m5
+  \textbf{Proven:} 2 convergence curves + loop-verified smokes for 11 of
+  the 12 demos (15 CPU + 6 GPU runs) on real hardware; warm-reuse m5
   boots 201 → 1. Caveats: \texttt{demo\_cpu\_branching} reward 0;
   fractional GPU farm on local L40S.
 \end{itemize}

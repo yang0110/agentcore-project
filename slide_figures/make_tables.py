@@ -67,7 +67,7 @@ render(
     "Canonical — the core story",
     ["#", "Demo", "Use case it demonstrates"],
     [
-        ["1", "demo_cpu_datasets", "Reference — RL on verifiable tasks in a CPU microVM; DATASET= picks the data (default MBPP)"],
+        ["1", "demo_cpu_tasks", "Reference — RL on verifiable tasks in a CPU microVM; DATASET= picks or mixes the data"],
         ["2", "demo_gpu_single", "GPU workload in the sandbox (KernelBench — writing / optimizing CUDA kernels)"],
         ["3", "demo_gpu_farm", "GPU packing on a local Ray farm — FARM=fractional (2 episodes, 1 GPU) | whole (1 GPU each)"],
         ["4", "demo_cpu_heartbeat", "Long-running / offline resilience — keeping a session alive via heartbeat outside the harness"],
@@ -79,7 +79,7 @@ render(
 # ---- Table 2: Real datasets (one demo, DATASET= selector — not separate demos) ----
 render(
     "2_datasets.png",
-    "demo_cpu_datasets — real agentic-RL datasets via DATASET=",
+    "demo_cpu_tasks — real agentic-RL datasets via DATASET= (one, a,b,c, or mixed)",
     ["DATASET", "Use case"],
     [
         ["mbpp (default)", "Python code repair against hidden asserts"],
@@ -92,6 +92,8 @@ render(
         ["hotpotqa", "Multi-hop retrieval / RAG QA"],
         ["xlam", "Function / tool calling"],
         ["mcp", "MCP tool-use (agent calling sandbox tools)"],
+        ["a,b,c", "Round-robin mix of any datasets above (eval/mix)"],
+        ["mixed", "Math + SQL + CTF + datasci in one batch (was demo_cpu_mixtask)"],
     ],
     [0.22, 0.78],
 )
@@ -103,7 +105,6 @@ render(
     ["#", "Demo", "Use case"],
     [
         ["6", "demo_cpu_scale_lanes", "Scaling as 4 × 4 × 4 lanes — harness worker : SGLang engine : microVM (was harness_scale)"],
-        ["7", "demo_cpu_mixtask", "Mixed-family batch — one training batch spans multiple task types"],
     ],
     [0.05, 0.26, 0.69],
 )
@@ -114,12 +115,12 @@ render(
     "Substrate & design variants",
     ["#", "Demo", "Use case"],
     [
-        ["8", "demo_cpu_branching", "RL on the real Claude Code CLI; one episode fans out into subagents (rollout-level GRPO)"],
-        ["9", "demo_cpu_customruntime", "Managed Code Interpreter vs. a custom Runtime — capability comparison"],
-        ["10", "demo_gpu_customruntime", "Same comparison for GPU — GPU only reachable via a custom Runtime on a g6 Instance"],
-        ["11", "demo_cpu_imagepool", "Capability-routed image pool — one prebuilt image per family (pandas / scipy / sklearn)"],
-        ["12", "demo_cpu_terminalbench", "Terminal-Bench as a large image pool — one Runtime per task (~229), fresh microVM per episode"],
-        ["13", "demo_cpu_bigimage", "Large (~4 GB) image exceeding the microVM cap → deploys on a CPU capacity-provider Instance"],
+        ["7", "demo_cpu_branching", "RL on the real Claude Code CLI; one episode fans out into subagents (rollout-level GRPO)"],
+        ["8", "demo_cpu_customruntime", "Managed Code Interpreter vs. a custom Runtime — capability comparison"],
+        ["9", "demo_gpu_customruntime", "Same comparison for GPU — GPU only reachable via a custom Runtime on a g6 Instance"],
+        ["10", "demo_cpu_imagepool", "Capability-routed image pool — one prebuilt image per family (pandas / scipy / sklearn)"],
+        ["11", "demo_cpu_terminalbench", "Terminal-Bench as a large image pool — one Runtime per task (~229), fresh microVM per episode"],
+        ["12", "demo_cpu_bigimage", "Large (~4 GB) image exceeding the microVM cap → deploys on a CPU capacity-provider Instance"],
     ],
     [0.04, 0.22, 0.74],
 )

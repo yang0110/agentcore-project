@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the single-family SWE dataset for demo_cpu_branching.
 
-Unlike demo_cpu_mixtask (which INTERLEAVES families), this demo pins ONE family — SWE bug-fix — so
+Unlike demo_cpu_tasks:mixed (which INTERLEAVES families), this demo pins ONE family — SWE bug-fix — so
 every rollout is the same kind of multi-turn task and the interesting variable is the FAN-OUT (how
 many trainable leaves one episode produces), not the task type. Each row is self-describing:
 

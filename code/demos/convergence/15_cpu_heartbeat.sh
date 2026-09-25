@@ -14,7 +14,7 @@
 #                  remote sandbox session survives the WEIGHT-SYNC BARRIER between
 #                  rollout steps (generation goes silent while weights sync; without
 #                  the heartbeat the session would idle out). HEARTBEAT_KEEP_WARM=0
-#                  makes the run byte-identical to demo_cpu_datasets DATASET=deepscaler.
+#                  makes the run byte-identical to demo_cpu_tasks DATASET=deepscaler.
 #                  Over a 200-step convergence run there are ~200 barriers, so the
 #                  keep-warm path is exercised continuously — this is where it earns
 #                  its keep vs. the 10-step smoke.
@@ -27,7 +27,7 @@
 # TEARDOWN       : sessions close per-episode; the SessionKeeper thread ends with the run.
 # ----------------------------------------------------------------------------
 # Overridable, e.g.:  NR=401 HEARTBEAT_IDLE=900 bash 15_cpu_heartbeat.sh
-#   HEARTBEAT_KEEP_WARM=0  -> disable keep-warm (== demo_cpu_datasets DATASET=deepscaler)
+#   HEARTBEAT_KEEP_WARM=0  -> disable keep-warm (== demo_cpu_tasks DATASET=deepscaler)
 # ============================================================================
 set -euo pipefail
 

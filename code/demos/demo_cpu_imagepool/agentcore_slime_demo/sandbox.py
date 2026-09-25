@@ -68,7 +68,7 @@ def _next_runtime_arn() -> str | None:
 
 
 def _runtime_arn_for_image(image: str | None) -> str | None:
-    """Capability-routing by container image (the mixtask custom-image case).
+    """Capability-routing by container image (the DATASET=mixed custom-image case).
 
     A heterogeneous batch may contain a family whose sandbox needs a DIFFERENT image than the
     generic CPU one — e.g. the `datasci` family needs pandas, which is absent from the plain CPU

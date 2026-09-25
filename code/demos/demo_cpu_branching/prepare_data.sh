@@ -6,7 +6,7 @@
 #     docker exec agentcore_p4 bash /work/code/demos/demo_cpu_branching/prepare_data.sh
 #
 # Produces swe_train.jsonl + swe_eval.jsonl — every row a SWE bug-fix task carrying its own hidden
-# RLVR checker in metadata.task. Unlike demo_cpu_mixtask this is ONE family: the interesting variable
+# RLVR checker in metadata.task. Unlike demo_cpu_tasks:mixed this is ONE family: the interesting variable
 # here is the FAN-OUT (one episode -> many trainable leaves via the real Claude Code CLI), not task
 # type. Fully self-contained: imports only this dir's vendored agentcore_slime_demo/. Idempotent.
 set -euo pipefail

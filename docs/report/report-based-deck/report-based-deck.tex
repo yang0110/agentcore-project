@@ -219,7 +219,7 @@ an LLM judge --- turns the outcome into a scalar reward (RLVR).
   \textbf{Integrating into slime} --- the call path, one hook, the
   episode loop, and the key code.
 \item
-  \textbf{The demos} --- all 13 at a glance, then \textbf{one slide per
+  \textbf{The demos} --- all 12 at a glance, then \textbf{one slide per
   demo} (config, checker, measured eval/latency, honest status, real use
   case).
 \item
@@ -250,7 +250,7 @@ an LLM judge --- turns the outcome into a scalar reward (RLVR).
   through \textbf{one hook}, harness in-process.
 \item
   \textbf{Proven.} The full loop runs \textbf{end-to-end on real
-  hardware across 13 demos} (code, math, SQL, RAG, tool-use, CUDA
+  hardware across 12 demos} (code, math, SQL, RAG, tool-use, CUDA
   kernels), each a standard \textbf{10-step run} with real rewards from
   an in-sandbox checker.
 \item
@@ -1093,65 +1093,65 @@ the difference is:
 \begin{frame}[fragile,allowframebreaks]{Find your workload --- the demos are client use
 cases}
 \protect\hypertarget{find-your-workload-the-demos-are-client-use-cases}{}
-The 13 demos aren't toys; each stands in for a \textbf{real agent a
+The 12 demos aren't toys; each stands in for a \textbf{real agent a
 client would train}. Find yours:
 
 \begin{itemize}
 \tightlist
 \item
-  \textbf{Coding agents} → \texttt{cpu\_datasets} \texttt{DATASET=mbpp}
+  \textbf{Coding agents} → \texttt{cpu\_tasks} \texttt{DATASET=mbpp}
   (MBPP repair) / \texttt{=humaneval} (function synthesis),
   \texttt{cpu\_terminalbench} (whole-OS terminal tasks),
   \texttt{cpu\_branching} (a real Claude Code CLI agent) --- test-driven
   assistants that iterate against your test runner.
 \item
-  \textbf{Reasoning / math} → \texttt{cpu\_datasets}
-  \texttt{DATASET=math} / \texttt{gsm8k} / \texttt{math500} /
-  \texttt{deepscaler} --- reasoning-model post-training with a one-line
-  numeric checker.
+  \textbf{Reasoning / math} → \texttt{cpu\_tasks} \texttt{DATASET=math}
+  / \texttt{gsm8k} / \texttt{math500} / \texttt{deepscaler} ---
+  reasoning-model post-training with a one-line numeric checker.
 \item
-  \textbf{Data \& analytics} → \texttt{cpu\_datasets}
-  \texttt{DATASET=gretelsql} (text-to-SQL), \texttt{cpu\_imagepool}
-  (pandas / scipy / sklearn) --- agents whose reward is \emph{running
-  the real data stack}.
+  \textbf{Data \& analytics} → \texttt{cpu\_tasks}
+  \texttt{DATASET=gretelsql} (text-to-SQL), \texttt{cpu\_tasks}
+  \texttt{DATASET=mixed} (SQL + datasci in one stream),
+  \texttt{cpu\_imagepool} (pandas / scipy / sklearn) --- agents whose
+  reward is \emph{running the real data stack}.
 \item
-  \textbf{RAG / search} → \texttt{cpu\_datasets}
-  \texttt{DATASET=hotpotqa} (multi-hop) --- retrieval agents over your
-  corpus.
+  \textbf{RAG / search} → \texttt{cpu\_tasks} \texttt{DATASET=hotpotqa}
+  (multi-hop) --- retrieval agents over your corpus.
 \item
-  \textbf{Tool / API use} → \texttt{cpu\_datasets} \texttt{DATASET=xlam}
-  / \texttt{mcp} --- function-calling and MCP-schema agents for your
-  APIs.
+  \textbf{Tool / API use} → \texttt{cpu\_tasks} \texttt{DATASET=xlam} /
+  \texttt{mcp} --- function-calling and MCP-schema agents for your APIs.
 \item
   \textbf{GPU kernels / systems} → \texttt{gpu\_single},
   \texttt{gpu\_farm} --- agents whose checker compiles and runs CUDA on
   a real GPU.
 \end{itemize}
 
-\emph{The rest (\texttt{scale\_lanes}, \texttt{mixtask},
-\texttt{customruntime}, \texttt{bigimage}, \texttt{heartbeat},
-\texttt{snapshot}) show \textbf{how to scale, mix, and operate} these in
-production.}
+\emph{The rest (\texttt{scale\_lanes}, \texttt{customruntime},
+\texttt{bigimage}, \texttt{heartbeat}, \texttt{snapshot}) show
+\textbf{how to scale and operate}; mixing is \texttt{cpu\_tasks}
+\texttt{DATASET=a,b,c} / \texttt{mixed} these in production.}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{The demo set --- 13 demos, one design}
-\protect\hypertarget{the-demo-set-13-demos-one-design}{}
+\begin{frame}[fragile,allowframebreaks]{The demo set --- 12 demos, one design}
+\protect\hypertarget{the-demo-set-12-demos-one-design}{}
 Policy always \textbf{Qwen3-4B}, harness \textbf{in-process} (except
 \texttt{cpu\_branching}), AgentCore the \textbf{sandbox}; only the
-\emph{substrate} and \emph{task} vary --- \textbf{9 CPU + 4 GPU}:
+\emph{substrate} and \emph{task} vary --- \textbf{8 CPU + 4 GPU}:
 
 \begin{itemize}
 \tightlist
 \item
-  \textbf{CPU reference} --- \texttt{cpu\_datasets}: ONE demo, many real
+  \textbf{CPU reference} --- \texttt{cpu\_tasks}: ONE demo, many real
   RLVR datasets via a \texttt{DATASET=} knob (mbpp · math · gsm8k ·
-  math500 · deepscaler · humaneval · gretelsql · hotpotqa · xlam · mcp).
-  \emph{These were ten separate folders until 2026-09-23; they differed
-  only in data, so they were merged.}
+  math500 · deepscaler · humaneval · gretelsql · hotpotqa · xlam · mcp),
+  a comma list to mix them (\texttt{DATASET=gsm8k,gretelsql,hotpotqa}),
+  or \texttt{mixed} (math + SQL + CTF + datasci). \emph{A single dataset
+  is the one-element mix. These were ten per-dataset folders +
+  \texttt{cpu\_mixtask} until 2026-09-23 / 25; they differed only in
+  data, so they were merged.}
 \item
-  \textbf{CPU scale / mix} --- \texttt{cpu\_scale\_lanes} (4 × 4 × 4
-  lanes: harness : engine : microVM; was \texttt{cpu\_harness\_scale}),
-  \texttt{cpu\_mixtask} (the batch).
+  \textbf{CPU scale} --- \texttt{cpu\_scale\_lanes} (4 × 4 × 4 lanes:
+  harness : engine : microVM; was \texttt{cpu\_harness\_scale}).
 \item
   \textbf{CPU substrate / design variants} --- \texttt{cpu\_imagepool},
   \texttt{cpu\_terminalbench}, \texttt{cpu\_branching},
@@ -1176,8 +1176,8 @@ Exceptions: \texttt{cpu\_branching} trains with reward 0, and
 slide per demo follows the summary.}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{All 13 demos at a glance}
-\protect\hypertarget{all-13-demos-at-a-glance}{}
+\begin{frame}[fragile,allowframebreaks]{All 12 demos at a glance}
+\protect\hypertarget{all-12-demos-at-a-glance}{}
 \scriptsize
 
 \begin{longtable}[]{@{}
@@ -1197,32 +1197,33 @@ Status / measured
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-\emph{CPU (9)} & & & \\
-\texttt{cpu\_datasets} \texttt{=mbpp} & CPU µVM · MBPP repair & hidden
+\emph{CPU (8)} & & & \\
+\texttt{cpu\_tasks} \texttt{=mbpp} & CPU µVM · MBPP repair & hidden
 asserts & 10-step; \texttt{eval} 0.56 \\
-\texttt{cpu\_datasets} \texttt{=math} & CPU µVM · math words & numeric
+\texttt{cpu\_tasks} \texttt{=math} & CPU µVM · math words & numeric
 assert & 10-step; \texttt{eval/gsm8k} 0.94 \\
-\texttt{cpu\_datasets} \texttt{=gsm8k} & CPU µVM · GSM8K & exact int
-match & 10-step; \texttt{eval} 0.91 \\
-\texttt{cpu\_datasets} \texttt{=math500} & CPU µVM · MATH-500 & numeric
+\texttt{cpu\_tasks} \texttt{=gsm8k} & CPU µVM · GSM8K & exact int match
+& 10-step; \texttt{eval} 0.91 \\
+\texttt{cpu\_tasks} \texttt{=math500} & CPU µVM · MATH-500 & numeric
 1e-4 & 10-step; \texttt{eval} 0.83 \\
-\texttt{cpu\_datasets} \texttt{=deepscaler} & CPU µVM · DeepScaleR &
+\texttt{cpu\_tasks} \texttt{=deepscaler} & CPU µVM · DeepScaleR &
 numeric 1e-4 & 10-step; \texttt{eval} 0.70 \\
-\texttt{cpu\_datasets} \texttt{=humaneval} & CPU µVM · HumanEval & row
+\texttt{cpu\_tasks} \texttt{=humaneval} & CPU µVM · HumanEval & row
 \texttt{check()} test & 10-step; \texttt{eval} 0.81 \\
-\texttt{cpu\_datasets} \texttt{=gretelsql} & CPU µVM · Gretel SQL &
+\texttt{cpu\_tasks} \texttt{=gretelsql} & CPU µVM · Gretel SQL &
 result-set eq (sqlite3) & 10-step; \texttt{eval} 0.65 \\
-\texttt{cpu\_datasets} \texttt{=hotpotqa} & CPU µVM · HotpotQA &
-SQuAD-norm EM & 10-step; \texttt{eval} 0.21 \\
-\texttt{cpu\_datasets} \texttt{=xlam} & CPU µVM · xLAM-60k & arg-norm
+\texttt{cpu\_tasks} \texttt{=hotpotqa} & CPU µVM · HotpotQA & SQuAD-norm
+EM & 10-step; \texttt{eval} 0.21 \\
+\texttt{cpu\_tasks} \texttt{=xlam} & CPU µVM · xLAM-60k & arg-norm call
+match & 10-step; \texttt{eval} 1.00 \\
+\texttt{cpu\_tasks} \texttt{=mcp} & CPU µVM · ToolACE (MCP) & arg-norm
 call match & 10-step; \texttt{eval} 1.00 \\
-\texttt{cpu\_datasets} \texttt{=mcp} & CPU µVM · ToolACE (MCP) &
-arg-norm call match & 10-step; \texttt{eval} 1.00 \\
+\texttt{cpu\_tasks} \texttt{=mixed} & CPU µVM · math+SQL+CTF+datasci &
+per-row checker & 10-step (as \texttt{cpu\_mixtask});
+\texttt{eval/mixed} 0.67 \\
 \texttt{cpu\_scale\_lanes} & CPU µVM ×4 persistent · DeepScaleR (fixed)
 & numeric assert & reworked to 4 × 4 × 4 lanes, offline-verified;
 earlier 10-step \texttt{eval} 0.33 was the pre-rework topology \\
-\texttt{cpu\_mixtask} & CPU µVM · math+SQL+CTF+tool & per-row checker &
-10-step; \texttt{eval/mixed} 0.67 \\
 \texttt{cpu\_imagepool} & CPU µVM ×3 · datasci/scipy/sklearn &
 per-family checker & 10-step; \texttt{eval/mixed} 1.00 \\
 \texttt{cpu\_terminalbench} & CPU µVM ×\textasciitilde229 ·
@@ -1258,18 +1259,18 @@ KernelBench & CUDA \texttt{allclose} & 10-step; \texttt{eval} 0.775 \\
 \normalsize
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{What the 13 demos demonstrate}
-\protect\hypertarget{what-the-13-demos-demonstrate}{}
+\begin{frame}[fragile,allowframebreaks]{What the 12 demos demonstrate}
+\protect\hypertarget{what-the-12-demos-demonstrate}{}
 \begin{itemize}
 \tightlist
 \item
-  \textbf{The core claim.} \texttt{cpu\_datasets} (MBPP by default) and
+  \textbf{The core claim.} \texttt{cpu\_tasks} (MBPP by default) and
   \texttt{gpu\_single} (KernelBench) are the two reference training
   loops, on a CPU and a GPU sandbox. \emph{Shows the loop works on both
   substrates.}
 \item
-  \textbf{Breadth across real workloads.} \texttt{cpu\_datasets} swaps
-  the dataset with one knob (\texttt{DATASET=}): GSM8K, MATH-500,
+  \textbf{Breadth across real workloads.} \texttt{cpu\_tasks} swaps the
+  dataset with one knob (\texttt{DATASET=}): GSM8K, MATH-500,
   DeepScaleR, HumanEval, Gretel SQL, HotpotQA, xLAM, ToolACE, spanning
   math, code, SQL, RAG and tool-use. \emph{Shows the same task-agnostic
   sandbox + checker covers every frontier family with no image change.
@@ -1277,8 +1278,9 @@ KernelBench & CUDA \texttt{allclose} & 10-step; \texttt{eval} 0.775 \\
 \item
   \textbf{Scale and mix.} \texttt{scale\_lanes} makes the \texttt{min()}
   throughput law concrete with 4 lanes of harness worker : SGLang engine
-  : microVM, scaled together by \texttt{LANES=}; \texttt{mixtask} trains
-  one generalist across families in a single stream.
+  : microVM, scaled together by \texttt{LANES=}; \texttt{cpu\_tasks}
+  \texttt{DATASET=mixed} (or any comma list) trains one generalist
+  across families in a single stream.
 \item
   \textbf{Substrate / design variants --- the AgentCore mechanics.}
   \texttt{cpu\_branching} (real Claude Code CLI as harness),
@@ -1295,9 +1297,9 @@ KernelBench & CUDA \texttt{allclose} & 10-step; \texttt{eval} 0.775 \\
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_datasets} --- one demo, many
-datasets (\texttt{DATASET=})}
-\protect\hypertarget{cpu_datasets-one-demo-many-datasets-dataset}{}
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} --- one demo, many datasets
+(\texttt{DATASET=})}
+\protect\hypertarget{cpu_tasks-one-demo-many-datasets-dataset}{}
 \textbf{One folder, one harness, one CPU sandbox; the dataset is a
 knob.} \texttt{DATASET=\textless{}name\textgreater{}} picks the seed
 rows + hidden checker and writes
@@ -1316,9 +1318,9 @@ only in their data; they were merged on 2026-09-23.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_datasets} \texttt{DATASET=mbpp} ---
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{DATASET=mbpp} ---
 MBPP code repair · CPU microVM · 10-step run}
-\protect\hypertarget{cpu_datasets-datasetmbpp-mbpp-code-repair-cpu-microvm-10-step-run}{}
+\protect\hypertarget{cpu_tasks-datasetmbpp-mbpp-code-repair-cpu-microvm-10-step-run}{}
 \textbf{Substrate} CPU µVM · \textbf{Data} MBPP 500/8 · \textbf{Checker}
 hidden asserts, 1.0 iff exit 0 · \textbf{Use case} unit-test-driven
 coding assistant.
@@ -1340,9 +1342,9 @@ coding assistant.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_datasets} \texttt{DATASET=math} ---
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{DATASET=math} ---
 math word problems · CPU microVM · 10-step run}
-\protect\hypertarget{cpu_datasets-datasetmath-math-word-problems-cpu-microvm-10-step-run}{}
+\protect\hypertarget{cpu_tasks-datasetmath-math-word-problems-cpu-microvm-10-step-run}{}
 \textbf{Substrate} CPU µVM · \textbf{Data} GSM8K 200/40, MATH-500
 160/40, DeepScaleR 400/40 (real HF) · \textbf{Checker} numeric assert,
 1.0/0.0 · \textbf{Use case} reasoning-model math post-training.
@@ -1467,9 +1469,9 @@ mid-episode in a long GPU run.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_datasets} \texttt{DATASET=gsm8k} ---
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{DATASET=gsm8k} ---
 grade-school math · 10-step run}
-\protect\hypertarget{cpu_datasets-datasetgsm8k-grade-school-math-10-step-run}{}
+\protect\hypertarget{cpu_tasks-datasetgsm8k-grade-school-math-10-step-run}{}
 \textbf{Family} math · \textbf{Data} GSM8K (\texttt{openai/gsm8k})
 200/40 · \textbf{Checker} exact integer match, 1.0/0.0 · \textbf{Use
 case} grade-school word-problem solver.
@@ -1486,9 +1488,9 @@ case} grade-school word-problem solver.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_datasets} \texttt{DATASET=math500}
---- competition-style math · 10-step run}
-\protect\hypertarget{cpu_datasets-datasetmath500-competition-style-math-10-step-run}{}
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{DATASET=math500} ---
+competition-style math · 10-step run}
+\protect\hypertarget{cpu_tasks-datasetmath500-competition-style-math-10-step-run}{}
 \textbf{Family} math · \textbf{Data} MATH-500
 (\texttt{HuggingFaceH4/MATH-500}) 160/40, \texttt{EPISODE\_MAX\_TURNS=4}
 · \textbf{Checker} numeric match (tol 1e-4) · \textbf{Use case}
@@ -1506,10 +1508,9 @@ competition-math solver.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_datasets}
-\texttt{DATASET=deepscaler} --- RL-scale math (largest split) · 10-step
-run}
-\protect\hypertarget{cpu_datasets-datasetdeepscaler-rl-scale-math-largest-split-10-step-run}{}
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{DATASET=deepscaler}
+--- RL-scale math (largest split) · 10-step run}
+\protect\hypertarget{cpu_tasks-datasetdeepscaler-rl-scale-math-largest-split-10-step-run}{}
 \textbf{Family} math · \textbf{Data} DeepScaleR
 (\texttt{agentica-org/DeepScaleR-Preview-Dataset}) 400/40 --- the
 largest split · \textbf{Checker} numeric match (tol 1e-4),
@@ -1528,9 +1529,9 @@ post-training.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_datasets} \texttt{DATASET=humaneval}
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{DATASET=humaneval}
 --- function-synthesis coding · 10-step run}
-\protect\hypertarget{cpu_datasets-datasethumaneval-function-synthesis-coding-10-step-run}{}
+\protect\hypertarget{cpu_tasks-datasethumaneval-function-synthesis-coding-10-step-run}{}
 \textbf{Family} coding · \textbf{Data} HumanEval
 (\texttt{openai/openai\_humaneval}) 140/24 · \textbf{Checker} the row's
 own \texttt{check()} unit test, run in the sandbox · \textbf{Use case}
@@ -1547,9 +1548,9 @@ function-synthesis coding assistant.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_datasets} \texttt{DATASET=gretelsql}
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{DATASET=gretelsql}
 --- text-to-SQL · 10-step run}
-\protect\hypertarget{cpu_datasets-datasetgretelsql-text-to-sql-10-step-run}{}
+\protect\hypertarget{cpu_tasks-datasetgretelsql-text-to-sql-10-step-run}{}
 \textbf{Family} sql · \textbf{Data} Gretel synthetic text-to-SQL
 (\texttt{gretelai/synthetic\_text\_to\_sql}) 300/40 · \textbf{Checker}
 result-set equality --- query executed against \textbf{\texttt{sqlite3}}
@@ -1566,9 +1567,9 @@ result-set equality --- query executed against \textbf{\texttt{sqlite3}}
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_datasets} \texttt{DATASET=hotpotqa}
---- multi-hop RAG · 10-step run}
-\protect\hypertarget{cpu_datasets-datasethotpotqa-multi-hop-rag-10-step-run}{}
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{DATASET=hotpotqa} ---
+multi-hop RAG · 10-step run}
+\protect\hypertarget{cpu_tasks-datasethotpotqa-multi-hop-rag-10-step-run}{}
 \textbf{Family} rag · \textbf{Data} HotpotQA
 (\texttt{hotpotqa/hotpot\_qa}, distractor; 10 passages/question) 300/40
 · \textbf{Checker} SQuAD-normalized exact match · \textbf{Use case}
@@ -1587,9 +1588,9 @@ multi-hop retrieval / search agent.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_datasets} \texttt{DATASET=xlam} ---
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{DATASET=xlam} ---
 function-calling / tool use · 10-step run}
-\protect\hypertarget{cpu_datasets-datasetxlam-function-calling-tool-use-10-step-run}{}
+\protect\hypertarget{cpu_tasks-datasetxlam-function-calling-tool-use-10-step-run}{}
 \textbf{Family} tool use · \textbf{Data} xLAM-60k
 (\texttt{minpeter/xlam-function-calling-60k-parsed}) 300/40 ·
 \textbf{Checker} arg-normalized gold-call match (order-insensitive),
@@ -1607,9 +1608,9 @@ RLVR · \textbf{Use case} function-calling tool agent.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_datasets} \texttt{DATASET=mcp} ---
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{DATASET=mcp} ---
 MCP-style tool schemas · 10-step run}
-\protect\hypertarget{cpu_datasets-datasetmcp-mcp-style-tool-schemas-10-step-run}{}
+\protect\hypertarget{cpu_tasks-datasetmcp-mcp-style-tool-schemas-10-step-run}{}
 \textbf{Family} tool use · \textbf{Data} ToolACE
 (\texttt{Team-ACE/ToolACE}, MCP-shaped schemas) 300/40 ·
 \textbf{Checker} arg-normalized gold-call match, RLVR · \textbf{Use
@@ -1624,6 +1625,35 @@ case} MCP tool-schema agent.
   checker run end-to-end,'' not a learned gain.
 \item
   Same family as \texttt{xlam}, against MCP-shaped tool definitions.
+  Generation-bound.
+\end{itemize}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{DATASET=mixed} ---
+one interleaved generalist stream · 10-step run}
+\protect\hypertarget{cpu_tasks-datasetmixed-one-interleaved-generalist-stream-10-step-run}{}
+\textbf{Substrate} CPU µVM, MODE B fully-async · \textbf{Data}
+\texttt{build\_mixed\_datasets.py} interleaves \textbf{math + SQL + CTF
++ datasci} into one 174-row \texttt{mixed\_train.jsonl} (datasci rows
+route to a pandas image via
+\texttt{AGENTCORE\_SANDBOX\_RUNTIME\_ARN\_BY\_IMAGE});
+\texttt{DATASET=a,b,c} interleaves any existing datasets round-robin
+(\texttt{eval/mix}) · \textbf{Checker} each row is self-describing (its
+own family + hidden checker) · \textbf{Use case} post-training
+\textbf{one generalist policy} across skills every batch (the frontier
+norm).
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Why nothing changes:} the sandbox is task-agnostic and each
+  row rebuilds its own \texttt{EpisodicTask}; GRPO normalizes advantage
+  \textbf{within a same-prompt group}, so families' reward scales never
+  clash. Still \textbf{one Runtime, many sessions}.
+\item
+  \textbf{Measured (10-step run, as the former \texttt{cpu\_mixtask}):}
+  \texttt{Job\ succeeded} at ckpt 10, \textbf{\texttt{eval/mixed} 0.67}
+  (single aggregate metric; per-family breakdown is the open work).
   Generation-bound.
 \end{itemize}
 \end{frame}
@@ -1660,30 +1690,6 @@ three dials caps throughput.
   (\texttt{Job\ succeeded}, ckpt 10, \texttt{eval/deepscaler} 0.33) used
   the \textbf{pre-rework} topology (2 engines, fresh sandbox per
   episode).
-\end{itemize}
-\end{frame}
-
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_mixtask} --- one interleaved
-generalist stream · 10-step run}
-\protect\hypertarget{cpu_mixtask-one-interleaved-generalist-stream-10-step-run}{}
-\textbf{Substrate} CPU µVM, MODE B fully-async · \textbf{Data}
-\texttt{build\_mixed\_datasets.py} interleaves \textbf{math + SQL + CTF
-+ tool-use} into one 174-row \texttt{mixed\_train.jsonl} ·
-\textbf{Checker} each row is self-describing (its own family + hidden
-checker) · \textbf{Use case} post-training \textbf{one generalist
-policy} across skills every batch (the frontier norm).
-
-\begin{itemize}
-\tightlist
-\item
-  \textbf{Why nothing changes:} the sandbox is task-agnostic and each
-  row rebuilds its own \texttt{EpisodicTask}; GRPO normalizes advantage
-  \textbf{within a same-prompt group}, so families' reward scales never
-  clash. Still \textbf{one Runtime, many sessions}.
-\item
-  \textbf{Measured (10-step run):} \texttt{Job\ succeeded} at ckpt 10,
-  \textbf{\texttt{eval/mixed} 0.67} (single aggregate metric; per-family
-  breakdown is the open work). Generation-bound.
 \end{itemize}
 \end{frame}
 

@@ -1,6 +1,6 @@
 # demo_cpu_imagepool — mixed-task RL over a pool of prebuilt images (one image per task)
 
-Every other CPU demo runs on **one** sandbox image. `demo_cpu_mixtask` mixes several task families
+Every other CPU demo runs on **one** sandbox image. `demo_cpu_tasks DATASET=mixed` mixes several task families
 but they still share one generic image (plus a single pandas add-on). **This demo is the next step
 the report calls a "described design, not [something] the shipped demos do":** a genuine
 **capability-routed pool of images** — each rollout step's batch spans several families, and **each
@@ -24,13 +24,13 @@ AgentCore Runtimes** — **one Runtime per image in the pool**. This demo is **R
 
 ---
 
-## Why this needs a pool of Runtimes (and mixtask did not)
+## Why this needs a pool of Runtimes (and `DATASET=mixed` did not)
 
 The report's §"One image per Runtime, but a different env per row" gives three ways to reconcile
 "one image per ARN" with "a different env per row":
 
 - **A — per-session setup** (write files / install at seed time into one generic image). This is
-  what `demo_cpu_mixtask` relies on: every family there is a pure-CPU / stdlib checker, so one
+  what `demo_cpu_tasks DATASET=mixed` relies on: every family there is a pure-CPU / stdlib checker, so one
   generic image serves them all and the task specificity is just *files*.
 - **B — a pool of Runtimes, one image per ARN, routed by row.** Used when the difference is
   *structural* — a library that cannot be a mere file. **This demo is B.** pandas, scipy and

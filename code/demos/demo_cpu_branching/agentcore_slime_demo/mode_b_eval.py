@@ -1,4 +1,4 @@
-"""Held-out eval for demo_cpu_datasets's FULLY-ASYNC (Mode B) training.
+"""Held-out eval for demo_cpu_tasks's FULLY-ASYNC (Mode B) training.
 
 Why this exists
 ---------------

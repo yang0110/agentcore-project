@@ -144,7 +144,7 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     slime's dispatch (generate_and_rm) treats a LIST return as the "fan-out" case and hands
     back list[list[Sample]] from generate_and_rm_group. The stock rollout path tolerates that
     nesting everywhere via `isinstance(group[0], list)` guards, but the fully-async path
-    (slime.rollout.fully_async_rollout, used by demo_cpu_datasets's Mode B ablation) does NOT guard its
+    (slime.rollout.fully_async_rollout, used by demo_cpu_tasks's Mode B ablation) does NOT guard its
     sort key and crashes on the nested shape. Returning a bare Sample keeps us on slime's
     primary (non-fan-out) shape, which BOTH the stock and fully-async paths handle. Behavior
     is identical for the stock demos (one flattened sample per episode either way)."""
@@ -174,7 +174,7 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
 
     # Keep-warm: wrap the sandbox so it registers with the process-wide SessionKeeper, which
     # heartbeats it if it goes idle across the weight-sync barrier. Falsy HEARTBEAT_KEEP_WARM =>
-    # behave exactly like demo_cpu_datasets (no wrap, no keeper). See _get_keeper above.
+    # behave exactly like demo_cpu_tasks (no wrap, no keeper). See _get_keeper above.
     if _truthy(os.environ.get("HEARTBEAT_KEEP_WARM", "1")):
         keeper = await _get_keeper()
         sandbox = KeptSandbox(sandbox, keeper,

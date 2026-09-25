@@ -6,9 +6,9 @@
 
 > **Historical plan (pre-2026-09-23).** Written when the set had 17 demos. The ten per-dataset CPU
 > folders (`demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k` … `demo_cpu_mcp`) have since been
-> merged into ONE demo, `demo_cpu_datasets`, selected with `DATASET=`. The set was then **15 demos**
-> (9 CPU + 6 GPU); since the 2026-09-25 `demo_gpu_farm` merge it is **13** (see `README.md`). In `run_smoke_sweep.sh` those trainers are now entries of the form
-> `demo_cpu_datasets:<ds>` (e.g. `demo_cpu_datasets:gsm8k`), logged as `demo_cpu_datasets-<ds>`.
+> merged into ONE demo, `demo_cpu_datasets` (now `demo_cpu_tasks`), selected with `DATASET=`. The set was then **15 demos**
+> (9 CPU + 6 GPU); since the 2026-09-25 merges (`demo_gpu_farm`; `demo_cpu_mixtask` folded into `demo_cpu_tasks` as `DATASET=mixed`) it is **12** (see `README.md`). In `run_smoke_sweep.sh` those trainers are now entries of the form
+> `demo_cpu_tasks:<ds>` (e.g. `demo_cpu_tasks:gsm8k`), logged as `demo_cpu_tasks-<ds>`.
 > `demo_gpu_shared` was split into `demo_gpu_shared_single` / `demo_gpu_shared_multi` (2026-09-21).
 
 Goal: run a short **smoke** of every demo to catch bugs end-to-end (dataset → harness →
@@ -50,10 +50,10 @@ logs to `offline_probe.log`. Behavior markers (not just exit 0) must appear.
 - `demo_cpu_scale_lanes`  — `python3 harness_scaling_demo.py …` (formerly `demo_cpu_harness_scale`) (`throughput = min(inference, sandbox, harness)` sweep)
 
 **Phase 1 — CPU RL trainers (remote AgentCore CPU sandbox, ~10 min each, ckpt deleted after).** Same driver.
-`demo_cpu_datasets:mbpp`, `demo_cpu_datasets:math`, `demo_cpu_mixtask`, `demo_cpu_datasets:gsm8k`,
-`demo_cpu_datasets:math500`, `demo_cpu_datasets:deepscaler`, `demo_cpu_datasets:humaneval`,
-`demo_cpu_datasets:gretelsql`, `demo_cpu_datasets:hotpotqa`, `demo_cpu_datasets:xlam`,
-`demo_cpu_datasets:mcp` (formerly the ten `demo_cpu_<ds>` folders), plus the three CPU property trainers `demo_cpu_heartbeat`,
+`demo_cpu_tasks:mbpp`, `demo_cpu_tasks:math`, `demo_cpu_tasks:mixed` (then `demo_cpu_mixtask`), `demo_cpu_tasks:gsm8k`,
+`demo_cpu_tasks:math500`, `demo_cpu_tasks:deepscaler`, `demo_cpu_tasks:humaneval`,
+`demo_cpu_tasks:gretelsql`, `demo_cpu_tasks:hotpotqa`, `demo_cpu_tasks:xlam`,
+`demo_cpu_tasks:mcp` (formerly the ten `demo_cpu_<ds>` folders), plus the three CPU property trainers `demo_cpu_heartbeat`,
 `demo_cpu_scale_lanes`, `demo_cpu_customruntime` (each now wraps a real slime run). The two GPU
 property trainers (`demo_gpu_snapshot`, `demo_gpu_customruntime`) need a live g6 ARN → run with the
 GPU trainers, not in this on-box sweep.

@@ -142,7 +142,7 @@ async def run_episode(
     traj.reward = task.reward(0 if traj.solved else 1)
 
     # Per-episode DEMO-SPECIFIC metric line (parsed by metrics.py's generic [demo] channel). One
-    # emit here instruments EVERY run_episode-based demo: `family` gives mixtask per-family / imagepool
+    # emit here instruments EVERY run_episode-based demo: `family` gives mixed-task per-family / imagepool
     # per-family reward, `image` gives imagepool per-image routing+correctness, `checker` gives each
     # dataset demo's outcome split (compile-vs-assert, numeric-vs-wrong, exec-match-vs-syntax-error,
     # valid-call-vs-correct), and boot_attempts/status give custom-Runtime rollout health. Numeric
