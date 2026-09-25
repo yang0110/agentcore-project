@@ -1,5 +1,7 @@
 # demo_cpu_instance_pool: a large sandbox image on CPU Instances, run as a warm pool (`SANDBOX_POOL=N`) shared by per-episode isolated sub-sessions
 
+**Sandbox tier 3: own Runtime, custom image.** The ≈ 4 GB torch + scientific image is over the 2 GB microVM cap, so it runs on a CPU capacity-provider Instance (m5). See the tier table in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
+
 **The point of this demo:** a sandbox image too big for a microVM runs on AgentCore **capacity-provider
 Instances** (EC2 m5). To avoid paying the Instance cold boot on every episode, a small **warm pool** of
 Instances is shared by all episodes. Each episode still gets a fresh, isolated environment on the

@@ -1,5 +1,7 @@
 # demo_cpu_tasks — literature RLVR tasks on the DEFAULT AgentCore sandbox (managed Code Interpreter, no image); `DATASET=` any task or mix, `HEARTBEAT=1`
 
+**Sandbox tier 1: the managed Code Interpreter** (`SANDBOX=agentcore`, no image). Tier 2 (`SANDBOX=agentcore-runtime`, stdlib image) is opt-in for heartbeat or the backend comparison. See the tier table in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
+
 **The point of this demo: most agentic-RL tasks from the literature train on the default AgentCore
 runtime as-is.** `SANDBOX=agentcore` (the default) runs every episode in a managed **AgentCore Code
 Interpreter** session: no Dockerfile, no ECR push, no Runtime to deploy or delete. You prepare the data

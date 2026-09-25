@@ -1,5 +1,7 @@
 # demo_cpu_branching — one episode → many training samples ("fan-out")
 
+**Sandbox tier 3: own Runtime, custom image.** The image bakes node 22 + the real Claude Code CLI (microVM). See the tier table in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
+
 > **EXPERIMENTAL — not part of the main 7-demo set; fixes pending a live re-run.** History of the blockers:
 > 1. *CLI exits 1 before any model call* (`fan_out=0`): the CLI refuses `--permission-mode
 >    bypassPermissions` as root. Fixed by `IS_SANDBOX=1` (confirmed on the sandbox 2026-09-19; the empty-group

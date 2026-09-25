@@ -1153,6 +1153,29 @@ The demos live in `code/demos/`, all built to one design (`docs/demos-program.md
 7. **GPU sandboxes** — one GPU per session, a fraction of one GPU, or one whole GPU per episode on a shared instance, with GPU isolation (`demo_gpu_single`, `demo_gpu_farm_fractional`, `demo_gpu_farm_whole`).
 8. **Experimental** — one episode, many samples, with the real Claude Code CLI (`demo_cpu_branching`).
 
+### Which sandbox does a task need? Three tiers
+
+Every demo sits in one of three sandbox tiers. Pick the **lowest tier that works**: move to tier 2 only for a run-level need, and to tier 3 only when the task's environment itself must change. A task that runs on tier 1 gives the same reward on tier 2 (`demo_cpu_tasks/compare_backends.py` asserts it), so the tier is an operational choice, not a change to the task.
+
+| Tier | Sandbox | Demos |
+|:---|:---|:---|
+| **1 · Managed Code Interpreter** | `SANDBOX=agentcore`, no image | `demo_cpu_tasks` |
+| **2 · Own Runtime, generic image** | `SANDBOX=agentcore-runtime`, stdlib image | `demo_cpu_scale_lanes`, `warmstart/`, `demo_cpu_tasks` opt-in |
+| **3 · Own Runtime, custom image** | task-specific image; microVM, CPU or GPU Instance | `demo_cpu_terminalbench`, `demo_cpu_branching`, `demo_cpu_instance_pool`, `demo_gpu_*` |
+
+- **Tier 1: the managed Code Interpreter.** An AWS-managed microVM with no image, no Runtime and no IAM role. Use it when Python 3.12 with numpy, pandas, scipy, scikit-learn, torch (CPU), sqlite, gcc and node is enough, the task needs no git, internet or GPU, and a session fits the hard `sessionTimeoutSeconds` cap (≤ 8 h). **Every literature task in this project runs here**: `mbpp`, `humaneval`, `gsm8k`, `math500`, `deepscaler`, `gretelsql`, `hotpotqa`, `xlam`, `mcp`, `libs` (pandas / scipy / sklearn), the synthetic zoo (all 13 families pass) and mixes.
+- **Tier 2: our own Runtime with the generic stdlib image** (`Dockerfile.sandbox.cpu`, microVM). The **task** fits tier 1, but the **run** needs Runtime behaviour:
+  - more than about 75 episodes in flight: the Code Interpreter's `InvokeCodeInterpreter` quota is 30/s, and a Runtime's data plane is far higher;
+  - sessions kept alive past the idle timeout by a heartbeat;
+  - network or VPC control.
+
+  Here: DeepScaleR over 256 pooled sessions (`demo_cpu_scale_lanes`), and the heartbeat and pre-open probes.
+- **Tier 3: our own Runtime with a custom image.** The task's **environment** differs from tier 1:
+  - Terminal-Bench pins its own OS image per task (218 Runtimes, microVM);
+  - the real Claude Code CLI needs node 22 and `claude` baked in (microVM);
+  - a torch + scientific stack of about 4 GB is over the 2 GB microVM cap (**CPU Instance**, m5);
+  - KernelBench needs CUDA (**GPU Instance**, g6; the farm demos run the same image on this box's GPUs 6,7).
+
 | # | Demo | Sandbox substrate | Task | Run status |
 |:-|:-----------------------|:------------|:---------|:----------------|
 | 1–2 | `demo_cpu_tasks` | managed **Code Interpreter** (default); own Runtime opt-in | any literature RLVR dataset, or a mix | **passed** on the Code Interpreter (2026-09-25): gsm8k 0.90, libs 1.0 |

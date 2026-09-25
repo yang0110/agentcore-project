@@ -171,18 +171,32 @@ Each demo runs as `cd code/demos/<demo>` then `1_prepare_data.sh` … `6_cleanup
 \scriptsize
 ```
 
-| Question | Demo | Substrate |
+| Question | Demo | Sandbox tier |
 |----------------------|----------------|----------|
 | Which tasks does the literature use? | task table (§5) | — |
-| Do most train on the **default** runtime? | `demo_cpu_tasks` | Code Interpreter |
-| **Custom images** in large numbers? | `demo_cpu_terminalbench` | ~229 Runtimes |
-| Cut **launch cost** (pre-open, heartbeat)? | `…terminalbench/warmstart/` | microVM |
-| Big image, warm pool, **isolated** sessions? | `demo_cpu_instance_pool` | m5 Instances |
-| **Scale** the tiers independently? | `demo_cpu_scale_lanes` | 256 microVMs |
-| GPU: one warm GPU Instance | `demo_gpu_single` | g6 Instance |
-| GPU: **one GPU split** by Ray | `demo_gpu_farm_fractional` | 1 GPU, 0.5 + 0.5 |
-| GPU: **one whole GPU** per session | `demo_gpu_farm_whole` | GPUs 6,7 |
-| *Experimental:* episode → many samples | *`demo_cpu_branching`* | microVM + CLI |
+| Do most train on the **default** runtime? | `demo_cpu_tasks` | 1 · Code Interpreter |
+| **Custom images** in large numbers? | `demo_cpu_terminalbench` | 3 · image per task |
+| Cut **launch cost** (pre-open, heartbeat)? | `…terminalbench/warmstart/` | 1 + 2 |
+| Big image, warm pool, **isolated** sessions? | `demo_cpu_instance_pool` | 3 · 4 GB image, m5 |
+| **Scale** the tiers independently? | `demo_cpu_scale_lanes` | 2 · generic image |
+| GPU: one warm GPU Instance | `demo_gpu_single` | 3 · CUDA, g6 |
+| GPU: **one GPU split** by Ray | `demo_gpu_farm_fractional` | 3 · CUDA, 0.5 GPU |
+| GPU: **one whole GPU** per session | `demo_gpu_farm_whole` | 3 · CUDA, 1 GPU |
+| *Experimental:* episode → many samples | *`demo_cpu_branching`* | 3 · node + CLI |
+
+## Which sandbox does a task need? Three tiers
+
+**Pick the lowest tier that works.** Tier 2 only for run-level needs; tier 3 only when the environment itself must change. A tier-1 task scores the same on tier 2 (`compare_backends.py`).
+
+```{=latex}
+\scriptsize
+```
+
+| Tier | Use it when | Here | Demos |
+|:----------|:-------------------|:-------------------|:-----------|
+| **1 · Code Interpreter**, no image | Python 3.12 + sci stack, sqlite, gcc, node is enough; no git / internet / GPU | **every literature task** (code, math, SQL, RAG, tool calls, pandas/scipy/sklearn, zoo, mixes) | `demo_cpu_tasks` |
+| **2 · own Runtime, generic image** | task fits tier 1, the **run** doesn't: > ~75 episodes in flight (CI invokes 30/s), heartbeat past idle, VPC | DeepScaleR at 256 sessions; heartbeat | `…scale_lanes`, `warmstart/`, `demo_cpu_tasks` opt-in |
+| **3 · own Runtime, custom image** | the **environment** differs | own OS per task; node + CLI; 4 GB stack (m5 Instance); CUDA (g6 Instance) | `…terminalbench`, `…branching`, `…instance_pool`, `demo_gpu_*` |
 
 # 5 · Sandbox tasks from the literature
 

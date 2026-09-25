@@ -1,5 +1,7 @@
 # demo_cpu_terminalbench — RL over a LARGE image pool (one image per task), one isolated microVM per episode
 
+**Sandbox tier 3: own Runtime, custom image.** Each task pins its own OS image, so each gets its own image and Runtime (microVM). The `warmstart/` probe runs tier 2 (stdlib image) and tier 1 (Code Interpreter) side by side. See the tier table in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
+
 Terminal-Bench ships each task as its **own container environment** (a task-specific `Dockerfile` +
 a hidden pytest oracle). This demo turns that into a **large image pool**: one container image → one
 AgentCore Runtime **per task** (~229 single-container tasks), and every rollout episode is routed to

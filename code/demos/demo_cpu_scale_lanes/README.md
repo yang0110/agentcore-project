@@ -1,5 +1,7 @@
 # demo_cpu_scale_lanes — scaling the rollout on **three DECOUPLED tiers** (4 SGLang engines : 256 in-process harness workers : 256 AgentCore microVMs)
 
+**Sandbox tier 2: own Runtime, generic stdlib image** (microVM). The task (DeepScaleR) would run on the Code Interpreter, but 256 sessions in flight need far more than its 30/s `InvokeCodeInterpreter` quota. See the tier table in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
+
 *(Formerly `demo_cpu_harness_scale`; until 2026-09-25 it ran 4 × 4 × 4 pinned "lanes", hence the folder
 name.)* The async-RL rollout is produced by three replicated tiers, and this demo shows they **scale
 independently**:

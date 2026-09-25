@@ -1,5 +1,7 @@
 # demo_gpu_farm_fractional — KernelBench with TWO episodes sharing ONE GPU (local Ray farm, 0.5 + 0.5)
 
+**Sandbox tier 3: own Runtime, custom image.** The CUDA sandbox image of the g6 GPU Runtime, run here as a local farm on GPU 6. See the tier table in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
+
 The GPU-**sharing** demo. A Ray farm inside a LOCAL AgentCore sandbox Runtime container owns host GPU 6
 and splits it into two fractional, long-lived, warm-CUDA actors (`B4_FARM_GPUS=1`,
 `B4_GPU_FRACTION=0.5` ⇒ `floor(1/0.5)=2` slots). Two concurrent KernelBench episodes then compile and

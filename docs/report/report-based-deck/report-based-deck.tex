@@ -1168,6 +1168,48 @@ chapters}
 a \textbf{smoke} (10 train steps · 1 eval) --- not convergence.}
 \end{frame}
 
+\begin{frame}[fragile,allowframebreaks]{Which sandbox does a task need? Three tiers}
+\protect\hypertarget{which-sandbox-does-a-task-need-three-tiers}{}
+\textbf{Pick the lowest tier that works.} A tier-1 task scores the same
+on tier 2 (\texttt{compare\_backends.py}).
+
+\scriptsize
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1746}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3175}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3175}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1905}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Tier
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Use it when
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Here
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Demos
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\textbf{1 · Code Interpreter} (\texttt{SANDBOX=agentcore}), no image &
+Python 3.12 + sci stack, sqlite, gcc, node is enough; no git / internet
+/ GPU & \textbf{every literature task} (code, math, SQL, RAG, tool
+calls, pandas/scipy/sklearn, zoo, mixes) & \texttt{demo\_cpu\_tasks} \\
+\textbf{2 · own Runtime, generic image}
+(\texttt{SANDBOX=agentcore-runtime}) & task fits tier 1, the
+\textbf{run} doesn't: \textgreater{} \textasciitilde75 episodes in
+flight (CI invokes 30/s), heartbeat past idle, VPC & DeepScaleR at 256
+sessions; heartbeat & \texttt{…scale\_lanes}, \texttt{warmstart/},
+\texttt{demo\_cpu\_tasks} opt-in \\
+\textbf{3 · own Runtime, custom image} & the \textbf{environment}
+differs & own OS per task; node + CLI; 4 GB stack (m5 Instance); CUDA
+(g6 Instance) & \texttt{…terminalbench}, \texttt{…branching},
+\texttt{…instance\_pool}, \texttt{demo\_gpu\_*} \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
 \begin{frame}[fragile,allowframebreaks]{All demos at a glance (1/2) --- CPU}
 \protect\hypertarget{all-demos-at-a-glance-12-cpu}{}
 \footnotesize

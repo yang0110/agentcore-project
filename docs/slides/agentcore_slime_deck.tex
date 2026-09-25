@@ -592,28 +592,71 @@ Question
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 Demo
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Substrate
+Sandbox tier
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
 Which tasks does the literature use? & task table (§5) & --- \\
 Do most train on the \textbf{default} runtime? &
-\texttt{demo\_cpu\_tasks} & Code Interpreter \\
+\texttt{demo\_cpu\_tasks} & 1 · Code Interpreter \\
 \textbf{Custom images} in large numbers? &
-\texttt{demo\_cpu\_terminalbench} & \textasciitilde229 Runtimes \\
+\texttt{demo\_cpu\_terminalbench} & 3 · image per task \\
 Cut \textbf{launch cost} (pre-open, heartbeat)? &
-\texttt{…terminalbench/warmstart/} & microVM \\
+\texttt{…terminalbench/warmstart/} & 1 + 2 \\
 Big image, warm pool, \textbf{isolated} sessions? &
-\texttt{demo\_cpu\_instance\_pool} & m5 Instances \\
+\texttt{demo\_cpu\_instance\_pool} & 3 · 4 GB image, m5 \\
 \textbf{Scale} the tiers independently? &
-\texttt{demo\_cpu\_scale\_lanes} & 256 microVMs \\
-GPU: one warm GPU Instance & \texttt{demo\_gpu\_single} & g6 Instance \\
+\texttt{demo\_cpu\_scale\_lanes} & 2 · generic image \\
+GPU: one warm GPU Instance & \texttt{demo\_gpu\_single} & 3 · CUDA,
+g6 \\
 GPU: \textbf{one GPU split} by Ray &
-\texttt{demo\_gpu\_farm\_fractional} & 1 GPU, 0.5 + 0.5 \\
+\texttt{demo\_gpu\_farm\_fractional} & 3 · CUDA, 0.5 GPU \\
 GPU: \textbf{one whole GPU} per session &
-\texttt{demo\_gpu\_farm\_whole} & GPUs 6,7 \\
+\texttt{demo\_gpu\_farm\_whole} & 3 · CUDA, 1 GPU \\
 \emph{Experimental:} episode → many samples &
-\emph{\texttt{demo\_cpu\_branching}} & microVM + CLI \\
+\emph{\texttt{demo\_cpu\_branching}} & 3 · node + CLI \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Which sandbox does a task need? Three tiers}
+\protect\hypertarget{which-sandbox-does-a-task-need-three-tiers}{}
+\textbf{Pick the lowest tier that works.} Tier 2 only for run-level
+needs; tier 3 only when the environment itself must change. A tier-1
+task scores the same on tier 2 (\texttt{compare\_backends.py}).
+
+\scriptsize
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1746}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3175}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.3175}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1905}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Tier
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Use it when
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Here
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Demos
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\textbf{1 · Code Interpreter}, no image & Python 3.12 + sci stack,
+sqlite, gcc, node is enough; no git / internet / GPU & \textbf{every
+literature task} (code, math, SQL, RAG, tool calls,
+pandas/scipy/sklearn, zoo, mixes) & \texttt{demo\_cpu\_tasks} \\
+\textbf{2 · own Runtime, generic image} & task fits tier 1, the
+\textbf{run} doesn't: \textgreater{} \textasciitilde75 episodes in
+flight (CI invokes 30/s), heartbeat past idle, VPC & DeepScaleR at 256
+sessions; heartbeat & \texttt{…scale\_lanes}, \texttt{warmstart/},
+\texttt{demo\_cpu\_tasks} opt-in \\
+\textbf{3 · own Runtime, custom image} & the \textbf{environment}
+differs & own OS per task; node + CLI; 4 GB stack (m5 Instance); CUDA
+(g6 Instance) & \texttt{…terminalbench}, \texttt{…branching},
+\texttt{…instance\_pool}, \texttt{demo\_gpu\_*} \\
 \bottomrule\noalign{}
 \end{longtable}
 \end{frame}

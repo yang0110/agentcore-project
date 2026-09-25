@@ -1,5 +1,7 @@
 # demo_gpu_farm_whole — KernelBench with ONE WHOLE GPU per episode (local Ray farm on GPUs 6,7)
 
+**Sandbox tier 3: own Runtime, custom image.** The CUDA sandbox image of the g6 GPU Runtime, run here as a local farm on GPUs 6,7. See the tier table in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
+
 The scale-out-on-one-box demo. A Ray farm inside a LOCAL AgentCore sandbox Runtime container owns host
 GPUs 6,7 and runs one long-lived, warm-CUDA actor per GPU (`B4_FARM_GPUS=2`, `B4_GPU_FRACTION=1.0` ⇒
 `floor(2/1.0)=2` slots). Each concurrent KernelBench episode leases a whole card, so no two episodes

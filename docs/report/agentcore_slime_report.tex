@@ -3793,6 +3793,99 @@ tells one story in eight chapters:
   Claude Code CLI (\texttt{demo\_cpu\_branching}).
 \end{enumerate}
 
+\hypertarget{which-sandbox-does-a-task-need-three-tiers}{%
+\subsection{Which sandbox does a task need? Three
+tiers}\label{which-sandbox-does-a-task-need-three-tiers}}
+
+Every demo sits in one of three sandbox tiers. Pick the \textbf{lowest
+tier that works}: move to tier 2 only for a run-level need, and to tier
+3 only when the task's environment itself must change. A task that runs
+on tier 1 gives the same reward on tier 2
+(\texttt{demo\_cpu\_tasks/compare\_backends.py} asserts it), so the tier
+is an operational choice, not a change to the task.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Tier
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Sandbox
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Demos
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\textbf{1 · Managed Code Interpreter} & \texttt{SANDBOX=agentcore}, no
+image & \texttt{demo\_cpu\_tasks} \\
+\textbf{2 · Own Runtime, generic image} &
+\texttt{SANDBOX=agentcore-runtime}, stdlib image &
+\texttt{demo\_cpu\_scale\_lanes}, \texttt{warmstart/},
+\texttt{demo\_cpu\_tasks} opt-in \\
+\textbf{3 · Own Runtime, custom image} & task-specific image; microVM,
+CPU or GPU Instance & \texttt{demo\_cpu\_terminalbench},
+\texttt{demo\_cpu\_branching}, \texttt{demo\_cpu\_instance\_pool},
+\texttt{demo\_gpu\_*} \\
+\end{longtable}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Tier 1: the managed Code Interpreter.} An AWS-managed microVM
+  with no image, no Runtime and no IAM role. Use it when Python 3.12
+  with numpy, pandas, scipy, scikit-learn, torch (CPU), sqlite, gcc and
+  node is enough, the task needs no git, internet or GPU, and a session
+  fits the hard \texttt{sessionTimeoutSeconds} cap (≤ 8 h).
+  \textbf{Every literature task in this project runs here}:
+  \texttt{mbpp}, \texttt{humaneval}, \texttt{gsm8k}, \texttt{math500},
+  \texttt{deepscaler}, \texttt{gretelsql}, \texttt{hotpotqa},
+  \texttt{xlam}, \texttt{mcp}, \texttt{libs} (pandas / scipy / sklearn),
+  the synthetic zoo (all 13 families pass) and mixes.
+\item
+  \textbf{Tier 2: our own Runtime with the generic stdlib image}
+  (\texttt{Dockerfile.sandbox.cpu}, microVM). The \textbf{task} fits
+  tier 1, but the \textbf{run} needs Runtime behaviour:
+
+  \begin{itemize}
+  \tightlist
+  \item
+    more than about 75 episodes in flight: the Code Interpreter's
+    \texttt{InvokeCodeInterpreter} quota is 30/s, and a Runtime's data
+    plane is far higher;
+  \item
+    sessions kept alive past the idle timeout by a heartbeat;
+  \item
+    network or VPC control.
+  \end{itemize}
+
+  Here: DeepScaleR over 256 pooled sessions
+  (\texttt{demo\_cpu\_scale\_lanes}), and the heartbeat and pre-open
+  probes.
+\item
+  \textbf{Tier 3: our own Runtime with a custom image.} The task's
+  \textbf{environment} differs from tier 1:
+
+  \begin{itemize}
+  \tightlist
+  \item
+    Terminal-Bench pins its own OS image per task (218 Runtimes,
+    microVM);
+  \item
+    the real Claude Code CLI needs node 22 and \texttt{claude} baked in
+    (microVM);
+  \item
+    a torch + scientific stack of about 4 GB is over the 2 GB microVM
+    cap (\textbf{CPU Instance}, m5);
+  \item
+    KernelBench needs CUDA (\textbf{GPU Instance}, g6; the farm demos
+    run the same image on this box's GPUs 6,7).
+  \end{itemize}
+\end{itemize}
+
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.0303}}
   >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.3636}}

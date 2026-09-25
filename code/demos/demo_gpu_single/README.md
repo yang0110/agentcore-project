@@ -1,5 +1,7 @@
 # demo_gpu_single — KernelBench CUDA RL on ONE warm custom GPU Runtime (g6), + snapshot/resume and custom-Runtime angles
 
+**Sandbox tier 3: own Runtime, custom image.** KernelBench needs CUDA, which only a custom image on a GPU capacity-provider Instance (g6) has. See the tier table in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
+
 An agentic RL loop: the policy (Qwen3-4B) writes a CUDA `ModelNew`, a torch/CUDA checker runs it, and
 the policy reads the failure and fixes it. GRPO rewards the fixes. The `run_episode` harness drives
 the multi-turn loop **in-process on this box**. The checker's torch/CUDA runs **remotely** in your

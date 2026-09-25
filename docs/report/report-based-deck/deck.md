@@ -498,6 +498,20 @@ Each demo stands in for a **real agent a client would train**. Find yours:
 
 *Policy **Qwen3-4B**, trainer **slime**, harness **in-process**; the same six step scripts everywhere. Every run is a **smoke** (10 train steps · 1 eval) — not convergence.*
 
+## Which sandbox does a task need? Three tiers
+
+**Pick the lowest tier that works.** A tier-1 task scores the same on tier 2 (`compare_backends.py`).
+
+```{=latex}
+\scriptsize
+```
+
+| Tier | Use it when | Here | Demos |
+|:----------|:-------------------|:-------------------|:-----------|
+| **1 · Code Interpreter** (`SANDBOX=agentcore`), no image | Python 3.12 + sci stack, sqlite, gcc, node is enough; no git / internet / GPU | **every literature task** (code, math, SQL, RAG, tool calls, pandas/scipy/sklearn, zoo, mixes) | `demo_cpu_tasks` |
+| **2 · own Runtime, generic image** (`SANDBOX=agentcore-runtime`) | task fits tier 1, the **run** doesn't: > ~75 episodes in flight (CI invokes 30/s), heartbeat past idle, VPC | DeepScaleR at 256 sessions; heartbeat | `…scale_lanes`, `warmstart/`, `demo_cpu_tasks` opt-in |
+| **3 · own Runtime, custom image** | the **environment** differs | own OS per task; node + CLI; 4 GB stack (m5 Instance); CUDA (g6 Instance) | `…terminalbench`, `…branching`, `…instance_pool`, `demo_gpu_*` |
+
 ## All demos at a glance (1/2) — CPU
 
 ```{=latex}

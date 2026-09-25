@@ -33,6 +33,22 @@ cluster. The *sandbox* only needs a GPU when the *task* does. Details + citation
 
 ---
 
+## Which sandbox does a task need? Three tiers
+
+> The current demo set is the 7 standalone demos + 1 experimental in **`code/demos/`**. Start at
+> [`code/demos/README.md`](code/demos/README.md). The "Demo A / Demo B" sections below are the
+> original two-demo layout and are kept as history.
+
+| Tier | Sandbox | Use it when | Demos |
+|---|---|---|---|
+| **1 · Managed Code Interpreter** | `SANDBOX=agentcore`, no image, no Runtime | Python 3.12 + numpy/pandas/scipy/sklearn/torch-cpu, sqlite, gcc, node is enough; no git, internet or GPU. **Every literature task** (code, math, SQL, RAG, tool calls, data science) | `demo_cpu_tasks` |
+| **2 · Own Runtime, generic image** | `SANDBOX=agentcore-runtime` + stdlib image (microVM) | the task fits tier 1 but the run doesn't: > ~75 episodes in flight (Code Interpreter invokes are 30/s), heartbeat past idle, VPC | `demo_cpu_scale_lanes`, `demo_cpu_terminalbench/warmstart/`, `demo_cpu_tasks` opt-in |
+| **3 · Own Runtime, custom image** | task-specific image | the environment differs: own OS per task (Terminal-Bench), Claude Code CLI, a > 2 GB image (CPU Instance), CUDA (GPU Instance) | `demo_cpu_terminalbench`, `demo_cpu_branching`, `demo_cpu_instance_pool`, `demo_gpu_*` |
+
+Pick the lowest tier that works. A tier-1 task gives the same reward on tier 2 (`compare_backends.py`).
+
+---
+
 ## The demos
 
 Both demos are the **same** multi-turn loop (write `solution.py` → run a checker in the sandbox
