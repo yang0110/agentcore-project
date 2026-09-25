@@ -90,8 +90,9 @@ The training demos share the training path: slime async/decoupled (`train_async.
 GRPO, the checkpoint-deadlock fix (`--async-save` + `--custom-megatron-init-path …enable_persistent_async_ckpt`),
 and save-only-at-end. They differ only in the **task** and the **sandbox**.
 
-**`run.sh` vs `train.sh`.** Every training demo has two entry points: `run.sh` is the full runner
-(all env knobs, defaults to a short smoke), and **`train.sh`** is a thin train-to-convergence wrapper
+**`run.sh` vs `train.sh`.** Every demo has `run.sh`, the full runner
+(all env knobs, defaults to a short smoke). Five also ship **`train.sh`** (`demo_cpu_tasks`,
+`demo_cpu_imagepool`, `demo_cpu_terminalbench`, `demo_cpu_branching`, `demo_gpu_single`), a thin train-to-convergence wrapper
 over it that exposes just the three top-level knobs a client tunes — training **steps** (`STEPS` →
 `NR`), eval **cadence** (`EVAL_EVERY` → `EVAL_INTERVAL`), and the **sandbox** counts (`SANDBOX_CONC` →
 `CONC`, and on CPU `SANDBOX_RUNTIMES` → the # of distinct sandbox Runtimes `K`) — passing everything

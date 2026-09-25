@@ -34,7 +34,7 @@ is one env var** (`SANDBOX=`). See the deck for the call path, TITO, and the key
 Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), AgentCore the
 **sandbox**; only the *substrate* and *task* vary. Each demo below is a **self-contained,
 standalone recipe** — its own dir with a `README.md`, vendored `agentcore_slime_demo/`, own
-`deploy/`, `run.sh`, and `train.sh`. Links go to each demo's own README.
+`deploy/` and `run.sh` (plus a `train.sh` convergence wrapper in five of them). Links go to each demo's own README.
 
 ### CPU (8)
 

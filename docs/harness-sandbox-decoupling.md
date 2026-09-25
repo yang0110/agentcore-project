@@ -121,8 +121,8 @@ ad-hoc, isolated, per-session GPU environment. It does **not** contradict "harne
   physical: trainer box = policy (8 GPU) + proxy + in-process harness; AgentCore GPU instance =
   sandbox only. This is the four-component architecture, cleanly.
 - **Sharing lives on the remote Runtime.** If many episodes must share one g6, that is a concern
-  of the remote Runtime image (`demo_gpu_shared` runs a Ray GPU-sharing farm *inside* the sandbox
-  Runtime), not of the trainer box.
+  of the remote Runtime image (a Ray GPU-sharing farm runs *inside* the sandbox Runtime — the
+  remote form of `demo_gpu_farm`'s local farm; formerly `demo_gpu_shared`), not of the trainer box.
 - **Cost/lifecycle:** a GPU Runtime instance bills while up (~$0.80–1/hr + EBS on `g6.xlarge`) and
   must be torn down — see the 08/09 `OBSERVATIONS.md` and the
   capacity-provider/`securityGroups`/`LD_LIBRARY_PATH` gotchas found there. A rollout that
