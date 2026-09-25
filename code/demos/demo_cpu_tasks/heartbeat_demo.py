@@ -24,14 +24,17 @@ AgentCoreIdleSim (agentcore_idle_sim.py) so the demo runs offline.
 Run against real AgentCore
 --------------------------
 Set REAL_AGENTCORE=1 (or SANDBOX to anything other than "local") to run the SAME arc against a real
-remote CPU sandbox (Code Interpreter managed microVM). No file needs to be deleted or edited — the
-switch is env-only. The inner sandbox is built with make_sandbox(SANDBOX) and wrapped in a real
-KeptSandbox whose heartbeat is a real inner.exec("true") round-trip; the idle timer is AWS's own.
-Because Code Interpreter's idle timeout is 900s, IDLE defaults to 900 in real mode and a short PAUSE
-survives ACT 1 too — seeing a genuine reclamation requires PAUSE > idle_timeout. Keep PAUSE small so
-the smoke is fast:
+remote sandbox. The inner sandbox is built with make_sandbox(SANDBOX) (default agentcore-runtime) and
+wrapped in a real KeptSandbox whose heartbeat is a real inner.exec("true") round-trip; the idle timer
+is AWS's own. Point it at YOUR OWN Runtime — that is where heartbeats matter (a Runtime session is
+reclaimed after its idle timeout, and pings reset it):
 
-    REAL_AGENTCORE=1 SANDBOX=agentcore AGENTCORE_REGION=us-west-2 PAUSE=30 python3 heartbeat_demo.py
+    REAL_AGENTCORE=1 SANDBOX=agentcore-runtime AGENTCORE_SANDBOX_RUNTIME_ARN=<arn> IDLE=900 PAUSE=30 \
+        python3 heartbeat_demo.py
+
+Do NOT expect it to help on the managed Code Interpreter (SANDBOX=agentcore): a CI session ends at the
+session_timeout_seconds set at start whatever the traffic (pings do not extend it — verified live), so
+the lever there is AGENTCORE_CI_SESSION_TIMEOUT (default 3600 s, max 8 h), not a heartbeat.
 """
 
 from __future__ import annotations
@@ -192,7 +195,7 @@ async def act3_recover() -> None:
 # ================================================================================================
 def _make_inner():
     """Build a real remote sandbox from the SANDBOX kind (default 'agentcore' = Code Interpreter)."""
-    return make_sandbox(_SANDBOX or "agentcore")
+    return make_sandbox(_SANDBOX or "agentcore-runtime")
 
 
 async def act1_naive_real() -> None:

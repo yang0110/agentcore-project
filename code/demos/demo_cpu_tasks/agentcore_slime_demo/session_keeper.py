@@ -295,8 +295,27 @@ async def get_keeper() -> SessionKeeper:
     return _KEEPER
 
 
+_CI_WARNED = False
+
+
+def heartbeat_applies(sandbox) -> bool:
+    """False for the managed Code Interpreter: its sessions end at session_timeout_seconds whatever
+    the traffic (pings do not extend them — verified live), so there is nothing to keep warm; set
+    AGENTCORE_CI_SESSION_TIMEOUT instead. Heartbeats only help Runtime sessions (idle timeout)."""
+    global _CI_WARNED
+    from .sandbox import AgentCoreSandbox
+    if not isinstance(sandbox, AgentCoreSandbox):
+        return True
+    if not _CI_WARNED:
+        _CI_WARNED = True
+        print("[demo] heartbeat_skipped=code_interpreter (CI sessions expire at their session timeout "
+              "regardless of pings; raise AGENTCORE_CI_SESSION_TIMEOUT instead)", flush=True)
+    return False
+
+
 async def maybe_keep_warm(sandbox):
-    """Wrap `sandbox` in a KeptSandbox when HEARTBEAT=1; otherwise return it unchanged."""
-    if not heartbeat_enabled():
+    """Wrap `sandbox` in a KeptSandbox when HEARTBEAT=1; otherwise return it unchanged.
+    A no-op (one warning) for the managed Code Interpreter — see heartbeat_applies."""
+    if not heartbeat_enabled() or not heartbeat_applies(sandbox):
         return sandbox
     return KeptSandbox(sandbox, await get_keeper(), idle_timeout=heartbeat_idle())

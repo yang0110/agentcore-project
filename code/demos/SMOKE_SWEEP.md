@@ -1,6 +1,18 @@
 # Smoke-sweep experiment plan — all 17 demos, end-to-end
 
-> **2026-09-25 (latest):** `demo_cpu_heartbeat` → the opt-in **`HEARTBEAT=1`** knob of every demo (probe
+> **2026-09-25 (restructure, latest):** the set is now **7 demos in storyline order + 1 experimental**:
+> `demo_cpu_tasks` (default managed Code Interpreter, `SANDBOX=agentcore`, no image) → `demo_cpu_terminalbench`
+> (+ the `warmstart/` probe) → `demo_cpu_instance_pool` (m5 Instance, `SANDBOX_POOL=2`, per-slot-uid isolation;
+> formerly `demo_cpu_tasks VARIANT=bigimage`) → `demo_cpu_scale_lanes` → `demo_gpu_single` →
+> `demo_gpu_farm_fractional` (GPU 6, 0.5 + 0.5) → `demo_gpu_farm_whole` (GPUs 6,7) + `demo_cpu_branching`.
+> `VARIANT=imagepool` is gone: its pandas/scipy/sklearn tasks are `DATASET=libs` on the Code Interpreter.
+> `demo_gpu_farm FARM=…` is split into the two farm folders. Driver entries: trainers `demo_cpu_tasks:libs`,
+> `demo_cpu_tasks:deepscaler+HEARTBEAT=1+SANDBOX=agentcore-runtime` (heartbeat is a no-op on the Code
+> Interpreter), `run_gpu_smoke.sh` `demo_gpu_farm_fractional` / `demo_gpu_farm_whole`, and in `run_smoke_plan.sh`
+> PHASE=2 `demo_cpu_instance_pool` (ARN from its `deploy/runtime.env` or `POOL_RUNTIME_ARN`); offline probes
+> `demo_cpu_terminalbench:warmstart` and `demo_cpu_instance_pool:isolation`. The notes and log below keep the old names.
+
+> **2026-09-25 (earlier):** `demo_cpu_heartbeat` → the opt-in **`HEARTBEAT=1`** knob of every demo (probe
 > `demo_cpu_tasks/heartbeat_demo.py`); `demo_cpu_customruntime` → `demo_cpu_tasks/compare_backends.py`;
 > `demo_cpu_imagepool` → **`demo_cpu_tasks VARIANT=imagepool`**. The set is now **6 demos** (5 main: 3 CPU
 > `demo_cpu_tasks` / `demo_cpu_terminalbench` / `demo_cpu_scale_lanes` + 2 GPU `demo_gpu_single` / `demo_gpu_farm`,

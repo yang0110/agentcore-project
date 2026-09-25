@@ -5,8 +5,8 @@
 # TASK / DATASET : MATH-500 (the 500-problem MATH eval subset). Boxed-answer
 #                  reasoning; checker extracts \boxed{} and compares to gold.
 #                  Harder / more diverse than GSM8K — expect a slower climb.
-# SUBSTRATE      : REMOTE managed AgentCore sandbox Runtime (SANDBOX=agentcore-runtime),
-#                  K=2 CPU sandbox ARNs baked in. Answer-match checker => CPU sandbox.
+# SUBSTRATE      : the DEFAULT managed AgentCore Code Interpreter (SANDBOX=agentcore): one
+#                  microVM session per episode, no image / Runtime. Answer-match checker => CPU sandbox.
 # BOTTLENECK     : Inference + trainer bound (long CoT); checker is instant.
 # CONVERGENCE    : eval/math500 mean reward rises then plateaus. Because the
 #                  problems are hard, watch that group reward VARIANCE stays > 0

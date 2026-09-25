@@ -6,8 +6,11 @@
 # appends a results row. Continues past failures so one bad demo does not abort the sweep.
 # Runs INSIDE agentcore_p4 (as root => can delete its own root-owned checkpoints).
 #
-#   PHASE=1  -> Group A (incl. demo_cpu_tasks:mixed) + HEARTBEAT=1 + scale_lanes (13, no extra env)   [default: 1,2]
-#   PHASE=2  -> demo_cpu_tasks VARIANT=imagepool (needs AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE; was demo_cpu_imagepool)
+#   PHASE=1  -> Group A on the default Code Interpreter (incl. demo_cpu_tasks:mixed / :libs) + HEARTBEAT=1
+#               on your own Runtime + scale_lanes (14, no extra env)   [default: 1,2]
+#   PHASE=2  -> demo_cpu_instance_pool (needs its AGENTCORE_SANDBOX_RUNTIME_ARN: env or the demo's
+#               deploy/runtime.env; was demo_cpu_tasks VARIANT=bigimage). VARIANT=imagepool is gone: its
+#               pandas/scipy/sklearn tasks are demo_cpu_tasks:libs on the Code Interpreter.
 # Override CPU_TRAINERS / NR / TRAIN_TIMEOUT / PHASES to resume a subset.
 set -uo pipefail
 
@@ -23,7 +26,7 @@ PHASES="${PHASES:-1 2}"
 # Entries are <demo>[:<DATASET>][+KEY=VAL...] — demo_cpu_tasks is ONE folder that trains many datasets,
 # so each dataset is its own entry (run with DATASET=<name>; logged/reported as <demo>-<name>). A
 # "+KEY=VAL" suffix adds env knobs, e.g. "+HEARTBEAT=1" (was the standalone demo_cpu_heartbeat).
-CPU_TRAINERS="${CPU_TRAINERS-demo_cpu_tasks:mbpp demo_cpu_tasks:math demo_cpu_tasks:mixed demo_cpu_tasks:gsm8k demo_cpu_tasks:math500 demo_cpu_tasks:deepscaler demo_cpu_tasks:humaneval demo_cpu_tasks:gretelsql demo_cpu_tasks:hotpotqa demo_cpu_tasks:xlam demo_cpu_tasks:mcp demo_cpu_tasks:deepscaler+HEARTBEAT=1 demo_cpu_scale_lanes}"
+CPU_TRAINERS="${CPU_TRAINERS-demo_cpu_tasks:mbpp demo_cpu_tasks:math demo_cpu_tasks:mixed demo_cpu_tasks:gsm8k demo_cpu_tasks:math500 demo_cpu_tasks:deepscaler demo_cpu_tasks:humaneval demo_cpu_tasks:gretelsql demo_cpu_tasks:hotpotqa demo_cpu_tasks:xlam demo_cpu_tasks:mcp demo_cpu_tasks:libs demo_cpu_tasks:deepscaler+HEARTBEAT=1+SANDBOX=agentcore-runtime demo_cpu_scale_lanes}"
 
 mkdir -p "$LOGDIR"
 [ -f "$RESULTS" ] || printf 'demo\tstatus\tsecs\tnote\n' > "$RESULTS"
@@ -47,7 +50,7 @@ run_trainer() {
   # build data if the demo has a prep step (idempotent; cheap if already built)
   [ -f "$BASE/$d/prepare_data.sh" ] && env "$@" bash "$BASE/$d/prepare_data.sh" >>"$log" 2>&1
   # -u strips any globally-exported image->ARN map so it never leaks into Group-A trainers (incl. DATASET=mixed)
-  # (only VARIANT=imagepool re-adds it via "$@"); a leaked map made the mixed run build invalid runtime-env-json.
+  # (a caller can re-add it via "$@"); a leaked map made the mixed run build invalid runtime-env-json.
   ( cd /work && env -u AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE "$@" \
       NR="$NR" EVAL_INTERVAL="$EVAL_INTERVAL" EVAL_NS="$EVAL_NS" \
       timeout "$TRAIN_TIMEOUT" bash "$BASE/$d/run.sh" ) > "$log" 2>&1
@@ -81,10 +84,11 @@ echo "[plan] start $(date -u +%FT%TZ)  NR=$NR PHASES='$PHASES'"
 for ph in $PHASES; do
   case "$ph" in
     1) for d in $CPU_TRAINERS; do run_trainer "$d"; done ;;
-    2) if [ -n "${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}" ]; then
-         run_trainer demo_cpu_tasks+VARIANT=imagepool "AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE=$AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE"
+    2) pool_arn="${POOL_RUNTIME_ARN:-$(sed -n 's/^AGENTCORE_SANDBOX_RUNTIME_ARN=//p' "$BASE/demo_cpu_instance_pool/deploy/runtime.env" 2>/dev/null | tr -d "'\"")}"
+       if [ -n "$pool_arn" ]; then
+         run_trainer demo_cpu_instance_pool "AGENTCORE_SANDBOX_RUNTIME_ARN=$pool_arn"
        else
-         row demo_cpu_tasks-variant_imagepool SKIP 0 "AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE unset"
+         row demo_cpu_instance_pool SKIP 0 "no Runtime ARN (POOL_RUNTIME_ARN or demo_cpu_instance_pool/deploy/runtime.env)"
        fi ;;
   esac
 done

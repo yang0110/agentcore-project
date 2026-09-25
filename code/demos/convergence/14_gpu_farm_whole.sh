@@ -1,10 +1,10 @@
 #!/bin/bash
 # ============================================================================
-# CONVERGENCE RUN 14 — demo_gpu_farm FARM=whole  (KernelBench, LOCAL whole-GPU Ray farm, GPUs 6,7)
+# CONVERGENCE RUN 14 — demo_gpu_farm_whole  (KernelBench, LOCAL whole-GPU Ray farm, GPUs 6,7)
 # ============================================================================
 # TASK / DATASET : KernelBench (same as 12/13): write CUDA ModelNew, checker compiles +
 #                  runs on GPU + allclose. Train = level_1 (100); eval = level_2 (20).
-# SUBSTRATE      : the SAME Ray farm as 13, served LOCALLY on THIS box's reserved GPUs
+# SUBSTRATE      : the SAME Ray farm as 13 (demo_gpu_farm_fractional), served LOCALLY on THIS box's reserved GPUs
 #                  6,7 (SANDBOX=agentcore-ray-farm, endpoint http://127.0.0.1:8080),
 #                  with B4_GPU_FRACTION=1.0 => 2 WHOLE-GPU sub-session slots (one GPU
 #                  each). slime trains on GPUs 0-5 (4 train + 2 infer). One shared
@@ -30,7 +30,7 @@
 set -euo pipefail
 
 CONV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_gpu_farm"
+DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_gpu_farm_whole"
 
 ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-http://127.0.0.1:8080}"
 if ! curl -fsS "${ENDPOINT}/ping" >/dev/null 2>&1; then
@@ -47,9 +47,8 @@ fi
 # Whole-GPU farm on 2 reserved GPUs: 2 slots => CONC=2. These MUST match the host
 # container's baked knobs (run_local_gpu_runtime.sh whole: FARM_GPUS=2, FRACTION=1.0).
 : "${B4_FARM_GPUS:=2}"; : "${B4_GPU_FRACTION:=1.0}"; : "${CONC:=2}"
-: "${FARM:=whole}"
-export FARM NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL CONC B4_FARM_GPUS B4_GPU_FRACTION
+export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL CONC B4_FARM_GPUS B4_GPU_FRACTION
 
 LOG="$DEMO/train.convergence_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_gpu_farm FARM=whole (KernelBench, local whole-GPU farm on 6,7)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) CONC=$CONC  log=$LOG"
+echo ">>> converging demo_gpu_farm_whole (KernelBench, local whole-GPU farm on 6,7)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) CONC=$CONC  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

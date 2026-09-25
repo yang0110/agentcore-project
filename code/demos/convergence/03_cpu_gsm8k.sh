@@ -5,8 +5,8 @@
 # TASK / DATASET : GSM8K grade-school word problems. The policy reasons step by
 #                  step and emits a final numeric answer; the checker parses the
 #                  final number and compares to gold.
-# SUBSTRATE      : REMOTE managed AgentCore sandbox Runtime (SANDBOX=agentcore-runtime),
-#                  K=2 CPU sandbox ARNs baked in. Numeric-match checker => CPU sandbox.
+# SUBSTRATE      : the DEFAULT managed AgentCore Code Interpreter (SANDBOX=agentcore): one
+#                  microVM session per episode, no image / Runtime. Numeric-match checker => CPU sandbox.
 # BOTTLENECK     : Inference + trainer bound; the arithmetic checker is instant.
 # CONVERGENCE    : eval/gsm8k mean reward (numeric-match rate) rises then plateaus.
 #                  GSM8K is the EASIEST math family here — a good FIRST convergence

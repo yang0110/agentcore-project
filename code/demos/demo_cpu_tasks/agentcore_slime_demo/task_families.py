@@ -910,6 +910,8 @@ class DataSciTask(EpisodicTask):
     This is capability-routing *by family* — the point of the custom-image mix: on the plain CPU
     image solution.py's `import pandas` raises ModuleNotFoundError, the checker fails, reward = 0;
     only the correctly-routed episode can pass. The reward stays RLVR (a numeric assert on `answer`).
+    (The managed Code Interpreter, SANDBOX=agentcore, already ships pandas/scipy/sklearn, so there the
+    routing is a no-op and every episode can pass — demo_cpu_tasks DATASET=mixed/libs default to it.)
     """
 
     family = "datasci"
@@ -969,7 +971,7 @@ class ScipyTask(EpisodicTask):
 
     The agent must use `scipy` to solve a small numerical problem (a linear system, a determinant,
     numerical integration, root finding) and store the result in a module-level float `answer`. This
-    is the point of DATASET=imagepool (VARIANT=imagepool): unlike DATASET=mixed (one custom image), here EACH family
+    is the point of DATASET=libs on your own Runtimes (was the imagepool variant): unlike DATASET=mixed (one custom image), here EACH family
     carries a DIFFERENT `image` tag ("scipy" here, "datasci"/pandas and "sklearn" elsewhere), so the
     batch is heterogeneous in the *container image* it needs. Route an episode to the wrong image and
     solution.py's `import scipy` raises ModuleNotFoundError, the checker fails, reward = 0 — only the

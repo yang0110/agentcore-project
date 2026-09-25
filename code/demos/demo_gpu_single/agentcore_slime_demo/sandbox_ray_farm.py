@@ -39,6 +39,24 @@ so we drop a tiny ``sitecustomize.py`` into each sandbox's working dir (Python a
 ``sitecustomize`` from the script's own directory at startup) which reads ``ENV_GPU_MEM_FRACTION``
 and applies the cap inside the checker process itself. Ray does the packing; sitecustomize isolates.
 
+Isolation between co-resident sub_sessions
+------------------------------------------
+Every slot runs its checker subprocesses as its OWN unprivileged uid (``B4_SANDBOX_UID_BASE`` +
+slot, default 20000+). Its session dir is owned by that uid with mode 0700, and the farm root and the
+per-actor dirs are 0711 (traversable, not listable). ``write_file`` / ``read_file`` resolve the path
+and refuse anything outside the session dir, symlinks included. On close the actor SIGKILLs every
+process of that uid (plus each exec's process group), then removes the dir. HOME and the compile
+caches are per uid, so one slot cannot plant a compiled kernel that ANOTHER slot loads. Episodes that
+follow each other on the SAME slot share its uid and cache; ``SANDBOX_ISOLATE_HOME=1`` moves HOME and
+every cache into the session dir, which is wiped on close, and removes that last path too (at the cost
+of recompiling each episode's kernels).
+
+The uid switch needs CAP_SETUID/SETGID/CHOWN/KILL. Docker's default root has them (the local farm).
+The AgentCore container on the g6 is uid 0 with an EMPTY capability set (see sandbox_server_agent), so
+there the farm detects the missing caps and falls back to one shared uid: separate dirs, path
+confinement and process-group kill still apply, but nothing OS-level stops one checker from reading
+another's dir. ``ping``/``open`` report ``uid_isolation`` so the log shows which mode ran.
+
 ``ray`` and ``torch`` are imported lazily so this module still loads for offline tooling/tests (and
 so it imports cleanly on the trainer box, which never runs the farm — only the g6 does).
 """
@@ -50,8 +68,11 @@ import math
 import os
 import queue
 import shlex
+import shutil
+import signal
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 
 from .sandbox import ExecResult, FileContent  # noqa: F401 — re-exported for type users
@@ -60,6 +81,52 @@ from .sandbox import ExecResult, FileContent  # noqa: F401 — re-exported for t
 # Lives in /dev/shm (shared across all actor processes on the one g6 host, same tmpfs as the
 # default workspace_root). See _SITECUSTOMIZE for why only the *compile* is gated.
 _NVCC_LOCK_PATH = "/dev/shm/b4-nvcc.lock"
+
+# Per-slot unprivileged uids (slot i runs as UID_BASE + i) and the root of their per-uid HOMEs.
+_UID_BASE = int(os.environ.get("B4_SANDBOX_UID_BASE", "20000"))
+_HOME_ROOT = os.environ.get("B4_SANDBOX_HOME_ROOT", "/var/tmp/b4-home")
+# CAP_CHOWN=0, CAP_KILL=5, CAP_SETGID=6, CAP_SETUID=7: all four are needed to hand a slot its own uid.
+_NEEDED_CAPS = (0, 5, 6, 7)
+
+
+def _can_switch_uid() -> bool:
+    """True when this process may run children as another uid (root with the needed capabilities).
+    False on the AgentCore g6 container (uid 0, CapEff=0) and for any non-root offline run."""
+    if os.environ.get("B4_SANDBOX_UID_ISOLATION", "auto") == "0" or os.geteuid() != 0:
+        return False
+    try:
+        with open("/proc/self/status") as f:
+            caps = next(int(l.split()[1], 16) for l in f if l.startswith("CapEff:"))
+    except (OSError, StopIteration, ValueError):
+        return False
+    return all(caps & (1 << c) for c in _NEEDED_CAPS)
+
+
+def _uid_pids(uid: int) -> list[int]:
+    """PIDs of every live process whose real uid is ``uid`` (read from /proc). Zombies are skipped:
+    they hold no resources, cannot be killed, and vanish once their parent reaps them."""
+    pids = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/status") as f:
+                st = dict(l.split(":", 1) for l in f if ":" in l)
+            ruid = int(st["Uid"].split()[0])
+            state = st["State"].split()[0]
+        except (OSError, KeyError, ValueError, IndexError):
+            continue
+        if ruid == uid and state != "Z":
+            pids.append(int(d))
+    return pids
+
+
+def _chown_tree(path: str, uid: int) -> None:
+    os.chown(path, uid, uid)
+    for dirpath, dirnames, filenames in os.walk(path):
+        for n in dirnames + filenames:
+            with contextlib.suppress(FileNotFoundError):
+                os.chown(os.path.join(dirpath, n), uid, uid, follow_symlinks=False)
 
 # Auto-imported by every `python3` the sandbox runs (Python imports `sitecustomize` from the
 # script's own directory, which is the per-session workdir). It (1) applies the per-sandbox memory
@@ -95,7 +162,12 @@ if _lockpath:
         def _serialize(_fn):
             @_functools.wraps(_fn)
             def _wrapped(*a, **k):
-                _f = open(_lockpath, "a")
+                # Read-only open: the lockfile is created 0644 by the (root) actor, and flock() works
+                # on a read-only fd, so the unprivileged checker uid can take it without write access.
+                try:
+                    _f = open(_lockpath)
+                except OSError:                       # no lockfile: build unserialized, never fail
+                    return _fn(*a, **k)
                 try:
                     _fcntl.flock(_f, _fcntl.LOCK_EX)   # one nvcc build at a time, host-wide
                     return _fn(*a, **k)
@@ -131,13 +203,29 @@ class _SandboxActorImpl:
     visible to this actor process AND to the checker subprocess it spawns.
     """
 
-    def __init__(self, actor_id: str, *, mem_fraction: float, workspace_root: str, warm: bool = True) -> None:
+    def __init__(self, actor_id: str, *, mem_fraction: float, workspace_root: str, warm: bool = True,
+                 slot: int = 0) -> None:
         self.actor_id = actor_id
         self.mem_fraction = float(mem_fraction)
         self.root = workspace_root
         os.makedirs(self.root, exist_ok=True)
         # Ray sets this to the (possibly shared) physical GPU it packed this actor onto.
         self.cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        self.isolate_home = os.environ.get("SANDBOX_ISOLATE_HOME") == "1"
+        # This slot's own uid, or None when the container can't switch uids (the g6: zero caps).
+        self.uid = _UID_BASE + int(slot) if _can_switch_uid() else None
+        self.home = os.path.join(_HOME_ROOT, f"uid-{self.uid}" if self.uid is not None else f"slot-{slot}")
+        self._pgids: dict[str, set[int]] = {}   # session -> process groups of its execs
+        # The lockfile must exist before an unprivileged checker opens it read-only.
+        with contextlib.suppress(OSError):
+            os.close(os.open(_NVCC_LOCK_PATH, os.O_CREAT | os.O_RDONLY, 0o644))
+        os.makedirs(self.home, exist_ok=True)
+        if self.uid is not None:
+            # Farm root + actor dir: traversable (x) but not listable/readable by the slot uids.
+            for d in (os.path.dirname(self.root), self.root, _HOME_ROOT):
+                os.chmod(d, 0o711)
+            os.chown(self.home, self.uid, self.uid)
+            os.chmod(self.home, 0o700)
         self.warm_error = ""
         if warm:
             self._warm_cuda()
@@ -163,21 +251,59 @@ class _SandboxActorImpl:
             "cuda_visible": self.cuda_visible,
             "mem_fraction": self.mem_fraction,
             "warm_error": self.warm_error,
+            "uid": self.uid if self.uid is not None else os.geteuid(),
+            "uid_isolation": self.uid is not None,
+            "isolate_home": self.isolate_home,
         }
 
     def _session_dir(self, session_id: str) -> str:
+        if not session_id or "/" in session_id or session_id in (".", ".."):
+            raise ValueError(f"bad sub_session id {session_id!r}")
         d = os.path.join(self.root, session_id)
-        os.makedirs(d, exist_ok=True)
-        # Drop the memory-cap hook so every `python3` launched from this dir inherits the cap.
-        sc = os.path.join(d, "sitecustomize.py")
-        if not os.path.exists(sc):
-            with open(sc, "w") as f:
+        if not os.path.isdir(d):
+            os.makedirs(os.path.join(d, "tmp"), exist_ok=True)
+            # Drop the memory-cap hook so every `python3` launched from this dir inherits the cap.
+            with open(os.path.join(d, "sitecustomize.py"), "w") as f:
                 f.write(_SITECUSTOMIZE)
+            if self.uid is not None:
+                _chown_tree(d, self.uid)
+                os.chmod(d, 0o700)
         return d
 
     def _abs(self, session_id: str, path: str) -> str:
-        base = self._session_dir(session_id)
-        return path if os.path.isabs(path) else os.path.join(base, path)
+        """Resolve ``path`` inside the session dir; refuse anything that escapes it (``..``, an
+        absolute path elsewhere, or a symlink the checker planted pointing at another session)."""
+        base = os.path.realpath(self._session_dir(session_id))
+        p = os.path.realpath(path if os.path.isabs(path) else os.path.join(base, path))
+        if p != base and not p.startswith(base + os.sep):
+            raise PermissionError(f"path {path!r} is outside this sub_session")
+        return p
+
+    def _run_env(self, workdir: str, env: dict | None) -> dict:
+        run_env = {**os.environ, **(env or {})}
+        if self.isolate_home:
+            # Full freshness: HOME, TMPDIR and EVERY cache (incl. compiled CUDA extensions) live in
+            # the session dir, which close() wipes. No state crosses episodes, even on the same slot.
+            try:
+                from .sandbox_farm_env import fresh_env
+            except ImportError:
+                from sandbox_farm_env import fresh_env
+            _, run_env = fresh_env(workdir, run_env, isolate_caches=True)
+            run_env["TORCH_EXTENSIONS_DIR"] = os.path.join(run_env["XDG_CACHE_HOME"], "torch_extensions")
+            if self.uid is not None:
+                _chown_tree(workdir, self.uid)
+        else:
+            # Default: a per-uid HOME that persists across this slot's episodes, so the compiled-
+            # kernel cache stays warm, but is private to the slot (0700, its own uid).
+            cache = os.path.join(self.home, ".cache")
+            run_env.update({
+                "HOME": self.home, "XDG_CACHE_HOME": cache,
+                "TORCH_EXTENSIONS_DIR": os.path.join(cache, "torch_extensions"),
+                "TMPDIR": os.path.join(workdir, "tmp"),
+            })
+        if self.uid is not None:
+            run_env.update({"USER": f"sbx{self.uid}", "LOGNAME": f"sbx{self.uid}"})
+        return run_env
 
     def exec(self, session_id: str, command: str, env: dict | None, timeout: int) -> dict:
         workdir = self._session_dir(session_id)
@@ -186,7 +312,7 @@ class _SandboxActorImpl:
         # SANDBOX_PYLIB on the g6 image) is preserved AFTER it, so the checker's torch still
         # resolves. CUDA_VISIBLE_DEVICES is inherited from the actor (set by Ray), pinning the
         # subprocess to the same shared device.
-        run_env = {**os.environ, **(env or {})}
+        run_env = self._run_env(workdir, env)
         run_env["ENV_GPU_MEM_FRACTION"] = f"{self.mem_fraction:.4f}"
         # Serialize nvcc compiles across co-resident sandboxes (default on; B4_SERIALIZE_COMPILE=0
         # to A/B against the old always-concurrent behaviour that wedged the non-MIG L4).
@@ -195,18 +321,35 @@ class _SandboxActorImpl:
         run_env["PYTHONPATH"] = workdir + (":" + run_env["PYTHONPATH"] if run_env.get("PYTHONPATH") else "")
         exports = "".join(f"export {k}={shlex.quote(str(v))}; " for k, v in (env or {}).items())
         full = f"cd {shlex.quote(workdir)}; {exports}bash -lc {shlex.quote(command)}"
+        # Drop to the slot's uid in the child. subprocess's user=/group=/extra_groups= do the same
+        # setgroups([]) + setgid + setuid as a preexec_fn would, but in C after fork: a Python
+        # preexec_fn is unsafe here because the Ray actor process is multi-threaded.
+        drop = ({"user": self.uid, "group": self.uid, "extra_groups": [], "umask": 0o077}
+                if self.uid is not None else {})
+        # Own process group per exec, so a timeout or close() can kill the whole tree.
+        proc = subprocess.Popen(full, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, env=run_env, start_new_session=True, **drop)
+        self._pgids.setdefault(session_id, set()).add(proc.pid)
         try:
-            proc = subprocess.run(full, shell=True, capture_output=True, text=True,
-                                  timeout=int(timeout), env=run_env)
-            return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
-        except subprocess.TimeoutExpired as e:
-            return {"exit_code": 124, "stdout": e.stdout or "", "stderr": "timeout"}
+            out, err = proc.communicate(timeout=int(timeout))
+            return {"exit_code": proc.returncode, "stdout": out, "stderr": err}
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            out, _ = proc.communicate()
+            return {"exit_code": 124, "stdout": out or "", "stderr": "timeout"}
 
     def write_file(self, session_id: str, path: str, text: str) -> dict:
         dst = self._abs(session_id, path)
-        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+        parent = os.path.dirname(dst)
+        if not os.path.isdir(parent):
+            os.makedirs(parent, exist_ok=True)
+            if self.uid is not None:
+                _chown_tree(self._session_dir(session_id), self.uid)
         with open(dst, "w") as f:
             f.write(text or "")
+        if self.uid is not None:
+            os.chown(dst, self.uid, self.uid)
         return {"ok": True}
 
     def read_file(self, session_id: str, path: str) -> dict:
@@ -216,14 +359,38 @@ class _SandboxActorImpl:
         except FileNotFoundError:
             return {"text": "", "error": "not found"}
 
-    def clear_session(self, session_id: str) -> dict:
-        """Wipe one episode's working dir (called when the sub-session closes) so the reused actor
-        starts the next episode clean. The warm CUDA context + the actor process persist."""
-        import shutil
+    def _kill_session_procs(self, session_id: str) -> int:
+        """SIGKILL everything the episode started: each exec's process group, then (when the slot has
+        its own uid) every remaining process of that uid, e.g. a `setsid nohup` that left the group."""
+        killed = 0
+        for pgid in self._pgids.pop(session_id, set()):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, signal.SIGKILL)
+                killed += 1
+        if self.uid is not None:
+            seen: set[int] = set()
+            for _ in range(50):                   # re-sweep: a dying parent may have just forked
+                pids = _uid_pids(self.uid)
+                if not pids:
+                    break
+                for pid in pids:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(pid, signal.SIGKILL)
+                        if pid not in seen:
+                            seen.add(pid)
+                            killed += 1
+                time.sleep(0.1)
+        return killed
 
+    def clear_session(self, session_id: str) -> dict:
+        """Kill the episode's processes and wipe its working dir (called when the sub-session closes)
+        so the reused actor starts the next episode clean. The warm CUDA context + the actor process
+        persist."""
+        killed = self._kill_session_procs(session_id)
         with contextlib.suppress(FileNotFoundError):
             shutil.rmtree(os.path.join(self.root, session_id))
-        return {"ok": True}
+        left = len(_uid_pids(self.uid)) if self.uid is not None else 0
+        return {"ok": True, "killed": killed, "left_procs": left}
 
 
 @dataclass
@@ -351,6 +518,7 @@ class RayGpuFarm:
                 mem_fraction=self.per_sandbox_mem_fraction,
                 workspace_root=os.path.join(self.workspace_root, f"actor-{i}"),
                 warm=self.warm,
+                slot=i,
             )
             self._actors.append(actor)
 
@@ -378,11 +546,12 @@ class RayGpuFarm:
     def close(self, sub_session: str) -> dict:
         with self._lock:
             actor = self._leases.pop(sub_session, None)
+        res = {"ok": True}
         if actor is not None:
             with contextlib.suppress(Exception):
-                _ray_get(actor.clear_session.remote(sub_session))
+                res.update(_ray_get(actor.clear_session.remote(sub_session)))
             self._free.put(actor)
-        return {"ok": True}
+        return res
 
     def _actor_for(self, sub_session: str):
         with self._lock:

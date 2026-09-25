@@ -1,281 +1,219 @@
-# demo_cpu_tasks — one demo, any RLVR dataset or MIX of datasets (`DATASET=`), CPU AgentCore sandbox (in-process harness); variants bigimage / imagepool, `HEARTBEAT=1`, custom-vs-managed
+# demo_cpu_tasks — literature RLVR tasks on the DEFAULT AgentCore sandbox (managed Code Interpreter, no image); `DATASET=` any task or mix, `HEARTBEAT=1`
 
-This single folder replaces several former demos that ran the same harness, sandbox and trainer and
-differed only in their data, image or knobs:
+**The point of this demo: most agentic-RL tasks from the literature train on the default AgentCore
+runtime as-is.** `SANDBOX=agentcore` (the default) runs every episode in a managed **AgentCore Code
+Interpreter** session: no Dockerfile, no ECR push, no Runtime to deploy or delete. You prepare the data
+and run the trainer; steps 2/3/4/6 of the step scripts are no-ops.
 
-- `demo_cpu_datasets` — one dataset per run (itself the merge of ten per-dataset folders
-  `demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k` … `demo_cpu_mcp`);
-- `demo_cpu_mixtask` — one batch spanning several task families (now `DATASET=mixed`);
-- `demo_cpu_bigimage` → `VARIANT=bigimage`, `demo_cpu_imagepool` → `VARIANT=imagepool`;
-- `demo_cpu_customruntime` → `compare_backends.py`, `demo_cpu_heartbeat` → `HEARTBEAT=1` (a knob in
-  every demo; its offline probe `heartbeat_demo.py` lives here).
+An agentic-RL loop RL-trains Qwen3-4B to solve verifiable tasks by **writing `solution.py` → running
+the hidden checker → reading the failure → fixing → repeat**. Each turn's `write_file` / `exec` /
+`read_file` runs inside a remote AgentCore sandbox session. The multi-turn `run_episode` harness and
+the slime trainer stay on the training box (in-process, via
+`--custom-generate-function-path agentcore_slime_demo.generate.generate`). The trainer is real slime,
+async/decoupled (`train_async.py`), 4 train + 4 inference GPUs, 0 GPUs for the env.
 
-A single dataset is just a one-element mix, so both are now one knob:
+This folder also absorbed several former demos:
 
-| `DATASET=` | trains | eval metric | ckpt |
-|---|---|---|---|
-| `mbpp` (default), `gsm8k`, … | one dataset (table below) | `eval/<name>` | `ckpt/Qwen3-4B_<name>_async` |
-| `gsm8k,gretelsql,hotpotqa` | an ad-hoc mix: `run.sh` interleaves those datasets' files round-robin | `eval/mix` | `ckpt/Qwen3-4B_gsm8k+gretelsql+hotpotqa_async` |
-| `mixed` | the prebuilt math + sql + ctf + datasci mix (the former `demo_cpu_mixtask`) | `eval/mixed` | `ckpt/Qwen3-4B_mixed_async` |
-| `imagepool` (set by `VARIANT=imagepool`) | datasci + scipy + sklearn, one custom image per family (the former `demo_cpu_imagepool`) | `eval/imagepool` | `ckpt/Qwen3-4B_imagepool_async` |
+- `demo_cpu_datasets` and `demo_cpu_mixtask`: now `DATASET=<name>` / `DATASET=a,b,c` / `DATASET=mixed`.
+- `demo_cpu_imagepool`: its pandas/scipy/sklearn tasks are now `DATASET=libs`, **on the default Code
+  Interpreter**. That service already has those libraries, so the three custom images are gone.
+- `demo_cpu_heartbeat`: now `HEARTBEAT=1`.
+- `demo_cpu_customruntime`: now `compare_backends.py`.
+- `VARIANT=bigimage`: moved out to `demo_cpu_instance_pool`. Custom images at scale are in
+  `demo_cpu_terminalbench`.
 
-An agentic-RL loop that RL-trains Qwen3-4B to solve verifiable tasks (default: MBPP Python problems) by **writing `solution.py` →
-running the hidden unit tests → reading the failure → fixing → repeat**. The AgentCore Runtime is
-the **RL environment**: each turn's `write_file` / `exec` / `read_file` is executed inside a managed
-serverless sandbox Runtime, reached over `invoke_agent_runtime`, while the multi-turn `run_episode`
-harness and the slime trainer stay on the training box.
+To scale the rollout as N 1:1:1 lanes (harness worker : SGLang engine : persistent sandbox session),
+see the standalone `demo_cpu_scale_lanes`.
 
-## What this demo shows
-- **Task:** multi-turn "write `solution.py` → run hidden checker → fix" over a **zoo of real,
-  verifiable-reward (RLVR) datasets** pulled from HuggingFace. The in-process harness is
-  task-agnostic — the SAME `run_episode` loop trains any of them; only the seed dataset + hidden
-  checker differ. Select one with `DATASET=<name>` (the file prefix; `FAMILY` is an accepted alias);
-  no other change. Each dataset writes its own `eval/<name>` metric and `ckpt/Qwen3-4B_<name>_async`:
+## 1. The tasks: dataset, source, environment, image
 
-  | `DATASET`     | family    | dataset (HuggingFace)                          | train/eval | reward |
-  |---------------|-----------|------------------------------------------------|-----------:|--------|
-  | `mbpp` (default; alias `coding`) | coding | MBPP (`mbpp`, via `build_dataset.py`) | 500/8 | hidden asserts |
-  | `gsm8k`       | math      | `openai/gsm8k` (config `main`)                 |    200/40  | exact integer match |
-  | `math500`     | math      | `HuggingFaceH4/MATH-500` (numeric subset)      |    160/40  | numeric match (tol 1e-4) |
-  | `deepscaler`  | math      | `agentica-org/DeepScaleR-Preview-Dataset`      |    400/40  | numeric match (tol 1e-4) |
-  | `humaneval`   | coding    | `openai/openai_humaneval`                      |    140/24  | row's own `test` fn |
-  | `gretelsql`   | sql       | `gretelai/synthetic_text_to_sql`               |    300/40  | SQL execution vs gold result set |
-  | `hotpotqa`    | rag       | `hotpotqa/hotpot_qa` (distractor)              |    300/40  | SQuAD-normalized exact match |
-  | `xlam`        | toolcall  | `minpeter/xlam-function-calling-60k-parsed`    |    300/40  | order-insensitive gold-call match |
-  | `mcp`         | toolcall  | `Team-ACE/ToolACE` (MCP-style tool schemas)    |    300/40  | order-insensitive gold-call match |
+Every row is self-describing (`metadata.task = {family, task_id, spec, …}`). `generate._task_from_sample`
+rebuilds the right task (seed files, hidden checker and reward) for each row, so the same harness trains
+all of them. Select a dataset with `DATASET=<file prefix>` (`FAMILY` is an alias). Each dataset writes
+its own `eval/<name>` metric and its own `ckpt/Qwen3-4B_<name>_async`.
 
-  The synthetic task-family zoo from `build_family_datasets.py` (`math` `swe` `tool_use` `sql` `ctf`
-  `rag` `regex` `config` `data` `planning`) is selectable the same way. `math` is the one the
-  former `demo_cpu_math` defaulted to; the rest are tiny (4–9 rows) and meant for offline smoke tests.
-  An unknown `DATASET` fails fast and lists what is in `data/`.
-- **Mixing datasets:** each row is self-describing
-  (`metadata.task = {family, task_id, spec, …}`), and `generate._task_from_sample` rebuilds the right
-  task (seed files + hidden checker + reward) **per row**, so a batch that spans families needs no
-  harness or sandbox change. GRPO normalizes advantage **within** a group of `NS` repeats of the same
-  prompt (one family); mixing happens **across** groups, so the families' reward scales never need
-  reconciling. `DATASET=a,b,c` truncates each dataset to the shortest one and interleaves them
-  (`a0 b0 c0 a1 b1 c1 …`, train and eval alike) into `ckpt/_mix/`, so every step spans all of them.
-  The sandbox session count (one per episode) is unchanged by mixing.
-- **The one custom-image family:** `DATASET=mixed` includes `datasci`, whose checker needs pandas —
-  absent from the generic CPU image. Each task carries an `image` tag (`cpu` by default, `datasci`
-  here) and the sandbox client routes an episode to the Runtime for its image via
-  `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE='{"cpu": "<arn>", "datasci": "<arn>"}'`. Build that
-  Runtime from `deploy/Dockerfile.sandbox.datasci`. Unset, datasci episodes fall back to the CPU
-  pool, fail to import pandas and score 0. (For a pool with one image per family, see
-  `VARIANT=imagepool` below.)
-- **Reward:** the candidate's answer is run against the dataset's hidden checker (for MBPP: its asserts); the
-  learning signal is `rollout/raw_reward`, and held-out **solve-rate** is the key eval metric. GRPO
-  advantage is 0 when every sample in a prompt's group gets the same reward, so reward variance
-  (higher `TEMP` / harder tasks) is what produces gradient.
-- **Sandbox arrangement:** ONE CPU-backed AgentCore Runtime sandbox (`sandbox_server_agent.py`).
-  Every checker is plain Python/IO, so the sandbox is CPU-only and all 8 L40S GPUs serve the
-  policy (**4 train + 4 inference + 0 env**). The harness runs **in-process** on the training box
-  via `--custom-generate-function-path agentcore_slime_demo.generate.generate`; there is NO separate
-  harness Runtime. Trainer is real slime, async/decoupled (`train_async.py`, no `--colocate`).
-  A fleet variant fans episodes round-robin across several sandbox Runtimes for the runtime-count
-  throughput ablation.
+| `DATASET` | family | dataset (URL) | train/eval | reward | env deps (checker) | Docker image? |
+|---|---|---|---:|---|---|---|
+| `mbpp` (default) | coding | [google-research-datasets/mbpp](https://huggingface.co/datasets/google-research-datasets/mbpp) | 500/8 | hidden asserts | python stdlib | **no**: Code Interpreter |
+| `humaneval` | coding | [openai/openai_humaneval](https://huggingface.co/datasets/openai/openai_humaneval) | 140/24 | the row's own `test` fn | python stdlib | **no** |
+| `gsm8k` | math | [openai/gsm8k](https://huggingface.co/datasets/openai/gsm8k) (`main`) | 200/40 | exact integer match | python stdlib | **no** |
+| `math500` | math | [HuggingFaceH4/MATH-500](https://huggingface.co/datasets/HuggingFaceH4/MATH-500) (numeric subset) | 160/40 | numeric match, tol 1e-4 | python stdlib | **no** |
+| `deepscaler` | math | [agentica-org/DeepScaleR-Preview-Dataset](https://huggingface.co/datasets/agentica-org/DeepScaleR-Preview-Dataset) | 400/40 | numeric match, tol 1e-4 | python stdlib | **no** |
+| `gretelsql` | sql | [gretelai/synthetic_text_to_sql](https://huggingface.co/datasets/gretelai/synthetic_text_to_sql) | 300/40 | SQL result set vs gold | `sqlite3` | **no** |
+| `hotpotqa` | rag | [hotpotqa/hotpot_qa](https://huggingface.co/datasets/hotpotqa/hotpot_qa) (distractor) | 300/40 | SQuAD-normalized EM | files in `./docs` | **no** |
+| `xlam` | tool call | [minpeter/xlam-function-calling-60k-parsed](https://huggingface.co/datasets/minpeter/xlam-function-calling-60k-parsed) | 300/40 | order-insensitive gold-call match | python stdlib | **no** |
+| `mcp` | tool call | [Team-ACE/ToolACE](https://huggingface.co/datasets/Team-ACE/ToolACE) (MCP-style schemas) | 300/40 | order-insensitive gold-call match | python stdlib | **no** |
+| `libs` | datasci + scipy + sklearn | synthetic (`task_families.py`) | 72/6 (+2 per family) | numeric assert on `answer` | **pandas, scipy, scikit-learn** | **no**: preinstalled in the Code Interpreter |
+| `mixed` | math + sql + ctf + datasci | synthetic mix | 174/9 | per family | stdlib + pandas | **no** |
+| `math` `swe` `tool_use` `sql` `ctf` `rag` `regex` `config` `data` `planning` | synthetic zoo (`build_family_datasets.py`) | — | tiny (4–9) | per family | stdlib | **no** |
 
-## AgentCore basics: launch / terminate / latency
-- **Launch:** `2_build_image.sh` → `3_push_ecr.sh` → `4_deploy_runtime.sh` (vendored
-  `deploy/agentcore_deploy.py`) creates the demo's own Runtimes. The sandbox comes up serverless — a
-  session is created lazily on the first `invoke_agent_runtime`. There is no fixed cold-start number
-  for the CPU sandbox.
-- **Terminate:** `6_cleanup.sh` deletes the Runtimes it created. `run.sh` itself does NO runtime
-  teardown; it only cleans up local processes (`pkill -9 sglang`, `ray stop`).
-- **Latency:** each step's train CSV carries the sandbox round-trip time
-  `perf/sandbox_ms_{mean,p50,p95}` (with `perf/sandbox_count` = number of `invoke_agent_runtime`
-  round-trips) and, split out separately, pure SGLang decode time `perf/sglang_gen_ms_{mean,p50,p95}`.
-  Because the harness is in-process, **both** latency splits are fully present in `train.log`.
-  `metrics.py` also writes raw per-op CSVs `<log>.sandbox_ops.csv` and `<log>.sglang_gen.csv`.
+**Where a custom image IS needed:** the task needs an OS or toolchain that the Code Interpreter lacks.
+It has no git and no internet (so no `pip install` at run time). Examples:
 
-## Variant: `VARIANT=bigimage`: a large image on a CPU Instance (was `demo_cpu_bigimage`)
+- Terminal-Bench, where each task pins its own OS image: `demo_cpu_terminalbench`.
+- An image larger than 2 GB: `demo_cpu_instance_pool`.
+- CUDA: the GPU demos.
 
-The Code Interpreter microVM caps the image at ~2 GB, so a heavy checker environment (torch, a full
-scientific stack) won't fit. The escape hatch is **purely a deployment change**: build a large custom
-Runtime image (`deploy/Dockerfile.sandbox.bigcpu`, ~4 GB) and run it on an AgentCore
-**capacity-provider Instance** (`CPU_INSTANCE`, default `m5.xlarge`). The harness, reward path and slime
-args are unchanged. Default task is `DATASET=deepscaler`; any dataset works.
+**The Code Interpreter environment** was probed live on 2026-09-25 in us-west-2:
 
-| | Code Interpreter microVM | `VARIANT=bigimage`: Runtime on a CPU Instance |
-|---|---|---|
-| Image cap | ~2 GB | instance root disk (`ROOT_FREE_GIB`, default 40 GB) |
-| Heavy deps (torch, scipy, sklearn) | won't fit | baked in |
-| Compute | AWS-managed microVM | your EC2 family (`CPU_INSTANCE`) |
-| Session length | ~8 h | 14 days |
+- Python 3.12.13 on aarch64.
+- Libraries: numpy 1.26.4, pandas 2.3.1, scipy 1.16.0, scikit-learn 1.5.0, sympy, torch 2.3.0 (CPU),
+  statsmodels, networkx, matplotlib, requests, sqlite3.
+- Toolchains: gcc 11.5, node v24.
+- **No** git, **no** internet.
 
-The variant runs **warm-shared** (`SANDBOX=agentcore-ray-farm`). All episodes share one
-`runtimeSessionId` (`B4_SHARED_RUNTIME_SESSION`, minted per run), so they land on the same warm m5
-and the ~60–80 s cold-boot is paid **once per run**. The server-side `SANDBOX_FARM=cpu` farm
-(`sandbox_cpu_farm.py`) gives every per-episode `sub_session` a fresh workdir plus its own
-`HOME`/`TMPDIR`/caches, all wiped on close. `SANDBOX=agentcore-runtime` falls back to one fresh
-instance per episode, which pays a cold-boot every time. See
-[`docs/sandbox-fresh-env-on-persistent-instance.md`](../../../docs/sandbox-fresh-env-on-persistent-instance.md).
+A MockPolicy episode of every one of the 13 task families scored reward 1.0 on it. Rerun that check with
+`SANDBOX=agentcore python3 smoke_remote_families.py`.
+
+**Mixing:** `DATASET=a,b,c` truncates each dataset to the shortest one and interleaves them
+(`a0 b0 c0 a1 …`) into `ckpt/_mix/`, with the eval metric `eval/mix`. GRPO normalizes the advantage
+**within** a group of `NS` repeats of one prompt, so the families' reward scales never mix. `mixed` and
+`libs` are prebuilt mixes (`build_mixed_datasets.py --name <n> --families …`) with per-family eval
+files `<n>_<family>_eval.jsonl`.
+
+## 2. Train on the default runtime (no image)
 
 ```bash
-python3 probe_bigimage.py                  # offline: image size vs the microVM cap + LocalSandbox contract parity
-python3 netcheck.py                        # offline: safe-networking checklist (see docs/agentcore-networking.md)
-VARIANT=bigimage bash 2_build_image.sh     # host: ~4 GB amd64 image
-VARIANT=bigimage bash 3_push_ecr.sh        # host: -> ECR acs-sandbox-bigcpu
-VARIANT=bigimage bash 4_deploy_runtime.sh  # host: CPU capacity provider acs_cpu_cp_bigimage + Runtime -> deploy/runtime.bigimage.env
-VARIANT=bigimage bash 5_run.sh             # container: 10 train steps + 1 eval on the warm m5
-VARIANT=bigimage bash 6_cleanup.sh         # host: delete the Runtime + the CP
+bash 1_prepare_data.sh          # container: prepare_data.sh (all datasets, or DATASET=<name>) + verify_data.py
+bash 5_run.sh                   # container: 10 train steps + 1 eval on the Code Interpreter; logs/<tag>.{log,csv,eval.csv,png}
+DATASET=gsm8k bash 5_run.sh     # easiest; good first run
+DATASET=libs  bash 5_run.sh     # pandas / scipy / sklearn tasks, still no image
+DATASET=gsm8k,gretelsql,hotpotqa bash 5_run.sh   # ad-hoc mix, eval/mix
 ```
 
-Networking stays pull-only (`networkMode=PUBLIC`, IAM `invoke_agent_runtime`, no inbound port).
-Deploy knobs: `CPU_INSTANCE`, `ROOT_FREE_GIB`, `FORCE_RECREATE=1`. Smoke results from the old folder
-are in `logs/bigimage/`.
+`2_build_image.sh`, `3_push_ecr.sh`, `4_deploy_runtime.sh` and `6_cleanup.sh` print
+`default Code Interpreter: no image/Runtime needed` and exit 0 when `SANDBOX=agentcore`.
 
-## Variant: `VARIANT=imagepool`: a pool of custom images, one per family (was `demo_cpu_imagepool`)
+**How it works:**
 
-`DATASET=mixed` needs one extra image (pandas). `VARIANT=imagepool` makes that the whole point: each
-step's batch spans three families, and **each family needs its own prebuilt image**:
+- Each episode opens its own Code Interpreter session (`StartCodeInterpreterSession`), runs its
+  write/exec/read ops (`InvokeCodeInterpreter`), and stops the session.
+- `AgentCoreSandbox` in `agentcore_slime_demo/sandbox.py` works in the session's native writable CWD.
+  `writeFiles` accepts only **relative** paths.
+- Sessions are isolated microVMs. No ARN and no IAM execution role are involved.
 
-- `datasci` → pandas (`deploy/Dockerfile.sandbox.datasci`)
-- `scipy` → scipy (`deploy/Dockerfile.sandbox.scipy`)
-- `sklearn` → scikit-learn (`deploy/Dockerfile.sandbox.sklearn`)
+**Quotas** (us-west-2 defaults, from `aws service-quotas list-service-quotas --service-code bedrock-agentcore`):
 
-None of these libraries is in the generic CPU image, so the routing matters. A `scipy` episode sent
-to the pandas image hits `ModuleNotFoundError` in its checker and scores 0. The routing is the same
-mechanism as `DATASET=mixed`: `task.image` → `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE`
-(`{"datasci": <arn>, "scipy": <arn>, "sklearn": <arn>}`), all on the client side. AgentCore never
-sees a task at invoke time. The Runtime count tracks distinct **images**, not tasks. GRPO groups are
-one family each, so the 0/1 reward scales never mix. The variant sets `DATASET=imagepool` (72 train /
-6 eval per family, `data/imagepool_*.jsonl`) and `run.sh` refuses to start without the ARN map.
+| Quota | Code | Default | This demo |
+|---|---|---:|---|
+| Concurrent active Code Interpreter sessions | L-CAF6F552 | 1000 | `S = CONC × engines` = 4 × 2 = **8** episodes in flight |
+| StartCodeInterpreterSession rate | L-6B09F374 | 30/s | about one per episode |
+| InvokeCodeInterpreter rate (every write_file/exec/read_file) | L-04A719E9 | 30/s | about 6–10 per episode, spread over turns |
+
+The default `CONC=4` sits far below all three quotas. The invoke rate is the binding one: at about
+8 ops/episode and 20 s/episode, 30/s allows roughly 75 episodes in flight. Raise the quota before
+running with `CONC ≳ 32`.
+
+**Opt-in: your own Runtime** (`SANDBOX=agentcore-runtime`). Every step then does real work:
 
 ```bash
-VARIANT=imagepool bash 1_prepare_data.sh   # container: build_mixed_datasets.py --name imagepool (offline, stdlib)
-VARIANT=imagepool bash 2_build_image.sh    # host: three arm64 images datasci / scipy / sklearn
-VARIANT=imagepool bash 3_push_ecr.sh       # host: -> ECR acs-sandbox-{datasci,scipy,sklearn}
-VARIANT=imagepool bash 4_deploy_runtime.sh # host: deploy/deploy_imagepool.py -> 3 VPC-mode Runtimes
-                                           #   -> deploy/runtime.imagepool.env (the ARN_BY_IMAGE map)
-VARIANT=imagepool bash 5_run.sh            # container: 10 train steps + 1 eval; eval/imagepool + per-family evals
-VARIANT=imagepool bash 6_cleanup.sh        # host: delete the three Runtimes
+SANDBOX=agentcore-runtime bash 2_build_image.sh     # arm64 image from deploy/Dockerfile.sandbox.cpu (stdlib only)
+SANDBOX=agentcore-runtime bash 3_push_ecr.sh        # -> ECR acs-tasks-cpu
+SANDBOX=agentcore-runtime bash 4_deploy_runtime.sh  # Runtime acs_tasks_cpu -> deploy/runtime.env (ARNS)
+SANDBOX=agentcore-runtime bash 5_run.sh             # without step 4: the baked shared K=2 acs_sandbox_cpu ARNs
+SANDBOX=agentcore-runtime bash 6_cleanup.sh
 ```
 
-`FORCE_RECREATE=1 VARIANT=imagepool bash 4_deploy_runtime.sh` recreates the three Runtimes to pick
-up rebuilt images. Old smoke logs are in `logs/imagepool/`.
+- `Dockerfile.sandbox.cpu` is `python:3.12-slim` plus the sandbox server. It has **no pandas, scipy or
+  sklearn**, so `DATASET=libs` and the datasci share of `mixed` score 0 on it unless you add those
+  libraries to the image.
+- The vendored lib still routes `task.image` to `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` when you give
+  it a per-image ARN map.
+- `AGENTCORE_SANDBOX_RUNTIME_ARNS` (comma list) fans episodes out round-robin for the Runtime-count
+  ablation (`run_runtime_ablation.sh`).
 
-## Heartbeat: `HEARTBEAT=1` keeps idle sessions warm across the weight-sync barrier (was `demo_cpu_heartbeat`)
-
-While slime syncs weights, generation stops and a sandbox session can sit idle. If it is idle past
-AgentCore's timeout, the session is reclaimed. `HEARTBEAT=1` (default `0`, which leaves the run
-unchanged) wraps every episode's sandbox in `KeptSandbox`. A process-wide `SessionKeeper`
-(`agentcore_slime_demo/session_keeper.py`, outside the harness) then pings any session idle for more
-than `HEARTBEAT_IDLE × HEARTBEAT_PING_FRACTION` seconds (defaults 600 × 0.5) with an `exec("true")`.
-Each ping logs `[demo] heartbeat_session=… total_pings=…`. The knob works the same way in
-`demo_cpu_scale_lanes` (where it also covers the persistent lane sessions), `demo_gpu_single` and
-`demo_gpu_farm`. `demo_cpu_terminalbench` always runs its own keeper for pre-opened sessions.
-`HEARTBEAT_KEEP_WARM=1` is still accepted as an alias.
-
-It matters most when sessions outlive one step: Mode B, warm-shared `VARIANT=bigimage`, long
-convergence runs. With the default 1–2-minute episodes, a session rarely goes idle long enough to need
-a ping.
+**Same episode, same reward, different ops: `compare_backends.py`**
 
 ```bash
-python3 heartbeat_demo.py                          # offline, ~30 s: naive loss -> heartbeat survives -> recover
-HEARTBEAT=1 DATASET=deepscaler bash 5_run.sh       # the real trainer with the keeper on
+python3 compare_backends.py --backends local                                  # offline: solved=True reward=1.0
+AGENTCORE_SANDBOX_RUNTIME_ARN=<cpu-arn> python3 compare_backends.py --backends local agentcore agentcore-runtime
 ```
 
-`heartbeat_demo.py` runs its three acts against `agentcore_idle_sim.py` by default, or against a
-real Code Interpreter with `REAL_AGENTCORE=1`. The old smoke log is in `logs/heartbeat/`. For 200
-steps, use `convergence/15_cpu_tasks_heartbeat.sh`.
+The script asserts that every backend gives the same reward, then prints who builds the image, which
+deps you get, and the deploy cost. Old logs are in `logs/customruntime/`.
 
-## Custom vs managed Runtime: `compare_backends.py` (was `demo_cpu_customruntime`)
+## `HEARTBEAT=1`: keep idle Runtime sessions warm across the weight-sync barrier (was `demo_cpu_heartbeat`)
 
-The same `MockPolicy` episode runs against each backend, the script asserts that every backend gives
-the same reward, and then it prints a table of the operational differences. Every backend exposes
-the same `write_file`/`exec`/`read_file` contract, so the harness is unchanged and only the
-operations differ: who builds the image, which deps you get, and the deploy cost.
+While slime syncs weights, generation stops and sandbox sessions sit idle. On **your own Runtime**
+(`SANDBOX=agentcore-runtime`), an idle session is reclaimed after its idle timeout.
+
+- **What it does.** `HEARTBEAT=1` (default 0, which leaves the run unchanged) wraps every episode's
+  sandbox in `KeptSandbox`. A process-wide `SessionKeeper`
+  (`session_keeper.py`) then pings any session that has been idle for more than
+  `HEARTBEAT_IDLE × HEARTBEAT_PING_FRACTION` s (600 × 0.5) with `exec("true")`. Each ping logs
+  `[demo] heartbeat_session=…`.
+- **Code Interpreter: no effect.** On the default Code Interpreter a session ends at the
+  `session_timeout_seconds` set when it starts, however much traffic it gets. Pings do not extend it
+  (verified live). `run.sh` therefore warns and turns `HEARTBEAT` off for `SANDBOX=agentcore`, and the
+  lib skips it with one `[demo] heartbeat_skipped=code_interpreter` line.
+- **The Code Interpreter lever.** Set `AGENTCORE_CI_SESSION_TIMEOUT` (default **3600 s** per episode,
+  max 8 h). Every session is stopped when its episode ends, so a generous
+  timeout costs nothing.
 
 ```bash
-python3 compare_backends.py --backends local                              # offline smoke: solved=True reward=1.0
-AWS_REGION=us-west-2 AGENTCORE_SANDBOX_RUNTIME_ARN=<cpu-arn> \
-  python3 compare_backends.py --backends local agentcore agentcore-runtime  # live: AWS creds + a CPU Runtime ARN
+python3 heartbeat_demo.py                      # offline ~30 s: naive loss -> heartbeat survives -> recover
+HEARTBEAT=1 SANDBOX=agentcore-runtime DATASET=deepscaler bash 5_run.sh
 ```
 
-Training on your own custom Runtime is simply this demo's default (`SANDBOX=agentcore-runtime` on
-the Runtimes that step 4 deploys). The former `demo_cpu_customruntime` run and its logs are in
-`logs/customruntime/`.
+## Knobs (env vars, defaults from `run.sh`)
 
-## Folder layout (self-contained)
-- `agentcore_slime_demo/` — vendored shared library (this demo imports only this copy;
-  `run.sh` puts `$DEMO_DIR` on `PYTHONPATH`, not `/work/code`), incl. `build_real_datasets.py` +
-  `real_datasets.py` (the HuggingFace loaders → task rows)
-- `1_…6_*.sh` — the numbered step scripts (settings in `deploy/demo.env`, shared logic in `deploy/steps_common.sh`)
-- `deploy/` — `Dockerfile.sandbox.cpu`, the Dockerfile the sandbox image is built from, and
-  `Dockerfile.sandbox.datasci` (the same server + pandas, for `DATASET=mixed`), and for
-  `VARIANT=bigimage` `Dockerfile.sandbox.bigcpu` + `deploy_bigimage.py` (CPU capacity provider + Runtime),
-  and for `VARIANT=imagepool` `Dockerfile.sandbox.{scipy,sklearn}` + `deploy_imagepool.py` (3 VPC Runtimes)
-- `probe_bigimage.py`, `netcheck.py` (+ `netcheck_sample_{good,bad}.json`): offline probes for the bigimage variant
-- `heartbeat_demo.py` (+ `agentcore_idle_sim.py`): offline probe for `HEARTBEAT=1`;
-  `compare_backends.py`: custom-vs-managed Runtime contrast
-- `logs/{bigimage,imagepool,heartbeat,customruntime}/`: smoke logs from the merged folders
-- `prepare_data.sh` — **download + prepare the datasets** (step 1; all, or `DATASET=<name>`); idempotent
-- `verify_data.py` — offline checker proof per real dataset (reference PASSES, wrong FAILS)
-- `build_dataset.py` — the MBPP loader; `build_mixed_datasets.py` — builds `DATASET=mixed`
-  (offline, stdlib); `data/` — every task's `*_train.jsonl` / `*_eval.jsonl`, plus
-  `mixed_train.jsonl` / `mixed_eval.jsonl` and per-family `mixed_<family>_eval.jsonl` (and the
-  same for `imagepool_*`; `build_mixed_datasets.py --name imagepool`)
-- `run.sh` — the RL training run (async/decoupled slime)
-- `metrics.py` — reward + latency parsing (CSVs + PNG)
-
-## Step by step (numbered scripts; run from this dir on the HOST — container steps `docker exec` themselves)
-
-Prereqs: the `agentcore_p4` container (repo at `/work/code`), `AWS_REGION=us-west-2` + AWS creds,
-the base checkpoint `code/p4_slime_train/ckpt/Qwen3-4B_torch_dist` (`CKPT_BASE`) and the Qwen3-4B HF
-snapshot in the container cache.
-
-```bash
-bash 1_prepare_data.sh     # 1. container: prepare_data.sh (all datasets, or DATASET=<name>) + verify_data.py
-bash 2_build_image.sh      # 2. arm64 images cpu (Dockerfile.sandbox.cpu) + datasci (Dockerfile.sandbox.datasci)
-bash 3_push_ecr.sh         # 3. -> ECR acs-tasks-cpu, acs-tasks-datasci (deploy/images.env)
-bash 4_deploy_runtime.sh   # 4. Runtimes acs_tasks_cpu, acs_tasks_datasci -> deploy/runtime.env
-                           #    (ARNS = cpu; ARN_BY_IMAGE {cpu,datasci} for DATASET=mixed)
-bash 5_run.sh              # 5. container: 10 train steps + 1 eval; logs/<tag>.{log,csv,eval.csv,png}
-bash 6_cleanup.sh          # 6. delete the Runtimes (ECR repos, data, logs, ckpt are kept)
-```
-
-- **Single-dataset runs** only need the `cpu` image: prefix steps 2/3/4/6 with
-  `IMAGES=cpu:Dockerfile.sandbox.cpu`. `datasci` is only routed to by `DATASET=mixed`.
-- **Without step 4**, `5_run.sh` falls back to the baked shared K=2 `acs_sandbox_cpu` ARNs in `run.sh`.
-- **`VARIANT=bigimage`** runs the same six steps on a CPU Instance, and **`VARIANT=imagepool`** on
-  a pool of three images (see the sections above).
-- **`HEARTBEAT=1`** can be added to any `5_run.sh`.
-- `FORCE_RECREATE=1 bash 4_deploy_runtime.sh` recreates the Runtimes.
-
-Pick the dataset at run time; the file prefix == `DATASET`, so nothing else changes:
-```bash
-DATASET=gsm8k bash 5_run.sh                       # easiest — good first run
-DATASET=gsm8k,gretelsql,hotpotqa bash 5_run.sh    # ad-hoc mix, eval/mix (no build step)
-DATASET=mixed bash 5_run.sh                       # prebuilt math+sql+ctf+datasci, eval/mixed
-FAMILIES=math,sql,swe,rag DATASET=mixed bash 1_prepare_data.sh   # rebuild the prebuilt mix
-```
-Only knobs matching `PASS_RE` in `deploy/steps_common.sh` are forwarded by `docker exec`; add new ones there
-(all demo copies are identical).
-Keep the train set `>= NR*RB` prompts so one epoch spans the whole run (save-only-at-end holds).
-`verify_data.py [names…]` re-checks the checkers offline (reference PASSES, a wrong one FAILS).
-
-### Knobs (env vars, defaults from `run.sh`)
 | Knob | Default | Meaning |
 |---|---|---|
-| `DATASET` (alias `FAMILY`) | `mbpp` | dataset, comma list to mix, or `mixed` |
-| `SANDBOX` | `agentcore-runtime` | remote Runtime; `agentcore` = Code Interpreter. `local` is rejected |
+| `DATASET` (alias `FAMILY`) | `mbpp` | dataset, comma list to mix, `mixed` or `libs` |
+| `SANDBOX` | `agentcore` | managed Code Interpreter; `agentcore-runtime` = your own Runtime (needs ARNs). `local` is rejected |
 | `MODE` | `B` | fully-async (staleness grows with `CONC`); `A` = 1-step-async |
 | `RB` / `NS` / `NR` / `TEMP` | 4 / 8 / 11 / 1.0 | prompts/step, GRPO group, 10 train + 1 eval, temperature |
-| `CONC` | `4` | concurrent episodes `S = CONC×2`; Mode B buffer depth |
+| `CONC` | `4` | concurrent episodes per engine; `S = CONC × engines` |
 | `INFER_CONC` | `0` (off) | caps decode concurrency while sweeping `CONC` |
-| `EVAL_INTERVAL` / `EVAL_NS` / `SAVE_INTERVAL` | 10 / 2 / 1000000 | eval cadence / samples / save-only-at-end |
-| `VARIANT` | unset | `bigimage` (CPU Instance) or `imagepool` (3-image pool) |
-| `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` | from `deploy/runtime.env` | image → ARN map; `DATASET=mixed` and `VARIANT=imagepool` need it |
-| `HEARTBEAT` / `HEARTBEAT_IDLE` / `HEARTBEAT_PING_FRACTION` | 0 / 600 / 0.5 | keep idle sessions warm across the weight-sync barrier |
+| `EVAL_INTERVAL` / `EVAL_NS` / `SAVE_INTERVAL` | 10 / 2 / 1000000 | eval cadence / samples / save only at the end |
+| `AGENTCORE_SANDBOX_RUNTIME_ARNS` | baked K=2 | only for `SANDBOX=agentcore-runtime` |
+| `HEARTBEAT` / `HEARTBEAT_IDLE` / `HEARTBEAT_PING_FRACTION` | 0 / 600 / 0.5 | session keeper (own Runtime only; no-op on the Code Interpreter) |
+| `AGENTCORE_CI_SESSION_TIMEOUT` | 3600 | Code Interpreter session cap in seconds, set at session start (max 28800) |
+| `ACTOR_GPUS` / `ROLLOUT_GPUS` | 4 / 4 | GPU split (TP2 actor, so `ACTOR_GPUS` is even) |
+| `SLIME_CUDA_VISIBLE` / `SLIME_NUM_GPUS` | unset / 8 | pin ray to a GPU subset on a shared box (e.g. `2,3,4,5` / `4`) |
 
-Runtime-count ablation (`RUNTIMES={1 2 4}`): `./run_runtime_ablation.sh`. Train to convergence
-(inside the container): `DATASET=mbpp STEPS=50 EVAL_EVERY=10 SANDBOX_CONC=4 SANDBOX_RUNTIMES=2 ./train.sh`
-(`STEPS` → `NR=STEPS+1`, `EVAL_EVERY` → `EVAL_INTERVAL`, `SANDBOX_CONC` → `CONC`,
-`SANDBOX_RUNTIMES` → K). For a mix, `eval/mix` can rise while one family lags; the `[demo]` per-family
-signal in the log shows each family.
+Only knobs that match `PASS_RE` in `deploy/steps_common.sh` are forwarded by `docker exec`.
 
-### Key metrics
-`rollout/raw_reward` (learning signal), `train/grad_norm`, `eval/<dataset>`, and the
-`perf/sandbox_ms_*` vs `perf/sglang_gen_ms_*` split (is the sandbox or SGLang the bottleneck).
-`metrics.py` also writes the raw per-op CSVs `<log>.sandbox_ops.csv` and `<log>.sglang_gen.csv`.
+To train to convergence, run inside the container:
+
+```bash
+DATASET=gsm8k STEPS=50 EVAL_EVERY=10 SANDBOX_CONC=4 ./train.sh
+```
+
+`STEPS` maps to `NR=STEPS+1`, `EVAL_EVERY` to `EVAL_INTERVAL` and `SANDBOX_CONC` to `CONC`.
+`SANDBOX_RUNTIMES` caps K and applies only with `SANDBOX=agentcore-runtime`. Keep the train set at
+`>= NR×RB` prompts so the run stays in one epoch.
+
+## Metrics
+
+`5_run.sh` runs `metrics.py` on its log and writes `logs/<tag>.{csv,eval.csv,png}`, plus the raw
+per-op files `<tag>.sandbox_ops.csv` and `<tag>.sglang_gen.csv`. Watch these:
+
+- `rollout/raw_reward`, the learning signal.
+- `eval/<dataset>`, the held-out solve-rate.
+- `perf/sandbox_ms_{mean,p50,p95}` and `perf/sandbox_count`, the sandbox round-trips.
+- `perf/sglang_gen_ms_*`, pure decode time.
+- The open/warm split in the `[demo]` lines.
+
+The harness is in-process, so both latency splits are fully present in the log.
+
+## Folder layout (self-contained)
+
+- `agentcore_slime_demo/`: the vendored shared lib. `run.sh` puts `$DEMO_DIR` on `PYTHONPATH`. It adds:
+  - `build_real_datasets.py` and `real_datasets.py` (HF loaders).
+- `1_…6_*.sh`: the numbered steps. Settings are in `deploy/demo.env` (the `SANDBOX` switch lives there)
+  and shared logic in `deploy/steps_common.sh`.
+- `deploy/`: `Dockerfile.sandbox.cpu` (opt-in own Runtime) and `agentcore_deploy.py`.
+- `prepare_data.sh`: download and prepare the data (step 1).
+- `verify_data.py`: an offline checker proof (the reference PASSES, a wrong answer FAILS).
+- `build_dataset.py` (MBPP), `build_family_datasets.py` (zoo), `build_mixed_datasets.py` (`mixed`, `libs`).
+- `data/`: `*_train.jsonl` / `*_eval.jsonl` (incl. `libs_*`, `mixed_*`).
+- `run.sh`: the RL run. `train.sh`: the convergence wrapper. `metrics.py`: parsing, CSVs, PNG, stickiness.
+- Probes: `compare_backends.py`, `heartbeat_demo.py` (+ `agentcore_idle_sim.py`),
+  `smoke_remote_families.py`.
+- `logs/{imagepool,heartbeat,customruntime}/`: logs from the merged folders.
+  `logs/bigimage/` is moving to `demo_cpu_instance_pool`.
+
+Prereqs: the `agentcore_p4` container (repo at `/work/code`), `AWS_REGION=us-west-2` and AWS creds,
+the base checkpoint `code/p4_slime_train/ckpt/Qwen3-4B_torch_dist` (`CKPT_BASE`), and the Qwen3-4B HF
+snapshot in the container cache.

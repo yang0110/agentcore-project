@@ -96,6 +96,54 @@ bash 6_cleanup.sh          # 6. delete every Runtime in tasks/arn_by_image.json
   `probe_coldstart.py` splits each cold open into pull+boot vs ready.
 - Train to convergence (inside the container): `train.sh` (`STEPS`, `EVAL_EVERY`, `SANDBOX_CONC`).
 
+## Warm-start probe (`warmstart/`): why the pre-open works, and what heartbeat adds
+
+A small host-only probe (no GPU, no model, no trainer; about 7 min, a few cents) that isolates the two
+mechanisms above. The same M=24 MockPolicy `sql` episodes run in batches of 6 in three modes:
+
+- **cold**: open at episode start.
+- **preopen**: the next batch is booted while this one runs, the same look-ahead idea as
+  `TB_PREOPEN_BATCHES`.
+- **heartbeat**: sessions sit idle 150 s, past a 60 s idle timeout, with and without `SessionKeeper`
+  pings.
+
+The probe runs against a stdlib CPU Runtime, `acs_warmstart_cpu`, and the managed Code Interpreter. The
+Runtime reuses the shared `acs-sandbox-cpu:latest` image with a 60 s `idleRuntimeSessionTimeout`.
+
+```bash
+bash warmstart/run_warmstart.sh                                  # creates the Runtime if needed, then runs
+BACKENDS=runtime,codeinterpreter bash warmstart/run_warmstart.sh # both backends (the recorded run)
+BACKENDS=local IDLE_S=3 GAP_S=5 bash warmstart/run_warmstart.sh  # offline, seconds
+bash warmstart/run_warmstart.sh cleanup                          # delete the Runtime
+```
+
+Recorded run (`warmstart/logs/warmstart_20260925_100103.*`, 2026-09-25, us-west-2; all rewards 1.0):
+
+| backend | mode | wait p50 | episodes that waited for a boot | idle held | makespan |
+|---|---|---:|---:|---:|---:|
+| own Runtime | cold | 774 ms | 24/24 | 0 s | 31.9 s |
+| own Runtime | preopen | **5 ms** | 8/24 (the first batch) | 75 s | 25.5 s (−20 %) |
+| Code Interpreter | cold | 1715 ms | 24/24 | 0 s | 28.7 s |
+| Code Interpreter | preopen | **0 ms** | 6/24 (the first batch) | 70 s | 24.3 s (−15 %) |
+
+| backend | heartbeat | sessions surviving 150 s idle | resume |
+|---|---|---:|---|
+| own Runtime | on (14 pings) | **3/3** | 104 ms, files intact |
+| own Runtime | off | 0/3 | **silently reclaimed**: the same session id returns a fresh, empty sandbox |
+| Code Interpreter | on / off | 0/3 | expires at its `sessionTimeoutSeconds` regardless of pings |
+
+What the probe shows:
+
+- **Pre-open removes the boot from the critical path; only the first batch pays it.** The price is
+  "idle held": booted sessions waiting for work. That is the same trade-off `preopen_idle_ms` shows at
+  full scale. The smoke had 64 sessions ahead and about 95 % idle, so try `TB_PREOPEN_BATCHES=1`.
+- **Heartbeat only helps your own Runtime.** Without it, a reclaimed session looks healthy but has lost
+  its files, which is why this demo's keeper is always on. On the Code Interpreter the lever is a
+  generous session timeout, not pings.
+
+Knobs: `BACKENDS` (runtime / codeinterpreter / local), `MODES` (cold,preopen,heartbeat), `FAMILY`,
+`M`, `BATCH`, `THINK_S`, `IDLE_S`, `GAP_S`, `HB_SESSIONS`. `warmstart/runtime.env` holds the Runtime ARN.
+
 ## Knobs (env vars; defaults in `run.sh`)
 
 | Knob | Default | Meaning |
@@ -133,6 +181,8 @@ Deploy-side: `TB_LIMIT` / `TB_TASKS` (subset), `SKIP_BUILD=1` (reuse pushed imag
   hook), `agentcore_runtime_sandbox.AgentCoreRuntimeSandbox` (client; stops the session on exit),
   `sandbox_server_agent.py` (the in-image `/invocations` server), `session_keeper.py` (heartbeat),
   and `task_families.TerminalBenchTask`.
+- `warmstart/` — the warm-start probe: `warmstart_demo.py`, `deploy_warmstart.py`, `run_warmstart.sh`,
+  `runtime.env`, `logs/`.
 - `fetch_terminalbench.py` — fetch + classify the corpus into `tasks/` + `manifest.json`.
 - `deploy/deploy_terminalbench.py` — build+push one image per task, register one Runtime per task,
   bake the hidden oracle + `grade.sh`; writes `tasks/arn_by_image.json`.

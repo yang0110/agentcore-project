@@ -10,7 +10,8 @@
 #   SANDBOX_CONC      concurrent episodes (pipeline width).      -> run.sh CONC ; S = CONC*num_engines
 #   SANDBOX_RUNTIMES  # DISTINCT sandbox Runtimes K to spread    -> truncates AGENTCORE_SANDBOX_RUNTIME_ARNS
 #                     episodes across (round-robin). unset=use      to its first K entries.
-#                     run.sh's baked default (K=2).
+#                     run.sh's baked default (K=2). Only for SANDBOX=agentcore-runtime — the default
+#                     SANDBOX=agentcore (managed Code Interpreter) has no ARNs to cap.
 #
 # The two sandbox knobs are deliberately SEPARATE (they scale different things):
 #   * SANDBOX_CONC = how many episodes run at once (throughput/staleness pipeline width);
@@ -18,7 +19,7 @@
 # CONC can exceed K (many concurrent sessions per Runtime) or be below it. See run.sh's header + the
 # sandbox-concurrency ablation (docs/sandbox-concurrency-ablation.md).
 #
-# Everything else (RB/NS/TEMP/MODE/SANDBOX/CKPT_BASE/AWS creds/…) passes straight through to run.sh.
+# Everything else (RB/NS/TEMP/MODE/SANDBOX/DATASET/HEARTBEAT/CKPT_BASE/AWS creds/…) passes straight through to run.sh.
 #
 # CONVERGENCE NOTE: the right STEPS is task-dependent — watch eval/<task> (metrics.py) and raise it.
 # slime force-saves at the final step AND at every epoch boundary; staying at STEPS <= (train_rows/RB - 1)

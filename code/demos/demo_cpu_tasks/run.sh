@@ -2,17 +2,18 @@
 # demo_cpu_tasks — ONE demo over many RLVR datasets AND their mixes (DATASET=mbpp|gsm8k|…, default
 # mbpp; DATASET=a,b,c or DATASET=mixed for a MIXED-task batch — see the DATASET selector below; a single
 # dataset is just the one-element mix). REMOTE-sandbox, OUR multi-turn run_episode harness. REAL slime training,
+# on the DEFAULT AgentCore sandbox (SANDBOX=agentcore = the managed Code Interpreter: no Docker image,
+# no ECR, no Runtime to deploy — it already ships python3.12 + numpy/pandas/scipy/sklearn/sympy/torch-cpu,
+# gcc and node, which covers every dataset here).
 # ASYNC (decoupled) mode. This dir owns its data/ + ckpt/, but imports the SHARED agentcore_slime_demo
 # library from its own vendored copy in this dir (on PYTHONPATH). Runs INSIDE the persistent
 # container agentcore_p4 (slimerl/slime).
 #
 # Harness/sandbox split (SAME decoupled shape as demo_gpu_single): the run_episode harness runs IN-PROCESS
-# on this box inside generate.generate, and the sandbox (write_file / exec / read_file) is a
-# SINGLE remote AgentCore Runtime (sandbox_server_agent.py), reached over invoke_agent_runtime.
-# There is only ONE runtime here — the sandbox; there is NO separate harness/adapter Runtime.
-# Unlike demo_gpu_single (KernelBench needs CUDA => GPU g6 sandbox), this demo's checkers (MBPP, math, SQL, …) are plain
-# Python/IO => it points at a CPU-backed sandbox Runtime (e.g. the a2 CPU sandbox acs_sandbox_a2
-# on the acs_cpu_cp capacity provider).
+# on this box inside generate.generate, and the sandbox (write_file / exec / read_file) is ONE fresh
+# AgentCore session per episode — by default a managed Code Interpreter session (SANDBOX=agentcore),
+# opt-in our own Runtime built from deploy/Dockerfile.sandbox.cpu (SANDBOX=agentcore-runtime, reached
+# over invoke_agent_runtime). There is NO separate harness/adapter Runtime.
 #
 # Async/decoupled: agentic rollouts have long, variable latency (multi-turn code repair in a
 # sandbox). slime's async driver (train_async.py) runs trainer GPUs and SGLang inference GPUs on
@@ -32,9 +33,9 @@
 # GPU split (8xL40S): 4 train + 4 inference + 0 env. MBPP checker is plain Python/IO => CPU envs,
 # so all 8 GPUs serve the policy (train + infer).
 #
-# Sandbox backend (SANDBOX): agentcore-runtime -> the SINGLE remote AgentCore Runtime sandbox
-# (default; requires AGENTCORE_SANDBOX_RUNTIME_ARN); agentcore -> AWS Code Interpreter microVM;
-# SANDBOX=local is DISABLED for CPU demos (remote-only; see the guard below). Tunables: MODE (A|B
+# Sandbox backend (SANDBOX): agentcore (DEFAULT) -> the managed AWS Code Interpreter microVM (nothing
+# to build or deploy); agentcore-runtime -> our own AgentCore Runtime sandbox (opt-in; needs
+# AGENTCORE_SANDBOX_RUNTIME_ARN(S) — steps 2-4 with SANDBOX=agentcore-runtime); SANDBOX=local is DISABLED for CPU demos (remote-only; see the guard below). Tunables: MODE (A|B
 # async mode), RB (rollout-batch-size), NS (n-samples-per-prompt), NR (num-rollout), TEMP
 # (sampling temp), CONC (sglang-server-concurrency), EVAL_INTERVAL/EVAL_NS.
 #
@@ -58,39 +59,24 @@
 # same reward. Reward variance within groups (harder tasks / higher temp) yields nonzero gradient.
 set -euo pipefail
 
-# VARIANT=bigimage (was demo_cpu_bigimage): the SAME trainer, but the sandbox is a LARGE (>2 GB) custom
-# image on a CPU capacity-provider INSTANCE (m5), run warm-shared: SANDBOX=agentcore-ray-farm + one
-# shared runtimeSessionId (cold-boot paid once) with a fresh CpuFarm env per episode sub_session.
-# Deploy it with deploy/deploy_bigimage.py (or VARIANT=bigimage bash 2_..4_*.sh); defaults to DATASET=deepscaler.
-VARIANT="${VARIANT:-}"
-# VARIANT=imagepool (was demo_cpu_imagepool): a POOL of custom microVM images, one per task family
-# (datasci=pandas, scipy, sklearn). DATASET=imagepool interleaves the three; each episode is routed to
-# its family's Runtime by task.image via AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE (written by
-# deploy/deploy_imagepool.py = VARIANT=imagepool bash 4_deploy_runtime.sh). A wrong image => the
-# checker's import fails => reward 0, so the routing is visible in the reward.
-if [ "$VARIANT" = "bigimage" ]; then
-   SANDBOX="${SANDBOX:-agentcore-ray-farm}"; DATASET="${DATASET:-${FAMILY:-deepscaler}}"
-elif [ "$VARIANT" = "imagepool" ]; then
-   DATASET="${DATASET:-${FAMILY:-imagepool}}"
-   if [ -z "${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}" ] && [ "${SANDBOX:-agentcore-runtime}" = "agentcore-runtime" ]; then
-      echo "VARIANT=imagepool needs AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE (a JSON {image->ARN} map covering datasci/scipy/sklearn) — run VARIANT=imagepool bash 4_deploy_runtime.sh first." >&2
-      exit 1
-   fi
-elif [ -n "$VARIANT" ]; then
-   echo "unknown VARIANT=$VARIANT (bigimage | imagepool)" >&2; exit 1
-fi
-SANDBOX="${SANDBOX:-agentcore-runtime}"   # agentcore-runtime -> SINGLE remote AgentCore Runtime sandbox (default);
-                                          # agentcore -> AWS Code Interpreter microVM. CPU demo => REMOTE-ONLY (no local).
+SANDBOX="${SANDBOX:-agentcore}"   # agentcore -> managed Code Interpreter (DEFAULT, no image);
+                                  # agentcore-runtime -> our own Runtime. CPU demo => REMOTE-ONLY (no local).
 # CPU demos run ONLY on remote managed serverless AgentCore sandbox sessions — never local. The local
 # (in-container LocalSandbox) path is rejected here so a CPU training run can never silently fall back
 # off the AgentCore substrate the demo is meant to exercise. (GPU demos keep a local fallback because
 # a remote g6 instance may be unavailable.)
 if [ "$SANDBOX" = "local" ]; then
-   echo "SANDBOX=local is not supported for CPU demos (remote-only) — use agentcore-runtime (default) or agentcore." >&2
+   echo "SANDBOX=local is not supported for CPU demos (remote-only) — use agentcore (default) or agentcore-runtime." >&2
    exit 1
 fi
-# The remote sandbox Runtime ARN (sandbox_server_agent.py). REQUIRED for SANDBOX=agentcore-runtime.
-# this demo's checkers (MBPP, math, SQL, …) are pure Python => a CPU-backed sandbox Runtime (e.g. acs_sandbox_a2 on acs_cpu_cp).
+case "$SANDBOX" in agentcore|aws|agentcore-runtime|runtime) ;;
+   *) echo "unknown SANDBOX=$SANDBOX (agentcore | agentcore-runtime)" >&2; exit 1 ;; esac
+# SANDBOX=agentcore (default): the managed Code Interpreter needs NO ARN — each episode starts its own
+# session (StartCodeInterpreterSession). Quotas (us-west-2 defaults): 1000 concurrent sessions, but only
+# 30 StartCodeInterpreterSession/s and 30 InvokeCodeInterpreter/s per account — every write_file/exec/
+# read_file is one invoke, so the default S = CONC*num_engines = 8 episodes (~6 ops each) stays far below.
+# The remote sandbox Runtime ARN (sandbox_server_agent.py). REQUIRED only for SANDBOX=agentcore-runtime
+# (our own Runtime: deploy/Dockerfile.sandbox.cpu, stdlib only — use it for the stdlib datasets).
 # AGENTCORE_SANDBOX_RUNTIME_ARNS (plural, comma-separated) fans episodes out round-robin across
 # SEVERAL sandbox Runtimes — the runtime-count throughput ablation knob. Either the plural list OR
 # the single ARN satisfies the requirement below.
@@ -100,18 +86,10 @@ fi
 # num_engines; it only spreads S=CONC*num_engines concurrent sessions across K endpoints. Override
 # by exporting AGENTCORE_SANDBOX_RUNTIME_ARNS (or ..._ARN) to sweep again.
 AGENTCORE_SANDBOX_RUNTIME_ARNS="${AGENTCORE_SANDBOX_RUNTIME_ARNS:-arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu-1gzBVp675S,arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu_1-adRZyEHM6g}"
-if [ "$SANDBOX" = "agentcore-runtime" ] && [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
+if [ "$SANDBOX" != "agentcore-runtime" ] && [ "$SANDBOX" != "runtime" ]; then
+   AGENTCORE_SANDBOX_RUNTIME_ARNS=""; AGENTCORE_SANDBOX_RUNTIME_ARN=""   # Code Interpreter: no ARN
+elif [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
    AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN (or ..._ARNS for the multi-Runtime sweep) to the CPU sandbox Runtime ARN (sandbox_server_agent.py; e.g. acs_sandbox_cpu from deploy_two_runtime.py)}"
-fi
-# SHARED-INSTANCE CPU FARM (SANDBOX=agentcore-ray-farm, the bigimage variant): all episodes invoke under
-# ONE shared runtimeSessionId (B4_SHARED_RUNTIME_SESSION) so they land on the SAME warm m5 — the ~60-80 s
-# capacity-provider cold-boot is paid ONCE per run — while the server's SANDBOX_FARM=cpu CpuFarm gives
-# every per-episode sub_session a FRESH isolated env (own workdir + HOME/TMPDIR/caches, wiped on close).
-# The ray-farm client reads ONLY the singular ARN (the baked K=2 ARNS list above is ignored here).
-if [ "$SANDBOX" = "agentcore-ray-farm" ]; then
-   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN to the big-image sandbox Runtime ARN printed by deploy/deploy_bigimage.py}"
-   B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-bigcpu-farm-$(date +%s)-$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
-   echo "shared-instance CPU farm: all episodes reuse runtimeSessionId=${B4_SHARED_RUNTIME_SESSION} (one warm m5)" >&2
 fi
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
@@ -157,17 +135,6 @@ SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"
 
 SLIME=/root/slime
 
-# CAPABILITY-ROUTING BY IMAGE (the custom-image mix). The `datasci` family (in DATASET=mixed) needs
-# pandas — absent from the generic CPU image. Each task carries an `image` tag (task.image: "cpu" for
-# the stdlib families, "datasci" for the pandas one), and make_sandbox routes an episode to the
-# Runtime whose image matches, via this JSON map:
-#     {"cpu": <CPU sandbox ARN>, "datasci": <pandas sandbox ARN>}
-# Build + deploy both images with the step scripts (bash 2_build_image.sh && bash 3_push_ecr.sh &&
-# bash 4_deploy_runtime.sh — they write this map to deploy/runtime.env), or set it here by hand. If unset (or a
-# tag is missing from the map), that image falls back to the round-robin CPU pool above — datasci
-# episodes then fail to import pandas and score 0. Single-dataset runs never need it.
-AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE="${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}"
-
 DEMO_DIR=/work/code/demos/demo_cpu_tasks
 CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"  # SHARED base Megatron ckpt
 HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
@@ -185,9 +152,9 @@ ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 #   real HF (RLVR):  mbpp (default; alias coding) gsm8k math500 deepscaler humaneval gretelsql
 #                    hotpotqa xlam mcp
 #   synthetic zoo:   math swe tool_use sql ctf rag regex config data planning (build_family_datasets.py)
-#   mixed:           the prebuilt math+sql+ctf+datasci mix (build_mixed_datasets.py; datasci needs the
-#                    pandas image via AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE above)
-#   imagepool:       datasci+scipy+sklearn, one custom image EACH (VARIANT=imagepool; eval/imagepool)
+#   mixed:           the prebuilt math+sql+ctf+datasci mix (build_mixed_datasets.py)
+#   libs:            datasci+scipy+sklearn (pandas / scipy / scikit-learn checkers; eval/libs). These
+#                    once needed one custom image each — the default Code Interpreter already has all three.
 # MIX: DATASET=a,b,c interleaves those datasets' train/eval files round-robin (balanced: each truncated
 # to the shortest) into ckpt/_mix/<a+b+c>_{train,eval}.jsonl, eval metric eval/mix. GRPO normalizes
 # advantage WITHIN a same-prompt group (one family); mixing is ACROSS groups, so the families' reward
@@ -239,9 +206,17 @@ EVAL_NAME="${EVAL_NAME:-$_EVAL_NAME}"
 HEARTBEAT="${HEARTBEAT:-${HEARTBEAT_KEEP_WARM:-0}}"
 HEARTBEAT_IDLE="${HEARTBEAT_IDLE:-600}"
 HEARTBEAT_PING_FRACTION="${HEARTBEAT_PING_FRACTION:-0.5}"
+# The managed Code Interpreter (SANDBOX=agentcore) ends a session at its session timeout whatever the
+# traffic — pings do not extend it — so HEARTBEAT is a no-op there; the lever is the timeout set at
+# session start, AGENTCORE_CI_SESSION_TIMEOUT (s; default 3600 per episode).
+AGENTCORE_CI_SESSION_TIMEOUT="${AGENTCORE_CI_SESSION_TIMEOUT:-3600}"
+if [ "$HEARTBEAT" = "1" ] && { [ "$SANDBOX" = agentcore ] || [ "$SANDBOX" = aws ]; }; then
+   echo "WARNING: HEARTBEAT=1 has no effect on the Code Interpreter (SANDBOX=$SANDBOX) — sessions expire at" \
+        "AGENTCORE_CI_SESSION_TIMEOUT=${AGENTCORE_CI_SESSION_TIMEOUT}s regardless of pings. Disabling; use SANDBOX=agentcore-runtime for heartbeats." >&2
+   HEARTBEAT=0
+fi
 _HB=""; [ "$HEARTBEAT" = "1" ] && _HB="_heartbeat"
-_VS="${VARIANT:+_$VARIANT}"; [ "$VARIANT" = "$_DS" ] && _VS=""   # imagepool: not _imagepool_imagepool
-SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}${_VS}${_HB}_async}"
+SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}${_HB}_async}"
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -382,7 +357,9 @@ MISC_ARGS=(
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 # Give ray ALL 8 physical GPUs. slime's placement reserves (ACTOR_GPUS + ROLLOUT_GPUS) of them.
-ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 \
+# Shared box only: SLIME_CUDA_VISIBLE=2,3,4,5 SLIME_NUM_GPUS=4 pins ray to a subset (default: all 8).
+[ -n "${SLIME_CUDA_VISIBLE:-}" ] && export CUDA_VISIBLE_DEVICES="$SLIME_CUDA_VISIBLE"
+ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${SLIME_NUM_GPUS:-8}" \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 RUNTIME_ENV_JSON="{
@@ -391,12 +368,12 @@ RUNTIME_ENV_JSON="{
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
     \"HEARTBEAT\": \"${HEARTBEAT}\",
+    \"AGENTCORE_CI_SESSION_TIMEOUT\": \"${AGENTCORE_CI_SESSION_TIMEOUT}\",
+    \"AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE\": \"$(printf '%s' "${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}" | sed 's/\\/\\\\/g; s/\"/\\\"/g')\",
     \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",
     \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARNS\": \"${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}\",
-    \"B4_SHARED_RUNTIME_SESSION\": \"${B4_SHARED_RUNTIME_SESSION:-}\",
-    \"AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE\": \"$(printf '%s' "${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}" | sed 's/\\/\\\\/g; s/\"/\\\"/g')\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"INFER_CONC\": \"${INFER_CONC:-0}\"

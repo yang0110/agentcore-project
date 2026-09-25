@@ -5,8 +5,8 @@
 # TASK / DATASET : HotpotQA multi-hop retrieval QA. Given a question + supporting
 #                  context, the policy reasons across passages and emits a short
 #                  answer; the checker scores it against gold (exact-match / F1).
-# SUBSTRATE      : REMOTE managed AgentCore sandbox Runtime (SANDBOX=agentcore-runtime),
-#                  K=2 CPU sandbox ARNs baked in. Answer-scoring checker => CPU sandbox.
+# SUBSTRATE      : the DEFAULT managed AgentCore Code Interpreter (SANDBOX=agentcore): one
+#                  microVM session per episode, no image / Runtime. Answer-scoring checker => CPU sandbox.
 # BOTTLENECK     : Long retrieved context inflates prompt length => SGLang prefill
 #                  is the pressure point; the checker is instant. Trainer + infer bound.
 # CONVERGENCE    : eval/hotpotqa mean reward (EM/F1) rises then plateaus. Partial

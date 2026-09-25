@@ -8,7 +8,7 @@ next to each demo's `ckpt/` as `train.convergence_<timestamp>.log` (01–10 all 
 See `README.md`.
 
 ```bash
-# ---- CPU demos (remote managed AgentCore sandbox, SANDBOX=agentcore-runtime) ----
+# ---- CPU task runs (DEFAULT managed Code Interpreter, SANDBOX=agentcore; nothing to deploy) ----
 # 01–10 = demo_cpu_tasks with DATASET=mbpp|math|gsm8k|math500|deepscaler|humaneval|gretelsql|hotpotqa|xlam|mcp
 bash code/demos/convergence/01_cpu_mbpp.sh      # MBPP coding
 bash code/demos/convergence/02_cpu_math.sh        # Hendrycks MATH
@@ -27,17 +27,18 @@ bash code/demos/convergence/11_cpu_mixed.sh      # DATASET=mixed (math+sql+ctf+d
 AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/<g6> \
   bash code/demos/convergence/12_gpu_single.sh    # one dedicated g6 GPU per session
 
-# 13/14 are LOCAL (demo_gpu_farm): start the farm on the HOST first, in the matching mode.
+# 13/14 are LOCAL (demo_gpu_farm_fractional / demo_gpu_farm_whole): start the farm on the HOST first, in the matching mode.
 #   (host)      bash code/deploy/run_local_gpu_runtime.sh fractional
-bash code/demos/convergence/13_gpu_farm_fractional.sh   # FARM=fractional: GPU 6 shared 0.5+0.5
+bash code/demos/convergence/13_gpu_farm_fractional.sh   # demo_gpu_farm_fractional: GPU 6 shared 0.5+0.5
 #   (host)      bash code/deploy/run_local_gpu_runtime.sh whole
-bash code/demos/convergence/14_gpu_farm_whole.sh        # FARM=whole: one GPU each on 6,7
+bash code/demos/convergence/14_gpu_farm_whole.sh        # demo_gpu_farm_whole: one GPU each on 6,7
 #   (host)      bash code/deploy/run_local_gpu_runtime.sh stop   # teardown
 
 # ---- Property demos, now real trainers (headline knob default-ON) ----
-bash code/demos/convergence/15_cpu_tasks_heartbeat.sh  # demo_cpu_tasks deepscaler + keep-warm (HEARTBEAT=1)
+bash code/demos/convergence/15_cpu_tasks_heartbeat.sh  # demo_cpu_tasks deepscaler + keep-warm (HEARTBEAT=1, own Runtime)
 bash code/demos/convergence/16_cpu_scale_lanes.sh  # 4x4x4 lanes: 4 workers : 4 engines : 4 microVMs (LANES=4, MODE=A)
-bash code/demos/convergence/17_cpu_tasks_imagepool.sh  # VARIANT=imagepool (needs deploy/runtime.imagepool.env)
+bash code/demos/convergence/17_cpu_tasks_libs.sh       # DATASET=libs (pandas/scipy/sklearn, Code Interpreter)
+bash code/demos/convergence/19_cpu_instance_pool.sh    # warm m5 pool, SANDBOX_POOL=2 (needs demo_cpu_instance_pool deploy/runtime.env)
 # 18 = demo_gpu_single + snapshot/resume; REMOTE (g6 ARN) or on-box (LOCAL_GPU=1, farm up on 6,7):
 AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/<g6> \
   bash code/demos/convergence/18_gpu_single_snapshot.sh   # app-level snapshot/resume (SNAPSHOT_EVERY=1)

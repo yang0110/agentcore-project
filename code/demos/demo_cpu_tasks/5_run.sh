@@ -3,6 +3,8 @@
 # full log to logs/<tag>.log, then parse it to <tag>.csv / .eval.csv / .png with metrics.py.
 # Defaults = the 10-step smoke (NR=11: 10 train steps + 1 eval + final ckpt). Override any knob, e.g.
 #     NR=3 DATASET=gsm8k bash 5_run.sh
+# SANDBOX defaults to agentcore (the managed Code Interpreter; steps 2-4 not needed). SANDBOX=agentcore-runtime
+# uses the Runtime from step 4.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/deploy/steps_common.sh"
@@ -14,7 +16,10 @@ if [ "$SUBSTRATE" = local-gpu ] || [ "${LOCAL_GPU:-0}" = 1 ]; then
   curl -fsS http://127.0.0.1:8080/ping >/dev/null || die "local GPU farm not answering on 127.0.0.1:8080 — run 4_deploy_runtime.sh"
 fi
 
-TAG="${RUN_TAG:-run}${VARIANT:+-$VARIANT}${DATASET:+-$DATASET}${FARM:+-$FARM}_$(date +%Y%m%d_%H%M%S)"
+_SFX=""
+if [ "$SANDBOX" != agentcore ]; then _SFX+="-$SANDBOX"; fi
+if [ "${HEARTBEAT:-0}" = 1 ]; then _SFX+="-hb"; fi
+TAG="${RUN_TAG:-run}${DATASET:+-$DATASET}${_SFX}_$(date +%Y%m%d_%H%M%S)"
 C_LOG="$C_DEMO_DIR/logs/$TAG.log"
 mkdir -p "$HERE/logs" 2>/dev/null || true
 log "step 5/6: run.sh  NR=$NR EVAL_INTERVAL=$EVAL_INTERVAL -> logs/$TAG.log"

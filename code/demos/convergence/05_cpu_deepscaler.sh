@@ -4,8 +4,8 @@
 # ============================================================================
 # TASK / DATASET : DeepScaleR competition-math problems (long chain-of-thought,
 #                  hardest of the math families). Boxed-answer checker vs gold.
-# SUBSTRATE      : REMOTE managed AgentCore sandbox Runtime (SANDBOX=agentcore-runtime),
-#                  K=2 CPU sandbox ARNs baked in. Answer-match checker => CPU sandbox.
+# SUBSTRATE      : the DEFAULT managed AgentCore Code Interpreter (SANDBOX=agentcore): one
+#                  microVM session per episode, no image / Runtime. Answer-match checker => CPU sandbox.
 # BOTTLENECK     : SGLang decode (long CoT dominates wall-clock); checker instant.
 #                  This is the run where a longer --rollout-max-response-len would
 #                  matter most, but we keep the demo default for comparability.

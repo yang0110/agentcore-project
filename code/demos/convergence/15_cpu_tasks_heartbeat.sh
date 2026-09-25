@@ -7,15 +7,18 @@
 #                  policy solves a hard math problem in the sandbox over up to a
 #                  few turns; RLVR checks the final answer. Train pool ~400 prompts,
 #                  disjoint held-out eval.
-# SUBSTRATE      : REMOTE managed AgentCore sandbox Runtime (SANDBOX=agentcore-runtime),
-#                  K=2 CPU sandbox ARNs (deploy/runtime.env or the run.sh defaults).
+# SUBSTRATE      : YOUR OWN AgentCore sandbox Runtime (SANDBOX=agentcore-runtime, set below),
+#                  K=2 CPU sandbox ARNs (deploy/runtime.env or the run.sh defaults). NOT the
+#                  default Code Interpreter: its sessions end at their session timeout whatever
+#                  the pings, so run.sh turns HEARTBEAT off there (the CI lever is
+#                  AGENTCORE_CI_SESSION_TIMEOUT).
 # PROPERTY (LIVE): this is the plain CPU trainer PLUS a session keep-warm layer.
 #                  HEARTBEAT=1 wraps every episode's sandbox in
 #                  KeptSandbox + a process-wide SessionKeeper heartbeat, so the
 #                  remote sandbox session survives the WEIGHT-SYNC BARRIER between
 #                  rollout steps (generation goes silent while weights sync; without
 #                  the heartbeat the session would idle out). HEARTBEAT=0
-#                  is exactly 05_cpu_deepscaler.sh.
+#                  is 05_cpu_deepscaler.sh on your own Runtime.
 #                  Over a 200-step convergence run there are ~200 barriers, so the
 #                  keep-warm path is exercised continuously — this is where it earns
 #                  its keep vs. the 10-step smoke.
@@ -28,7 +31,7 @@
 # TEARDOWN       : sessions close per-episode; the SessionKeeper thread ends with the run.
 # ----------------------------------------------------------------------------
 # Overridable, e.g.:  NR=401 HEARTBEAT_IDLE=900 bash 15_cpu_tasks_heartbeat.sh
-#   HEARTBEAT=0  -> disable keep-warm (== 05_cpu_deepscaler.sh)
+#   HEARTBEAT=0  -> disable keep-warm (== 05_cpu_deepscaler.sh with SANDBOX=agentcore-runtime)
 # ============================================================================
 set -euo pipefail
 
@@ -40,8 +43,9 @@ DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_tasks"
 : "${MODE:=B}"; : "${CONC:=4}"
 : "${DATASET:=deepscaler}"
 : "${HEARTBEAT:=1}"   # keep-warm across the weight-sync barrier (the point of this run)
-export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC DATASET HEARTBEAT
+: "${SANDBOX:=agentcore-runtime}"   # heartbeat only matters on your own Runtime
+export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC DATASET HEARTBEAT SANDBOX
 
 LOG="$DEMO/train.convergence_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_cpu_tasks HEARTBEAT=$HEARTBEAT ($DATASET)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
+echo ">>> converging demo_cpu_tasks HEARTBEAT=$HEARTBEAT SANDBOX=$SANDBOX ($DATASET)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

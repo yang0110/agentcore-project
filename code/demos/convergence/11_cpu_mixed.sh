@@ -8,8 +8,8 @@
 #                  family-specific hidden checker. For an ad-hoc mix, e.g.
 #                  DATASET=gsm8k,gretelsql,hotpotqa (run.sh interleaves them).
 #                  No harness/sandbox change — the run_episode loop is task-agnostic.
-# SUBSTRATE      : REMOTE managed AgentCore sandbox Runtime (SANDBOX=agentcore-runtime),
-#                  K=2 CPU sandbox ARNs baked in.
+# SUBSTRATE      : the DEFAULT managed AgentCore Code Interpreter (SANDBOX=agentcore): one
+#                  microVM session per episode, no image / Runtime.
 # BOTTLENECK     : Heterogeneous rewards across families. The interesting risk is
 #                  GRPO gradient imbalance — easy families (GSM8K) saturate while
 #                  hard ones (deepscaler/xlam) lag. Trainer + inference bound.

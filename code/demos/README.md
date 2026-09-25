@@ -29,59 +29,77 @@ bash 6_cleanup.sh          # delete the Runtime(s) (and the capacity provider wi
 ```
 
 Knobs pass straight through, for example `DATASET=gsm8k bash 5_run.sh` or `NR=51 bash 5_run.sh`.
-Without a `deploy/runtime.env`, `5_run.sh` falls back to the defaults in `run.sh`. For most CPU demos
-those are the baked shared `acs_sandbox_cpu` ARNs.
+Without a `deploy/runtime.env`, `5_run.sh` falls back to the defaults in `run.sh`. For
+`demo_cpu_tasks` that is the managed Code Interpreter, where no Runtime is involved.
 
 ## The demos
 
-There are **6 demos**: 5 main (3 CPU + 2 GPU) plus one experimental.
+There are **7 demos plus one experimental**, each standalone. They are listed in storyline order:
+the tasks and where they come from, then training on the default runtime, custom images at scale,
+hiding the container launch, a warm CPU instance pool, rollout scaling, and finally GPUs.
 
-- `demo_cpu_tasks` trains **any of ~19 datasets, or any mix**, via `DATASET=`. `VARIANT=bigimage`
-  moves the same trainer onto a large image on a CPU capacity-provider Instance. `VARIANT=imagepool`
-  routes each family to its own custom image. `compare_backends.py` shows the custom-vs-managed
-  Runtime contrast.
-- `demo_gpu_single` covers the warm g6 GPU sandbox, the custom-Runtime angle and snapshot/resume
-  (`SNAPSHOT_EVERY=1`).
-- `demo_gpu_farm` covers the local GPU-sharing splits (`FARM=fractional|whole`).
-- **`HEARTBEAT=1` works in every demo**: an opt-in `SessionKeeper` that keeps idle sandbox sessions
-  warm across the weight-sync barrier. It defaults to off, which leaves the run unchanged.
-  `demo_cpu_terminalbench` always runs its own keeper for its pre-opened sessions.
+| # | Demo | Substrate | What it shows |
+|---|---|---|---|
+| 1 | [`demo_cpu_tasks/`](demo_cpu_tasks/) | **Default AgentCore sandbox**: the managed Code Interpreter (`SANDBOX=agentcore`), no image | **Most literature tasks train on the default runtime as-is.** Its README's task table gives each dataset's source URL, env deps and image need. Datasets: HF `mbpp` (default), `gsm8k`, `math500`, `deepscaler`, `humaneval`, `gretelsql`, `hotpotqa`, `xlam`, `mcp`, pandas/scipy/sklearn tasks (`DATASET=libs`), the synthetic zoo, and mixes (`DATASET=a,b,c`, `DATASET=mixed`). Steps 2/3/4/6 are no-ops. `compare_backends.py` covers the own-Runtime contrast |
+| 2 | [`demo_cpu_terminalbench/`](demo_cpu_terminalbench/) | Custom images at scale: one image + Runtime per Terminal-Bench task (~229), a fresh microVM per episode | **Custom images in large numbers**, with the container launch hidden. The look-ahead pre-open (`TB_PREOPEN_BATCHES=2`) boots the next 1–2 batches' sessions, and an always-on heartbeat keeps them alive. The `warmstart/` probe (`bash warmstart/run_warmstart.sh`) measures cold vs pre-open vs heartbeat on its own, in about 7 min with no GPU |
+| 3 | [`demo_cpu_instance_pool/`](demo_cpu_instance_pool/) | CPU capacity-provider Instance (m5): a ~4 GB image, over the 2 GB microVM cap | **A warm instance pool shared by sessions** (`SANDBOX_POOL=N`, default 2): each boot is paid once per instance, and every episode is an isolated sub_session. See the isolation note below |
+| 4 | [`demo_cpu_scale_lanes/`](demo_cpu_scale_lanes/) | CPU microVMs | **Rollout scaling as 4 × 4 × 4 lanes**: 4 harness workers : 4 SGLang engines : 4 persistent microVMs, pinned 1:1:1. `throughput = min(inference, sandbox, harness)` |
+| 5 | [`demo_gpu_single/`](demo_gpu_single/) | GPU capacity-provider Instance (g6), one warm custom Runtime | KernelBench CUDA RL. Only a custom Runtime has CUDA (`gpu_torch_smoke.py`). `SNAPSHOT_EVERY=1` adds app-level snapshot/resume |
+| 6 | [`demo_gpu_farm_fractional/`](demo_gpu_farm_fractional/) | Ray GPU farm, **one GPU split in fractions** (GPU 6, 0.5 + 0.5) | Two episodes share one GPU: separate CUDA contexts, with a per-process memory fraction |
+| 7 | [`demo_gpu_farm_whole/`](demo_gpu_farm_whole/) | Ray GPU farm, **one whole GPU per session** (GPUs 6,7) | One shared warm instance, one GPU per sub_session |
+| exp. | [`demo_cpu_branching/`](demo_cpu_branching/) | CPU Runtime running the real Claude Code CLI | One episode → many samples ("fan-out"). **Blocked:** the in-sandbox CLI exits 1 before any model call, so there are no trajectories yet |
 
-| Substrate | Demo | Use case |
-|---|---|---|
-| **CPU serverless microVM** | [`demo_cpu_tasks/`](demo_cpu_tasks/) | **The reference.** RLVR on any dataset: real HF `mbpp` (default) `gsm8k` `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, plus the synthetic family zoo (`math` `swe` `sql` `ctf` `rag` `tool_use` …). **Mixed-task** batches via `DATASET=a,b,c` or `DATASET=mixed` |
-| | `demo_cpu_tasks` `VARIANT=imagepool` | Mixed-task RL over a **pool of custom images** (pandas / scipy / sklearn), one Runtime per image, routed per family via `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` |
-| | `demo_cpu_tasks` `compare_backends.py` | The same episode on **your own** custom CPU Runtime and the managed sandbox: same reward, and a table of the operational differences |
-| **CPU capacity-provider Instance** | `demo_cpu_tasks` `VARIANT=bigimage` | A ~4 GB image (over the 2 GB microVM cap) on a warm m5. Warm-shared session, fresh env per episode |
-| **Large image pool** | [`demo_cpu_terminalbench/`](demo_cpu_terminalbench/) | One image + Runtime per Terminal-Bench task (~229), a fresh microVM per episode, pre-opened to hide the cold start |
-| **Rollout scaling** | [`demo_cpu_scale_lanes/`](demo_cpu_scale_lanes/) | **4 × 4 × 4 lanes**: 4 harness workers : 4 SGLang engines : 4 persistent microVMs, pinned 1:1:1. Shows `throughput = min(inference, sandbox, harness)` |
-| **GPU capacity-provider Instance** (g6) | [`demo_gpu_single/`](demo_gpu_single/) | KernelBench CUDA RL on **one warm custom GPU Runtime**. Only a custom Runtime has CUDA (`gpu_torch_smoke.py`). `SNAPSHOT_EVERY=1` adds app-level snapshot/resume. `LOCAL_GPU=1` runs the on-box farm |
-| **Local GPU Ray farm** (GPUs 6,7) | [`demo_gpu_farm/`](demo_gpu_farm/) | GPU sharing: `FARM=fractional` (two episodes on ONE GPU, 0.5 + 0.5) or `FARM=whole` (a whole GPU each across 6,7) |
-| *Experimental* | [`demo_cpu_branching/`](demo_cpu_branching/) | One episode → many samples ("fan-out") with the real Claude Code CLI in the sandbox. **Blocked:** the in-sandbox CLI exits 1 before any model call, so there are no trajectories yet |
+**Heartbeat.** `HEARTBEAT=1` is an opt-in `SessionKeeper` in every demo. It keeps idle sessions on
+**your own Runtime** warm across the weight-sync barrier, and defaults to off, which leaves the run
+unchanged. It is a no-op on the Code Interpreter: those sessions end at their session timeout whatever
+the traffic, so the lever there is `AGENTCORE_CI_SESSION_TIMEOUT`. `demo_cpu_terminalbench` always runs
+its own keeper. Without pings, a reclaimed Runtime session silently returns a fresh, empty sandbox
+under the same session id (measured by the warmstart probe).
+
+**Isolation on a shared instance (demos 3, 6, 7).** Several episodes share one warm instance, so
+there is no VM boundary between them. The farm puts back as much isolation as one kernel allows:
+
+- **Its own uid per sub_session** (`20000+slot`): a private `0700` dir with HOME, TMPDIR and caches
+  inside it, `umask 077`.
+- **Limits:** `prlimit` (NPROC, FSIZE, CORE), and a timeout kills the whole process tree.
+- **Server file ops** refuse `..`, absolute and symlink escapes.
+- **No leaks:** `AWS_*` is not inherited, and the session id never appears on a command line.
+- **Close** kills every process of the uid and wipes its files.
+
+The episodes still share the kernel, the network namespace, and CPU/RAM (there is no per-episode
+cgroup). On the GPU farms they also share the GPU: CUDA contexts are separate, but the memory fraction
+is cooperative, and with no MIG on L4/L40S a GPU fault hits every co-tenant. For a hard boundary use a
+microVM per session (demos 1, 2, 4). Each shared-instance demo's README has the full table and its
+probe results.
 
 **Merge history.**
 - 2026-09-23: the ten per-dataset CPU folders (`demo_cpu_mbpp` … `demo_cpu_mcp`) became `demo_cpu_tasks`.
-- 2026-09-25: `demo_cpu_mixtask` → `demo_cpu_tasks DATASET=mixed`.
-- 2026-09-25: `demo_gpu_shared_single`, `demo_gpu_shared_multi` and `demo_gpu_local` → `demo_gpu_farm`.
-- 2026-09-25: `demo_cpu_bigimage` → `demo_cpu_tasks VARIANT=bigimage`.
-- 2026-09-25: `demo_gpu_snapshot` and `demo_gpu_customruntime` → `demo_gpu_single`.
-- 2026-09-25: `demo_cpu_heartbeat` → the `HEARTBEAT=1` knob in every demo (probe: `demo_cpu_tasks/heartbeat_demo.py`).
-- 2026-09-25: `demo_cpu_customruntime` → `demo_cpu_tasks/compare_backends.py`; `demo_cpu_imagepool` → `demo_cpu_tasks VARIANT=imagepool`.
+- 2026-09-25: `demo_cpu_mixtask` → `demo_cpu_tasks DATASET=mixed`; `demo_cpu_heartbeat` → the
+  `HEARTBEAT=1` knob; `demo_cpu_customruntime` → `demo_cpu_tasks/compare_backends.py`;
+  `demo_gpu_snapshot` + `demo_gpu_customruntime` → `demo_gpu_single`.
+- 2026-09-25, storyline restructure: `demo_cpu_tasks` defaults to the Code Interpreter;
+  `demo_cpu_imagepool` (briefly `VARIANT=imagepool`) → `DATASET=libs` on the Code Interpreter, which
+  already has pandas/scipy/sklearn; `demo_cpu_bigimage` (briefly `VARIANT=bigimage`) →
+  `demo_cpu_instance_pool`; the GPU farms (`demo_gpu_shared_single/_multi`, `demo_gpu_local`, briefly
+  `demo_gpu_farm FARM=`) → `demo_gpu_farm_fractional` + `demo_gpu_farm_whole`; the short-lived
+  `demo_cpu_warmstart` → `demo_cpu_terminalbench/warmstart/`.
 
 Older logs and docs keep the old names.
 
 **Sandbox mode by substrate.** The CPU demos are **remote-only**. Their `run.sh` rejects
-`SANDBOX=local`, so a CPU run can never silently fall off AgentCore. The GPU demos keep an on-box
-path (`LOCAL_GPU=1`, or `demo_gpu_farm`), because a remote g6 may be unavailable.
+`SANDBOX=local`, so a CPU run can never silently fall off AgentCore. The GPU farms run on this box's
+GPUs 6/7 (`code/deploy/run_local_gpu_runtime.sh fractional|whole`, or step 4), because a remote g6 may
+be unavailable. `demo_gpu_single` keeps `LOCAL_GPU=1` for the same reason.
 
 ## Which to run first
 
-- **`demo_cpu_tasks`**: the reference and the most battle-tested. Try `DATASET=gsm8k bash 5_run.sh`.
-- **`demo_gpu_single`**: the GPU-sandbox path. The KernelBench checker's GPU is the remote g6, so this
-  box stays 4 train + 4 infer.
-- **`demo_gpu_farm`**: GPU sharing on this box with no AWS GPU needed.
-- **`HEARTBEAT=1`** and **`demo_gpu_single SNAPSHOT_EVERY=1`**: the resilience angles. Their
-  offline probes (`demo_cpu_tasks/heartbeat_demo.py`, `demo_gpu_single/snapshot_demo.py`) run in
+- **`demo_cpu_tasks`**: nothing to build or deploy. Try `DATASET=gsm8k bash 5_run.sh`
+  (eval/gsm8k 0.90 on the Code Interpreter, 2026-09-25).
+- **`demo_cpu_terminalbench/warmstart/run_warmstart.sh`**: the launch-cost story in minutes, no GPU.
+- **`demo_cpu_instance_pool`**: `python3 isolation_probe.py` checks the shared-instance isolation
+  offline.
+- **`demo_gpu_single`** / **`demo_gpu_farm_fractional`**: the GPU paths.
+- The offline probes `demo_cpu_tasks/heartbeat_demo.py` and `demo_gpu_single/snapshot_demo.py` run in
   seconds with no AWS or GPU.
 
 All trainers share one training path: slime `train_async.py`, Qwen3-4B, GRPO, the
@@ -89,7 +107,7 @@ checkpoint-deadlock fix and save-only-at-end. They differ only in the **task** a
 
 **`run.sh` vs `train.sh`.** `run.sh` is the full runner (all env knobs; defaults to a short smoke).
 Three demos also ship **`train.sh`**, a train-to-convergence wrapper: `demo_cpu_tasks` (all
-datasets and variants), `demo_cpu_terminalbench` and `demo_gpu_single` (`demo_cpu_branching` has one
+datasets), `demo_cpu_terminalbench` and `demo_gpu_single` (`demo_cpu_branching` has one
 too, but it is blocked). `train.sh` exposes `STEPS` → `NR`, `EVAL_EVERY` → `EVAL_INTERVAL`,
 `SANDBOX_CONC` → `CONC` and, on CPU, `SANDBOX_RUNTIMES` → `K`. For the 100–200-step runs, see
 [`convergence/`](convergence/).

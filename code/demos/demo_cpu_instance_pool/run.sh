@@ -1,0 +1,376 @@
+#!/bin/bash
+# demo_cpu_instance_pool — AgentCore on CPU capacity-provider INSTANCES, run as a WARM INSTANCE POOL that
+# many episodes share while each keeps its own isolated environment. REAL slime training (async GRPO,
+# Qwen3-4B) on DATASET=deepscaler (default; any real dataset prepare_data.sh builds works), our
+# in-process multi-turn run_episode harness. Runs INSIDE the persistent container agentcore_p4.
+#
+# Why Instances: the sandbox image (deploy/Dockerfile.sandbox.bigcpu, torch CPU + scientific stack) is
+# ~4 GB, past the 2 GB serverless-microVM image cap, so it must run on an EC2 instance family behind an
+# AgentCore capacity provider (default m5.xlarge). An Instance cold-boots in ~60-80 s, so a fresh
+# instance per episode would let boot time dominate. Instead:
+#
+#   * SANDBOX_POOL=N (default 2; POOL is an alias) — N shared runtimeSessionIds. AgentCore maps one
+#     runtimeSessionId to one instance, so this is a pool of N warm m5 instances; the cold boot is paid
+#     N times per run, not once per episode.
+#   * Every episode is assigned to the LEAST-LOADED pool member (round-robin on ties, per rollout
+#     process) and gets its own sub_session there. The server's CpuFarm (SANDBOX_FARM=cpu) gives each
+#     sub_session a FRESH isolated env: own workdir, HOME/TMPDIR and ALL caches redirected into it, a
+#     fresh subprocess per exec, and the dir wiped on close.
+#   * Isolation is PROCESS/DIRECTORY-level, NOT VM-level: episodes on one instance share its kernel,
+#     user and network. That is fine for RLVR checkers we write; use a fresh microVM per episode
+#     (demo_cpu_tasks) when the code under test must not share a kernel with other episodes.
+#
+# Harness/sandbox split: the run_episode harness runs IN-PROCESS on this box inside generate.generate;
+# the sandbox (write_file / exec / read_file) is the remote Runtime acs_sandbox_bigcpu, reached over
+# invoke_agent_runtime (SigV4, no inbound port).
+#
+# Async/decoupled: agentic rollouts have long, variable latency (multi-turn code repair in a
+# sandbox). slime's async driver (train_async.py) runs trainer GPUs and SGLang inference GPUs on
+# DISJOINT devices. Hard-requires no --colocate (train_async.py asserts it).
+#
+# ASYNC MODE (MODE=A|B, DEFAULT B) for the ablation — see the MODE block below and
+# docs/sandbox-concurrency-ablation.md "Two async modes". The DEFAULT is FULLY-ASYNC (Mode B): on
+# top of train_async.py's 1-step overlap it selects slime's --rollout-function-path
+# generate_rollout_fully_async, a background worker holding a DEEP, warm buffer of in-flight +
+# completed rollouts across step boundaries, so staleness genuinely GROWS with concurrency (CONC).
+# That deep buffer is what lets the sandbox-concurrency ablation observe the real
+# staleness/discard/clip trade-off. MODE=A drops the override and runs train_async.py's stock
+# 1-step-async driver (staleness pinned to ~1 step regardless of CONC) for the A-vs-B comparison.
+# Both modes share the identical custom generate hook + Sample contract
+# (tokens/logprobs/loss-mask/reward); only the rollout DRIVER (and matching eval path) changes.
+#
+# GPU split (8xL40S): 4 train + 4 inference + 0 env. The checker runs on the remote m5 pool, so all
+# 8 GPUs serve the policy (train + infer).
+#
+# Sandbox backend: SANDBOX=agentcore-ray-farm only (the shared-instance CPU farm; see the pool block
+# below). Tunables: SANDBOX_POOL (pool size), MODE (A|B async mode), RB (rollout-batch-size), NS
+# (n-samples-per-prompt), NR (num-rollout), TEMP (sampling temp), CONC (sglang-server-concurrency),
+# EVAL_INTERVAL/EVAL_NS.
+#
+# CONCURRENCY KNOBS (decoupled, for the sandbox-concurrency ablation — see
+# docs/sandbox-concurrency-ablation.md):
+#   * CONC       -> SANDBOX/EPISODE concurrency. #episodes (= #concurrent remote sandboxes) in
+#                   flight is S = CONC * num_engines = CONC * 2. This is the knob to SWEEP. In the
+#                   fully-async (Mode B) path it also sets BUFFER DEPTH: the worker keeps up to
+#                   S in-flight AND up to S completed groups queued ahead of the trainer (which
+#                   drains RB/step), so raising CONC raises staleness. One knob moves both, which is
+#                   exactly the trade-off the ablation measures.
+#   * INFER_CONC -> INFERENCE concurrency I. A process-global semaphore around ONLY the SGLang
+#                   decode POST, so at most I episodes decode at once no matter how large S is.
+#                   Default 0 = disabled (I follows S, the original coupled behavior). Set it to a
+#                   FIXED value (e.g. 8) to hold inference load constant while sweeping CONC, which
+#                   isolates the effect of sandbox count from inference load.
+#
+# NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
+# runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train + 1 eval (SMOKE; no more needed).
+# NOTE GRPO signal: group-relative advantage is 0 when every sample in a prompt's group gets the
+# same reward. Reward variance within groups (harder tasks / higher temp) yields nonzero gradient.
+set -euo pipefail
+
+# ---- The warm instance pool (SANDBOX=agentcore-ray-farm) -----------------------------------------
+SANDBOX="${SANDBOX:-agentcore-ray-farm}"
+if [ "$SANDBOX" != "agentcore-ray-farm" ]; then
+   echo "demo_cpu_instance_pool runs only SANDBOX=agentcore-ray-farm (the shared-instance CPU farm); got '$SANDBOX'." >&2
+   exit 1
+fi
+AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN to the big-image sandbox Runtime ARN printed by deploy/deploy_bigimage.py (bash 4_deploy_runtime.sh writes it to deploy/runtime.env)}"
+# SANDBOX_POOL=N warm instances (POOL is an alias). Default 2: the smallest pool that shows episodes
+# spreading across instances while each stays isolated, at 2x m5.xlarge. 1 = the old single warm m5.
+SANDBOX_POOL="${SANDBOX_POOL:-${POOL:-2}}"
+case "$SANDBOX_POOL" in ''|*[!0-9]*|0) echo "SANDBOX_POOL must be a positive integer (got '$SANDBOX_POOL')" >&2; exit 1;; esac
+# One runtimeSessionId per pool member (>= 33 chars). B4_SHARED_RUNTIME_SESSIONS (comma list) is what
+# RayFarmRuntimeSandbox reads; the singular B4_SHARED_RUNTIME_SESSION stays = member 0 for older tools.
+if [ -z "${B4_SHARED_RUNTIME_SESSIONS:-}" ]; then
+   _RUN_ID="$(date +%s)-$(head -c6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+   B4_SHARED_RUNTIME_SESSIONS="$(for k in $(seq 0 $((SANDBOX_POOL - 1))); do printf 'cpupool-%s-m%02d,' "$_RUN_ID" "$k"; done)"
+   B4_SHARED_RUNTIME_SESSIONS="${B4_SHARED_RUNTIME_SESSIONS%,}"
+fi
+B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSIONS%%,*}"
+# POOL_PROBE_INSTANCE=1 (default): at each episode's open, read the instance's boot_id (one extra
+# ~150 ms warm op) so the [demo] line proves WHICH instance served the episode.
+POOL_PROBE_INSTANCE="${POOL_PROBE_INSTANCE:-${SANDBOX_POOL_PROBE:-1}}"   # SANDBOX_POOL_PROBE: the name 5_run.sh forwards
+echo "warm instance pool: SANDBOX_POOL=${SANDBOX_POOL} shared runtimeSessionIds -> ${B4_SHARED_RUNTIME_SESSIONS}" >&2
+RB="${RB:-4}"          # prompts per rollout step
+NS="${NS:-8}"          # GRPO group size (samples per prompt)
+NR="${NR:-11}"        # num-rollout; real training steps = NR-1 (see NOTE) => 10 train + 1 eval (SMOKE; no more needed).
+                       # Keep the train set >= NR*RB prompts so one epoch spans the whole run and
+                       # the ONLY checkpoint is the final one (slime force-saves at epoch
+                       # boundaries too). The deepscaler set is built at 400 prompts (>= 100*4).
+TEMP="${TEMP:-1.0}"    # rollout sampling temperature (higher => more intra-group diversity)
+GBS=$(( RB * NS ))     # global batch = all samples, 1 optimizer step per rollout
+# ASYNC MODE (the ablation's two async modes — see docs/sandbox-concurrency-ablation.md):
+#   B (DEFAULT) = FULLY-ASYNC. slime's generate_rollout_fully_async runs a background worker with a
+#                 DEEP, warm buffer of in-flight + completed rollouts across step boundaries, so
+#                 staleness genuinely GROWS with concurrency (CONC). This is the vehicle the
+#                 sandbox-concurrency ablation needs to observe the real staleness/discard/clip
+#                 trade-off. Eval routes through our mode_b_eval wrapper (see EVAL_ARGS).
+#   A           = 1-STEP-ASYNC (stock). train_async.py's default rollout path: exactly ONE rollout
+#                 step overlaps the trainer, so staleness is pinned to ~1 step regardless of CONC.
+#                 Kept reachable from this same runner for the A-vs-B comparison. Eval uses the
+#                 stock sync rollout (no fully-async worker to quiesce).
+# Both modes run under train_async.py (no --colocate) and share the identical custom-generate hook
+# + Sample contract; only the rollout DRIVER (and the matching eval path) changes.
+MODE="${MODE:-B}"
+case "$MODE" in B|b) MODE=B;; A|a) MODE=A;; *) echo "MODE must be A or B (got '$MODE')" >&2; exit 1;; esac
+# Held-out eval every N steps (0 => off). Held-out solve-rate is a KEY metric, so eval stays ON
+# under fully-async (Mode B). It does NOT work through the stock rollout path, though: slime's
+# GenerateState is a process singleton whose asyncio.Semaphore binds to the FIRST event loop that
+# acquires it — the background fully-async worker's loop — while eval runs generation on the MAIN
+# loop, which would crash with "Semaphore is bound to a different event loop". We route eval
+# through agentcore_slime_demo.mode_b_eval.generate_rollout (see EVAL_ARGS), which quiesces the
+# worker and rebuilds the singleton on the eval loop so stock eval runs cleanly. NOTE: each eval
+# discards the worker's warm buffer (it re-warms over the next few rollouts), so keep EVAL_INTERVAL
+# well above the re-warm time (default 10 is fine for the smoke; use a larger value for long runs).
+EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
+EVAL_NS="${EVAL_NS:-2}"               # samples per eval prompt
+# Checkpoint policy (disk-saving): we do NOT snapshot mid-training — the ONLY checkpoint written is
+# the final one. slime saves whenever should_run_periodic_action() fires; here that is ONLY the last
+# rollout (rollout_id == num_rollout-1, always forced). Its two other triggers are both inactive:
+# (a) step % save-interval == 0 is disabled by the huge SAVE_INTERVAL below, and (b) the
+# epoch-boundary trigger (step % num_rollout_per_epoch) is OFF because we pass an explicit
+# --num-rollout (NR) => slime leaves num_rollout_per_epoch = None (it is computed only under
+# --num-epoch). Net: exactly one checkpoint, at the end of training, regardless of dataset size.
+SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"
+
+SLIME=/root/slime
+
+DEMO_DIR=/work/code/demos/demo_cpu_instance_pool
+CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"  # SHARED base Megatron ckpt
+HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
+
+# ---- Demo A config (baked in) --------------------------------------------------------------
+ACTOR_GPUS="${ACTOR_GPUS:-4}"
+ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
+
+# DATASET selector (default deepscaler, committed). Any dataset prepare_data.sh builds works, and
+# DATASET=a,b,c interleaves several round-robin (eval metric eval/mix): the task is not the point here,
+# the substrate is. FAMILY is kept as an alias of DATASET.
+DATASET="${DATASET:-${FAMILY:-deepscaler}}"
+IFS=',' read -r -a _DSETS <<< "$DATASET"
+for i in "${!_DSETS[@]}"; do [ "${_DSETS[$i]}" = "coding" ] && _DSETS[$i]=mbpp; done
+if [ -z "${DATA:-}" ]; then
+  for d in "${_DSETS[@]}"; do
+    if [ ! -f "$DEMO_DIR/data/${d}_train.jsonl" ]; then
+      echo "unknown DATASET=$d (no $DEMO_DIR/data/${d}_train.jsonl). Available:" >&2
+      ls "$DEMO_DIR/data" | sed -n 's/_train\.jsonl$//p' | tr '\n' ' ' >&2; echo >&2
+      exit 2
+    fi
+  done
+fi
+if [ "${#_DSETS[@]}" -gt 1 ]; then
+  _DS="$(IFS=+; echo "${_DSETS[*]}")"; _EVAL_NAME=mix
+  if [ -z "${DATA:-}" ]; then
+    mkdir -p "$DEMO_DIR/ckpt/_mix"
+    for split in train eval; do
+      python3 - "$DEMO_DIR/ckpt/_mix/${_DS}_${split}.jsonl" \
+          $(for d in "${_DSETS[@]}"; do printf '%s ' "$DEMO_DIR/data/${d}_${split}.jsonl"; done) <<'PY'
+import sys
+out, srcs = sys.argv[1], sys.argv[2:]
+rows = [[l for l in open(p) if l.strip()] for p in srcs]
+n = min(len(r) for r in rows)
+with open(out, "w") as f:
+    for i in range(n):
+        for r in rows:
+            f.write(r[i] if r[i].endswith("\n") else r[i] + "\n")
+print(f"[mix] {out}: {n} rows x {len(rows)} datasets", file=sys.stderr)
+PY
+    done
+    DATA="$DEMO_DIR/ckpt/_mix/${_DS}_train.jsonl"
+    EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/ckpt/_mix/${_DS}_eval.jsonl}"
+  fi
+else
+  _DS="${_DSETS[0]}"; _EVAL_NAME="$_DS"
+fi
+DATA="${DATA:-$DEMO_DIR/data/${_DS}_train.jsonl}"
+EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/${_DS}_eval.jsonl}"
+EVAL_NAME="${EVAL_NAME:-$_EVAL_NAME}"
+# HEARTBEAT=1 (opt-in; was the standalone demo_cpu_heartbeat): a process-wide SessionKeeper
+# heartbeats every open sandbox session that goes idle past HEARTBEAT_PING_FRACTION*HEARTBEAT_IDLE,
+# so the weight-sync stall can't idle-reclaim it (agentcore_slime_demo/session_keeper.py).
+# Watch the [demo] heartbeat_session=… lines (0 with HEARTBEAT=0).
+HEARTBEAT="${HEARTBEAT:-${HEARTBEAT_KEEP_WARM:-0}}"
+HEARTBEAT_IDLE="${HEARTBEAT_IDLE:-600}"
+HEARTBEAT_PING_FRACTION="${HEARTBEAT_PING_FRACTION:-0.5}"
+_HB=""; [ "$HEARTBEAT" = "1" ] && _HB="_heartbeat"
+SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}_pool${SANDBOX_POOL}${_HB}_async}"
+
+# clean any prior ray/sglang from a previous run
+pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
+pkill -9 ray 2>/dev/null || true; sleep 2
+
+set -ex
+export PYTHONUNBUFFERED=1
+source "$SLIME/scripts/models/qwen3-4B.sh"
+
+CKPT_ARGS=(
+   --hf-checkpoint "$HF"
+   --ref-load "$CKPT"
+   --load "$CKPT"
+   --save "$SAVE"
+   --save-interval "$SAVE_INTERVAL"   # save-only-at-end (see SAVE_INTERVAL note above)
+   # ---- Checkpoint-save deadlock fix (two flags that MUST go together) ---------------------
+   # Megatron's checkpoint writer forks a writer process off the MAIN training process
+   # (mp.get_context("fork")); forking a process holding CUDA/NCCL/inductor threads can inherit a
+   # locked mutex with no thread to release it -> the writer hangs forever AFTER the .distcp files
+   # are written. The safe backend is Megatron's SPAWN-based PersistentAsyncCaller, selected only
+   # when BOTH --async-save is set AND init_persistent_async_worker() is called. slime forces
+   # use_persistent_ckpt_worker=True but its own init() bypasses megatron.training.initialize, so
+   # it NEVER makes that call -> --async-save alone falls back to the fork-based caller and can
+   # still deadlock. So we supply the missing call via slime's supported init hook:
+   --async-save
+   --custom-megatron-init-path agentcore_slime_demo.megatron_init.enable_persistent_async_ckpt
+)
+
+# Held-out EVAL. The eval rollout FUNCTION depends on the async MODE:
+#   Mode B (fully-async): the stock rollout path can't run eval (the fully-async worker's event loop
+#     owns slime's GenerateState singleton semaphore, so in-process eval would crash with "Semaphore
+#     is bound to a different event loop"). We route eval through
+#     agentcore_slime_demo.mode_b_eval.generate_rollout, which quiesces the fully-async worker (waits
+#     for its loop thread to fully die), drops the GenerateState singleton so the semaphore rebuilds
+#     on THIS loop, runs slime's stock eval unchanged, then drops the singleton again so the next
+#     training rollout's worker rebuilds it cleanly on the worker loop. (generate_rollout_fully_async
+#     itself raises on evaluation=True, which is exactly why eval needs its own function-path.)
+#   Mode A (1-step-async): no background worker exists, so eval uses slime's stock sync rollout.
+if [ "$MODE" = "B" ]; then
+   EVAL_FN=agentcore_slime_demo.mode_b_eval.generate_rollout
+else
+   EVAL_FN=slime.rollout.sglang_rollout.generate_rollout
+fi
+EVAL_ARGS=()
+if [ "$EVAL_INTERVAL" != "0" ] && [ -f "$EVAL_DATA" ]; then
+   EVAL_ARGS=(
+      --eval-interval "$EVAL_INTERVAL"
+      --eval-prompt-data "$EVAL_NAME" "$EVAL_DATA"
+      --n-samples-per-eval-prompt "$EVAL_NS"
+      --eval-temperature "$TEMP"
+      --eval-function-path "$EVAL_FN"
+   )
+fi
+
+ROLLOUT_ARGS=(
+   --prompt-data "$DATA"
+   --input-key prompt
+   --label-key label
+   --metadata-key metadata
+   --rollout-shuffle
+   --num-rollout "$NR"
+   --rollout-batch-size "$RB"
+   --n-samples-per-prompt "$NS"
+   --rollout-max-response-len 1024
+   --rollout-temperature "$TEMP"
+   --global-batch-size "$GBS"
+   # NOTE: the rollout DRIVER (--rollout-function-path) is set by MODE_ARGS below, not here, so it
+   # tracks the A/B async MODE. The custom generate hook is the same for both modes: the worker
+   # (Mode B) and the stock driver (Mode A) both call slime's generate_and_rm_group, which
+   # dispatches to our --custom-generate-function-path, so our token-ids / logprobs / loss-mask /
+   # reward Sample contract is preserved UNCHANGED (reward set on the Sample => no --custom-rm-path).
+   --custom-generate-function-path agentcore_slime_demo.generate.generate
+)
+
+# Async MODE driver flags (see the MODE note near the top). Mode B swaps in slime's fully-async
+# rollout: a background worker that keeps a fixed pool of in-flight trajectories (concurrency =
+# sglang_server_concurrency * num_engines = CONC*2) AND up to that many COMPLETED groups queued
+# ahead of the trainer across rollout boundaries. The trainer drains only RB groups/step, so the
+# queue grows deep and samples age => staleness scales with CONC. Mode A omits the override, leaving
+# train_async.py's stock 1-step-async driver (staleness pinned to ~1 step regardless of CONC).
+MODE_ARGS=()
+if [ "$MODE" = "B" ]; then
+   MODE_ARGS=(--rollout-function-path slime.rollout.fully_async_rollout.generate_rollout_fully_async)
+fi
+
+PERF_ARGS=(
+   --tensor-model-parallel-size 2
+   --sequence-parallel
+   --pipeline-model-parallel-size 1
+   --context-parallel-size 1
+   --recompute-granularity full
+   --recompute-method uniform
+   --recompute-num-layers 1
+   --use-dynamic-batch-size
+   --max-tokens-per-gpu 9216
+)
+
+GRPO_ARGS=(
+   --advantage-estimator grpo
+   --use-kl-loss
+   --kl-loss-coef 0.00
+   --kl-loss-type low_var_kl
+   --entropy-coef 0.00
+   --eps-clip 0.2
+   --eps-clip-high 0.28
+)
+
+OPTIMIZER_ARGS=(
+   --optimizer adam
+   --lr 1e-6
+   --lr-decay-style constant
+   --weight-decay 0.1
+   --adam-beta1 0.9
+   --adam-beta2 0.98
+)
+
+SGLANG_ARGS=(
+   --rollout-num-gpus "$ROLLOUT_GPUS"
+   --rollout-num-gpus-per-engine 2
+   --sglang-mem-fraction-static 0.7
+   # SANDBOX/EPISODE concurrency S. slime gates custom-generate with
+   # Semaphore(sglang_server_concurrency * num_engines), so with num_engines = ROLLOUT_GPUS /
+   # per-engine = 4/2 = 2, the number of episodes (= concurrent remote sandboxes) in flight is
+   # S = CONC * 2. This is the knob to SWEEP for the sandbox-concurrency ablation
+   # (docs/sandbox-concurrency-ablation.md). Each episode opens an HTTP session AND a remote
+   # sandbox session, so raising it also raises client-side load (asyncio thread pool, boto3
+   # clients) — see the ablation doc's "can the in-process harness handle large C" section.
+   --sglang-server-concurrency "${CONC:-4}"
+)
+
+MISC_ARGS=(
+   --attention-dropout 0.0
+   --hidden-dropout 0.0
+   --accumulate-allreduce-grads-in-fp32
+   --attention-softmax-in-fp32
+   --attention-backend flash
+)
+
+export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
+# Give ray ALL 8 physical GPUs. slime's placement reserves (ACTOR_GPUS + ROLLOUT_GPUS) of them.
+# Shared box only: SLIME_CUDA_VISIBLE=2,3,4,5,6,7 SLIME_NUM_GPUS=6 pins ray to a subset (default: all 8).
+[ -n "${SLIME_CUDA_VISIBLE:-}" ] && export CUDA_VISIBLE_DEVICES="$SLIME_CUDA_VISIBLE"
+ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${SLIME_NUM_GPUS:-8}" \
+   --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+
+RUNTIME_ENV_JSON="{
+  \"env_vars\": {
+    \"PYTHONPATH\": \"/root/Megatron-LM:${DEMO_DIR}:/root/slime\",
+    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+    \"SANDBOX\": \"${SANDBOX}\",
+    \"HEARTBEAT\": \"${HEARTBEAT}\",
+    \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",
+    \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\",
+    \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
+    \"B4_SHARED_RUNTIME_SESSION\": \"${B4_SHARED_RUNTIME_SESSION}\",
+    \"B4_SHARED_RUNTIME_SESSIONS\": \"${B4_SHARED_RUNTIME_SESSIONS}\",
+    \"POOL_PROBE_INSTANCE\": \"${POOL_PROBE_INSTANCE}\",
+    \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
+    \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
+    \"INFER_CONC\": \"${INFER_CONC:-0}\"
+  }
+}"
+
+cd "$SLIME"
+# ASYNC driver + DECOUPLED placement: train_async.py, NO --colocate. Use an ABSOLUTE path: the ray
+# job entrypoint's cwd is the ray-head cwd (/work here), not this script's `cd "$SLIME"`.
+ray job submit --address="http://127.0.0.1:8265" \
+   --runtime-env-json="${RUNTIME_ENV_JSON}" \
+   -- python3 "$SLIME/train_async.py" \
+   --actor-num-nodes 1 \
+   --actor-num-gpus-per-node "$ACTOR_GPUS" \
+   "${MODEL_ARGS[@]}" \
+   "${CKPT_ARGS[@]}" \
+   "${EVAL_ARGS[@]}" \
+   "${ROLLOUT_ARGS[@]}" \
+   "${MODE_ARGS[@]}" \
+   "${OPTIMIZER_ARGS[@]}" \
+   "${GRPO_ARGS[@]}" \
+   "${PERF_ARGS[@]}" \
+   "${SGLANG_ARGS[@]}" \
+   "${MISC_ARGS[@]}"

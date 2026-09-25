@@ -19,9 +19,10 @@
 #   SKIP_BUILD=1 bash code/deploy/run_local_gpu_runtime.sh <mode>   # reuse the already-built image
 # Old mode names are kept as aliases: local / shared_multi -> whole, shared_single -> fractional.
 #
-# Then, inside agentcore_p4, run the matching demo, e.g.:
-#   FARM=fractional bash code/demos/demo_gpu_farm/run.sh   # FARM must equal the mode started here
-#   LOCAL_GPU=1 bash code/demos/demo_gpu_single/run.sh     # whole mode (also gpu_snapshot/customruntime)
+# Then, inside agentcore_p4, run the demo matching the mode started here:
+#   bash code/demos/demo_gpu_farm_fractional/run.sh        # fractional mode
+#   bash code/demos/demo_gpu_farm_whole/run.sh             # whole mode
+#   LOCAL_GPU=1 bash code/demos/demo_gpu_single/run.sh     # whole mode
 
 set -euo pipefail
 
@@ -34,7 +35,8 @@ stop() { docker rm -f "$NAME" >/dev/null 2>&1 && echo "stopped $NAME" || echo "$
 
 if [ "$MODE" = "stop" ]; then stop; exit 0; fi
 
-# Per-mode config. Both modes build the SAME shared-farm image from demo_gpu_farm; they differ only in
+# Per-mode config. Both modes build the SAME shared-farm image (from the matching demo dir:
+# demo_gpu_farm_whole / demo_gpu_farm_fractional; LOCAL_RT_DEMO_DIR overrides); they differ only in
 # which host GPUs are reserved and how the in-container Ray farm partitions them (all overridable by env):
 #   whole      -> 2 GPUs (6,7), fraction 1.0 => 2 whole-GPU slots, one per session.
 #   fractional -> 1 GPU (6),    fraction 0.5 => 2 slots sharing one GPU (0.5+0.5).
@@ -42,12 +44,13 @@ case "$MODE" in
   local|shared_multi) MODE=whole ;;
   shared_single)      MODE=fractional ;;
 esac
-DEMO_DIR="$REPO_ROOT/code/demos/demo_gpu_farm"; TAG="acs-local-gpu-sbx:$MODE"
+TAG="acs-local-gpu-sbx:$MODE"
 case "$MODE" in
   whole)      GPUS_DEFAULT="6,7"; FARM_GPUS_DEFAULT="2"; GPU_FRACTION_DEFAULT="1.0"; MEM_FRACTION_DEFAULT="0.95" ;;
   fractional) GPUS_DEFAULT="6";   FARM_GPUS_DEFAULT="1"; GPU_FRACTION_DEFAULT="0.5"; MEM_FRACTION_DEFAULT="0.5" ;;
   *) echo "usage: $0 {whole|fractional|stop}"; exit 2 ;;
 esac
+DEMO_DIR="${LOCAL_RT_DEMO_DIR:-$REPO_ROOT/code/demos/demo_gpu_farm_$MODE}"
 DOCKERFILE="deploy/Dockerfile.sandbox.gpu.shared"; FARM=1
 GPUS="${LOCAL_RT_GPUS:-$GPUS_DEFAULT}"       # host GPUs reserved for the local runtime
 
@@ -115,5 +118,5 @@ until curl -fsS "http://127.0.0.1:${PORT}/ping" >/dev/null 2>&1; do
 done
 
 echo "OK local AgentCore runtime up: http://127.0.0.1:${PORT}  (name=$NAME, GPUs=$GPUS, mode=$MODE)"
-echo "Now inside agentcore_p4:  FARM=$MODE bash code/demos/demo_gpu_farm/run.sh"
+echo "Now inside agentcore_p4:  bash code/demos/demo_gpu_farm_$MODE/run.sh"
 echo "Tear down when done:      bash code/deploy/run_local_gpu_runtime.sh stop"

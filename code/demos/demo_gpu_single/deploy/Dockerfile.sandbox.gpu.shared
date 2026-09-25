@@ -25,11 +25,12 @@ WORKDIR /app
 # bedrock-agentcore = the runtime app framework; ray = the GPU-sharing farm backend.
 RUN pip install --no-cache-dir bedrock-agentcore ray
 
-# Ship ONLY the three modules the server + farm need, as a package with an EMPTY __init__ (so Python
+# Ship ONLY the four modules the server + farm need, as a package with an EMPTY __init__ (so Python
 # resolves the relative imports without executing the heavy real package __init__).
 RUN mkdir -p /app/agentcore_slime_demo && : > /app/agentcore_slime_demo/__init__.py
 COPY agentcore_slime_demo/sandbox_server_agent.py /app/agentcore_slime_demo/sandbox_server_agent.py
 COPY agentcore_slime_demo/sandbox_ray_farm.py     /app/agentcore_slime_demo/sandbox_ray_farm.py
+COPY agentcore_slime_demo/sandbox_farm_env.py     /app/agentcore_slime_demo/sandbox_farm_env.py
 COPY agentcore_slime_demo/sandbox.py              /app/agentcore_slime_demo/sandbox.py
 
 # LD_LIBRARY_PATH MUST be set at PROCESS START (the loader caches its search path). AgentCore injects

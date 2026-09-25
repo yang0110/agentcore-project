@@ -192,7 +192,7 @@ class AgentCoreSandbox:
     """
 
     def __init__(self, region: str | None = None, workdir: str = "",
-                 session_timeout_seconds: int = 900) -> None:
+                 session_timeout_seconds: int | None = None) -> None:
         # workdir="" (default) means "use the session's native writable CWD". The managed
         # Code Interpreter runs as an unprivileged user (genesis1ptools) whose CWD
         # (/opt/amazon/genesis1p-tools/var) IS writable and persists across invokes, whereas
@@ -203,24 +203,59 @@ class AgentCoreSandbox:
         self.sandbox_id = f"ac-{uuid.uuid4().hex}"
         self._region = region or os.environ.get("AGENTCORE_REGION", "us-west-2")
         self._workdir = workdir
+        # A Code Interpreter session ends at its session timeout NO MATTER what (heartbeat pings do
+        # not extend it — verified live), so the only lever is to set it at start: long enough to
+        # cover the longest episode plus a weight-sync stall. The session is stopped at episode end,
+        # so a generous cap costs nothing. AGENTCORE_CI_SESSION_TIMEOUT (s, default 3600, max 8 h).
+        if session_timeout_seconds is None:
+            session_timeout_seconds = int(os.environ.get("AGENTCORE_CI_SESSION_TIMEOUT", "3600"))
         self._timeout = session_timeout_seconds
         self._client = None
+        self._session_id = self.sandbox_id      # the [sbx-op] / [router] join key (router_trace)
+
+    # One `[sbx-op]` line per Code Interpreter call, same format as agentcore_runtime_sandbox's
+    # records, so metrics.py fills perf/sandbox_ms_* (warm ops) and perf/sandbox_open_ms_*
+    # (start_session) for the default SANDBOX=agentcore path too.
+    _OP_NAMES = {"executeCommand": "exec", "writeFiles": "write_file", "readFiles": "read_file"}
+
+    def _op_record(self, op: str, t0: float, status: str) -> None:
+        import sys as _sys
+        import time as _time
+        ms = (_time.perf_counter() - t0) * 1000.0
+        _sys.stdout.write(f"[sbx-op] ts={_time.time():.3f} op={op} ms={ms:.1f} "
+                          f"arn=code-interpreter session={self._session_id} status={status}\n")
+        _sys.stdout.flush()
 
     async def __aenter__(self) -> "AgentCoreSandbox":
         # Imported lazily so the offline path never needs the AWS SDK installed.
         from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
 
-        self._client = CodeInterpreter(self._region)
-        await asyncio.to_thread(
-            self._client.start, name=self.sandbox_id, session_timeout_seconds=self._timeout
-        )
+        # Build the client AND start the session off the event loop: CodeInterpreter() creates boto3
+        # clients (~150 ms of blocking work), which would otherwise serialise concurrent opens.
+        def _open():
+            client = CodeInterpreter(self._region)
+            client.start(name=self.sandbox_id, session_timeout_seconds=self._timeout)
+            return client
+
+        import time as _time
+        t0, status = _time.perf_counter(), "ok"
+        try:
+            self._client = await asyncio.to_thread(_open)
+        except Exception as exc:  # noqa: BLE001 — re-raised; only tags the record
+            status = type(exc).__name__
+            raise
+        finally:
+            self._op_record("start_session", t0, status)
         if self._workdir:                       # only create/enter an explicit workdir
             await self.exec(f"mkdir -p {shlex.quote(self._workdir)}")
         return self
 
     async def __aexit__(self, *exc) -> None:
         if self._client is not None:
+            import time as _time
+            t0 = _time.perf_counter()
             await asyncio.to_thread(self._client.stop)
+            self._op_record("stop_session", t0, "ok")
             self._client = None
 
     # Transport blips where the session is still alive: safe to retry the SAME op in place.
@@ -235,6 +270,18 @@ class AgentCoreSandbox:
     _RPC_BACKOFF_SEC = 0.5
 
     def _call(self, tool: str, args: dict) -> dict:
+        import time as _time
+
+        t0, status = _time.perf_counter(), "ok"
+        try:
+            return self._call_retry(tool, args)
+        except Exception as exc:  # noqa: BLE001 — re-raised; only tags the record
+            status = type(exc).__name__
+            raise
+        finally:
+            self._op_record(self._OP_NAMES.get(tool, tool), t0, status)
+
+    def _call_retry(self, tool: str, args: dict) -> dict:
         import time as _time
 
         last: Exception | None = None

@@ -6,8 +6,8 @@
 #                  runs it against hidden unit tests in the sandbox, and repairs
 #                  it over up to a few turns (our multi-turn run_episode harness).
 #                  Train pool ~500 prompts; disjoint held-out eval set.
-# SUBSTRATE      : REMOTE managed AgentCore sandbox Runtime (SANDBOX=agentcore-runtime),
-#                  K=2 CPU sandbox ARNs baked into the demo run.sh. Pure-Python /
+# SUBSTRATE      : the DEFAULT managed AgentCore Code Interpreter (SANDBOX=agentcore): one
+#                  microVM session per episode, no image / Runtime. Pure-Python /
 #                  IO checker => CPU sandbox (no GPU).
 # BOTTLENECK     : The runtime-count ablation found the sandbox is NOT the
 #                  bottleneck for a pure-Python checker — the 2 SGLang inference
