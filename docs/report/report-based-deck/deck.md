@@ -23,7 +23,7 @@ AgentCore Runtime as the execution sandbox for agentic RL, integrated with slime
 2. **Architecture & pipeline** — reference architecture, the five components, slime + its async rollout.
 3. **Foundations of AgentCore** — Runtime / session / microVM, CPU vs GPU compute, session lifecycle & launch/terminate.
 4. **Integrating into slime** — the call path, one hook, the episode loop, and the key code.
-5. **The demos** — all 21 at a glance, then **one slide per demo** (config, checker, measured eval/latency, honest status, real use case).
+5. **The demos** — all 13 at a glance, then **one slide per demo** (config, checker, measured eval/latency, honest status, real use case).
 6. **Cross-cutting mechanisms** — episode shape, TITO, the scaling `min()` law, one-episode→many-samples, and the resilience levers.
 
 *Scope: AgentCore = the execution **sandbox**; **slime** = the trainer; the **harness stays in-process**.*
@@ -32,7 +32,7 @@ AgentCore Runtime as the execution sandbox for agentic RL, integrated with slime
 
 - **Problem.** Agentic RL runs **untrusted model output** in an isolated environment thousands of times per run and scores it with a **programmatic checker** — the *sandbox* layer, not the GPU, is often the bottleneck (Kimi K2 [5]: **>10,000 concurrent sandboxes**).
 - **Solution.** **AgentCore Runtime is that sandbox** — one isolated microVM session per episode, **in your own AWS account** (IAM/SigV4, VPC), bring-your-own container, CPU by default and **GPU on Instances** — wired into the **slime** trainer through **one hook**, harness in-process.
-- **Proven.** The full loop runs **end-to-end on real hardware across 21 workloads** (code, math, SQL, RAG, tool-use, CUDA kernels), each a standard **10-step run** with real rewards from an in-sandbox checker.
+- **Proven.** The full loop runs **end-to-end on real hardware across 13 demos** (code, math, SQL, RAG, tool-use, CUDA kernels), each a standard **10-step run** with real rewards from an in-sandbox checker.
 - **How you adopt it.** Build a sandbox image → deploy a Runtime → seed a task → train via one `generate` hook. **CPU↔GPU is one env var.**
 
 ## What tasks do frontier labs run in sandboxes
@@ -203,7 +203,7 @@ Running **untrusted, model-generated code** — isolation is the whole point: on
 | Filesystem | ephemeral | persistent EBS |
 | Agents / session | 1 | many |
 
-**One session = one whole instance** (session→instance is 1:1 — you get the *instance*, not a GPU). Two ids acquire two *separate* instances, so you can't split one multi-GPU box across sessions. To use every GPU of one instance: **one shared session + a self-managed in-instance Ray farm** (`demo_gpu_shared` / `demo_gpu_local`).
+**One session = one whole instance** (session→instance is 1:1 — you get the *instance*, not a GPU). Two ids acquire two *separate* instances, so you can't split one multi-GPU box across sessions. To use every GPU of one instance: **one shared session + a self-managed in-instance Ray farm** (`demo_gpu_farm`).
 
 ## The microVM's resource envelope — three limits that bite
 
@@ -309,7 +309,7 @@ Every episode executes model-generated code you did not write. AgentCore makes t
 
 - **Billing model:** you pay for sandbox **vCPU-seconds + GB-hours** while a session is live [D13], plus **Instance** hours for GPU sandboxes — not a flat per-sandbox fee. Idle sessions are reclaimed (~15 min), so **warm-but-unused time is bounded**.
 - **CPU sandboxes are cheap; the bottleneck is elsewhere:** for cheap-checker families (math, code, SQL, tool-use) the measured sandbox op is **~0.1 s** (p50 123 ms / p95 900 ms) — generation dominates, so you scale inference, not sandboxes.
-- **GPU is where cost concentrates — and where packing pays:** KernelBench is sandbox-bound (`exec` p50 **8.5 s** ≫ generation 2.5 s). Isolated needs **N whole g6 at once**; the `gpu_shared` Ray farm packs **N episodes onto one GPU** (`num_gpus=0.5` → 2×), so you provision **one** instance, not N.
+- **GPU is where cost concentrates — and where packing pays:** KernelBench is sandbox-bound (`exec` p50 **8.5 s** ≫ generation 2.5 s). Isolated needs **N whole g6 at once**; the `gpu_farm` Ray farm (`FARM=fractional`) packs **N episodes onto one GPU** (`num_gpus=0.5` → 2×), so you provision **one** instance, not N.
 - **Primary lever is capacity, not just cost:** on a capacity-starved GPU fleet you often *cannot* launch N instances at all — the farm makes the run *possible*, and cheaper.
 
 # 4. Integrating AgentCore into slime as the sandbox
@@ -476,29 +476,29 @@ app.run()                       # serves 0.0.0.0:8080  (/invocations + /ping)
 
 ## Find your workload — the demos are client use cases
 
-The 21 demos aren't toys; each stands in for a **real agent a client would train**. Find yours:
+The 13 demos aren't toys; each stands in for a **real agent a client would train**. Find yours:
 
-- **Coding agents** → `cpu_mbpp` (MBPP repair), `cpu_humaneval` (function synthesis), `cpu_branching` (a real Claude Code CLI agent) — test-driven assistants that iterate against your test runner.
-- **Reasoning / math** → `cpu_math`, `cpu_gsm8k`, `cpu_math500`, `cpu_deepscaler` — reasoning-model post-training with a one-line numeric checker.
-- **Data & analytics** → `cpu_gretelsql` (text-to-SQL), `cpu_imagepool` (pandas / scipy / sklearn) — agents whose reward is *running the real data stack*.
-- **RAG / search** → `cpu_hotpotqa` (multi-hop) — retrieval agents over your corpus.
-- **Tool / API use** → `cpu_xlam`, `cpu_mcp` — function-calling and MCP-schema agents for your APIs.
-- **GPU kernels / systems** → `gpu_single`, `gpu_shared`, `gpu_local` — agents whose checker compiles and runs CUDA on a real GPU.
+- **Coding agents** → `cpu_datasets` `DATASET=mbpp` (MBPP repair) / `=humaneval` (function synthesis), `cpu_terminalbench` (whole-OS terminal tasks), `cpu_branching` (a real Claude Code CLI agent) — test-driven assistants that iterate against your test runner.
+- **Reasoning / math** → `cpu_datasets` `DATASET=math` / `gsm8k` / `math500` / `deepscaler` — reasoning-model post-training with a one-line numeric checker.
+- **Data & analytics** → `cpu_datasets` `DATASET=gretelsql` (text-to-SQL), `cpu_imagepool` (pandas / scipy / sklearn) — agents whose reward is *running the real data stack*.
+- **RAG / search** → `cpu_datasets` `DATASET=hotpotqa` (multi-hop) — retrieval agents over your corpus.
+- **Tool / API use** → `cpu_datasets` `DATASET=xlam` / `mcp` — function-calling and MCP-schema agents for your APIs.
+- **GPU kernels / systems** → `gpu_single`, `gpu_farm` — agents whose checker compiles and runs CUDA on a real GPU.
 
-*The rest (`harness_scale`, `mixtask`, `customruntime`, `heartbeat`, `snapshot`) show **how to scale, mix, and operate** these in production.*
+*The rest (`scale_lanes`, `mixtask`, `customruntime`, `bigimage`, `heartbeat`, `snapshot`) show **how to scale, mix, and operate** these in production.*
 
-## The demo set — 21 demos, one design
+## The demo set — 13 demos, one design
 
-Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), AgentCore the **sandbox**; only the *substrate* and *task* vary — in **four layers**:
+Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), AgentCore the **sandbox**; only the *substrate* and *task* vary — **9 CPU + 4 GPU**:
 
-- **6 canonical** — `cpu_mbpp` (MBPP), `cpu_math`, `gpu_single` (KernelBench), `gpu_shared` (Ray farm), `cpu_heartbeat` + `gpu_snapshot` (resilience).
-- **8 per-task CPU fan-out** — one real HF dataset each: gsm8k, math500, deepscaler, humaneval, gretelsql, hotpotqa, xlam, mcp.
-- **2 scale a new dimension** — `harness_scale` (the driver), `mixtask` (the batch).
-- **5 substrate/design variants** — `cpu_branching`, `cpu_imagepool`, `cpu_customruntime`, `gpu_customruntime`, `gpu_local`.
+- **CPU reference** — `cpu_datasets`: ONE demo, many real RLVR datasets via a `DATASET=` knob (mbpp · math · gsm8k · math500 · deepscaler · humaneval · gretelsql · hotpotqa · xlam · mcp). *These were ten separate folders until 2026-09-23; they differed only in data, so they were merged.*
+- **CPU scale / mix** — `cpu_scale_lanes` (4 × 4 × 4 lanes: harness : engine : microVM; was `cpu_harness_scale`), `cpu_mixtask` (the batch).
+- **CPU substrate / design variants** — `cpu_imagepool`, `cpu_terminalbench`, `cpu_branching`, `cpu_customruntime`, `cpu_bigimage`, `cpu_heartbeat` (resilience).
+- **GPU** — `gpu_single`, `gpu_customruntime`, `gpu_snapshot` (resilience), `gpu_farm` (local Ray farm; `FARM=fractional` packs two episodes on one GPU, `FARM=whole` gives each a whole GPU). *`gpu_farm` replaces `gpu_shared_single`, `gpu_shared_multi` and `gpu_local` (merged 2026-09-25; they differed only in farm knobs).*
 
-**Honest status — uniform.** Every training demo is **one 10-step run**: 10 train steps · 1 held-out eval · 1 checkpoint · a weight-sync each step (10) — **loop-complete, not convergence**. The four non-training demos are the exceptions: `cpu_heartbeat`/`gpu_snapshot` run offline (no policy), `gpu_customruntime` is a capability probe, and `gpu_local` attempted the run but hit farm instability before a clean finish. *One slide per demo follows the summary.*
+**Honest status — uniform.** Every training demo is **one 10-step run**: 10 train steps · 1 held-out eval · 1 checkpoint · a weight-sync each step (10) — **loop-complete, not convergence**. Exceptions: `cpu_branching` trains with reward 0, and `cpu_terminalbench` has no run yet. All four GPU demos (both `gpu_farm` modes) passed the 2026-09-21 GPU sweep. *One slide per demo follows the summary.*
 
-## All 21 demos at a glance
+## All 13 demos at a glance
 
 ```{=latex}
 \scriptsize
@@ -506,31 +506,31 @@ Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), Age
 
 | Demo | Substrate · task | Checker | Status / measured |
 |---|---|---|---|
-| *canonical (6)* | | | |
-| `cpu_mbpp` | CPU µVM · MBPP repair | hidden asserts | 10-step; `eval` 0.56 |
-| `cpu_math` | CPU µVM · math words | numeric assert | 10-step; `eval/gsm8k` 0.94 |
-| `gpu_single` | GPU g6 · KernelBench | CUDA `allclose` | 10-step; `eval` 0.65 |
-| `gpu_shared` | GPU g6 farm · KernelBench | CUDA `allclose` | 10-step (local GPU) |
-| `cpu_heartbeat` | CPU µVM · heartbeat | — (no policy) | offline sim |
-| `gpu_snapshot` | GPU inst. · snapshot | — (no policy) | offline sim; real recycle unverified |
-| *per-task CPU fan-out (8)* | | | |
-| `cpu_gsm8k` | CPU µVM · GSM8K | exact int match | 10-step; `eval` 0.91 |
-| `cpu_math500` | CPU µVM · MATH-500 | numeric 1e-4 | 10-step; `eval` 0.83 |
-| `cpu_deepscaler` | CPU µVM · DeepScaleR | numeric 1e-4 | 10-step; `eval` 0.70 |
-| `cpu_humaneval` | CPU µVM · HumanEval | row `check()` test | 10-step; `eval` 0.81 |
-| `cpu_gretelsql` | CPU µVM · Gretel SQL | result-set eq (sqlite3) | 10-step; `eval` 0.65 |
-| `cpu_hotpotqa` | CPU µVM · HotpotQA | SQuAD-norm EM | 10-step; `eval` 0.21 |
-| `cpu_xlam` | CPU µVM · xLAM-60k | arg-norm call match | 10-step; `eval` 1.00 |
-| `cpu_mcp` | CPU µVM · ToolACE (MCP) | arg-norm call match | 10-step; `eval` 1.00 |
-| *scale a dimension (2)* | | | |
-| `cpu_harness_scale` | CPU µVM · DeepScaleR (fixed) | numeric assert | offline sweep + 10-step; `eval` 0.33 |
+| *CPU (9)* | | | |
+| `cpu_datasets` `=mbpp` | CPU µVM · MBPP repair | hidden asserts | 10-step; `eval` 0.56 |
+| `cpu_datasets` `=math` | CPU µVM · math words | numeric assert | 10-step; `eval/gsm8k` 0.94 |
+| `cpu_datasets` `=gsm8k` | CPU µVM · GSM8K | exact int match | 10-step; `eval` 0.91 |
+| `cpu_datasets` `=math500` | CPU µVM · MATH-500 | numeric 1e-4 | 10-step; `eval` 0.83 |
+| `cpu_datasets` `=deepscaler` | CPU µVM · DeepScaleR | numeric 1e-4 | 10-step; `eval` 0.70 |
+| `cpu_datasets` `=humaneval` | CPU µVM · HumanEval | row `check()` test | 10-step; `eval` 0.81 |
+| `cpu_datasets` `=gretelsql` | CPU µVM · Gretel SQL | result-set eq (sqlite3) | 10-step; `eval` 0.65 |
+| `cpu_datasets` `=hotpotqa` | CPU µVM · HotpotQA | SQuAD-norm EM | 10-step; `eval` 0.21 |
+| `cpu_datasets` `=xlam` | CPU µVM · xLAM-60k | arg-norm call match | 10-step; `eval` 1.00 |
+| `cpu_datasets` `=mcp` | CPU µVM · ToolACE (MCP) | arg-norm call match | 10-step; `eval` 1.00 |
+| `cpu_scale_lanes` | CPU µVM ×4 persistent · DeepScaleR (fixed) | numeric assert | reworked to 4 × 4 × 4 lanes, offline-verified; earlier 10-step `eval` 0.33 was the pre-rework topology |
 | `cpu_mixtask` | CPU µVM · math+SQL+CTF+tool | per-row checker | 10-step; `eval/mixed` 0.67 |
-| *substrate / design variants (5)* | | | |
-| `cpu_branching` | CPU CLI Runtime · SWE + Claude Code CLI | SWE checker | 10-step; fan-out ≥ 1, reward 0 |
 | `cpu_imagepool` | CPU µVM ×3 · datasci/scipy/sklearn | per-family checker | 10-step; `eval/mixed` 1.00 |
+| `cpu_terminalbench` | CPU µVM ×~229 · Terminal-Bench | task's hidden pytest | 218/229 Runtimes deployed; oracle 165 usable of 212 checked; no training run yet |
+| `cpu_branching` | CPU CLI Runtime · SWE + Claude Code CLI | SWE checker | 10-step; fan-out ≥ 1, reward 0 |
 | `cpu_customruntime` | CPU µVM · DeepScaleR, both backends | numeric assert | 10-step; `eval` 0.69 |
-| `gpu_customruntime` | GPU inst. · torch-on-CUDA probe | `cuda.is_available()` | capability probe; no run |
-| `gpu_local` | local whole-GPU farm · KernelBench | CUDA `allclose` | run attempted; real rewards, no clean success |
+| `cpu_bigimage` | CPU Instance (m5) · DeepScaleR, ~4 GB image | numeric assert | 10-step; `eval` 0.76 |
+| `cpu_heartbeat` | CPU µVM · heartbeat | — | offline sim + 10-step; `eval` 0.71 |
+| *GPU (4)* | | | |
+| `gpu_single` | GPU g6 · KernelBench | CUDA `allclose` | 10-step; `eval` 0.525 |
+| `gpu_customruntime` | custom GPU Runtime · KernelBench | CUDA `allclose` | 10-step; `eval` 0.65 |
+| `gpu_snapshot` | whole-GPU farm + snapshot | CUDA `allclose` | 10-step; `eval` 0.625 |
+| `gpu_farm` `=fractional` | 1 local GPU, 0.5+0.5 · KernelBench | CUDA `allclose` | 10-step; `eval` 0.775 |
+| `gpu_farm` `=whole` | 2 local GPUs, 1 each · KernelBench | CUDA `allclose` | two 10-step runs; `eval` 0.65 / 0.70 |
 
 *Every training demo = one **10-step run** (10 train · 1 eval · 1 ckpt · 10 weight syncs) — loop-complete, not convergence.*
 
@@ -538,22 +538,29 @@ Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), Age
 \normalsize
 ```
 
-## What the 21 demos demonstrate — in four layers
+## What the 13 demos demonstrate
 
-- **6 canonical — the core claim.** `cpu_mbpp` (MBPP) and `gpu_single` (KernelBench) are the two reference training loops, on a CPU and a GPU sandbox; `cpu_math` adds reasoning; `gpu_shared` packs many episodes onto one GPU; `cpu_heartbeat` + `gpu_snapshot` are the resilience levers. *Shows the loop works on both substrates and survives real faults.*
-- **8 per-task CPU fan-out — breadth across real workloads.** One real Hugging Face dataset each — GSM8K, MATH-500, DeepScaleR, HumanEval, Gretel SQL, HotpotQA, xLAM, ToolACE — spanning math, code, SQL, RAG, and tool-use. *Shows the same task-agnostic sandbox + checker covers every frontier family, with no image change.*
-- **2 scale a new dimension.** `harness_scale` makes the `min()` throughput law concrete (scale the rollout driver); `mixtask` trains one generalist across families in a single stream. *Shows how you scale and how you mix — not just what you run.*
-- **5 substrate / design variants — the AgentCore mechanics.** `cpu_branching` (real Claude Code CLI as harness), `cpu_customruntime` / `gpu_customruntime` (managed vs. your own Runtime), `cpu_imagepool` (capability-routed image pool), `gpu_local` (whole-GPU farm). *Shows the substrate choices — BYO container, GPU, image routing — a production deployment actually makes.*
+- **The core claim.** `cpu_datasets` (MBPP by default) and `gpu_single` (KernelBench) are the two reference training loops, on a CPU and a GPU sandbox. *Shows the loop works on both substrates.*
+- **Breadth across real workloads.** `cpu_datasets` swaps the dataset with one knob (`DATASET=`): GSM8K, MATH-500, DeepScaleR, HumanEval, Gretel SQL, HotpotQA, xLAM, ToolACE, spanning math, code, SQL, RAG and tool-use. *Shows the same task-agnostic sandbox + checker covers every frontier family with no image change. The dataset is data, not a new demo.*
+- **Scale and mix.** `scale_lanes` makes the `min()` throughput law concrete with 4 lanes of harness worker : SGLang engine : microVM, scaled together by `LANES=`; `mixtask` trains one generalist across families in a single stream.
+- **Substrate / design variants — the AgentCore mechanics.** `cpu_branching` (real Claude Code CLI as harness), `cpu_customruntime` / `gpu_customruntime` (managed vs. your own Runtime), `cpu_imagepool` / `cpu_terminalbench` (image pools routed by family / by task), `cpu_bigimage` (image past the microVM cap, on an Instance), `gpu_farm` (GPU Ray farm, fractional or whole-GPU). *Shows the substrate choices a production deployment actually makes.*
+- **Resilience.** `cpu_heartbeat` + `gpu_snapshot`: *heartbeat prevents loss; snapshot recovers from it.*
 
-## `cpu_mbpp` — MBPP code repair · CPU microVM · 10-step run
+## `cpu_datasets` — one demo, many datasets (`DATASET=`)
+
+**One folder, one harness, one CPU sandbox; the dataset is a knob.** `DATASET=<name>` picks the seed rows + hidden checker and writes `eval/<name>` + `ckpt/Qwen3-4B_<name>_async`. An unknown name fails fast. **Why one demo:** the ten former per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k` … `demo_cpu_mcp`) differed only in their data; they were merged on 2026-09-23.
+
+- The next slides give each dataset's measured 10-step run. Those runs were recorded under the old per-dataset folder names.
+
+## `cpu_datasets` `DATASET=mbpp` — MBPP code repair · CPU microVM · 10-step run
 
 **Substrate** CPU µVM · **Data** MBPP 500/8 · **Checker** hidden asserts, 1.0 iff exit 0 · **Use case** unit-test-driven coding assistant.
 
 - **Measured (10-step run):** `raw_reward` 0.5–0.94, `eval/mbpp` 0.56 @ step 9; `step_time` 23–78 s, `wait_time_ratio` 0.39–0.84, MFU 0.018–0.043 (2–4 % of L40S peak).
 - **Latency:** sandbox p50 123 ms / p95 900 ms; SGLang decode p50 1.76 s / p95 4.1 s.
-- **Bottleneck:** generation (1.76 s) ≫ sandbox (0.12 s) → **generation-bound**, scale inference. The reference CPU demo the eight fan-outs clone.
+- **Bottleneck:** generation (1.76 s) ≫ sandbox (0.12 s) → **generation-bound**, scale inference. The default `DATASET` of the reference CPU demo.
 
-## `cpu_math` — math word problems · CPU microVM · 10-step run
+## `cpu_datasets` `DATASET=math` — math word problems · CPU microVM · 10-step run
 
 **Substrate** CPU µVM · **Data** GSM8K 200/40, MATH-500 160/40, DeepScaleR 400/40 (real HF) · **Checker** numeric assert, 1.0/0.0 · **Use case** reasoning-model math post-training.
 
@@ -569,12 +576,12 @@ Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), Age
 - **Latency (remote g6):** `exec` p50 8.5 s / p95 17.3 s; first `ping` ~123 s (one-time g6 cold launch); SGLang decode p50 2.5 s / p95 6.4 s.
 - **Bottleneck:** `exec` (8.5 s) ≫ generation (2.5 s) → **sandbox-bound**, scale the sandbox (more g6, or the farm). Re-verified on hardware via `LOCAL_GPU` (`Job succeeded`, ckpt 2).
 
-## `gpu_shared` — pack many episodes onto one GPU · 10-step run (local GPU)
+## `gpu_farm` — a local Ray GPU farm, `FARM=fractional | whole` · 10-step runs (local GPU)
 
-**Diff from `gpu_single`:** one line — `SANDBOX=agentcore-ray-farm`. All episodes invoke **one** GPU Runtime under a shared `runtimeSessionId`; inside, `_handle_farm` leases one **`num_gpus=0.5`** Ray actor per episode (per-episode `sub_session`). **Use case** GPU packing on a capacity-starved fleet.
+**One demo, two GPU splits** (merged 2026-09-25 from `gpu_shared_single`, `gpu_shared_multi`, `gpu_local`): `FARM=fractional` = two 0.5 actors share ONE GPU; `FARM=whole` = one whole GPU per episode across TWO GPUs. **Diff from `gpu_single`:** one line — `SANDBOX=agentcore-ray-farm`. All episodes invoke **one** GPU Runtime under a shared `runtimeSessionId`; inside, `_handle_farm` leases one Ray actor per episode (per-episode `sub_session`). **Use case** GPU packing on a capacity-starved fleet.
 
-- **Measured (10-step run, local-GPU fallback):** `Job succeeded` + ckpt 2 (fraction 0.5 → 2 warm-CUDA actors); the client-side open-concurrency gate capped opens at the farm's 2 slots — **10 opens succeeded, 0 refused**.
-- **Why:** isolated needs *N whole g6 at once* (stalls on a starved fleet); the farm needs **one** instance. No MIG on L4 → software-only isolation (`nvcc` `flock`). No convergence curve yet.
+- **Measured (2026-09-21 GPU sweep, 10-step runs):** `fractional` `Job succeeded`, ckpt 10, `eval/kernelbench` **0.775**; `whole` passed twice, `eval` 0.65 / 0.70. The client-side open-concurrency gate caps opens at the farm's 2 slots; sandbox `open`==`close` counts balanced.
+- **Why:** isolated needs *N whole g6 at once* (stalls on a starved fleet); the farm needs **one** instance. No MIG on L4 → software-only isolation (`nvcc` `flock`); `whole` sidesteps the fractional compile-wedge when whole GPUs are available. No convergence curve yet.
 
 ## `cpu_heartbeat` — heartbeat keeps the sandbox warm · offline
 
@@ -588,70 +595,71 @@ Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), Age
 **Mechanism, not a training run.** A GPU instance can be recycled and come back blank (AgentCore has no VM/EBS snapshot), so workspace state is serialized to a store you own (S3 in prod) and restored onto a fresh session. **Use case** surviving an instance recycle mid-episode in a long GPU run.
 
 - **A/B arc:** Run A (no snapshot) redoes from step 0; Run B restores and prints the rework saved.
-- **Status — honest:** the **offline sim** is committed (~1 s, `LocalSnapshotStore`); the `REAL_SNAPSHOT=1` on-hardware recycle is a **documented recipe, not yet verified** (`snapshots/` is empty).
+- **Status:** the **offline sim** is committed (~1 s, `LocalSnapshotStore`). The 2026-09-21 GPU sweep also ran it as a real trainer on the local whole-GPU farm, saving and restoring 3 files per episode: `Job succeeded`, ckpt 10, `eval/kernelbench` 0.625.
 
-## `cpu_gsm8k` — grade-school math · 10-step run
+## `cpu_datasets` `DATASET=gsm8k` — grade-school math · 10-step run
 
 **Family** math · **Data** GSM8K (`openai/gsm8k`) 200/40 · **Checker** exact integer match, 1.0/0.0 · **Use case** grade-school word-problem solver.
 
-- **Measured (10-step run):** `eval/gsm8k` **0.91** — the base policy already solves most of this easy split, so it is the fan-out's *sanity anchor*; its curve should flatten fast.
+- **Measured (10-step run):** `eval/gsm8k` **0.91** — the base policy already solves most of this easy split, so it is the *sanity anchor*; its curve should flatten fast.
 - **Bottleneck:** generation-bound (cheap checker) → scale inference, never sandboxes.
 
-## `cpu_math500` — competition-style math · 10-step run
+## `cpu_datasets` `DATASET=math500` — competition-style math · 10-step run
 
 **Family** math · **Data** MATH-500 (`HuggingFaceH4/MATH-500`) 160/40, `EPISODE_MAX_TURNS=4` · **Checker** numeric match (tol 1e-4) · **Use case** competition-math solver.
 
 - **Measured (10-step run):** `eval/math500` **0.83** — harder than GSM8K, so more headroom to climb.
 - **Note:** its longer reasoning traces make `--rollout-max-response-len` the first knob to size up. Generation-bound.
 
-## `cpu_deepscaler` — RL-scale math (largest split) · 10-step run
+## `cpu_datasets` `DATASET=deepscaler` — RL-scale math (largest split) · 10-step run
 
-**Family** math · **Data** DeepScaleR (`agentica-org/DeepScaleR-Preview-Dataset`) 400/40 — the largest fan-out split · **Checker** numeric match (tol 1e-4), `EPISODE_MAX_TURNS=4` · **Use case** RL-scale math post-training.
+**Family** math · **Data** DeepScaleR (`agentica-org/DeepScaleR-Preview-Dataset`) 400/40 — the largest split · **Checker** numeric match (tol 1e-4), `EPISODE_MAX_TURNS=4` · **Use case** RL-scale math post-training.
 
 - **Measured (10-step run):** `eval/deepscaler` **0.70** — lowest of the math three (hardest cold), the most room to show learning.
-- Also the fixed workload `cpu_harness_scale` reuses. Generation-bound.
+- Also the fixed workload `cpu_scale_lanes` reuses. Generation-bound.
 
-## `cpu_humaneval` — function-synthesis coding · 10-step run
+## `cpu_datasets` `DATASET=humaneval` — function-synthesis coding · 10-step run
 
 **Family** coding · **Data** HumanEval (`openai/openai_humaneval`) 140/24 · **Checker** the row's own `check()` unit test, run in the sandbox · **Use case** function-synthesis coding assistant.
 
-- **Measured (10-step run):** `eval/humaneval` **0.81** — same shape as `cpu_mbpp` (MBPP) but with the canonical HumanEval tests (real code execution, not a numeric assert).
+- **Measured (10-step run):** `eval/humaneval` **0.81** — same shape as `DATASET=mbpp` but with the canonical HumanEval tests (real code execution, not a numeric assert).
 - Generation-bound.
 
-## `cpu_gretelsql` — text-to-SQL · 10-step run
+## `cpu_datasets` `DATASET=gretelsql` — text-to-SQL · 10-step run
 
 **Family** sql · **Data** Gretel synthetic text-to-SQL (`gretelai/synthetic_text_to_sql`) 300/40 · **Checker** result-set equality — query executed against **`sqlite3`** (stdlib), rows vs gold · **Use case** text-to-SQL analytics agent.
 
 - **Measured (10-step run):** `eval/gretelsql` **0.65**.
 - **Cheapest checker of all** (in-process SQLite query) → textbook generation-bound.
 
-## `cpu_hotpotqa` — multi-hop RAG · 10-step run
+## `cpu_datasets` `DATASET=hotpotqa` — multi-hop RAG · 10-step run
 
 **Family** rag · **Data** HotpotQA (`hotpotqa/hotpot_qa`, distractor; 10 passages/question) 300/40 · **Checker** SQuAD-normalized exact match · **Use case** multi-hop retrieval / search agent.
 
-- **Measured (10-step run):** `eval/hotpotqa` **0.21** — the **hardest cold** of the eight, so the most interesting convergence target.
+- **Measured (10-step run):** `eval/hotpotqa` **0.21** — the **hardest cold** of the datasets, so the most interesting convergence target.
 - **Bottleneck:** the mild exception — 10-passage observations grow the *context* each turn, but the checker is trivial → generation/**context**-bound, still not sandbox-bound.
 
-## `cpu_xlam` — function-calling / tool use · 10-step run
+## `cpu_datasets` `DATASET=xlam` — function-calling / tool use · 10-step run
 
 **Family** tool use · **Data** xLAM-60k (`minpeter/xlam-function-calling-60k-parsed`) 300/40 · **Checker** arg-normalized gold-call match (order-insensitive), RLVR · **Use case** function-calling tool agent.
 
 - **Measured (10-step run):** `eval/xlam` **1.00** — the base policy nails this slice, so the value is verifying the **tool-call parsing/checker path** end-to-end, not showing a climb.
 - Generation-bound.
 
-## `cpu_mcp` — MCP-style tool schemas · 10-step run
+## `cpu_datasets` `DATASET=mcp` — MCP-style tool schemas · 10-step run
 
 **Family** tool use · **Data** ToolACE (`Team-ACE/ToolACE`, MCP-shaped schemas) 300/40 · **Checker** arg-normalized gold-call match, RLVR · **Use case** MCP tool-schema agent.
 
 - **Measured (10-step run, `eval-interval 2`):** `eval/mcp` **1.00** on the two-rollout held-out set — a *baseline solve rate*: read it as "the MCP-style tool loop + checker run end-to-end," not a learned gain.
 - Same family as `xlam`, against MCP-shaped tool definitions. Generation-bound.
 
-## `cpu_harness_scale` — scale the rollout driver · offline sweep + 10-step run
+## `cpu_scale_lanes` — 4 × 4 × 4 lanes: harness : engine : microVM · offline-verified
 
-**Fixes task + sandbox, scales the *harness*.** A pool of `W` warm in-process workers (`HARNESS_WORKERS`, default 4) over one `asyncio.Queue`, on DeepScaleR (400/40), 2 CPU sandbox ARNs round-robined. **Use case** lifting the easily-forgotten third dial once inference + sandbox are fast.
+**Fixes the task (DeepScaleR, 400/40), scales the rollout as lanes.** Each lane = one warm harness worker, pinned to **its own SGLang engine** (TP1, one of rollout GPUs 4–7) and **its own persistent AgentCore microVM** (one session for the whole run, a fresh workdir per episode). Default `LANES=4` → **4 workers : 4 engines : 4 microVMs**, strictly 1:1:1, on 4 train + 4 inference GPUs; `LANES=N` scales all three tiers together. *Formerly `cpu_harness_scale`.* **Use case** seeing which of the three dials caps throughput.
 
-- **Offline sweep (illustrates the `min()` law):** throughput 5.3 / 10.5 / 20.9 / 29.6 / 36.5 ep/s at `W`=1/2/4/6/8 while **harness-bound**, then **plateaus ~37 ep/s** once **inference-bound** (`W`=12 → 36.6). 48/48 solved. Unseeded sim — shape, not absolute rate.
-- **Loop-verified on hardware:** the real slime integration reaches `Job succeeded` at ckpt 10 (the standard 10-step run), `eval/deepscaler` 0.33.
+- **Verifiable in logs:** every episode's `[demo]` line carries `lane=`, `engine=`, `sandbox_session=`; `metrics.py` checks each lane used one engine and one session.
+- **Offline sweep (illustrates the `min()` law):** throughput 5.3 / 10.5 / 20.9 / 29.6 / 36.5 ep/s at `W`=1/2/4/6/8 while **harness-bound**, then **plateaus ~37 ep/s** once **inference-bound**. 48/48 solved. Unseeded sim — shape, not absolute rate.
+- **Status:** the lane rework is verified offline (fake-microVM run: 4 sessions, 4 episodes per lane, 1:1:1). The earlier hardware run (`Job succeeded`, ckpt 10, `eval/deepscaler` 0.33) used the **pre-rework** topology (2 engines, fresh sandbox per episode).
 
 ## `cpu_mixtask` — one interleaved generalist stream · 10-step run
 
@@ -681,19 +689,40 @@ Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), Age
 - Routing is not cosmetic: send a `scipy` episode to the pandas image and `import scipy` fails → reward 0. The third rung of the dependency ladder (files → CMD-install → **per-capability ARN**).
 - **Measured (10-step run):** `Job succeeded` at ckpt 10 driving the **real 3-image ARN pool** (per-family routing confirmed in the runtime-env), **`eval/mixed` 1.00**.
 
+## `cpu_terminalbench` — one image per task, one fresh microVM per episode · recipe
+
+**Terminal-Bench as a large image pool:** one AgentCore Runtime **per task** (~229 images); each episode is routed to its task's own Runtime. It is the `cpu_imagepool` routing idea at task scale. Tasks act on the whole OS, so **every episode gets a brand-new session** (isolation). **Use case** terminal / DevOps agents.
+
+- **Cold start hidden by look-ahead:** a slime data-source plugin (`tb_lookahead_source.py`) replays slime's deterministic data order and announces the **next 2 rollouts'** episodes; the pool keeps **64** fresh sessions (2 × 4 prompts × 8 samples) booted ahead, pooled per task, heartbeated until claimed. Offline-tested.
+- **Reward:** the task's own hidden pytest oracle (`grade.sh`), RLVR. Tool-calling `MiniClaudeHarness` loop (needs the `qwen25` tool parser). Remote-only.
+- **Status:** 218/229 Runtimes deployed; oracle validation (reference passes, untouched env fails) **165 usable of 212 checked** so far; no training run yet.
+
+## Terminal-Bench look-ahead pre-open (1/2): status and why
+
+**Status.** The look-ahead is built and passes two offline tests, but it hasn't run on AWS or in real training yet. With the defaults (4 prompts × 8 samples, 2 batches ahead), the pool keeps **64 microVMs booted ahead** of the episodes that are running.
+
+**How the pool learns the next two batches' episodes.** slime would never tell it in time: it passes along only **8 episodes** of the current batch at once and doesn't draw the next batch until the current one finishes. But slime's prompt order is **predictable**: it walks a shuffled dataset in order, with a fixed seed for each epoch. So a data source can compute what slime will draw next.
+
+## Terminal-Bench look-ahead pre-open (2/2): the five steps
+
+1. A new **look-ahead data source** (`agentcore_slime_demo/tb_lookahead_source.py`, wired in `run.sh` with `--data-source-path`) wraps slime's normal one. Each time slime draws a batch, it also works out the prompts of the next 2 batches the same way slime will draw them, without moving slime's position.
+2. It sends the pool the task list for each upcoming episode: the **32** just drawn, plus the next **64**.
+3. The pool keeps the first **64** not-yet-started episodes booted, each on its own brand-new session on that task's Runtime. Sessions are matched by task, and each one still serves exactly one episode.
+4. When a worker starts an episode, it takes a ready session for that task and the next episode in line starts booting. So 64 always stay booted ahead, which covers batch **N+2** before slime draws it. The existing heartbeat keeps waiting sessions alive.
+5. If a prediction is wrong, the extra sessions are stopped at the next draw and those episodes just open on demand.
+
+## `cpu_bigimage` — an image past the microVM cap, on a warm CPU Instance · 10-step run
+
+**A ~4 GB image** (torch + scientific stack) is over the ~2 GB microVM cap, so it runs on a CPU **capacity-provider Instance** (`m5.xlarge`) instead. **Use case** agents whose toolchain can't shrink below the cap.
+
+- **Measured (10-step run, real AWS):** `Job succeeded`, `eval/deepscaler` 0.76. Warm-instance reuse (one shared session, fresh env per episode) cut m5 cold boots from 201 to 1.
+
 ## `gpu_customruntime` — a GPU under the sandbox · capability probe
 
 **The managed Code Interpreter has no GPU.** If a checker needs CUDA, the sandbox must be **your own custom Runtime on an AgentCore capacity-provider Instance** (a g6 box). The demo `write_file`s a torch-on-CUDA probe, `exec`s it, `read_file`s the result. **Use case** confirming a CUDA-dependent reward can only be scored on the Instances substrate.
 
 - **Measured (probe):** `torch.cuda.is_available()` **False on managed CI** vs **True on the custom Runtime** (`torch 2.11+cu129`, `device: NVIDIA L40S`).
-- **Status:** capability probe only — the `LOCAL_GPU` training attempt was `Killed`; no committed training run. States the rule: one session = one whole Instance, no cross-session GPU time-slicing.
-
-## `gpu_local` — KernelBench on a local whole-GPU farm · run attempted
-
-**The whole-GPU counterpart to `gpu_shared`:** the same Ray-farm Runtime served **locally** on the box's reserved GPUs 6,7 with **fraction 1.0** — a whole dedicated GPU per episode (`floor(2/1.0)=2` actors); slime keeps the other six. **Use case** GPU packing when a whole GPU per episode *is* available locally and the fractional compile-wedge risk isn't worth it.
-
-- Runtime config confirmed: `SANDBOX=agentcore-ray-farm`, fraction 1.0, GPUs 6,7, open-concurrency capped at 2, shared `runtimeSessionId`.
-- **Status — honest:** produced **real KernelBench rewards** (`raw_reward` 0.59–0.81) but **neither attempt reached a clean success** — both hit repeated farm-endpoint `Connection refused` (the local farm container dies under load) before a final checkpoint.
+- **Status:** the 2026-09-21 GPU sweep ran it as a real KernelBench trainer: `Job succeeded`, ckpt 10, `eval/kernelbench` 0.65 (an earlier `LOCAL_GPU` attempt was `Killed`). States the rule: one session = one whole Instance, no cross-session GPU time-slicing.
 
 # 6. Cross-cutting mechanisms
 
@@ -810,12 +839,12 @@ On the 8×L40S box the demos **fix trainer, inference, and harness** and change 
 
 *Each tier balances load by a **different rule** — and none needs a load balancer you build.*
 
-## The scaling demo (2/2) — the min() law & `cpu_harness_scale`
+## The scaling demo (2/2) — the min() law & `cpu_scale_lanes`
 
 **The min() law — `throughput = min(inference, sandbox, harness)`.** Scale two and the bottleneck moves to the third.
 
 - **Diagnose first:** compare `perf/sglang_gen_ms_*` vs `perf/sandbox_ms_*`. Generation dominates → add SGLang replicas; sandbox dominates → add sessions / ARNs / the GPU farm.
-- **`cpu_harness_scale`** targets the **easily-forgotten third dial**: the warm in-process harness (GIL, `to_thread` pool, FDs). Scale it by **replicating warm workers** (`N × S`), not by making it ad-hoc. **Problem targeted:** rollout driver becomes the bottleneck once inference and sandbox are both fast.
+- **`cpu_scale_lanes`** makes all three dials visible as **4 lanes** (worker : engine : microVM, 1:1:1), including the **easily-forgotten third**: the warm in-process harness (GIL, `to_thread` pool, FDs). Scale it by **replicating warm workers**, not by making it ad-hoc. **Problem targeted:** rollout driver becomes the bottleneck once inference and sandbox are both fast.
 - **Load-balancing differs by side:** inference → target slime's cache-aware router (prefix affinity); sandbox → the **session id *is* the balancer** (sticky round-robin across a pool of ARNs). You never stand up your own load balancer.
 
 ## Mechanism spotlight — one episode → many samples

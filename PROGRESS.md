@@ -14,7 +14,7 @@ sections: **Done**, **In progress**, **Next steps (to run)**.
 > `demo_cpu_scale_sandboxes` copy was folded into `demo_cpu_scale_lanes` (its only new files,
 > `build_deepcoder.py` + `data/deepcoder_probe.csv`; DeepCoder checker not wired yet).
 >
-> **2026-09-23 — dataset demos merged (15 demos now).** The ten per-dataset CPU folders
+> **2026-09-23 — dataset demos merged (15 demos at the time; 13 since the 2026-09-25 `demo_gpu_farm` merge).** The ten per-dataset CPU folders
 > (`demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k`, `demo_cpu_math500`, `demo_cpu_deepscaler`,
 > `demo_cpu_humaneval`, `demo_cpu_gretelsql`, `demo_cpu_hotpotqa`, `demo_cpu_xlam`, `demo_cpu_mcp`)
 > are now ONE demo, `demo_cpu_datasets` (a `git mv` of `demo_cpu_mbpp`), selected with

@@ -29,53 +29,39 @@ the trainer. The agent loop plugs into slime's **custom generation hook** — on
 `invoke_agent_runtime` to the sandbox, the in-sandbox checker gives the reward. **CPU↔GPU
 is one env var** (`SANDBOX=`). See the deck for the call path, TITO, and the key code.
 
-## The demos — 21, one design
+## The demos — 13, one design
 
 Policy always **Qwen3-4B**, harness **in-process** (except `cpu_branching`), AgentCore the
 **sandbox**; only the *substrate* and *task* vary. Each demo below is a **self-contained,
 standalone recipe** — its own dir with a `README.md`, vendored `agentcore_slime_demo/`, own
 `deploy/`, `run.sh`, and `train.sh`. Links go to each demo's own README.
 
-### Canonical (6)
+### CPU (9)
 
 | Demo | Task | Real use case |
 |---|---|---|
-| [cpu_mbpp](../../../code/demos/demo_cpu_mbpp/README.md) | MBPP repair | test-driven coding (the reference demo, **trained**) |
-| [cpu_math](../../../code/demos/demo_cpu_math/README.md) | math words | math post-training |
-| [gpu_single](../../../code/demos/demo_gpu_single/README.md) | KernelBench | CUDA-kernel agent on a real GPU (**trained**) |
-| [gpu_shared](../../../code/demos/demo_gpu_shared/README.md) | KernelBench (Ray farm) | GPU packing when the fleet is scarce/costly |
-| [cpu_heartbeat](../../../code/demos/demo_cpu_heartbeat/README.md) | heartbeat | keep a warm sandbox alive across the weight-sync pause |
-| [gpu_snapshot](../../../code/demos/demo_gpu_snapshot/README.md) | snapshot | survive a GPU-instance recycle (app-level S3 snapshot) |
-
-### Per-task CPU fan-out (8, real HF datasets)
-
-| Demo | Task | Real use case |
-|---|---|---|
-| [cpu_gsm8k](../../../code/demos/demo_cpu_gsm8k/README.md) | GSM8K | grade-school math |
-| [cpu_math500](../../../code/demos/demo_cpu_math500/README.md) | MATH-500 | competition math |
-| [cpu_deepscaler](../../../code/demos/demo_cpu_deepscaler/README.md) | DeepScaleR | scaled math reasoning |
-| [cpu_humaneval](../../../code/demos/demo_cpu_humaneval/README.md) | HumanEval | function-synthesis coding |
-| [cpu_gretelsql](../../../code/demos/demo_cpu_gretelsql/README.md) | Gretel SQL | text-to-SQL analytics |
-| [cpu_hotpotqa](../../../code/demos/demo_cpu_hotpotqa/README.md) | HotpotQA | multi-hop RAG / search |
-| [cpu_xlam](../../../code/demos/demo_cpu_xlam/README.md) | xLAM-60k | function-calling agent |
-| [cpu_mcp](../../../code/demos/demo_cpu_mcp/README.md) | ToolACE (MCP) | MCP tool-schema agent |
-
-### Scale a new dimension (2)
-
-| Demo | Task | Real use case |
-|---|---|---|
-| [cpu_harness_scale](../../../code/demos/demo_cpu_harness_scale/README.md) | DeepScaleR (fixed) | scale the rollout driver (the forgotten 3rd tier) |
+| [cpu_datasets](../../../code/demos/demo_cpu_datasets/README.md) | `DATASET=` mbpp (default) · math · gsm8k · math500 · deepscaler · humaneval · gretelsql · hotpotqa · xlam · mcp | the reference demo: coding, math, SQL, RAG and tool-use agents from one folder |
+| [cpu_scale_lanes](../../../code/demos/demo_cpu_scale_lanes/README.md) | DeepScaleR (fixed) | 4 × 4 × 4 lanes: harness worker : SGLang engine : microVM (was `cpu_harness_scale`) |
 | [cpu_mixtask](../../../code/demos/demo_cpu_mixtask/README.md) | math+SQL+CTF+tool | one generalist policy across many families |
+| [cpu_imagepool](../../../code/demos/demo_cpu_imagepool/README.md) | datasci (pandas/scipy/sklearn) | data-science agent with heavy, incompatible deps → per-image Runtimes |
+| [cpu_terminalbench](../../../code/demos/demo_cpu_terminalbench/README.md) | Terminal-Bench (~229 task images) | terminal / DevOps agent; one Runtime per task, fresh microVM per episode |
+| [cpu_branching](../../../code/demos/demo_cpu_branching/README.md) | Claude Code CLI | RL on a **real production coding agent** (subagents + summarization) |
+| [cpu_customruntime](../../../code/demos/demo_cpu_customruntime/README.md) | DeepScaleR | managed Code Interpreter vs a custom Runtime |
+| [cpu_bigimage](../../../code/demos/demo_cpu_bigimage/README.md) | DeepScaleR, ~4 GB image | an image past the microVM cap, on a warm CPU Instance |
+| [cpu_heartbeat](../../../code/demos/demo_cpu_heartbeat/README.md) | heartbeat | keep a warm sandbox alive across the weight-sync pause |
 
-### Substrate & design variants (5)
+`cpu_datasets` replaces ten per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`,
+`demo_cpu_gsm8k` … `demo_cpu_mcp`) that differed only in their data (merged 2026-09-23).
+
+### GPU (4)
 
 | Demo | Task | Real use case |
 |---|---|---|
-| [cpu_branching](../../../code/demos/demo_cpu_branching/README.md) | Claude Code CLI | RL on a **real production coding agent** (subagents + summarization) |
-| [cpu_imagepool](../../../code/demos/demo_cpu_imagepool/README.md) | datasci (pandas/scipy/sklearn) | data-science agent with heavy, incompatible deps → per-image Runtimes |
-| [cpu_customruntime](../../../code/demos/demo_cpu_customruntime/README.md) | trivial | managed Code Interpreter vs a custom Runtime (capability compare) |
-| [gpu_customruntime](../../../code/demos/demo_gpu_customruntime/README.md) | trivial | GPU available only via a custom Runtime (capability compare) |
-| [gpu_local](../../../code/demos/demo_gpu_local/README.md) | KernelBench | local whole-GPU-per-session Ray farm |
+| [gpu_single](../../../code/demos/demo_gpu_single/README.md) | KernelBench | CUDA-kernel agent on a real GPU (**trained**) |
+| [gpu_customruntime](../../../code/demos/demo_gpu_customruntime/README.md) | KernelBench | GPU available only via a custom Runtime |
+| [gpu_snapshot](../../../code/demos/demo_gpu_snapshot/README.md) | snapshot | survive a GPU-instance recycle (app-level S3 snapshot) |
+| [gpu_farm](../../../code/demos/demo_gpu_farm/README.md) | KernelBench (Ray farm) | `FARM=fractional`: two episodes share ONE GPU (0.5 + 0.5); `FARM=whole`: one whole GPU per episode across two GPUs |
 
-**Status (honest):** only `cpu_mbpp` and `gpu_single` carry ~10-step training curves; the
-rest are `NR=3` smoke runs or ready-to-run recipes. See each demo's README for specifics.
+**Status (honest):** only `cpu_datasets` (`DATASET=mbpp`) and `gpu_single` carry ~10-step
+training curves; the rest are 10-step (`NR=11`) smoke runs or ready-to-run recipes
+(`cpu_terminalbench` has no run yet). See each demo's README for specifics.

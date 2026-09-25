@@ -6,8 +6,8 @@
 
 > **Historical plan (pre-2026-09-23).** Written when the set had 17 demos. The ten per-dataset CPU
 > folders (`demo_cpu_mbpp`, `demo_cpu_math`, `demo_cpu_gsm8k` … `demo_cpu_mcp`) have since been
-> merged into ONE demo, `demo_cpu_datasets`, selected with `DATASET=`. The set is now **15 demos**
-> (9 CPU + 6 GPU; see `README.md`). In `run_smoke_sweep.sh` those trainers are now entries of the form
+> merged into ONE demo, `demo_cpu_datasets`, selected with `DATASET=`. The set was then **15 demos**
+> (9 CPU + 6 GPU); since the 2026-09-25 `demo_gpu_farm` merge it is **13** (see `README.md`). In `run_smoke_sweep.sh` those trainers are now entries of the form
 > `demo_cpu_datasets:<ds>` (e.g. `demo_cpu_datasets:gsm8k`), logged as `demo_cpu_datasets-<ds>`.
 > `demo_gpu_shared` was split into `demo_gpu_shared_single` / `demo_gpu_shared_multi` (2026-09-21).
 
