@@ -38,11 +38,10 @@ bash code/demos/convergence/14_gpu_farm_whole.sh        # FARM=whole: one GPU ea
 bash code/demos/convergence/15_cpu_heartbeat.sh        # keep-warm across the barrier (HEARTBEAT_KEEP_WARM=1)
 bash code/demos/convergence/16_cpu_scale_lanes.sh  # 4x4x4 lanes: 4 workers : 4 engines : 4 microVMs (LANES=4, MODE=A)
 bash code/demos/convergence/17_cpu_customruntime.sh  # deepscaler on your custom CPU Runtime
-# 18 is REMOTE-ONLY (no LOCAL_GPU path): export a live g6 ARN.
+# 18 = demo_gpu_single + snapshot/resume; REMOTE (g6 ARN) or on-box (LOCAL_GPU=1, farm up on 6,7):
 AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/<g6> \
-  bash code/demos/convergence/18_gpu_snapshot.sh     # app-level snapshot/resume (SNAPSHOT_EVERY=1)
-# 19 runs REMOTE (g6 ARN) OR on-box (LOCAL_GPU=1, farm up on 6,7):
-LOCAL_GPU=1 bash code/demos/convergence/19_gpu_customruntime.sh   # KernelBench on custom GPU Runtime
+  bash code/demos/convergence/18_gpu_single_snapshot.sh   # app-level snapshot/resume (SNAPSHOT_EVERY=1)
+# 12 on-box (was 19_gpu_customruntime): LOCAL_GPU=1 bash code/demos/convergence/12_gpu_single.sh
 ```
 
 ## Common overrides

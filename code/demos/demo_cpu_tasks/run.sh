@@ -58,6 +58,14 @@
 # same reward. Reward variance within groups (harder tasks / higher temp) yields nonzero gradient.
 set -euo pipefail
 
+# VARIANT=bigimage (was demo_cpu_bigimage): the SAME trainer, but the sandbox is a LARGE (>2 GB) custom
+# image on a CPU capacity-provider INSTANCE (m5), run warm-shared: SANDBOX=agentcore-ray-farm + one
+# shared runtimeSessionId (cold-boot paid once) with a fresh CpuFarm env per episode sub_session.
+# Deploy it with deploy/deploy_bigimage.py (or VARIANT=bigimage bash 2_..4_*.sh); defaults to DATASET=deepscaler.
+VARIANT="${VARIANT:-}"
+if [ "$VARIANT" = "bigimage" ]; then
+   SANDBOX="${SANDBOX:-agentcore-ray-farm}"; DATASET="${DATASET:-${FAMILY:-deepscaler}}"
+fi
 SANDBOX="${SANDBOX:-agentcore-runtime}"   # agentcore-runtime -> SINGLE remote AgentCore Runtime sandbox (default);
                                           # agentcore -> AWS Code Interpreter microVM. CPU demo => REMOTE-ONLY (no local).
 # CPU demos run ONLY on remote managed serverless AgentCore sandbox sessions — never local. The local
@@ -81,6 +89,16 @@ fi
 AGENTCORE_SANDBOX_RUNTIME_ARNS="${AGENTCORE_SANDBOX_RUNTIME_ARNS:-arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu-1gzBVp675S,arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu_1-adRZyEHM6g}"
 if [ "$SANDBOX" = "agentcore-runtime" ] && [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
    AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN (or ..._ARNS for the multi-Runtime sweep) to the CPU sandbox Runtime ARN (sandbox_server_agent.py; e.g. acs_sandbox_cpu from deploy_two_runtime.py)}"
+fi
+# SHARED-INSTANCE CPU FARM (SANDBOX=agentcore-ray-farm, the bigimage variant): all episodes invoke under
+# ONE shared runtimeSessionId (B4_SHARED_RUNTIME_SESSION) so they land on the SAME warm m5 — the ~60-80 s
+# capacity-provider cold-boot is paid ONCE per run — while the server's SANDBOX_FARM=cpu CpuFarm gives
+# every per-episode sub_session a FRESH isolated env (own workdir + HOME/TMPDIR/caches, wiped on close).
+# The ray-farm client reads ONLY the singular ARN (the baked K=2 ARNS list above is ignored here).
+if [ "$SANDBOX" = "agentcore-ray-farm" ]; then
+   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN to the big-image sandbox Runtime ARN printed by deploy/deploy_bigimage.py}"
+   B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-bigcpu-farm-$(date +%s)-$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
+   echo "shared-instance CPU farm: all episodes reuse runtimeSessionId=${B4_SHARED_RUNTIME_SESSION} (one warm m5)" >&2
 fi
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
@@ -131,8 +149,8 @@ SLIME=/root/slime
 # the stdlib families, "datasci" for the pandas one), and make_sandbox routes an episode to the
 # Runtime whose image matches, via this JSON map:
 #     {"cpu": <CPU sandbox ARN>, "datasci": <pandas sandbox ARN>}
-# Build the pandas image from deploy/Dockerfile.sandbox.datasci and deploy it (deploy_two_runtime.py
-# --sandbox-only --dockerfile deploy/Dockerfile.sandbox.datasci), then set the ARN here. If unset (or a
+# Build + deploy both images with the step scripts (bash 2_build_image.sh && bash 3_push_ecr.sh &&
+# bash 4_deploy_runtime.sh — they write this map to deploy/runtime.env), or set it here by hand. If unset (or a
 # tag is missing from the map), that image falls back to the round-robin CPU pool above — datasci
 # episodes then fail to import pandas and score 0. Single-dataset runs never need it.
 AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE="${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}"
@@ -200,7 +218,7 @@ fi
 DATA="${DATA:-$DEMO_DIR/data/${_DS}_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/${_DS}_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-$_EVAL_NAME}"
-SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}_async}"
+SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}${VARIANT:+_$VARIANT}_async}"
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -351,6 +369,7 @@ RUNTIME_ENV_JSON="{
     \"SANDBOX\": \"${SANDBOX}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARNS\": \"${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}\",
+    \"B4_SHARED_RUNTIME_SESSION\": \"${B4_SHARED_RUNTIME_SESSION:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE\": \"$(printf '%s' "${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}" | sed 's/\\/\\\\/g; s/\"/\\\"/g')\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",

@@ -14,7 +14,7 @@ OFFLINE_TIMEOUT="${OFFLINE_TIMEOUT:-420}"
 TRAIN_TIMEOUT="${TRAIN_TIMEOUT:-1800}"
 
 # Phase lists (override via env to resume a subset).
-OFFLINE_DEMOS="${OFFLINE_DEMOS:-demo_cpu_heartbeat demo_gpu_snapshot demo_cpu_scale_lanes}"
+OFFLINE_DEMOS="${OFFLINE_DEMOS:-demo_cpu_heartbeat demo_gpu_single demo_cpu_scale_lanes}"
 # Entries are <demo> or <demo>:<DATASET> — demo_cpu_tasks is ONE folder that trains many datasets,
 # so each dataset is its own entry (run with DATASET=<name>; logged/reported as <demo>-<name>).
 CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_tasks:mbpp demo_cpu_tasks:math demo_cpu_tasks:mixed demo_cpu_tasks:gsm8k demo_cpu_tasks:math500 demo_cpu_tasks:deepscaler demo_cpu_tasks:humaneval demo_cpu_tasks:gretelsql demo_cpu_tasks:hotpotqa demo_cpu_tasks:xlam demo_cpu_tasks:mcp demo_cpu_heartbeat demo_cpu_scale_lanes demo_cpu_customruntime}"
@@ -24,7 +24,7 @@ CPU_TRAINERS="${CPU_TRAINERS:-demo_cpu_tasks:mbpp demo_cpu_tasks:math demo_cpu_t
 offline_cmd() {
   case "$1" in
     demo_cpu_heartbeat)       echo "python3 heartbeat_demo.py" ;;
-    demo_gpu_snapshot)      echo "python3 snapshot_demo.py" ;;
+    demo_gpu_single)        echo "python3 snapshot_demo.py" ;;   # the SNAPSHOT_EVERY=1 angle (was demo_gpu_snapshot)
     demo_cpu_scale_lanes) echo "python3 harness_scaling_demo.py --episodes 48 --workers 1,2,4,6,8,12 --cinf 4 --csbx 8 --tinf 0.10 --tsbx 0.05" ;;
     *) echo "" ;;
   esac
@@ -48,7 +48,7 @@ offline_markers() {
         "['sync-ended', 'gated-invoke-ran']" \
         ">> RECOVERED" \
         "takeaway:" ;;
-    demo_gpu_snapshot)     # no-snapshot reworks 2 steps; app-snapshot resumes (6 vs 4 executed)
+    demo_gpu_single)       # no-snapshot reworks 2 steps; app-snapshot resumes (6 vs 4 executed)
       printf '%s\n' \
         "RUN A" \
         "RUN B" \

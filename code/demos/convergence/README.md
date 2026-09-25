@@ -29,14 +29,13 @@ convergence/
   09_cpu_xlam.sh
   10_cpu_mcp.sh
   11_cpu_mixed.sh      <- demo_cpu_tasks DATASET=mixed (the multi-family batch)
-  12_gpu_single.sh     <- GPU demos (KernelBench; CUDA sandbox)
+  12_gpu_single.sh     <- GPU demos (KernelBench; CUDA sandbox; remote g6 or LOCAL_GPU=1)
   13_gpu_farm_fractional.sh  <- demo_gpu_farm FARM=fractional (local, GPU 6 shared 0.5+0.5)
   14_gpu_farm_whole.sh       <- demo_gpu_farm FARM=whole (local, GPUs 6,7, one GPU each)
   15_cpu_heartbeat.sh    <- property demos, now real trainers (headline knob default-ON;
   16_cpu_scale_lanes.sh    set it OFF => byte-identical to the plain single-substrate trainer)
   17_cpu_customruntime.sh
-  18_gpu_snapshot.sh
-  19_gpu_customruntime.sh
+  18_gpu_single_snapshot.sh  <- demo_gpu_single SNAPSHOT_EVERY=1 (was demo_gpu_snapshot)
 ```
 
 ## Where you run these
@@ -144,8 +143,10 @@ property's effect on convergence:
 | 15 | `15_cpu_heartbeat.sh` | CPU sandbox (baked ARNs) | keep the session warm across the weight-sync barrier (`HEARTBEAT_KEEP_WARM=1`) |
 | 16 | `16_cpu_scale_lanes.sh` | CPU sandbox (baked ARNs) | 4×4×4 lanes: 4 warm harness workers : 4 SGLang engines : 4 persistent microVMs (`LANES`; MODE pinned to A) |
 | 17 | `17_cpu_customruntime.sh` | your **custom CPU** Runtime | training runs unchanged on a custom Runtime vs the managed Code Interpreter |
-| 18 | `18_gpu_snapshot.sh` | remote **g6** (needs ARN) | app-level workspace snapshot/resume every episode (`SNAPSHOT_EVERY=1`) |
-| 19 | `19_gpu_customruntime.sh` | custom **GPU** Runtime | KernelBench CUDA training only possible on a custom GPU Runtime; has an on-box `LOCAL_GPU=1` path |
+| 18 | `18_gpu_single_snapshot.sh` | remote **g6** or `LOCAL_GPU=1` | `demo_gpu_single` with app-level workspace snapshot/resume every episode (`SNAPSHOT_EVERY=1`) |
+
+(The former `19_gpu_customruntime.sh` is gone: `demo_gpu_customruntime` was merged into
+`demo_gpu_single`, so `LOCAL_GPU=1 bash 12_gpu_single.sh` is the same run.)
 
 The retained seconds-long **offline probes** (`heartbeat_demo.py`, `snapshot_demo.py`,
 `harness_scaling_demo.py`, `gpu_torch_smoke.py`) are NOT trainers — invoke them directly

@@ -1,116 +1,100 @@
-# demo_gpu_single — KernelBench CUDA task, one WARM GPU AgentCore sandbox on a g6 (in-process harness)
+# demo_gpu_single — KernelBench CUDA RL on ONE warm custom GPU Runtime (g6), + snapshot/resume and custom-Runtime angles
 
-An agentic RL loop: the policy (Qwen3-4B) writes a CUDA `ModelNew`, a torch/CUDA checker runs it, the policy reads the failure and fixes it — GRPO rewards the fixes. The `run_episode` harness drives the multi-turn loop **in-process on this box**, but the checker's torch/CUDA runs **remotely** in a GPU AgentCore Runtime backed by a `g6` capacity-provider instance. All episodes share **one warm g6** (see below), so the instance count does not scale with concurrency.
+An agentic RL loop: the policy (Qwen3-4B) writes a CUDA `ModelNew`, a torch/CUDA checker runs it, and
+the policy reads the failure and fixes it. GRPO rewards the fixes. The `run_episode` harness drives
+the multi-turn loop **in-process on this box**. The checker's torch/CUDA runs **remotely** in your
+custom GPU AgentCore Runtime on a `g6` capacity-provider Instance. All episodes share **one warm
+g6**, so the instance count does not scale with concurrency.
+
+> **Merged 2026-09-25.** This one demo now covers what used to be three:
+> `demo_gpu_single` (the default path), `demo_gpu_snapshot` (now `SNAPSHOT_EVERY=1`) and
+> `demo_gpu_customruntime` (the "why a custom Runtime" angle plus `gpu_torch_smoke.py`). All three had
+> the same trainer, the same KernelBench data and the same g6 image.
+
+| Angle | How | What it shows |
+|---|---|---|
+| **Warm-shared GPU sandbox** (default) | `bash 5_run.sh` | One g6 + an in-instance Ray farm. Every episode gets a fresh env on a whole GPU, and cold-boot is paid once per run |
+| **Custom Runtime = the only GPU** | `python3 gpu_torch_smoke.py` | The managed Code Interpreter is a CPU microVM (`cuda_available=False`). Only your custom Runtime on a g6 has CUDA, through the same `write_file`/`exec`/`read_file` contract |
+| **App-level snapshot/resume** | `SNAPSHOT_EVERY=1 bash 5_run.sh` | AgentCore has no VM/GPU snapshot. The harness restores each task's workspace from a store you own at episode ENTER and snapshots it at EXIT |
 
 ## What this demo shows
-- **Task:** the real **KernelBench** (`ScalingIntelligence/KernelBench`, 270 CUDA problems). Each problem gives a reference `Model` (nn.Module) + `get_inputs()`/`get_init_inputs()`; the policy must write an equivalent `ModelNew` that runs on CUDA and matches the reference.
-- **Reward = GPU checker:** `python3 run_checks.py` rebuilds the reference on the GPU with matched seeds, asserts `allclose` on a `cuda` device, and reports a speedup. Pass → reward; failure text is fed back for the next turn.
-- **Sandbox = one WARM GPU AgentCore Runtime:** `sandbox_server_agent.py` on a `g6.xlarge` capacity-provider instance. `write_file` / `exec` / `read_file` — including the checker — run **there**, reached over `invoke_agent_runtime`. Default `SANDBOX=agentcore-ray-farm`: all episodes invoke under **one shared `runtimeSessionId`** (`B4_SHARED_RUNTIME_SESSION`) + a per-episode `sub_session`, so they land on the **same warm g6** (cold-boot paid once per run, not per episode) and the server's in-process Ray farm gives each episode a fresh isolated env on a **whole GPU** (`B4_GPU_FRACTION=1.0`). The instance count no longer scales with concurrency. The same g6 image also serves the legacy `SANDBOX=agentcore-runtime` per-episode dedicated-instance path (`AgentCoreRuntimeSandbox`). No local GPU is reserved for the checker.
-- **In-process harness:** `generate.generate` drives SGLang directly on this box; only the sandbox is remote (no MCP / two-Runtime harness). GPU split on this 8×L40S box: `ACTOR_GPUS=4` train + `ROLLOUT_GPUS=4` inference + 0 env.
+- **Task:** real **KernelBench** (`ScalingIntelligence/KernelBench`). Train = `level_1` (100
+  single-op problems); held-out eval = 20 `level_2` fusions, disjoint from train.
+- **Reward = GPU checker:** `run_checks.py` rebuilds the reference on the GPU with matched seeds,
+  asserts `allclose` on `cuda` and reports a speedup. The failure text feeds the next turn.
+- **Sandbox:** `sandbox_server_agent.py` (image `deploy/Dockerfile.sandbox.gpu.shared`) on `g6.xlarge`.
+  The default is `SANDBOX=agentcore-ray-farm`: one shared `runtimeSessionId` (`B4_SHARED_RUNTIME_SESSION`)
+  plus a per-episode `sub_session`, served by the in-instance Ray farm. `SANDBOX=agentcore-runtime` is the
+  legacy one-dedicated-instance-per-episode path.
+- **GPU split on this 8×L40S box:** 4 train + 4 inference. The checker's GPU is remote.
+  `LOCAL_GPU=1` runs the same image as a local whole-GPU farm on GPUs 6,7 instead, with slime on 0–5
+  and a synchronous checkpoint save.
 
-## AgentCore basics: launch / terminate / latency
-- **Launch:** the sandbox is a GPU Runtime on the `acs_gpu_cp` capacity provider (a real `g6.xlarge`). **torch is installed at container startup**, not baked into the image and not on a persisted volume: the Dockerfile's `CMD` runs `pip install torch==2.5.1 numpy --index-url .../cu124` (~90s per cold g6) before the server binds. This dodges the 2048 MB `maxImageSizeMb` quota (CUDA torch is ~2.7 GB) and the fact that the capacity-provider EBS `models` volume is reprovisioned empty on every instance recycle — so `mode=prepare`/smoke now mainly **warm** the instance rather than persist anything.
-- **Terminate:** `deploy_two_runtime.py cleanup` deletes the `acs_sandbox_gpu` Runtime **and** the `acs_gpu_cp` capacity provider. `run.sh` itself does no runtime teardown (it only `pkill`s local sglang / `ray stop`).
-- **Latency:** multi-turn agentic rollout latency is long and variable (kernel repair on a GPU). Expect a cold g6 launch + the ~90s torch install on each cold instance; `mode=prepare` widens the invoke read timeout to 1200s so the cold launch doesn't time out. Per-step latency lands in the train CSV as `perf/sandbox_ms_{mean,p50,p95}` and `perf/sglang_gen_ms_{mean,p50,p95}` (via `metrics.py`).
+| `SANDBOX=` | substrate | `torch.cuda.is_available()` | trains KernelBench? |
+|---|---|---|---|
+| `agentcore-ray-farm` (default) / `agentcore-runtime` | **your custom Runtime on a g6 Instance** | **True** | **yes** |
+| `agentcore` | managed Code Interpreter, CPU microVM | False | no |
+| `local` | offline subprocess (host) | whatever the host has | offline probe only |
+
+### Snapshot/resume (`SNAPSHOT_EVERY=1`)
+Every episode opens a fresh sandbox sub_session, so every episode boundary is effectively a recycle.
+`agentcore_slime_demo/generate.py` wraps the episode with two hooks from `app_snapshot.py`:
+- `maybe_restore(sb, "ep-<task_id>")` at ENTER writes the task's saved workspace back (resume).
+- `maybe_snapshot(sb, "ep-<task_id>")` at EXIT captures it. EXIT is the quiescent point, right
+  before the weight-sync barrier, so the snapshot is consistent.
+
+The store is `snapshot_store.py`: `LocalSnapshotStore` under `SNAPSHOT_DIR`, or `S3SnapshotStore`
+when `SNAPSHOT_S3_BUCKET` is set. Watch the `[app-snapshot] snapshot key=… / restore key=…` log lines.
+`RECYCLE_AFTER=N` logs a simulated recycle. `python3 snapshot_demo.py` is the one-second offline
+animation of the same mechanism. Why there is no real GPU-instance snapshot:
+[`docs/gpu-snapshot.md`](../../../docs/gpu-snapshot.md). **Hardware status:** the snapshot glue has only
+been validated offline. The live g6 + store round-trip is unverified.
+
+## Step by step (numbered scripts; run from this dir on the HOST — container steps `docker exec` themselves)
+
+```bash
+python3 gpu_torch_smoke.py       # 0. offline: CUDA contract probe (write -> exec -> read of torch.cuda)
+python3 snapshot_demo.py         #    offline: snapshot/resume animation
+bash 1_prepare_data.sh           # 1. verify shipped KernelBench data (REBUILD=1 re-downloads from HF)
+bash 2_build_image.sh            # 2. amd64 image from deploy/Dockerfile.sandbox.gpu.shared
+bash 3_push_ecr.sh               # 3. -> ECR acs-gpusingle-gpu
+bash 4_deploy_runtime.sh         # 4. Runtime acs_gpusingle_gpu on the g6 capacity provider acs_gpu_cp -> deploy/runtime.env
+bash 5_run.sh                    # 5. 10 train steps + 1 eval (container); SNAPSHOT_EVERY=1 for the snapshot angle
+bash 6_cleanup.sh                # 6. delete the Runtime (DELETE_CP=1 also deletes acs_gpu_cp; the g6 is the real cost)
+```
+
+**On-box, no g6:** `LOCAL_GPU=1 bash 4_deploy_runtime.sh` starts the local whole-GPU farm on GPUs 6,7.
+Then run `LOCAL_GPU=1 bash 5_run.sh` and finish with `LOCAL_GPU=1 bash 6_cleanup.sh`. Skip steps 3–4's
+ECR/AgentCore parts; step 4 tags the local image.
+
+**Train to convergence:** `STEPS=20 EVAL_EVERY=10 SANDBOX_CONC=4 bash train.sh`, run inside the
+container. `STEPS` maps to `NR=STEPS+1`. Keep `STEPS × RB ≤ 100`.
+
+## Knobs (defaults in `run.sh`)
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `SANDBOX` | `agentcore-ray-farm` | warm-shared g6. `agentcore-runtime` = one instance per episode |
+| `AGENTCORE_SANDBOX_RUNTIME_ARN` | from `deploy/runtime.env` | the g6 Runtime (required unless `LOCAL_GPU=1`) |
+| `LOCAL_GPU` | `0` | `1` = local whole-GPU farm on 6,7 (slime on 0–5, sync save) |
+| `B4_FARM_MAX_CONCURRENT` | `1` | client open-gate. Must not exceed the server farm slots |
+| `SNAPSHOT_EVERY` | `0` | snapshot cadence in episodes. `0` = off |
+| `SNAPSHOT_DIR` / `SNAPSHOT_S3_BUCKET` | `snapshots/` / unset | local store root / S3 store (production) |
+| `SNAPSHOT_PATHS` | `progress.json,work.log,solution.py` | workspace files to keep |
+| `RECYCLE_AFTER` | `0` | `>0` = log a simulated recycle after N episodes |
+| `NR` / `RB` / `NS` / `TEMP` | 11 / 4 / 8 / 1.0 | 10 train + 1 eval; keep `NR × RB ≤ 100` |
+| `EVAL_INTERVAL` / `EVAL_NS` | 10 / 2 | held-out eval cadence / samples |
+| `INVOKE_MAX_RETRIES` | 8 | retries on transient invoke 5xx (cold g6) |
+
+## Key metrics
+`rollout/raw_reward` (the RL signal) and `eval/kernelbench` (held-out solve rate). Latency:
+`perf/sandbox_ms_{mean,p50,p95}` (remote checker round-trips) vs `perf/sglang_gen_ms_{mean,p50,p95}`,
+plus the cold/warm open split. `5_run.sh` writes `logs/<tag>.{csv,eval.csv,png}` via `metrics.py`.
 
 ## Folder layout (self-contained)
-- `agentcore_slime_demo/` — **vendored** shared library (imports resolve here; `PYTHONPATH` is `${DEMO_DIR}`, no longer `/work/code`)
-- `deploy/Dockerfile.sandbox.gpu` — the GPU sandbox image (ECR repo `acs-sandbox-gpu`; `COPY agentcore_slime_demo/sandbox_server_agent.py`)
-- `build_dataset.py`, `data/` — KernelBench dataset (train `level_1` / eval `level_2`)
-- `run.sh`, `metrics.py` — the training runner and the log→CSV/PNG parser
-
-Not vendored (shared, referenced by path): `code/deploy/deploy_two_runtime.py`, `code/deploy/redeploy_gpu_sandbox.py`, `code/deploy/_prepare_gpu_once.py`, `code/deploy/smoke_gpu_torch.py`, and the base Megatron checkpoint (`/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist`).
-
-## Step by step
-
-### 0. Prereqs
-Run everything **inside** the persistent container `agentcore_p4` (repo at `/work/code`, slime at `/root/slime`, has `datasets` + HF cache). Set `AWS_REGION=us-west-2`, and `AWS_BEARER_TOKEN_BEDROCK` (for `invoke_agent_runtime`). The `deploy/` scripts reach AgentCore via IAM.
-
-### 1. Build the dataset
-Train on `level_1` (100 single-op problems); hold out 20 `level_2` fusions for eval (disjoint — no leakage):
-```bash
-docker exec agentcore_p4 python /work/code/demos/demo_gpu_single/build_dataset.py \
-    --dataset kernelbench --level level_1 --limit 100 \
-    --out /work/code/demos/demo_gpu_single/data/kernelbench_train.jsonl
-docker exec agentcore_p4 python /work/code/demos/demo_gpu_single/build_dataset.py \
-    --dataset kernelbench --level level_2 --limit 20 \
-    --out /work/code/demos/demo_gpu_single/data/kernelbench_eval.jsonl
-```
-(`--dataset kernelbench-stub` builds the hand-written 3-op smoke set for a minimal offline check.)
-
-### 2. Build the GPU sandbox image
-Build with the **context = this demo dir** (so `COPY agentcore_slime_demo/...` resolves against the vendored copy), for `linux/amd64`:
-```bash
-cd /work/code/demos/demo_gpu_single
-docker build --platform linux/amd64 \
-    -f deploy/Dockerfile.sandbox.gpu \
-    -t <ecr>/acs-sandbox-gpu:latest .
-# then docker push <ecr>/acs-sandbox-gpu:latest
-```
-
-### 3. Launch the Runtime (g6 capacity provider)
-From `code/deploy/`, create the capacity provider `acs_gpu_cp` + the `acs_sandbox_gpu` Runtime and run the one-time prepare invoke:
-```bash
-cd /work/code/deploy
-python3 deploy_two_runtime.py all        # creates acs_gpu_cp + acs_sandbox_gpu, then mode=prepare
-# SKIP_PREPARE=1 python3 deploy_two_runtime.py all   # skip the cold-launch warm-up
-```
-`all` runs the one-time `{"mode":"prepare"}` invoke (`prepare_gpu_volume`, read timeout widened to 1200s). To redeploy **just** the GPU image after a rebuild:
-```bash
-python3 redeploy_gpu_sandbox.py          # prints: OUT AGENTCORE_SANDBOX_GPU_RUNTIME_ARN=arn:aws:bedrock-agentcore:...
-```
-Standalone prepare (warm a cold instance) if needed:
-```bash
-GPU_SANDBOX_ARN=arn:aws:bedrock-agentcore:...:runtime/acs_sandbox_gpu-... python3 _prepare_gpu_once.py
-```
-
-### 4. Smoke-test the GPU sandbox
-Confirm the remote g6 can `import torch` on CUDA (retries transient 5xx during cold launch):
-```bash
-AGENTCORE_SANDBOX_GPU_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/acs_sandbox_gpu-... \
-    python3 smoke_gpu_torch.py
-```
-
-### 5. Export the ARN
-`run.sh` needs only the sandbox ARN (`SANDBOX` defaults to `agentcore-runtime`):
-```bash
-export AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/acs_sandbox_gpu-...
-```
-
-### 6. Run RL training
-From inside the container, run the standalone runner (REAL async slime training, `train_async.py`, no `--colocate`):
-```bash
-docker exec agentcore_p4 bash -lc \
-  'cd /work && AWS_REGION=us-west-2 \
-     AGENTCORE_SANDBOX_RUNTIME_ARN='"$AGENTCORE_SANDBOX_RUNTIME_ARN"' \
-     NR=11 EVAL_INTERVAL=10 \
-     bash code/demos/demo_gpu_single/run.sh'
-```
-Key knobs (defaults): `RB=4` (prompts/step), `NS=8` (GRPO group size), `NR=11` (real steps = `NR-1` = 10; **keep `NR × RB ≤ 100`** so one epoch spans the run and the only checkpoint is the final one), `TEMP=1.0`, `CONC=4` (sglang concurrency), `EVAL_INTERVAL=10`, `EVAL_NS=2`, `SAVE`, `CKPT_BASE`. `SAVE_INTERVAL` is huge (1000000): no mid-training snapshots; slime force-saves the final rollout under `--save`. The end-of-training save deadlock is fixed via `--async-save` + `--custom-megatron-init-path agentcore_slime_demo.megatron_init.enable_persistent_async_ckpt`.
-
-**One-command train-to-convergence.** `train.sh` wraps this with top-level knobs — training
-**steps**, eval **cadence**, sandbox **concurrency** — and passes `AGENTCORE_SANDBOX_RUNTIME_ARN`
-through: `STEPS` → `NR=STEPS+1` (default 20; **keep `STEPS × RB ≤ 100`** for a single-epoch run),
-`EVAL_EVERY` → `EVAL_INTERVAL`, `SANDBOX_CONC` → `CONC`. (There's no `K` knob here: the GPU sandbox is
-a single g6 Runtime.)
-```bash
-docker exec agentcore_p4 bash -lc \
-  'cd /work && AGENTCORE_SANDBOX_RUNTIME_ARN='"$AGENTCORE_SANDBOX_RUNTIME_ARN"' \
-     STEPS=20 EVAL_EVERY=10 SANDBOX_CONC=4 \
-     bash code/demos/demo_gpu_single/train.sh'
-```
-
-### 7. Read metrics / latency
-Parse the tee'd training log into CSVs + a PNG:
-```bash
-python3 code/demos/demo_gpu_single/metrics.py <train.log> \
-    --csv train.csv --eval-csv train.eval.csv --plot train.png
-```
-Per-step train CSV: `rollout/raw_reward` (the RL signal), `train/grad_norm`, `train/kl_loss`, `perf/step_time`, `perf/mfu`, `perf/wait_time_ratio`, and the latency columns `perf/sandbox_ms_{mean,p50,p95}` + `perf/sglang_gen_ms_{mean,p50,p95}`. The eval CSV is keyed by `eval/step` (held-out solve rate at each `EVAL_INTERVAL`).
-
-### 8. Terminate
-Tear the whole GPU stack back down (this is the only real cost — a live g6.xlarge + EBS):
-```bash
-cd /work/code/deploy
-python3 deploy_two_runtime.py cleanup    # deletes acs_sandbox_gpu AND the acs_gpu_cp capacity provider
-```
+- `1_…6_*.sh` + `deploy/` (`steps_common.sh`, `demo.env`, `agentcore_deploy.py`, `local_gpu_runtime.sh`,
+  `Dockerfile.sandbox.gpu.shared`; `Dockerfile.sandbox.gpu` = the older flat server, non-farm)
+- `run.sh` (trainer), `train.sh` (convergence wrapper), `metrics.py`, `prepare_data.sh`, `build_dataset.py`, `data/`
+- `gpu_torch_smoke.py`, `snapshot_demo.py` (+ `agentcore_idle_sim.py`): offline probes
+- `agentcore_slime_demo/`: vendored library (incl. `app_snapshot.py`, `snapshot_store.py`, `session_keeper.py`)
+- `logs/snapshot/`: smoke log from the former `demo_gpu_snapshot`

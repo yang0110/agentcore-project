@@ -5,7 +5,23 @@ _Last updated: 2026-09-25. Branch: `master`._
 This file tracks the current work session so it can be picked up later. It has three
 sections: **Done**, **In progress**, **Next steps (to run)**.
 
-> **2026-09-25 — single-dataset + mixed-task demos merged (12 demos now: 8 CPU + 4 GPU).**
+> **2026-09-25 — bigimage + GPU single/snapshot/customruntime merged; step scripts everywhere (9 demos now).**
+> The set is **8 main demos** (6 CPU: `demo_cpu_tasks`, `demo_cpu_imagepool`, `demo_cpu_terminalbench`,
+> `demo_cpu_customruntime`, `demo_cpu_heartbeat`, `demo_cpu_scale_lanes`; 2 GPU: `demo_gpu_single`,
+> `demo_gpu_farm`) **plus `demo_cpu_branching`, marked EXPERIMENTAL/blocked** (the in-sandbox CLI exits 1
+> before any model call → no trajectories). Merges:
+> - `demo_cpu_bigimage` → **`demo_cpu_tasks VARIANT=bigimage`** (side note on the tasks track; `probe_bigimage.py`,
+>   `netcheck.py`, `deploy/deploy_bigimage.py`, `Dockerfile.sandbox.bigcpu` moved in; old logs in `demo_cpu_tasks/logs/bigimage/`).
+> - `demo_gpu_snapshot` → **`demo_gpu_single SNAPSHOT_EVERY=1`** (default 0 = off; old log in `demo_gpu_single/logs/snapshot/`).
+> - `demo_gpu_customruntime` → **`demo_gpu_single`** (custom-Runtime angle, `gpu_torch_smoke.py`, `LOCAL_GPU=1` on-box farm with sync save).
+> - Convergence: `18_gpu_snapshot.sh` → `18_gpu_single_snapshot.sh`; `19_gpu_customruntime.sh` deleted (= `LOCAL_GPU=1 12_gpu_single.sh`).
+> - Smoke drivers: `run_gpu_smoke.sh` entries `demo_gpu_single` / `demo_gpu_single:snapshot`; offline probe → `demo_gpu_single` `snapshot_demo.py`.
+>
+> Every demo now ships the same six step scripts `1_prepare_data.sh` … `6_cleanup.sh` (see
+> `code/demos/README.md`). Report, report-based deck, `slide_figures/` tables and the supporting docs
+> were updated to the 9-demo set; smoke results are kept and attributed to the merged demo/variant.
+>
+> **2026-09-25 — single-dataset + mixed-task demos merged (12 demos at the time: 8 CPU + 4 GPU).**
 > `demo_cpu_datasets` and `demo_cpu_mixtask` are now ONE demo, **`demo_cpu_tasks`** (a `git mv` of
 > `demo_cpu_datasets`): a single dataset is the one-element mix. `DATASET=mbpp` etc. works as before;
 > `DATASET=a,b,c` interleaves those datasets round-robin (`eval/mix`); `DATASET=mixed` is the old

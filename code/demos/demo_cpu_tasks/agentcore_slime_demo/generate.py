@@ -157,9 +157,9 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
             rollout_id=getattr(sample, "index", "?"),
             engine=engine,
             engine_pinned=int(num_engines > 1),
-            sandbox_id=getattr(sb, "sandbox_id", "?"),
-            sandbox_session=getattr(sb, "_session_id", getattr(sb, "_sub", "?")),
-            runtime_arn=router_trace.arn_tail(getattr(sb, "_arn", None)),
+            sandbox_id=router_trace.sandbox_id_of(sb),
+            sandbox_session=router_trace.session_of(sb),
+            runtime_arn=router_trace.arn_of(sb),
             sandbox_image=getattr(task, "image", "cpu"),
             family=getattr(task, "family", "?"),
         )

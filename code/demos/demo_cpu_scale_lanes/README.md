@@ -97,51 +97,34 @@ in-process warm workers are the right, cheap answer.
 
 ---
 
-## Reproduce (run one by one)
-
-Everything runs INSIDE the persistent container `agentcore_p4` (`slimerl/slime`); the repo is at
-`/work/code`. `data/` is already populated — step 1 only re-pulls it from scratch.
+## Step by step (numbered scripts; run from this dir on the HOST — container steps `docker exec` themselves)
 
 ```bash
-# 1. Download + prepare the dataset (one-time network to pull the HF rows) — builds deepscaler 400/40
-docker exec agentcore_p4 bash /work/code/demos/demo_cpu_scale_lanes/prepare_data.sh
-
-# 2. See the scaling law offline (no AWS, no GPU): sweep W and watch the knee + plateau
-docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_scale_lanes/harness_scaling_demo.py
-
-# 2b. (optional) REAL-remote sandbox tier: the sandbox service time is now a genuine measured
-#     round-trip against a live remote AgentCore CPU sandbox (the --tsbx sleep is dropped, the
-#     --csbx ceiling still applies). Keep EPISODES small — each episode is a real network call.
-docker exec agentcore_p4 env REAL_SANDBOX=1 SANDBOX=agentcore-runtime \
-    AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu-1gzBVp675S \
-    EPISODES=8 WORKERS=1,2,4 \
-    python3 /work/code/demos/demo_cpu_scale_lanes/harness_scaling_demo.py
-
-# 2c. (optional) BALANCED joint sweep: scale inference=sandbox=harness=N together (the 4+4+4 case).
-#     Unlike step 2 (harness-only, which plateaus at min(inf,sbx)), every tier rises with N, so
-#     throughput scales ~linearly — this is the argument for scaling the three tiers jointly.
-docker exec agentcore_p4 env TIERS=1,2,4,8 EPISODES=24 \
-    python3 /work/code/demos/demo_cpu_scale_lanes/harness_scaling_demo.py
-
-# 3. Real RL train + eval (async/decoupled slime) through the WARM worker pool.
-#    Smoke = NR=11 (10 train + 1 eval, single final checkpoint); converge with a larger NR.
-#    LANES=1|2|4 scales all three tiers together (HARNESS_WORKERS alone sweeps just the harness tier). STOCK driver only (MODE=A, pinned — the pool's fan-out
-#    LIST of Samples is incompatible with the fully-async Mode B sort key; run.sh rejects MODE=B).
-docker exec -e NR=11 -e EVAL_INTERVAL=10 -e EVAL_NS=2 -e LANES=4 agentcore_p4 \
-    bash -lc 'cd /work && bash code/demos/demo_cpu_scale_lanes/run.sh'
+bash 1_prepare_data.sh     # 1. container: deepscaler 400/40 (ships in data/; re-pulls the HF rows)
+bash 2_build_image.sh      # 2. arm64 image from deploy/Dockerfile.sandbox.cpu
+bash 3_push_ecr.sh         # 3. -> ECR acs-scalelanes-cpu (deploy/images.env)
+bash 4_deploy_runtime.sh   # 4. Runtime acs_scalelanes_cpu -> deploy/runtime.env (AGENTCORE_SANDBOX_RUNTIME_ARNS)
+bash 5_run.sh              # 5. container: 10 train + 1 eval through the warm lanes (LANES=4); logs/<tag>.{log,csv,eval.csv,png}
+bash 6_cleanup.sh          # 6. delete the Runtime
 ```
 
-Step 2 is the cheapest way to *see* the claim: it drives the real `run_episode` on a `LocalSandbox`
-through `W` warm asyncio workers behind modelled inference/sandbox ceilings, measures wall-clock
-throughput, and prints which tier binds at each `W` (throughput rises ~linearly while the harness
-binds, then plateaus at `min(inference, sandbox)`).
+Without step 4, `5_run.sh` uses the baked K=2 `acs_sandbox_cpu` ARNs (lane `w` on `ARN[w % K]`).
+`LANES=1|2|4` scales all three tiers together; `HARNESS_WORKERS` alone sweeps just the harness tier.
+Stock driver only (`MODE=A`, pinned): the pool's fan-out LIST of Samples is incompatible with the
+fully-async Mode B sort key, so `run.sh` rejects `MODE=B`.
 
-Real remote runs (steps 2b and 3) need `AGENTCORE_SANDBOX_RUNTIME_ARN(S)` + AWS creds in the
-container (`run.sh` ships a pinned CPU-sandbox ARNS default). `SANDBOX=local` runs fully offline.
-Step 2b's `REAL_SANDBOX=1` opens one live remote sandbox **per warm worker** (reused across that
-worker's episodes; a session is a full start round-trip, too heavy to reopen per episode) and
-round-robins the workers across the configured ARNs, so the `sandbox` ceiling it reports is now
-measured from real remote latency rather than the modelled `--tsbx`.
+**Offline scaling law (no AWS, no GPU)**, run in the container:
+```bash
+python3 harness_scaling_demo.py                            # sweep W: knee + plateau at min(inference, sandbox)
+TIERS=1,2,4,8 EPISODES=24 python3 harness_scaling_demo.py  # balanced joint sweep: every tier = N, ~linear
+REAL_SANDBOX=1 SANDBOX=agentcore-runtime AGENTCORE_SANDBOX_RUNTIME_ARN=<arn> \
+  EPISODES=8 WORKERS=1,2,4 python3 harness_scaling_demo.py # sandbox tier = measured remote round-trip
+```
+The first sweep drives the real `run_episode` on a `LocalSandbox` through `W` warm asyncio workers
+behind modelled inference/sandbox ceilings and prints which tier binds at each `W`. `REAL_SANDBOX=1`
+opens one live remote sandbox **per warm worker** (reused across its episodes) and round-robins the
+workers across the ARNs, so the `sandbox` ceiling is measured instead of the modelled `--tsbx`
+(`--csbx` still applies). Keep `EPISODES` small — each episode is a real network call.
 
 > **Adapter/tool-parser requirement (the A3/B3 dead-reward fix):** `run.sh` bakes in
 > `--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3`. Without them the adapter cannot
@@ -170,14 +153,11 @@ measured from real remote latency rather than the modelled `--tsbx`.
 
 The sandbox image is built from [`deploy/Dockerfile.sandbox.cpu`](deploy/Dockerfile.sandbox.cpu) —
 the same CPU sandbox server (`sandbox_server_agent.py`, a `BedrockAgentCoreApp` exposing
-`/invocations` write_file/exec/read_file) the other CPU demos use. To rebuild + redeploy the CPU
-sandbox Runtime and get fresh ARNs, use the shared deploy orchestrator:
+`/invocations` write_file/exec/read_file) the other CPU demos use. Edit it, then rebuild and redeploy
+with the step scripts (`FORCE_RECREATE=1` replaces an existing Runtime):
 
 ```bash
-# from the host (needs docker + AWS creds); builds this demo's Dockerfile, pushes to ECR, (re)creates
-# the Runtime, and prints the ARN to feed AGENTCORE_SANDBOX_RUNTIME_ARNS.
-python3 code/deploy/deploy_two_runtime.py --sandbox-only \
-    --demo-dir code/demos/demo_cpu_scale_lanes --dockerfile deploy/Dockerfile.sandbox.cpu
+bash 2_build_image.sh && bash 3_push_ecr.sh && FORCE_RECREATE=1 bash 4_deploy_runtime.sh
 ```
 
 The adapter and the harness workers run **in the trainer process** (localhost), so — unlike the
@@ -186,10 +166,7 @@ security-group to open. Only the *sandbox* Runtime is remote.
 
 ## Metrics → CSV + PNG
 
-```bash
-docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_scale_lanes/metrics.py <train.log> \
-    --csv train.csv --eval-csv train.eval.csv --plot train.png
-```
+`5_run.sh` runs `metrics.py` on its log and writes `logs/<tag>.{csv,eval.csv,png}`.
 
 Watch `rollout/raw_reward` (learning signal), `eval/deepscaler` (held-out solve-rate), and the
 `perf/sandbox_ms_*` vs `perf/sglang_gen_ms_*` split. Each finished sample carries
@@ -223,11 +200,11 @@ vendored `task.py`, so `FAMILY=deepcoder` does not run until that lands.
   worker pool + full routing model) and `harness_pool_generate.py` (the slime `--custom-generate-function-path`
   hook). `mini_agent.py` is the shared `MiniClaudeHarness` with one added `http=` param so a worker
   can reuse its warm `aiohttp` session across episodes.
-- `harness_scaling_demo.py` — the **offline** scaling-law demo (step 2; no AWS/GPU)
+- `harness_scaling_demo.py` — the **offline** scaling-law demo (no AWS/GPU)
 - `deploy/Dockerfile.sandbox.cpu` — the CPU sandbox Runtime image
 - `data/` — `deepscaler_train.jsonl` / `deepscaler_eval.jsonl`; `deepcoder_probe.csv` (DeepCoder probe, see above)
-- `prepare_data.sh` — build the dataset (step 1) · `run.sh` — the RL run (step 3) · `metrics.py`
+- `1_…6_*.sh` + `deploy/` (`demo.env`, `steps_common.sh`, `agentcore_deploy.py`) — the numbered steps
+- `prepare_data.sh` — build the dataset (step 1) · `run.sh` — the RL run (step 5) · `metrics.py`
 
 Shared by reference (NOT vendored): the base Megatron checkpoint
-(`code/p4_slime_train/ckpt/Qwen3-4B_torch_dist`, override `CKPT_BASE`), the slime install, and the
-deploy orchestrator (`code/deploy/deploy_two_runtime.py`).
+(`code/p4_slime_train/ckpt/Qwen3-4B_torch_dist`, override `CKPT_BASE`) and the slime install.

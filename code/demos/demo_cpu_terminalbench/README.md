@@ -71,34 +71,30 @@ slime → terminalbench_pool_generate.generate → TerminalBenchPool.submit
 Only single-container tasks are poolable (one image ↔ one sandbox); `fetch_terminalbench.py`
 auto-skips the multi-container tasks (a task whose `docker-compose.yaml` declares extra services).
 
-## Reproduce (inside the `agentcore_p4` container unless noted)
+## Step by step (numbered scripts; run from this dir on the HOST — container steps `docker exec` themselves)
+
+There is no single sandbox image here: every task gets its own image and Runtime, built from `tasks/`
+by `deploy/deploy_terminalbench.py`. The step scripts wrap that script.
 
 ```bash
-D=code/demos/demo_cpu_terminalbench
-
-# 0. Fetch + classify the Terminal-Bench corpus into tasks/ + tasks/manifest.json (no AWS/Docker).
-python3 $D/fetch_terminalbench.py                 # all single-container tasks (~229); TB_LIMIT=5 to smoke
-
-# 1. Build + push one image per task to ECR and register one managed Runtime per task (real AWS $).
-#    Prove the pipeline first, then scale. Writes tasks/arn_by_image.json (the pool map).
-TB_LIMIT=2 python3 $D/deploy/deploy_terminalbench.py     # validate on 2 tasks
-python3 $D/deploy/deploy_terminalbench.py                # then the full pool
-
-# 2. (optional) Manually prewarm + MEASURE per-start seconds for the whole pool.
-AGENTCORE_REGION=us-west-2 python3 $D/prewarm_pool.py     # measures cold-start seconds per task image
-
-# 3. Build the train/eval dataset from the manifest (offline, stdlib-only).
-docker exec agentcore_p4 bash /work/$D/prepare_data.sh    # -> data/tb_train.jsonl + tb_eval.jsonl
-
-# 4. REAL RL train + eval through the isolated pool (async/decoupled slime). Smoke = NR=3.
-#    run.sh loads tasks/arn_by_image.json itself; just needs AWS creds in the container.
-docker exec -e NR=3 -e EVAL_INTERVAL=2 agentcore_p4 \
-    bash -lc 'cd /work && bash '$D'/run.sh 2>&1 | tee '$D'/smoke_run.log'
-
-# 5. Parse the log into CSVs + a PNG.
-docker exec agentcore_p4 python3 /work/$D/metrics.py /work/$D/smoke_run.log \
-    --csv train.csv --eval-csv train.eval.csv --plot train.png
+bash 1_prepare_data.sh     # 1. container: fetch_terminalbench.py (tasks/ + manifest.json, ~229 single-container tasks)
+                           #    then prepare_data.sh -> data/tb_{train,eval}.jsonl
+bash 2_build_image.sh      # 2. TB_NO_REGISTER=1 deploy_terminalbench.py: build + push one arm64 image per task (ECR acs-tb-*)
+bash 3_push_ecr.sh         # 3. no-op: prints tasks/images.csv (step 2 already pushed)
+bash 4_deploy_runtime.sh   # 4. deploy_terminalbench.py: one Runtime per task (acs_tb_*) -> tasks/arn_by_image.json
+python3 validate_oracle.py # 4b. (container, AGENTCORE_REGION=us-west-2) null must FAIL, oracle must PASS -> tasks/oracle.csv
+bash 1_prepare_data.sh     # 4c. rebuild the dataset from the usable tasks only (oracle=1, null=0)
+bash 5_run.sh              # 5. container: 10 train steps + 1 eval through the pool; logs/<tag>.{log,csv,eval.csv,png}
+bash 6_cleanup.sh          # 6. delete every Runtime in tasks/arn_by_image.json
 ```
+
+- **Validate on 2 tasks first** (real AWS $): `TB_LIMIT=2 bash 2_build_image.sh && TB_LIMIT=2 bash 4_deploy_runtime.sh`,
+  then drop `TB_LIMIT` for the full pool.
+- `run.sh` loads `tasks/arn_by_image.json` itself, so `deploy/runtime.env` stays empty.
+- Last full run: 218/229 Runtimes deployed, 166 usable after the oracle check (135 train + 31 eval).
+- Optional: `python3 prewarm_pool.py` measures per-task cold-start seconds (`tasks/prewarm_times.csv`);
+  `probe_coldstart.py` splits each cold open into pull+boot vs ready.
+- Train to convergence (inside the container): `train.sh` (`STEPS`, `EVAL_EVERY`, `SANDBOX_CONC`).
 
 ## Knobs (env vars; defaults in `run.sh`)
 
@@ -141,8 +137,10 @@ Deploy-side: `TB_LIMIT` / `TB_TASKS` (subset), `SKIP_BUILD=1` (reuse pushed imag
 - `deploy/deploy_terminalbench.py` — build+push one image per task, register one Runtime per task,
   bake the hidden oracle + `grade.sh`; writes `tasks/arn_by_image.json`.
 - `prewarm_pool.py` — manual pool prewarm + per-start latency probe.
-- `build_terminalbench_dataset.py` / `prepare_data.sh` — dataset (step 3) · `run.sh` — the RL run
-  (step 4) · `metrics.py` — parse (step 5).
+- `validate_oracle.py` — null/oracle check per deployed task → `tasks/oracle.csv` (the `usable` filter).
+- `build_terminalbench_dataset.py` / `prepare_data.sh` — dataset (step 1) · `run.sh` — the RL run
+  (step 5) · `metrics.py` — parse (run by step 5).
+- `1_…6_*.sh` + `deploy/demo.env` — the numbered steps (BUILD/PUSH/DEPLOY/CLEANUP_CMD overrides).
 - `tasks/` (gitignored) — the fetched task dirs + `manifest.json` + `arn_by_image.json` + `prewarm_times.csv`.
 - `data/` — `tb_train.jsonl` / `tb_eval.jsonl`.
 ```

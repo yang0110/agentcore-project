@@ -219,7 +219,7 @@ an LLM judge --- turns the outcome into a scalar reward (RLVR).
   \textbf{Integrating into slime} --- the call path, one hook, the
   episode loop, and the key code.
 \item
-  \textbf{The demos} --- all 12 at a glance, then \textbf{one slide per
+  \textbf{The demos} --- all 9 at a glance, then \textbf{one slide per
   demo} (config, checker, measured eval/latency, honest status, real use
   case).
 \item
@@ -250,9 +250,9 @@ an LLM judge --- turns the outcome into a scalar reward (RLVR).
   through \textbf{one hook}, harness in-process.
 \item
   \textbf{Proven.} The full loop runs \textbf{end-to-end on real
-  hardware across 12 demos} (code, math, SQL, RAG, tool-use, CUDA
-  kernels), each a standard \textbf{10-step run} with real rewards from
-  an in-sandbox checker.
+  hardware across 9 demos} (8 main + 1 experimental; code, math, SQL,
+  RAG, tool-use, CUDA kernels), each a standard \textbf{10-step run}
+  with real rewards from an in-sandbox checker.
 \item
   \textbf{How you adopt it.} Build a sandbox image → deploy a Runtime →
   seed a task → train via one \texttt{generate} hook. \textbf{CPU↔GPU is
@@ -788,7 +788,8 @@ makes that safe \textbf{by construction}:
 \item
   \textbf{Ephemeral by default} --- a fresh session per episode,
   reclaimed on idle; no state bleeds across rollouts unless you
-  deliberately snapshot it (\texttt{gpu\_snapshot}).
+  deliberately snapshot it (\texttt{gpu\_single}
+  \texttt{SNAPSHOT\_EVERY=1}).
 \end{itemize}
 
 \emph{This is the enterprise reason to run agentic RL on AWS rather than
@@ -1093,7 +1094,7 @@ the difference is:
 \begin{frame}[fragile,allowframebreaks]{Find your workload --- the demos are client use
 cases}
 \protect\hypertarget{find-your-workload-the-demos-are-client-use-cases}{}
-The 12 demos aren't toys; each stands in for a \textbf{real agent a
+The 9 demos aren't toys; each stands in for a \textbf{real agent a
 client would train}. Find yours:
 
 \begin{itemize}
@@ -1102,8 +1103,9 @@ client would train}. Find yours:
   \textbf{Coding agents} → \texttt{cpu\_tasks} \texttt{DATASET=mbpp}
   (MBPP repair) / \texttt{=humaneval} (function synthesis),
   \texttt{cpu\_terminalbench} (whole-OS terminal tasks),
-  \texttt{cpu\_branching} (a real Claude Code CLI agent) --- test-driven
-  assistants that iterate against your test runner.
+  \texttt{cpu\_branching} (a real Claude Code CLI agent; experimental,
+  blocked) --- test-driven assistants that iterate against your test
+  runner.
 \item
   \textbf{Reasoning / math} → \texttt{cpu\_tasks} \texttt{DATASET=math}
   / \texttt{gsm8k} / \texttt{math500} / \texttt{deepscaler} ---
@@ -1127,16 +1129,19 @@ client would train}. Find yours:
 \end{itemize}
 
 \emph{The rest (\texttt{scale\_lanes}, \texttt{customruntime},
-\texttt{bigimage}, \texttt{heartbeat}, \texttt{snapshot}) show
-\textbf{how to scale and operate}; mixing is \texttt{cpu\_tasks}
-\texttt{DATASET=a,b,c} / \texttt{mixed} these in production.}
+\texttt{cpu\_tasks} \texttt{VARIANT=bigimage}, \texttt{heartbeat},
+\texttt{gpu\_single} \texttt{SNAPSHOT\_EVERY=1}) show \textbf{how to
+scale and operate}; mixing is \texttt{cpu\_tasks} \texttt{DATASET=a,b,c}
+/ \texttt{mixed} these in production.}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{The demo set --- 12 demos, one design}
-\protect\hypertarget{the-demo-set-12-demos-one-design}{}
+\begin{frame}[fragile,allowframebreaks]{The demo set --- 9 demos, one design}
+\protect\hypertarget{the-demo-set-9-demos-one-design}{}
 Policy always \textbf{Qwen3-4B}, harness \textbf{in-process} (except
 \texttt{cpu\_branching}), AgentCore the \textbf{sandbox}; only the
-\emph{substrate} and \emph{task} vary --- \textbf{8 CPU + 4 GPU}:
+\emph{substrate} and \emph{task} vary --- \textbf{8 main (6 CPU + 2 GPU)
++ 1 experimental}. Every demo runs the same six step scripts
+(\texttt{1\_prepare\_data.sh} \ldots{} \texttt{6\_cleanup.sh}):
 
 \begin{itemize}
 \tightlist
@@ -1148,19 +1153,26 @@ Policy always \textbf{Qwen3-4B}, harness \textbf{in-process} (except
   or \texttt{mixed} (math + SQL + CTF + datasci). \emph{A single dataset
   is the one-element mix. These were ten per-dataset folders +
   \texttt{cpu\_mixtask} until 2026-09-23 / 25; they differed only in
-  data, so they were merged.}
+  data, so they were merged. Side note: \texttt{VARIANT=bigimage} (was
+  \texttt{cpu\_bigimage}) runs the same trainer on a \textasciitilde4 GB
+  image on a warm CPU Instance.}
 \item
   \textbf{CPU scale} --- \texttt{cpu\_scale\_lanes} (4 × 4 × 4 lanes:
   harness : engine : microVM; was \texttt{cpu\_harness\_scale}).
 \item
   \textbf{CPU substrate / design variants} --- \texttt{cpu\_imagepool},
-  \texttt{cpu\_terminalbench}, \texttt{cpu\_branching},
-  \texttt{cpu\_customruntime}, \texttt{cpu\_bigimage},
+  \texttt{cpu\_terminalbench}, \texttt{cpu\_customruntime},
   \texttt{cpu\_heartbeat} (resilience).
 \item
-  \textbf{GPU} --- \texttt{gpu\_single}, \texttt{gpu\_customruntime},
-  \texttt{gpu\_snapshot} (resilience), \texttt{gpu\_farm} (local Ray
-  farm; \texttt{FARM=fractional} packs two episodes on one GPU,
+  \textbf{Experimental} --- \texttt{cpu\_branching} (real Claude Code
+  CLI; \textbf{blocked}: the in-sandbox CLI exits 1 before any model
+  call, so no trajectories).
+\item
+  \textbf{GPU} --- \texttt{gpu\_single} (+ custom-Runtime angle and
+  \texttt{SNAPSHOT\_EVERY=1} snapshot/resume; was
+  \texttt{gpu\_customruntime} / \texttt{gpu\_snapshot} until
+  2026-09-25), \texttt{gpu\_farm} (local Ray farm;
+  \texttt{FARM=fractional} packs two episodes on one GPU,
   \texttt{FARM=whole} gives each a whole GPU). \emph{\texttt{gpu\_farm}
   replaces \texttt{gpu\_shared\_single}, \texttt{gpu\_shared\_multi} and
   \texttt{gpu\_local} (merged 2026-09-25; they differed only in farm
@@ -1170,14 +1182,16 @@ Policy always \textbf{Qwen3-4B}, harness \textbf{in-process} (except
 \textbf{Honest status --- uniform.} Every training demo is \textbf{one
 10-step run}: 10 train steps · 1 held-out eval · 1 checkpoint · a
 weight-sync each step (10) --- \textbf{loop-complete, not convergence}.
-Exceptions: \texttt{cpu\_branching} trains with reward 0, and
-\texttt{cpu\_terminalbench} has no run yet. All four GPU demos (both
-\texttt{gpu\_farm} modes) passed the 2026-09-21 GPU sweep. \emph{One
-slide per demo follows the summary.}
+Exceptions: \texttt{cpu\_branching} is blocked (no trajectories), and
+\texttt{cpu\_terminalbench}'s first smoke (2026-09-23) passed but with a
+sparse reward (4/382 solves). Both GPU demos in every configuration
+(three \texttt{gpu\_single} angles, both \texttt{gpu\_farm} modes)
+passed the 2026-09-21 GPU sweep. \emph{One slide per demo follows the
+summary.}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{All 12 demos at a glance}
-\protect\hypertarget{all-12-demos-at-a-glance}{}
+\begin{frame}[fragile,allowframebreaks]{All 9 demos at a glance}
+\protect\hypertarget{all-9-demos-at-a-glance}{}
 \scriptsize
 
 \begin{longtable}[]{@{}
@@ -1197,7 +1211,7 @@ Status / measured
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-\emph{CPU (8)} & & & \\
+\emph{CPU (6 + experimental)} & & & \\
 \texttt{cpu\_tasks} \texttt{=mbpp} & CPU µVM · MBPP repair & hidden
 asserts & 10-step; \texttt{eval} 0.56 \\
 \texttt{cpu\_tasks} \texttt{=math} & CPU µVM · math words & numeric
@@ -1221,30 +1235,34 @@ call match & 10-step; \texttt{eval} 1.00 \\
 \texttt{cpu\_tasks} \texttt{=mixed} & CPU µVM · math+SQL+CTF+datasci &
 per-row checker & 10-step (as \texttt{cpu\_mixtask});
 \texttt{eval/mixed} 0.67 \\
+↳ \texttt{VARIANT=bigimage} & CPU Instance (m5) · DeepScaleR,
+\textasciitilde4 GB image & numeric assert & 10-step (as
+\texttt{cpu\_bigimage}); \texttt{eval} 0.76 \\
 \texttt{cpu\_scale\_lanes} & CPU µVM ×4 persistent · DeepScaleR (fixed)
 & numeric assert & reworked to 4 × 4 × 4 lanes, offline-verified;
 earlier 10-step \texttt{eval} 0.33 was the pre-rework topology \\
 \texttt{cpu\_imagepool} & CPU µVM ×3 · datasci/scipy/sklearn &
 per-family checker & 10-step; \texttt{eval/mixed} 1.00 \\
 \texttt{cpu\_terminalbench} & CPU µVM ×\textasciitilde229 ·
-Terminal-Bench & task's hidden pytest & 218/229 Runtimes deployed;
-oracle 165 usable of 212 checked; no training run yet \\
-\texttt{cpu\_branching} & CPU CLI Runtime · SWE + Claude Code CLI & SWE
-checker & 10-step; fan-out ≥ 1, reward 0 \\
+Terminal-Bench & task's hidden pytest & 218/229 Runtimes deployed, 166
+usable; smoke passed to ckpt 10 (2026-09-23), reward sparse (4/382),
+eval 0.0 \\
+\texttt{cpu\_branching} \emph{(exp.)} & CPU CLI Runtime · SWE + Claude
+Code CLI & SWE checker & \textbf{blocked} --- CLI exits 1
+pre-model-call; earlier run reward 0 \\
 \texttt{cpu\_customruntime} & CPU µVM · DeepScaleR, both backends &
 numeric assert & 10-step; \texttt{eval} 0.69 \\
-\texttt{cpu\_bigimage} & CPU Instance (m5) · DeepScaleR,
-\textasciitilde4 GB image & numeric assert & 10-step; \texttt{eval}
-0.76 \\
 \texttt{cpu\_heartbeat} & CPU µVM · heartbeat & --- & offline sim +
 10-step; \texttt{eval} 0.71 \\
-\emph{GPU (4)} & & & \\
+\emph{GPU (2)} & & & \\
 \texttt{gpu\_single} & GPU g6 · KernelBench & CUDA \texttt{allclose} &
 10-step; \texttt{eval} 0.525 \\
-\texttt{gpu\_customruntime} & custom GPU Runtime · KernelBench & CUDA
-\texttt{allclose} & 10-step; \texttt{eval} 0.65 \\
-\texttt{gpu\_snapshot} & whole-GPU farm + snapshot & CUDA
-\texttt{allclose} & 10-step; \texttt{eval} 0.625 \\
+↳ custom-Runtime angle & custom GPU Runtime · KernelBench & CUDA
+\texttt{allclose} & 10-step (as \texttt{gpu\_customruntime});
+\texttt{eval} 0.65 \\
+↳ \texttt{SNAPSHOT\_EVERY=1} & whole-GPU farm + snapshot & CUDA
+\texttt{allclose} & 10-step (as \texttt{gpu\_snapshot}); \texttt{eval}
+0.625 \\
 \texttt{gpu\_farm} \texttt{=fractional} & 1 local GPU, 0.5+0.5 ·
 KernelBench & CUDA \texttt{allclose} & 10-step; \texttt{eval} 0.775 \\
 \texttt{gpu\_farm} \texttt{=whole} & 2 local GPUs, 1 each · KernelBench
@@ -1259,8 +1277,8 @@ KernelBench & CUDA \texttt{allclose} & 10-step; \texttt{eval} 0.775 \\
 \normalsize
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{What the 12 demos demonstrate}
-\protect\hypertarget{what-the-12-demos-demonstrate}{}
+\begin{frame}[fragile,allowframebreaks]{What the 9 demos demonstrate}
+\protect\hypertarget{what-the-9-demos-demonstrate}{}
 \begin{itemize}
 \tightlist
 \item
@@ -1283,17 +1301,19 @@ KernelBench & CUDA \texttt{allclose} & 10-step; \texttt{eval} 0.775 \\
   across families in a single stream.
 \item
   \textbf{Substrate / design variants --- the AgentCore mechanics.}
-  \texttt{cpu\_branching} (real Claude Code CLI as harness),
-  \texttt{cpu\_customruntime} / \texttt{gpu\_customruntime} (managed
-  vs.~your own Runtime), \texttt{cpu\_imagepool} /
-  \texttt{cpu\_terminalbench} (image pools routed by family / by task),
-  \texttt{cpu\_bigimage} (image past the microVM cap, on an Instance),
-  \texttt{gpu\_farm} (GPU Ray farm, fractional or whole-GPU).
+  \texttt{cpu\_branching} (real Claude Code CLI as harness;
+  experimental, blocked), \texttt{cpu\_customruntime} /
+  \texttt{gpu\_single}'s custom-Runtime angle (managed vs.~your own
+  Runtime), \texttt{cpu\_imagepool} / \texttt{cpu\_terminalbench} (image
+  pools routed by family / by task), \texttt{cpu\_tasks}
+  \texttt{VARIANT=bigimage} (image past the microVM cap, on an
+  Instance), \texttt{gpu\_farm} (GPU Ray farm, fractional or whole-GPU).
   \emph{Shows the substrate choices a production deployment actually
   makes.}
 \item
-  \textbf{Resilience.} \texttt{cpu\_heartbeat} + \texttt{gpu\_snapshot}:
-  \emph{heartbeat prevents loss; snapshot recovers from it.}
+  \textbf{Resilience.} \texttt{cpu\_heartbeat} + \texttt{gpu\_single}
+  \texttt{SNAPSHOT\_EVERY=1}: \emph{heartbeat prevents loss; snapshot
+  recovers from it.}
 \end{itemize}
 \end{frame}
 
@@ -1441,19 +1461,21 @@ whose warm, stateful session must outlive the sync pause.
   recover-by-reseed if it dies anyway.
 \item
   Lives \textbf{outside} the harness by design; runs offline in seconds
-  (no policy). Paired with \texttt{gpu\_snapshot}: \emph{heartbeat
-  prevents loss; snapshot recovers from it.}
+  (no policy). Paired with \texttt{gpu\_single}
+  \texttt{SNAPSHOT\_EVERY=1}: \emph{heartbeat prevents loss; snapshot
+  recovers from it.}
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{gpu\_snapshot} --- application-level
-snapshot / resume · offline}
-\protect\hypertarget{gpu_snapshot-application-level-snapshot-resume-offline}{}
-\textbf{Mechanism, not a training run.} A GPU instance can be recycled
-and come back blank (AgentCore has no VM/EBS snapshot), so workspace
-state is serialized to a store you own (S3 in prod) and restored onto a
-fresh session. \textbf{Use case} surviving an instance recycle
-mid-episode in a long GPU run.
+\begin{frame}[fragile,allowframebreaks]{\texttt{gpu\_single} \texttt{SNAPSHOT\_EVERY=1}
+--- application-level snapshot / resume}
+\protect\hypertarget{gpu_single-snapshot_every1-application-level-snapshot-resume}{}
+\emph{Was \texttt{gpu\_snapshot}; merged into \texttt{gpu\_single}
+2026-09-25 (default 0 = off).} \textbf{A mechanism first.} A GPU
+instance can be recycled and come back blank (AgentCore has no VM/EBS
+snapshot), so workspace state is serialized to a store you own (S3 in
+prod) and restored onto a fresh session. \textbf{Use case} surviving an
+instance recycle mid-episode in a long GPU run.
 
 \begin{itemize}
 \tightlist
@@ -1694,8 +1716,8 @@ three dials caps throughput.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_branching} --- real Claude Code CLI
-as harness · 10-step run}
-\protect\hypertarget{cpu_branching-real-claude-code-cli-as-harness-10-step-run}{}
+as harness · EXPERIMENTAL (blocked)}
+\protect\hypertarget{cpu_branching-real-claude-code-cli-as-harness-experimental-blocked}{}
 \textbf{The only demo where the harness is the real Claude Code CLI},
 co-located with slime; its \textbf{tools run in a remote CPU Runtime}
 (image bakes node22 + \texttt{claude}). One episode fans out (subagents
@@ -1716,7 +1738,8 @@ subagents and compact context.
   \textbf{\texttt{fan\_out=0} blocker resolved} (\texttt{=1} ×315,
   \texttt{=2} ×8, \texttt{=3} ×1) --- but \texttt{raw\_reward} and
   \texttt{eval/swe} are still \textbf{0.0} (the SWE checker earns no
-  reward yet: the residual open item).
+  reward yet). \textbf{Now blocked:} the in-sandbox CLI exits 1 before
+  any model call, so no trajectories are produced.
 \end{itemize}
 \end{frame}
 
@@ -1769,8 +1792,8 @@ GB cap.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_terminalbench} --- one image per
-task, one fresh microVM per episode · recipe}
-\protect\hypertarget{cpu_terminalbench-one-image-per-task-one-fresh-microvm-per-episode-recipe}{}
+task, one fresh microVM per episode · smoke}
+\protect\hypertarget{cpu_terminalbench-one-image-per-task-one-fresh-microvm-per-episode-smoke}{}
 \textbf{Terminal-Bench as a large image pool:} one AgentCore Runtime
 \textbf{per task} (\textasciitilde229 images); each episode is routed to
 its task's own Runtime. It is the \texttt{cpu\_imagepool} routing idea
@@ -1792,15 +1815,20 @@ agents.
   loop (needs the \texttt{qwen25} tool parser). Remote-only.
 \item
   \textbf{Status:} 218/229 Runtimes deployed; oracle validation
-  (reference passes, untouched env fails) \textbf{165 usable of 212
-  checked} so far; no training run yet.
+  (reference passes, untouched env fails) \textbf{166 usable of 218};
+  first smoke passed to ckpt 10 on 2026-09-23 (reward sparse: 4 solves /
+  382 episodes).
 \end{itemize}
 \end{frame}
 
-\begin{frame}[allowframebreaks]{Terminal-Bench look-ahead pre-open (1/2): status and why}
+\begin{frame}[fragile,allowframebreaks]{Terminal-Bench look-ahead pre-open (1/2): status
+and why}
 \protect\hypertarget{terminal-bench-look-ahead-pre-open-12-status-and-why}{}
-\textbf{Status.} The look-ahead is built and passes two offline tests,
-but it hasn't run on AWS or in real training yet. With the defaults (4
+\textbf{Status.} The look-ahead ran in the 2026-09-23 AWS smoke:
+\texttt{open\_wait\_ms} p95 was 0 (boot fully hidden), but pre-opened
+sessions idled for a median of 7.3 min against a 21 s episode, so
+\textasciitilde95 \% of microVM time was idle
+(\texttt{TB\_PREOPEN\_BATCHES=1} is the next try). With the defaults (4
 prompts × 8 samples, 2 batches ahead), the pool keeps \textbf{64
 microVMs booted ahead} of the episodes that are running.
 
@@ -1842,13 +1870,15 @@ five steps}
 \end{enumerate}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_bigimage} --- an image past the
-microVM cap, on a warm CPU Instance · 10-step run}
-\protect\hypertarget{cpu_bigimage-an-image-past-the-microvm-cap-on-a-warm-cpu-instance-10-step-run}{}
-\textbf{A \textasciitilde4 GB image} (torch + scientific stack) is over
-the \textasciitilde2 GB microVM cap, so it runs on a CPU
-\textbf{capacity-provider Instance} (\texttt{m5.xlarge}) instead.
-\textbf{Use case} agents whose toolchain can't shrink below the cap.
+\begin{frame}[fragile,allowframebreaks]{\texttt{cpu\_tasks} \texttt{VARIANT=bigimage} ---
+an image past the microVM cap, on a warm CPU Instance · 10-step run}
+\protect\hypertarget{cpu_tasks-variantbigimage-an-image-past-the-microvm-cap-on-a-warm-cpu-instance-10-step-run}{}
+\emph{Side note on the tasks track: was \texttt{cpu\_bigimage}, folded
+into \texttt{cpu\_tasks} 2026-09-25.} \textbf{A \textasciitilde4 GB
+image} (torch + scientific stack) is over the \textasciitilde2 GB
+microVM cap, so it runs on a CPU \textbf{capacity-provider Instance}
+(\texttt{m5.xlarge}) instead. \textbf{Use case} agents whose toolchain
+can't shrink below the cap.
 
 \begin{itemize}
 \tightlist
@@ -1859,13 +1889,15 @@ the \textasciitilde2 GB microVM cap, so it runs on a CPU
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{\texttt{gpu\_customruntime} --- a GPU under the
-sandbox · capability probe}
-\protect\hypertarget{gpu_customruntime-a-gpu-under-the-sandbox-capability-probe}{}
-\textbf{The managed Code Interpreter has no GPU.} If a checker needs
-CUDA, the sandbox must be \textbf{your own custom Runtime on an
-AgentCore capacity-provider Instance} (a g6 box). The demo
-\texttt{write\_file}s a torch-on-CUDA probe, \texttt{exec}s it,
+\begin{frame}[fragile,allowframebreaks]{\texttt{gpu\_single} custom-Runtime angle --- a
+GPU under the sandbox · capability probe}
+\protect\hypertarget{gpu_single-custom-runtime-angle-a-gpu-under-the-sandbox-capability-probe}{}
+\emph{Was \texttt{gpu\_customruntime}; merged into \texttt{gpu\_single}
+2026-09-25 (\texttt{gpu\_torch\_smoke.py}; \texttt{LOCAL\_GPU=1} =
+on-box farm, sync save).} \textbf{The managed Code Interpreter has no
+GPU.} If a checker needs CUDA, the sandbox must be \textbf{your own
+custom Runtime on an AgentCore capacity-provider Instance} (a g6 box).
+The demo \texttt{write\_file}s a torch-on-CUDA probe, \texttt{exec}s it,
 \texttt{read\_file}s the result. \textbf{Use case} confirming a
 CUDA-dependent reward can only be scored on the Instances substrate.
 
@@ -2166,10 +2198,10 @@ reward is still 0.}
 snapshot}
 \protect\hypertarget{mechanism-spotlight-resilience-heartbeat-snapshot}{}
 Two levers a long RL run composes, demonstrated by
-\texttt{cpu\_heartbeat} and \texttt{gpu\_snapshot} (§5). \textbf{Use
-case:} any multi-hour run whose warm, stateful sessions (installed deps,
-seeded repo) must survive both the periodic pause and a genuine instance
-recycle.
+\texttt{cpu\_heartbeat} and \texttt{gpu\_single}
+\texttt{SNAPSHOT\_EVERY=1} (§5). \textbf{Use case:} any multi-hour run
+whose warm, stateful sessions (installed deps, seeded repo) must survive
+both the periodic pause and a genuine instance recycle.
 
 \begin{itemize}
 \tightlist
@@ -2182,9 +2214,10 @@ recycle.
   \textbf{outside the harness} (\texttt{KeptSandbox}), because the stall
   is a training-loop property, not an episode one.
 \item
-  \textbf{Snapshot (\texttt{gpu\_snapshot})} --- a recycled GPU instance
-  comes back blank (no VM/EBS snapshot), so the workspace is serialized
-  to a store you own (S3) and restored onto a fresh session.
+  \textbf{Snapshot (\texttt{gpu\_single} \texttt{SNAPSHOT\_EVERY=1})}
+  --- a recycled GPU instance comes back blank (no VM/EBS snapshot), so
+  the workspace is serialized to a store you own (S3) and restored onto
+  a fresh session.
 \item
   \textbf{The pairing:} \emph{heartbeat prevents loss; snapshot recovers
   from it.}

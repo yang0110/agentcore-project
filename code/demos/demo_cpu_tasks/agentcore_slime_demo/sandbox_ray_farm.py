@@ -187,6 +187,17 @@ class _SandboxActorImpl:
         # resolves. CUDA_VISIBLE_DEVICES is inherited from the actor (set by Ray), pinning the
         # subprocess to the same shared device.
         run_env = {**os.environ, **(env or {})}
+        # Opt-in env freshness on the REUSED warm actor: redirect HOME/TMPDIR into the (already
+        # per-episode, cleared-on-close) session dir so a checker that writes to $HOME or /tmp can't
+        # leak into the next episode on this actor. Caches stay SHARED (isolate_caches=False) so the
+        # warm compiled-CUDA-kernel cache — the whole point of the warm actor — survives. Default OFF
+        # to leave the hardware-verified B4 path byte-identical; set SANDBOX_ISOLATE_HOME=1 to enable.
+        if os.environ.get("SANDBOX_ISOLATE_HOME") == "1":
+            try:
+                from .sandbox_farm_env import fresh_env
+            except ImportError:
+                from sandbox_farm_env import fresh_env
+            _, run_env = fresh_env(workdir, run_env, isolate_caches=False)
         run_env["ENV_GPU_MEM_FRACTION"] = f"{self.mem_fraction:.4f}"
         # Serialize nvcc compiles across co-resident sandboxes (default on; B4_SERIALIZE_COMPILE=0
         # to A/B against the old always-concurrent behaviour that wedged the non-MIG L4).

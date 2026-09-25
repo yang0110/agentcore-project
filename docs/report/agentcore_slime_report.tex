@@ -383,26 +383,32 @@ RL}. It is grounded in a working slime + AgentCore project and in the
   \textbf{How to run a real task on it} --- datasets, Dockerfiles,
   deploy commands, and the single slime hook that wires AgentCore in
   without a fork (§``Using AgentCore as the sandbox in an agentic RL
-  workflow''). The project ships a \textbf{twelve-demo set} (eight CPU,
-  four GPU), presented at two levels: a brief one-row-per-demo catalogue
-  (§``Demos --- the demo set at a glance'') and a full per-demo
-  walkthrough of architecture, pipeline, lifecycle, and \textbf{measured
-  results where a run is committed} (§``Demos in depth''). The set is
-  deliberately tiered by evidence, and the report says so plainly:
-  \textbf{two} demos carry committed convergence-shaped training curves
+  workflow''). The project ships a \textbf{nine-demo set} --- eight main
+  demos (six CPU, two GPU) plus one experimental
+  (\texttt{demo\_cpu\_branching}, blocked) --- each a self-contained
+  folder run through the same six numbered step scripts
+  (\texttt{1\_prepare\_data.sh} \ldots{} \texttt{6\_cleanup.sh}),
+  presented at two levels: a brief one-row-per-demo catalogue (§``Demos
+  --- the demo set at a glance'') and a full per-demo walkthrough of
+  architecture, pipeline, lifecycle, and \textbf{measured results where
+  a run is committed} (§``Demos in depth''). The set is deliberately
+  tiered by evidence, and the report says so plainly: \textbf{two} demos
+  carry committed convergence-shaped training curves
   (\texttt{demo\_cpu\_tasks} with \texttt{DATASET=mbpp}, and
   \texttt{demo\_gpu\_single}), and a \textbf{smoke-plan batch
   (2026-09-18→21, \texttt{code/demos/\_smoke\_logs/})} has since driven
   \textbf{all eleven \texttt{DATASET=} variants of
   \texttt{demo\_cpu\_tasks} (ten single datasets plus the \texttt{mixed}
-  batch), the other CPU trainers, and all four GPU demos (both
-  \texttt{FARM=} modes of \texttt{demo\_gpu\_farm})} end-to-end as
-  \textbf{full 10-step runs} on real AgentCore hardware (10 train steps
-  + 1 held-out eval + one final checkpoint at iter 10 --- loop-verified
-  smokes, not convergence curves); the handful of remaining variants are
-  ready-to-run recipes or capability comparisons on the same verified
-  plumbing --- this is a \emph{capability} demonstration of the sandbox
-  seam, not a convergence study.
+  batch), the other CPU trainers, and both GPU demos (both
+  \texttt{FARM=} modes of \texttt{demo\_gpu\_farm}, and
+  \texttt{demo\_gpu\_single} including its snapshot and custom-Runtime
+  angles)} end-to-end as \textbf{full 10-step runs} on real AgentCore
+  hardware (10 train steps + 1 held-out eval + one final checkpoint at
+  iter 10 --- loop-verified smokes, not convergence curves); the handful
+  of remaining variants are ready-to-run recipes or capability
+  comparisons on the same verified plumbing --- this is a
+  \emph{capability} demonstration of the sandbox seam, not a convergence
+  study.
 \item
   \textbf{How to train agentic RL on a GPU Runtime} --- an AgentCore
   Runtime \textbf{Instance backed by GPU-based EC2} (g6 / L4), where
@@ -428,7 +434,7 @@ RL}. It is grounded in a working slime + AgentCore project and in the
   GPU-EC2 Runtime Instance --- a \textbf{Dockerfile + a custom script,
   triggered by the weight-sync event}, checkpoints application state to
   a store you own, so training resumes after a recycle from the saved
-  snapshot (\texttt{demo\_gpu\_snapshot}).
+  snapshot (\texttt{demo\_gpu\_single} with \texttt{SNAPSHOT\_EVERY=1}).
 \item
   \textbf{Where the open problems are} --- the infrastructure and
   algorithmic questions production agentic RL still faces (§``Open
@@ -3411,10 +3417,11 @@ episode mints its own \texttt{runtimeSessionId} (its own fresh microVM),
 which is cheaper, faster, and perfectly isolated for free (that is the
 per-episode-session path of the previous subsection). The
 \textbf{Instances} substrate --- a capacity-provider EC2 box, the
-\textbf{CPU \texttt{m5}} (\texttt{demo\_cpu\_bigimage}) and the
-\textbf{GPU \texttt{g6}} (\texttt{demo\_gpu\_farm}) --- is the opposite:
-it takes \textbf{\textasciitilde60--80 s to cold-boot}. And AgentCore
-maps \textbf{one session to one whole instance} {[}D5{]}, so the naive
+\textbf{CPU \texttt{m5}} (\texttt{demo\_cpu\_tasks}
+\texttt{VARIANT=bigimage}) and the \textbf{GPU \texttt{g6}}
+(\texttt{demo\_gpu\_farm}) --- is the opposite: it takes
+\textbf{\textasciitilde60--80 s to cold-boot}. And AgentCore maps
+\textbf{one session to one whole instance} {[}D5{]}, so the naive
 ``fresh session per episode'' model would (a) make the boot dominate
 wall-clock and (b) \textbf{scale the \emph{number of instances} with
 concurrency} --- one live \texttt{g6} per in-flight episode. At GRPO
@@ -3494,15 +3501,15 @@ decoupled from concurrency}: one warm Instance serves an arbitrary
 number of concurrent episodes, each in its own clean env, with the
 cold-boot amortized to once. Measured on hardware, the CPU farm cut
 \texttt{m5} cold-boots from \textbf{201 → 1} across a 10-step run
-(§\texttt{demo\_cpu\_bigimage}). It is also the \emph{only} way to pack
-several episodes onto one physical GPU under AgentCore's ``1 session = 1
-GPU, no MIG, no time-slicing'' reality --- the fractional Ray farm is
-our own scheduler on top. And correctness is free: because the isolated
-env lives in the \texttt{sub\_session} (not the instance), reuse never
-leaks state between episodes, and episode-end closes only the
-\texttt{sub\_session} --- never the shared session (previous
-subsection). This is now the \textbf{default for every Instance-based
-demo}, CPU and GPU alike; the microVM demos keep the
+(§\texttt{demo\_cpu\_tasks} \texttt{VARIANT=bigimage}). It is also the
+\emph{only} way to pack several episodes onto one physical GPU under
+AgentCore's ``1 session = 1 GPU, no MIG, no time-slicing'' reality ---
+the fractional Ray farm is our own scheduler on top. And correctness is
+free: because the isolated env lives in the \texttt{sub\_session} (not
+the instance), reuse never leaks state between episodes, and episode-end
+closes only the \texttt{sub\_session} --- never the shared session
+(previous subsection). This is now the \textbf{default for every
+Instance-based demo}, CPU and GPU alike; the microVM demos keep the
 fresh-session-per-episode model on purpose. Full mechanism write-up:
 \texttt{docs/sandbox-fresh-env-on-persistent-instance.md}.
 
@@ -3627,8 +3634,8 @@ isolation}\label{scaling-sharing-and-network-isolation}}
   every episode mints its own session (its own fresh microVM), which is
   cheaper, faster, and perfectly isolated for free. The
   \textbf{Instances} compute type is the opposite: a capacity-provider
-  EC2 box --- the \textbf{CPU \texttt{m5}}
-  (\texttt{demo\_cpu\_bigimage}) \emph{and} the \textbf{GPU \texttt{g6}}
+  EC2 box --- the \textbf{CPU \texttt{m5}} (\texttt{demo\_cpu\_tasks}
+  \texttt{VARIANT=bigimage}) \emph{and} the \textbf{GPU \texttt{g6}}
   (\texttt{demo\_gpu\_farm}) --- takes \textbf{\textasciitilde60--80 s
   to cold-boot}, so a fresh instance per episode makes the boot dominate
   wall-clock. For those two, and only those two, the project solves
@@ -3647,9 +3654,9 @@ isolation}\label{scaling-sharing-and-network-isolation}}
   --- its own workdir \emph{and} \texttt{HOME}/\texttt{TMPDIR}/caches,
   wiped on close. Measured on hardware, the CPU farm cut \texttt{m5}
   cold-boots \textbf{201 → 1} over a 10-step run
-  (§\texttt{demo\_cpu\_bigimage}); the GPU farm is the same
-  shared-session pattern, verified on the reserved L40S GPUs in both of
-  \texttt{demo\_gpu\_farm}'s modes --- fractional packing
+  (§\texttt{demo\_cpu\_tasks} \texttt{VARIANT=bigimage}); the GPU farm
+  is the same shared-session pattern, verified on the reserved L40S GPUs
+  in both of \texttt{demo\_gpu\_farm}'s modes --- fractional packing
   (\texttt{FARM=fractional}) and whole-GPU-per-episode
   (\texttt{FARM=whole}, run twice) --- each with
   \texttt{demo/boot\_attempts} p50 = 1 (one warm actor per episode, no
@@ -3710,9 +3717,9 @@ In this project the policy is always \textbf{Qwen3-4B}, trained by
 slime, with the harness in-process and AgentCore as the sandbox; what
 varies from demo to demo is only the \textbf{sandbox substrate} (CPU
 microVM vs GPU Runtime instance) and the \textbf{task}. The project
-ships a \textbf{twelve-demo set} on this one design, catalogued next
-(§``Demos --- the demo set at a glance'') and then deep-dived with
-measured results in §``Demos in depth''.
+ships a \textbf{nine-demo set} (eight main + one experimental) on this
+one design, catalogued next (§``Demos --- the demo set at a glance'')
+and then deep-dived with measured results in §``Demos in depth''.
 
 \hypertarget{demos-the-demo-set-at-a-glance}{%
 \section{Demos --- the demo set at a
@@ -3724,18 +3731,26 @@ always \textbf{Qwen3-4B} trained by \textbf{slime}, the \textbf{harness
 is in-process}, and \textbf{AgentCore is the sandbox} --- so what varies
 from demo to demo is only the \emph{sandbox substrate} (a CPU AgentCore
 Runtime / Code-Interpreter microVM vs a GPU \texttt{g6} Runtime
-instance) and the \emph{task}. There are \textbf{twelve} --- eight on
-CPU, four on GPU. \textbf{Five core demos} anchor the set: the
-CPU-sandbox reference \texttt{demo\_cpu\_tasks}, two GPU-sandbox demos
-(\texttt{demo\_gpu\_single}, \texttt{demo\_gpu\_farm}), and two
-\textbf{resilience} demos (\texttt{demo\_cpu\_heartbeat},
-\texttt{demo\_gpu\_snapshot}). \texttt{demo\_cpu\_tasks} is one folder
-that trains any of its datasets through a \textbf{\texttt{DATASET=}
-selector}: MBPP by default, the \texttt{math} family, eight more real
-Hugging Face RLVR datasets (\texttt{gsm8k}, \texttt{math500},
-\texttt{deepscaler}, \texttt{humaneval}, \texttt{gretelsql},
-\texttt{hotpotqa}, \texttt{xlam}, \texttt{mcp}), and the synthetic
-task-family zoo. The same selector takes a \textbf{mix}: a comma list
+instance) and the \emph{task}. There are \textbf{nine} --- eight main
+demos (six on CPU, two on GPU) plus one experimental. \textbf{Four core
+demos} anchor the set: the CPU-sandbox reference
+\texttt{demo\_cpu\_tasks}, the two GPU-sandbox demos
+(\texttt{demo\_gpu\_single}, \texttt{demo\_gpu\_farm}), and the
+\textbf{resilience} demo \texttt{demo\_cpu\_heartbeat}.
+\texttt{demo\_gpu\_single} also carries the GPU resilience angle ---
+application-level snapshot/resume with \texttt{SNAPSHOT\_EVERY=1}
+(default 0, off) --- and the ``only a custom Runtime gives you a GPU''
+angle (\texttt{gpu\_torch\_smoke.py}, plus a \texttt{LOCAL\_GPU=1}
+on-box path with a synchronous checkpoint save); these were the separate
+\texttt{demo\_gpu\_snapshot} and \texttt{demo\_gpu\_customruntime} until
+2026-09-25, which ran the same trainer, data and g6 image.
+\texttt{demo\_cpu\_tasks} is one folder that trains any of its datasets
+through a \textbf{\texttt{DATASET=} selector}: MBPP by default, the
+\texttt{math} family, eight more real Hugging Face RLVR datasets
+(\texttt{gsm8k}, \texttt{math500}, \texttt{deepscaler},
+\texttt{humaneval}, \texttt{gretelsql}, \texttt{hotpotqa},
+\texttt{xlam}, \texttt{mcp}), and the synthetic task-family zoo. The
+same selector takes a \textbf{mix}: a comma list
 (\texttt{DATASET=gsm8k,gretelsql,hotpotqa}) or the prebuilt
 \texttt{DATASET=mixed} \textbf{interleaves several families into one
 training stream}, so every GRPO step draws a \emph{multi-family} batch
@@ -3743,47 +3758,57 @@ training stream}, so every GRPO step draws a \emph{multi-family} batch
 per-dataset folders (\texttt{demo\_cpu\_mbpp}, \texttt{demo\_cpu\_math},
 \texttt{demo\_cpu\_gsm8k} \ldots{} \texttt{demo\_cpu\_mcp}) and the
 former mixed-task \texttt{demo\_cpu\_mixtask}, all of which ran the same
-harness, sandbox and trainer and differed only in their data (deep dives
-in §``\texttt{demo\_cpu\_tasks} per dataset in depth'' and
-§``\texttt{demo\_cpu\_tasks} mixes in depth''). \texttt{demo\_gpu\_farm}
-works the same way for the GPU split: a \textbf{\texttt{FARM=} selector}
-picks how its local Ray farm partitions GPUs --- \texttt{fractional}
-(default; two episodes share one GPU at 0.5 + 0.5) or \texttt{whole}
-(one whole GPU per episode across two GPUs) --- and it replaces three
-former folders (\texttt{demo\_gpu\_shared\_single},
-\texttt{demo\_gpu\_shared\_multi}, \texttt{demo\_gpu\_local}) that
-differed only in those farm knobs. One further demo sits outside the
-core: \texttt{demo\_cpu\_scale\_lanes} fixes the task and sandbox and
-instead scales the rollout as \textbf{lanes} --- 4 harness workers : 4
-SGLang engines : 4 persistent microVMs by default --- making the
-§``Scaling the loop'' law
+harness, sandbox and trainer and differed only in their data. As a side
+note on the same track, \texttt{VARIANT=bigimage} (formerly
+\texttt{demo\_cpu\_bigimage}) moves the same trainer onto a
+\textasciitilde4 GB image on a CPU capacity-provider Instance --- past
+the microVM image cap --- with \textbf{warm-instance reuse} and a fresh
+env per episode (deep dives in §``\texttt{demo\_cpu\_tasks} per dataset
+in depth'' and §``\texttt{demo\_cpu\_tasks} mixes in depth'').
+\texttt{demo\_gpu\_farm} works the same way for the GPU split: a
+\textbf{\texttt{FARM=} selector} picks how its local Ray farm partitions
+GPUs --- \texttt{fractional} (default; two episodes share one GPU at 0.5
++ 0.5) or \texttt{whole} (one whole GPU per episode across two GPUs) ---
+and it replaces three former folders
+(\texttt{demo\_gpu\_shared\_single}, \texttt{demo\_gpu\_shared\_multi},
+\texttt{demo\_gpu\_local}) that differed only in those farm knobs. One
+further demo sits outside the core: \texttt{demo\_cpu\_scale\_lanes}
+fixes the task and sandbox and instead scales the rollout as
+\textbf{lanes} --- 4 harness workers : 4 SGLang engines : 4 persistent
+microVMs by default --- making the §``Scaling the loop'' law
 \texttt{throughput\ =\ min(inference,\ sandbox,\ harness)} concrete.
-Finally, \textbf{six substrate-and-design variants} exercise the
-AgentCore mechanics the rest of the set holds fixed:
-\texttt{demo\_cpu\_branching} (the real Claude Code CLI as harness,
-where one episode fans out into many training samples),
-\texttt{demo\_cpu\_customruntime} and \texttt{demo\_gpu\_customruntime}
-(managed Code Interpreter vs.~your own custom Runtime, on CPU and on a
-GPU respectively), \texttt{demo\_cpu\_imagepool} (a capability-routed
-pool of prebuilt images, one per task family),
+Then \textbf{three substrate-and-design variants} exercise the AgentCore
+mechanics the rest of the set holds fixed:
+\texttt{demo\_cpu\_customruntime} (managed Code Interpreter vs.~your own
+custom CPU Runtime), \texttt{demo\_cpu\_imagepool} (a capability-routed
+pool of prebuilt images, one per task family), and
 \texttt{demo\_cpu\_terminalbench} (the same routing at task scale ---
 one image and Runtime per Terminal-Bench task, one fresh microVM per
-episode), and \texttt{demo\_cpu\_bigimage} (a large sandbox image past
-the microVM cap, run on a CPU capacity-provider Instance --- and the
-demo that also shows \textbf{warm-instance reuse} with a fresh env per
-episode). That makes \textbf{twelve demos in all}. Each entry names the
-frontier task family from §``Tasks frontier labs run in a sandbox'' it
-exercises and a real-world scenario it stands in for; the \emph{Run
-status} column states honestly what has been \textbf{trained on
-hardware} versus what is a ready-to-run recipe.
+episode). That makes \textbf{eight main demos}. Finally,
+\texttt{demo\_cpu\_branching} (the real Claude Code CLI as harness,
+where one episode fans out into many training samples) is kept as
+\textbf{experimental and blocked}: the in-sandbox CLI exits 1 before any
+model call, so it produces no trajectories. \textbf{Nine demos in all.}
+Every folder ships the same six step scripts
+(\texttt{1\_prepare\_data.sh}, \texttt{2\_build\_image.sh},
+\texttt{3\_push\_ecr.sh}, \texttt{4\_deploy\_runtime.sh},
+\texttt{5\_run.sh}, \texttt{6\_cleanup.sh}; see
+\texttt{code/demos/README.md}), so any demo can be followed from dataset
+to cleanup. Each entry names the frontier task family from §``Tasks
+frontier labs run in a sandbox'' it exercises and a real-world scenario
+it stands in for; the \emph{Run status} column states honestly what has
+been \textbf{trained on hardware} versus what is a ready-to-run recipe.
 
-The table below lists \textbf{all twelve} demos, one brief row each,
-grouped as described above (five core, then the one that scales a new
-dimension, then the six substrate-and-design variants); the
-\texttt{demo\_cpu\_tasks} row is followed by one ↳ sub-row per
-\texttt{DATASET} it has been run with, and \texttt{demo\_gpu\_farm} by
-one per \texttt{FARM} mode. Section 7 then deep-dives the training demos
-and catalogues the rest.
+The table below lists \textbf{all nine} demos, one brief row each,
+grouped as described above (four core, then the one that scales a new
+dimension, then the three substrate-and-design variants, then the
+experimental one); the \texttt{demo\_cpu\_tasks} row is followed by one
+↳ sub-row per \texttt{DATASET} it has been run with plus its
+\texttt{VARIANT=bigimage} side note, \texttt{demo\_gpu\_single} by its
+snapshot and custom-Runtime angles, and \texttt{demo\_gpu\_farm} by one
+per \texttt{FARM} mode. Rows for merged angles keep the smoke results
+measured under their former folder names. Section 7 then deep-dives the
+training demos and catalogues the rest.
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2603}}
@@ -3807,7 +3832,7 @@ Run status
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-\emph{--- core (5) ---} & & & & \\
+\emph{--- core (4) ---} & & & & \\
 \texttt{demo\_cpu\_tasks} & CPU microVM & one RLVR dataset, or a mix,
 per run via \texttt{DATASET=} & code / math / SQL / RAG / tool use;
 cross-family & all eleven \texttt{DATASET} variants pass a 10-step smoke
@@ -3845,9 +3870,26 @@ smoke (\texttt{Job\ succeeded}, ckpt 10), \texttt{eval/xlam} 1.00 \\
 datasci & cross-family regime (§2) & 10-step smoke
 (\texttt{Job\ succeeded}, ckpt 10; run as \texttt{demo\_cpu\_mixtask}),
 \texttt{eval/mixed} 0.67 \\
+↳ \texttt{VARIANT=bigimage} (side note) & CPU \textbf{Instance}
+(capacity provider, \textasciitilde4 GB image) & DeepScaleR math &
+large-image / warm-reuse (§4) & \textbf{trained} (run as
+\texttt{demo\_cpu\_bigimage}) --- 10-step run both modes; warm-farm cuts
+m5 boots \textbf{201 → 1}, \texttt{eval/deepscaler} 0.76,
+\texttt{raw\_reward} 0.72--0.91 \\
 \texttt{demo\_gpu\_single} & GPU instance (warm g6 / local farm) &
 KernelBench CUDA & GPU kernels {[}7{]} & \textbf{trained} --- 10-step
 run; + 10-step GPU-farm smoke, \texttt{eval/kernelbench} 0.525 \\
+↳ \texttt{SNAPSHOT\_EVERY=1} & GPU instance (local whole-GPU farm) &
+KernelBench + snapshot / resume & resilience (long-horizon) & 10-step
+smoke (\texttt{Job\ succeeded}, ckpt 10; run as
+\texttt{demo\_gpu\_snapshot}), 3 files saved+restored/episode,
+\texttt{eval/kernelbench} 0.625; + offline sim \\
+↳ custom-Runtime angle (\texttt{gpu\_torch\_smoke.py},
+\texttt{LOCAL\_GPU=1}) & GPU instance (custom g6 Runtime) & KernelBench
+CUDA (+ CUDA probe) & GPU only via custom Runtime (§4) & 10-step smoke
+(\texttt{Job\ succeeded}, ckpt 10; run as
+\texttt{demo\_gpu\_customruntime}), \texttt{eval/kernelbench} 0.65; +
+capability probe \\
 \texttt{demo\_gpu\_farm} & GPU instance (local Ray farm, \texttt{FARM=})
 & KernelBench CUDA & GPU kernels {[}7{]} & both \texttt{FARM} modes pass
 a 10-step smoke (below) \\
@@ -3861,19 +3903,12 @@ CUDA & GPU kernels {[}7{]} & two 10-step smokes
 \texttt{demo\_cpu\_heartbeat} & CPU microVM & heartbeat / quiesce &
 resilience (long-horizon) & 10-step smoke (\texttt{Job\ succeeded}, ckpt
 10), \texttt{eval/deepscaler} 0.71; + offline probe \\
-\texttt{demo\_gpu\_snapshot} & GPU instance (local farm) & snapshot /
-resume & resilience (long-horizon) & 10-step smoke
-(\texttt{Job\ succeeded}, ckpt 10), 3 files saved+restored/episode,
-\texttt{eval/kernelbench} 0.625; + offline sim \\
 \emph{--- scale a new dimension (1) ---} & & & & \\
 \texttt{demo\_cpu\_scale\_lanes} & CPU microVM (4 persistent sessions) &
 DeepScaleR math (fixed) & infra --- 4 × 4 × 4 lanes (§2) & offline sweep
 + fake-microVM lane test; 4 × 4 × 4 not yet run on AWS; pre-rework smoke
 (old topology, \texttt{Job\ succeeded}, ckpt 10) \texttt{eval} 0.33 \\
-\emph{--- substrate \& design variants (6) ---} & & & & \\
-\texttt{demo\_cpu\_branching} & CPU microVM (CLI-capable) & SWE bug-fix,
-\textbf{real Claude Code CLI} & one episode → many samples (§2) & smoke
-(\texttt{Job\ succeeded}, ckpt 10); fan-out ≥ 1, reward 0 \\
+\emph{--- substrate \& design variants (3) ---} & & & & \\
 \texttt{demo\_cpu\_customruntime} & CPU microVM & DeepScaleR math, both
 backends & managed CI vs.~custom Runtime (§4) & smoke (ckpt 10),
 \texttt{eval} 0.69 \\
@@ -3883,17 +3918,16 @@ datasci + scipy + sklearn & capability-routed image pool (§4) & smoke
 1.0 \\
 \texttt{demo\_cpu\_terminalbench} & CPU microVM (per-task image pool,
 \textasciitilde229 images) & Terminal-Bench tasks, tool-calling loop &
-terminal / SWE agents {[}6{]} & recipe --- pool deployed; no committed
-run yet \\
-\texttt{demo\_gpu\_customruntime} & GPU instance (custom g6 Runtime) &
-KernelBench CUDA (+ CUDA probe) & GPU only via custom Runtime (§4) &
-10-step smoke (\texttt{Job\ succeeded}, ckpt 10),
-\texttt{eval/kernelbench} 0.65; + capability probe \\
-\texttt{demo\_cpu\_bigimage} & CPU \textbf{Instance} (capacity provider,
-\textasciitilde4 GB image) & DeepScaleR math & large-image / warm-reuse
-(§4) & \textbf{trained} --- 10-step run both modes; warm-farm cuts m5
-boots \textbf{201 → 1}, \texttt{eval/deepscaler} 0.76,
-\texttt{raw\_reward} 0.72--0.91 \\
+terminal / SWE agents {[}6{]} & \textbf{smoke passed} (2026-09-23) ---
+ckpt 10, boot fully hidden (\texttt{open\_wait\_ms} p95 0) but
+\textasciitilde95 \% of pre-opened microVM time idle; reward sparse (4
+solves / 382 episodes, \texttt{eval/terminalbench} 0.0) \\
+\emph{--- experimental (1) ---} & & & & \\
+\texttt{demo\_cpu\_branching} & CPU microVM (CLI-capable) & SWE bug-fix,
+\textbf{real Claude Code CLI} & one episode → many samples (§2) &
+\textbf{EXPERIMENTAL / blocked} --- in-sandbox CLI exits 1 before any
+model call → no trajectories; an earlier smoke reached ckpt 10 with
+fan-out ≥ 1 but reward 0 \\
 \end{longtable}
 
 Only \texttt{demo\_cpu\_tasks} (\texttt{DATASET=mbpp}) and
@@ -3935,15 +3969,18 @@ and passed clean once the driver was fixed to strip it);
 than the backend comparison it was seeded as); and
 \texttt{demo\_cpu\_imagepool} (a run against the \textbf{real 3-image
 ARN pool} with per-family routing, \texttt{eval/mixed} 1.0).
-\texttt{demo\_cpu\_branching} also trains to ckpt 10 with
-\textbf{fan-out ≥ 1 --- the old \texttt{fan\_out=0} blocker is resolved}
---- but its real-Claude-Code-CLI SWE reward is still structurally 0, so
-it verifies the plumbing (one episode → many samples) without a learning
-signal. \texttt{demo\_cpu\_terminalbench} postdates the batch and has no
-committed run yet. On the GPU side, a dedicated \textbf{GPU smoke sweep
-(2026-09-21, driver \texttt{run\_gpu\_smoke.sh})} then drove \textbf{all
-four GPU demos} --- six runs, since \texttt{demo\_gpu\_farm}'s modes ran
-as three separate folders at the time --- through the same full
+\texttt{demo\_cpu\_branching} is now marked \textbf{experimental /
+blocked}: an earlier smoke reached ckpt 10 with fan-out ≥ 1 but reward
+0, and the in-sandbox Claude Code CLI currently exits 1 before any model
+call, so it produces no trajectories and cannot train.
+\texttt{demo\_cpu\_terminalbench} postdates the batch; its own first
+smoke (2026-09-23, \texttt{\_smoke\_logs/lanes\_tb\_0923/}) passed to
+ckpt 10 with the boot fully hidden but a sparse reward (4 solves / 382
+episodes, eval 0.0). On the GPU side, a dedicated \textbf{GPU smoke
+sweep (2026-09-21, driver \texttt{run\_gpu\_smoke.sh})} then drove
+\textbf{every GPU configuration} --- six runs over what were then six
+GPU folders, now the two demos \texttt{demo\_gpu\_single} (three angles)
+and \texttt{demo\_gpu\_farm} (two modes) --- through the same full
 \texttt{NR=11} budget on the box's reserved L40S GPUs (the Ray-farm
 sandbox served locally over the identical \texttt{/invocations}
 contract, slime on the other GPUs), and \textbf{every one passed} --- 10
@@ -3955,9 +3992,11 @@ committed convergence curve) \texttt{eval/kernelbench} 0.525;
 one GPU; run as \texttt{demo\_gpu\_shared\_single}) 0.775 and
 \texttt{FARM=whole} (one whole GPU per episode; run twice, as
 \texttt{demo\_gpu\_shared\_multi} and \texttt{demo\_gpu\_local}) 0.65
-and 0.70; \texttt{demo\_gpu\_snapshot} (whole-GPU farm + application
-snapshot, 3 files saved and restored per episode) 0.625; and
-\texttt{demo\_gpu\_customruntime} (real KernelBench RL on a custom GPU
+and 0.70; \texttt{demo\_gpu\_single} \texttt{SNAPSHOT\_EVERY=1} (run as
+\texttt{demo\_gpu\_snapshot}: whole-GPU farm + application snapshot, 3
+files saved and restored per episode) 0.625; and
+\texttt{demo\_gpu\_single}'s custom-Runtime angle (run as
+\texttt{demo\_gpu\_customruntime}: real KernelBench RL on a custom GPU
 Runtime --- grown past the \texttt{torch.cuda.is\_available()}
 capability probe it started as) 0.65. These are 10-step
 \textbf{loop-verified smokes with real KernelBench rewards}, not
@@ -4125,24 +4164,27 @@ survive stalls. \emph{Scenario:} keeping warm per-episode sandboxes
 alive across the seconds-long weight-sync pause without paying a cold
 start every step.
 
-\hypertarget{demo_gpu_snapshot-application-level-snapshot-resume-across-a-recycle}{%
-\subsection{\texorpdfstring{\texttt{demo\_gpu\_snapshot} ---
-application-level snapshot / resume across a
-recycle}{demo\_gpu\_snapshot --- application-level snapshot / resume across a recycle}}\label{demo_gpu_snapshot-application-level-snapshot-resume-across-a-recycle}}
+\hypertarget{demo_gpu_single-snapshot_every1-application-level-snapshot-resume-across-a-recycle}{%
+\subsection{\texorpdfstring{\texttt{demo\_gpu\_single}
+\texttt{SNAPSHOT\_EVERY=1} --- application-level snapshot / resume
+across a
+recycle}{demo\_gpu\_single SNAPSHOT\_EVERY=1 --- application-level snapshot / resume across a recycle}}\label{demo_gpu_single-snapshot_every1-application-level-snapshot-resume-across-a-recycle}}
 
-The sibling resilience demo: a GPU Runtime instance can be
-\emph{recycled} and come back blank (AgentCore offers no VM/EBS
-snapshot), so accumulated workspace state is serialized to a store you
-own (S3 in production) and restored onto a fresh session. Run A (no
-snapshot) restarts from scratch; Run B resumes --- printing the rework
-saved. Offline, \textasciitilde1 s. \emph{Exercises (§3):} resilience
-for \textbf{long-horizon GPU families} whose multi-hour sessions may
-outlive an instance. \emph{Scenario:} surviving an instance recycle in a
-long RL run without discarding an episode's progress. \emph{Run status:}
-now more than offline --- a \textbf{real 10-step KernelBench GPU
-trainer} (\texttt{SNAPSHOT\_EVERY=1}, whole-GPU local farm) passes
-end-to-end (\texttt{Job\ succeeded}, ckpt 10, \texttt{eval/kernelbench}
-0.625). The snapshot mechanism runs \emph{inside} the training loop:
+\emph{(Formerly the separate \texttt{demo\_gpu\_snapshot}; merged into
+\texttt{demo\_gpu\_single} 2026-09-25, off by default.)} The sibling
+resilience angle: a GPU Runtime instance can be \emph{recycled} and come
+back blank (AgentCore offers no VM/EBS snapshot), so accumulated
+workspace state is serialized to a store you own (S3 in production) and
+restored onto a fresh session. Run A (no snapshot) restarts from
+scratch; Run B resumes --- printing the rework saved. Offline,
+\textasciitilde1 s. \emph{Exercises (§3):} resilience for
+\textbf{long-horizon GPU families} whose multi-hour sessions may outlive
+an instance. \emph{Scenario:} surviving an instance recycle in a long RL
+run without discarding an episode's progress. \emph{Run status:} now
+more than offline --- a \textbf{real 10-step KernelBench GPU trainer}
+(\texttt{SNAPSHOT\_EVERY=1}, whole-GPU local farm) passes end-to-end
+(\texttt{Job\ succeeded}, ckpt 10, \texttt{eval/kernelbench} 0.625). The
+snapshot mechanism runs \emph{inside} the training loop:
 \texttt{demo/snapshot\_saved\_files} = 3 and
 \texttt{demo/snapshot\_restored\_files} = 3 per episode (p50/p95 both
 3), so every episode serialises and restores its 3-file workspace across
@@ -4376,41 +4418,49 @@ microVMs sit idle for the whole current batch. If
 \texttt{preopen\_idle\_ms} stays high, lower
 \texttt{TB\_PREOPEN\_BATCHES}.
 
-\hypertarget{demo_gpu_customruntime-a-gpu-under-the-sandbox-which-only-a-custom-runtime-can-give-you}{%
-\subsection{\texorpdfstring{\texttt{demo\_gpu\_customruntime} --- a GPU
-under the sandbox, which only a custom Runtime can give
-you}{demo\_gpu\_customruntime --- a GPU under the sandbox, which only a custom Runtime can give you}}\label{demo_gpu_customruntime-a-gpu-under-the-sandbox-which-only-a-custom-runtime-can-give-you}}
+\hypertarget{demo_gpu_single-custom-runtime-angle-a-gpu-under-the-sandbox-which-only-a-custom-runtime-can-give-you}{%
+\subsection{\texorpdfstring{\texttt{demo\_gpu\_single} custom-Runtime
+angle --- a GPU under the sandbox, which only a custom Runtime can give
+you}{demo\_gpu\_single custom-Runtime angle --- a GPU under the sandbox, which only a custom Runtime can give you}}\label{demo_gpu_single-custom-runtime-angle-a-gpu-under-the-sandbox-which-only-a-custom-runtime-can-give-you}}
 
-The GPU sibling of \texttt{demo\_cpu\_customruntime}, grown from a
-capability probe into a real training run. The managed Code Interpreter
-has \textbf{no GPU}; if a task's checker needs CUDA, the sandbox must be
-\textbf{your own custom Runtime deployed on an AgentCore
-capacity-provider Instance} (a \texttt{g6} box). The demo makes the
-contrast physical --- it \texttt{write\_file}s a torch-on-CUDA probe,
-\texttt{exec}s it, and \texttt{read\_file}s the result (the whole
-contract in three calls) --- and prints that
-\texttt{torch.cuda.is\_available()} is \textbf{False} on the managed CI
-but \textbf{True} on the custom Runtime; it then runs a \textbf{full
-KernelBench RL loop} on that custom GPU Runtime, so the probe's
-punchline (only a custom Runtime gives you a GPU under the sandbox) is
-backed by an actual trained checkpoint. It also states the rule the GPU
-demos rest on: one AgentCore session = one whole Instance, with no
-cross-session GPU time-slicing. \emph{Exercises (§3):} the substrate
-prerequisite for every \textbf{GPU-kernel} family {[}7{]} --- why the
-GPU demos must use a custom Runtime. \emph{Scenario:} confirming a
-CUDA-dependent reward can only be scored on the Instances substrate,
+\emph{(Formerly the separate \texttt{demo\_gpu\_customruntime}; merged
+into \texttt{demo\_gpu\_single} 2026-09-25 ---
+\texttt{gpu\_torch\_smoke.py}, plus \texttt{LOCAL\_GPU=1} for the on-box
+farm with a synchronous checkpoint save.)} The GPU sibling of
+\texttt{demo\_cpu\_customruntime}, grown from a capability probe into a
+real training run. The managed Code Interpreter has \textbf{no GPU}; if
+a task's checker needs CUDA, the sandbox must be \textbf{your own custom
+Runtime deployed on an AgentCore capacity-provider Instance} (a
+\texttt{g6} box). The demo makes the contrast physical --- it
+\texttt{write\_file}s a torch-on-CUDA probe, \texttt{exec}s it, and
+\texttt{read\_file}s the result (the whole contract in three calls) ---
+and prints that \texttt{torch.cuda.is\_available()} is \textbf{False} on
+the managed CI but \textbf{True} on the custom Runtime; it then runs a
+\textbf{full KernelBench RL loop} on that custom GPU Runtime, so the
+probe's punchline (only a custom Runtime gives you a GPU under the
+sandbox) is backed by an actual trained checkpoint. It also states the
+rule the GPU demos rest on: one AgentCore session = one whole Instance,
+with no cross-session GPU time-slicing. \emph{Exercises (§3):} the
+substrate prerequisite for every \textbf{GPU-kernel} family {[}7{]} ---
+why the GPU demos must use a custom Runtime. \emph{Scenario:} confirming
+a CUDA-dependent reward can only be scored on the Instances substrate,
 then training on it. \emph{Run status:} \textbf{10-step smoke passes}
 (\texttt{Job\ succeeded}, ckpt 10) on the custom GPU Runtime;
 \texttt{eval/kernelbench} 0.65, \texttt{demo/cuda\_visible} p50 0.5 (the
 whole-GPU actor is visible to the checker), \texttt{raw\_reward}
 0.75→0.5 over the noisy 10 steps.
 
-\hypertarget{demo_cpu_bigimage-a-large-sandbox-image-on-a-cpu-instance-with-warm-instance-reuse}{%
-\subsection{\texorpdfstring{\texttt{demo\_cpu\_bigimage} --- a large
-sandbox image on a CPU Instance, with warm-instance
-reuse}{demo\_cpu\_bigimage --- a large sandbox image on a CPU Instance, with warm-instance reuse}}\label{demo_cpu_bigimage-a-large-sandbox-image-on-a-cpu-instance-with-warm-instance-reuse}}
+\hypertarget{demo_cpu_tasks-variantbigimage-a-large-sandbox-image-on-a-cpu-instance-with-warm-instance-reuse}{%
+\subsection{\texorpdfstring{\texttt{demo\_cpu\_tasks}
+\texttt{VARIANT=bigimage} --- a large sandbox image on a CPU Instance,
+with warm-instance
+reuse}{demo\_cpu\_tasks VARIANT=bigimage --- a large sandbox image on a CPU Instance, with warm-instance reuse}}\label{demo_cpu_tasks-variantbigimage-a-large-sandbox-image-on-a-cpu-instance-with-warm-instance-reuse}}
 
-The CPU analogue of \texttt{demo\_gpu\_customruntime}: the managed Code
+\emph{(Side note on the tasks track: formerly the separate
+\texttt{demo\_cpu\_bigimage}, folded into \texttt{demo\_cpu\_tasks}
+2026-09-25; \texttt{probe\_bigimage.py}, \texttt{netcheck.py} and
+\texttt{deploy/deploy\_bigimage.py} moved with it.)} The CPU analogue of
+\texttt{demo\_gpu\_single}'s custom-Runtime angle: the managed Code
 Interpreter microVM caps the image at \textasciitilde2 GB, so a heavy
 checker environment (torch CPU + a full scientific stack,
 \textasciitilde4 GB) \textbf{cannot} be a microVM --- it must run as
@@ -4475,28 +4525,30 @@ measured smoke baselines and their shared bottleneck/plan; its mixes
 differ in a dimension worth their own short subsection --- the batch
 \emph{interleaves} families rather than pinning one --- so they get one
 (``\texttt{demo\_cpu\_tasks} mixes in depth''). The Ray-farm, the two
-resilience demos, and the harness-scaling demo have a genuinely
-different topology and each carries its own diagram. The \textbf{six
-substrate-and-design variants} of §6 (\texttt{demo\_cpu\_branching},
+resilience mechanisms (\texttt{demo\_cpu\_heartbeat} and
+\texttt{demo\_gpu\_single} \texttt{SNAPSHOT\_EVERY=1}), and the
+harness-scaling demo have a genuinely different topology and each
+carries its own diagram. The \textbf{three substrate-and-design
+variants} of §6 (\texttt{demo\_cpu\_customruntime},
+\texttt{demo\_cpu\_imagepool}, \texttt{demo\_cpu\_terminalbench}), the
+two merged angles (\texttt{demo\_cpu\_tasks} \texttt{VARIANT=bigimage},
+\texttt{demo\_gpu\_single}'s custom-Runtime angle) and the experimental
+\texttt{demo\_cpu\_branching} exercise AgentCore mechanics rather than
+adding a convergence curve --- and all but the blocked
+\texttt{demo\_cpu\_branching} carry a loop-verified ckpt-10 smoke:
 \texttt{demo\_cpu\_customruntime}, \texttt{demo\_cpu\_imagepool},
-\texttt{demo\_cpu\_terminalbench}, \texttt{demo\_gpu\_customruntime},
-\texttt{demo\_cpu\_bigimage}) exercise AgentCore mechanics rather than
-adding a convergence curve --- and all but
-\texttt{demo\_cpu\_terminalbench} (no run yet) and
-\texttt{demo\_cpu\_branching}'s learning signal now carry a
-loop-verified ckpt-10 smoke: the four CPU variants
-(\texttt{demo\_cpu\_customruntime}, \texttt{demo\_cpu\_imagepool},
-\texttt{demo\_cpu\_branching}, \texttt{demo\_cpu\_bigimage}, the last
-also carrying the measured warm-reuse result --- m5 boots 201 → 1) and,
-as of the 2026-09-21 GPU sweep, the GPU variant
-\texttt{demo\_gpu\_customruntime}, now a real KernelBench run rather
+\texttt{demo\_cpu\_terminalbench} (2026-09-23),
+\texttt{VARIANT=bigimage} (run as \texttt{demo\_cpu\_bigimage}, also
+carrying the measured warm-reuse result --- m5 boots 201 → 1) and, as of
+the 2026-09-21 GPU sweep, the custom-Runtime angle (run as
+\texttt{demo\_gpu\_customruntime}), now a real KernelBench run rather
 than only a capability probe --- and their measured status is given in
 the at-a-glance catalogue above rather than re-analyzed here; the
 fan-out mechanics of \texttt{demo\_cpu\_branching} in particular are
 worked through in §``When one episode becomes many samples''. Between
 them the per-demo subsections below cover the training demos, and the
-glance catalogue and that section together account for \textbf{all
-twelve} demos.
+glance catalogue and that section together account for \textbf{all nine}
+demos.
 
 A note on grounding: the numbers below are read from this project's own
 committed run artifacts (\texttt{train.csv}, the ablation CSVs under
@@ -4697,9 +4749,9 @@ proxy.
 
 \textbf{Two tiers: the general set, plus one per-demo signal.} Every
 demo records the \emph{general} set above (it is the same
-\texttt{metrics.py} and the same in-process harness across all 22, so
-the pipeline-shape numbers are comparable demo-to-demo). On top of that,
-each demo emits exactly the signal that makes \emph{its own point}
+\texttt{metrics.py} and the same in-process harness across every demo,
+so the pipeline-shape numbers are comparable demo-to-demo). On top of
+that, each demo emits exactly the signal that makes \emph{its own point}
 legible, through one unified channel: a \texttt{{[}demo{]}\ k=v\ k=v\ …}
 line that \texttt{metrics.py} parses generically (numeric keys →
 count/mean/p50/p95/max; categorical keys → value-counts; plus
@@ -4719,9 +4771,10 @@ free. The bespoke demos add their defining metric on the same channel:
 (\textgreater0 with keep-warm on, 0 in the A/B baseline --- the whole
 point of the demo); \texttt{demo\_cpu\_scale\_lanes} logs the driving
 \texttt{worker}, pull-\texttt{qdepth}, and its lane's \texttt{engine}
-and \texttt{sandbox\_session}; \texttt{demo\_gpu\_snapshot} logs files
-restored/saved at each episode boundary (the rework a recycle would
-otherwise cost); and the GPU-farm demos log the per-episode
+and \texttt{sandbox\_session}; \texttt{demo\_gpu\_single} with
+\texttt{SNAPSHOT\_EVERY=1} logs files restored/saved at each episode
+boundary (the rework a recycle would otherwise cost); and the GPU-farm
+demos log the per-episode
 \texttt{mem\_fraction}/\texttt{waited\_s}/\texttt{cuda\_visible} of each
 fractional sub-session.
 
@@ -4799,8 +4852,9 @@ variants of \texttt{demo\_cpu\_tasks} and the scale/resilience/variant
 CPU trainers --- at \texttt{NR=11} (10 train steps + 1 held-out eval +
 one final checkpoint at iter 10), a loop-verified smoke with a baseline
 held-out solve rate, not a learning curve; and the 2026-09-21 GPU sweep
-ran \textbf{all four GPU demos} (both \texttt{demo\_gpu\_farm} modes) at
-the same \texttt{NR=11} budget on the reserved L40S
+ran \textbf{both GPU demos in every configuration} (all three
+\texttt{demo\_gpu\_single} angles, both \texttt{demo\_gpu\_farm} modes)
+at the same \texttt{NR=11} budget on the reserved L40S
 (\texttt{Job\ succeeded} + checkpoint iter 10 each), so every training
 demo now has at least a loop-verified smoke --- none has yet been run to
 convergence. The plan to convergence has the same shape for every
@@ -4917,8 +4971,8 @@ no demo has yet been run to plateau --- the committed runs are the
 (\texttt{DATASET=mbpp}) / \texttt{demo\_gpu\_single}, the 10-step
 (\texttt{NR=11}) smoke-plan batch across the CPU set (the other
 \texttt{DATASET=} variants and the scale/variant trainers), and the
-2026-09-21 \texttt{NR=11} GPU sweep across all four GPU demos. The GPU
-range is wide because \texttt{perf/step\_time} spans
+2026-09-21 \texttt{NR=11} GPU sweep across both GPU demos (every angle
+and mode). The GPU range is wide because \texttt{perf/step\_time} spans
 \textasciitilde110--800 s: on the remote g6, cold start
 (\textasciitilde90 s torch install + \textasciitilde123 s first ping)
 and per-episode checker variance dominate; on the local L40S farm the
@@ -5255,10 +5309,11 @@ same \texttt{NR\ ≈\ 100–150} / \texttt{EVAL\_INTERVAL=10} protocol as
 per-episode reward at \textasciitilde half the GPUs (the packing win),
 \texttt{whole} at parity per GPU.
 
-\hypertarget{demo_cpu_heartbeat-and-demo_gpu_snapshot-in-depth-surviving-the-pause-and-the-recycle}{%
+\hypertarget{demo_cpu_heartbeat-and-demo_gpu_single-snapshot_every1-in-depth-surviving-the-pause-and-the-recycle}{%
 \subsection{\texorpdfstring{\texttt{demo\_cpu\_heartbeat} and
-\texttt{demo\_gpu\_snapshot} in depth --- surviving the pause and the
-recycle}{demo\_cpu\_heartbeat and demo\_gpu\_snapshot in depth --- surviving the pause and the recycle}}\label{demo_cpu_heartbeat-and-demo_gpu_snapshot-in-depth-surviving-the-pause-and-the-recycle}}
+\texttt{demo\_gpu\_single} \texttt{SNAPSHOT\_EVERY=1} in depth ---
+surviving the pause and the
+recycle}{demo\_cpu\_heartbeat and demo\_gpu\_single SNAPSHOT\_EVERY=1 in depth --- surviving the pause and the recycle}}\label{demo_cpu_heartbeat-and-demo_gpu_single-snapshot_every1-in-depth-surviving-the-pause-and-the-recycle}}
 
 \begin{figure}[htbp]
 \centering
@@ -5316,7 +5371,8 @@ compose in production.
   The heartbeat lives \textbf{outside} the harness by design, so no
   harness grows its own keepalive.
 \item
-  \textbf{\texttt{demo\_gpu\_snapshot}} ---
+  \textbf{\texttt{demo\_gpu\_single} \texttt{SNAPSHOT\_EVERY=1}}
+  (formerly \texttt{demo\_gpu\_snapshot}) ---
   \texttt{snapshot\_workspace()} / \texttt{restore\_workspace()} in
   \texttt{snapshot\_store.py}, backend-agnostic
   (\texttt{LocalSnapshotStore} offline, \texttt{S3SnapshotStore} for
@@ -5859,10 +5915,10 @@ Mitigations: \emph{async checkpointing}; \emph{worker heartbeats}
 (slime's \texttt{/health\_generate} with restart-and-re-sync,
 \texttt{-\/-use-fault-tolerance} {[}9{]}); and \emph{sandbox recycling}
 with timeouts and rate limits so one bad tool call does not abort a
-rollout. \emph{The project's two resilience demos
-(§\texttt{demo\_cpu\_heartbeat}, §\texttt{demo\_gpu\_snapshot}) address
-the sandbox-side failure modes --- idle reclamation and instance
-recycle.}
+rollout. \emph{The project's two resilience mechanisms
+(§\texttt{demo\_cpu\_heartbeat}, §\texttt{demo\_gpu\_single}
+\texttt{SNAPSHOT\_EVERY=1}) address the sandbox-side failure modes ---
+idle reclamation and instance recycle.}
 
 \hypertarget{algorithms}{%
 \subsection{Algorithms}\label{algorithms}}
@@ -5971,7 +6027,7 @@ demos already exercise.
   training curves (\texttt{demo\_cpu\_tasks} with \texttt{DATASET=mbpp}
   on a CPU microVM; \texttt{demo\_gpu\_single} on a remote g6 GPU), and
   \textbf{the rest of the set --- all but the newest,
-  \texttt{demo\_cpu\_terminalbench}, which has no run yet --- is
+  \texttt{demo\_cpu\_terminalbench} (first smoke 2026-09-23) --- is
   loop-verified} as short hardware smokes that reach
   \texttt{Job\ succeeded} / a final checkpoint iter 10 with real rewards
   --- real \texttt{invoke\_agent\_runtime} →
@@ -5980,28 +6036,30 @@ demos already exercise.
   \texttt{DATASET=} variants of \texttt{demo\_cpu\_tasks}, including
   \texttt{mixed}, plus \texttt{demo\_cpu\_heartbeat},
   \texttt{demo\_cpu\_scale\_lanes}, \texttt{demo\_cpu\_customruntime},
-  \texttt{demo\_cpu\_imagepool}, and \texttt{demo\_cpu\_branching}), the
-  CPU-Instance \texttt{demo\_cpu\_bigimage} (which also carries the
-  measured warm-reuse win, m5 boots 201 → 1), and --- as of the
-  \textbf{2026-09-21 GPU sweep} --- \textbf{all four GPU demos}
-  (\texttt{demo\_gpu\_single}, \texttt{demo\_gpu\_farm} in both
-  \texttt{FARM} modes, \texttt{demo\_gpu\_snapshot},
-  \texttt{demo\_gpu\_customruntime}), each 10 train steps + 1 eval +
-  final ckpt 10 with real KernelBench rewards and balanced sandbox
-  \texttt{open}==\texttt{close} counts. \texttt{demo\_gpu\_snapshot} in
-  particular went from offline-only to a real GPU trainer that
+  \texttt{demo\_cpu\_imagepool}, and the now-experimental
+  \texttt{demo\_cpu\_branching}), the CPU-Instance
+  \texttt{demo\_cpu\_tasks} \texttt{VARIANT=bigimage} (run as
+  \texttt{demo\_cpu\_bigimage}, which also carries the measured
+  warm-reuse win, m5 boots 201 → 1), and --- as of the
+  \textbf{2026-09-21 GPU sweep} --- \textbf{both GPU demos in every
+  configuration} (\texttt{demo\_gpu\_single} with its
+  \texttt{SNAPSHOT\_EVERY=1} and custom-Runtime angles --- run then as
+  \texttt{demo\_gpu\_snapshot} / \texttt{demo\_gpu\_customruntime} ---
+  and \texttt{demo\_gpu\_farm} in both \texttt{FARM} modes), each 10
+  train steps + 1 eval + final ckpt 10 with real KernelBench rewards and
+  balanced sandbox \texttt{open}==\texttt{close} counts. The snapshot
+  angle in particular went from offline-only to a real GPU trainer that
   serialises and restores a 3-file workspace \emph{per episode} while
-  still earning reward, and \texttt{demo\_gpu\_customruntime} grew from
-  a capability probe into a real KernelBench run. \textbf{Two honest
-  caveats remain:} \textbf{\texttt{demo\_cpu\_branching}'s SWE reward is
-  still 0} --- its fan-out and training loop run, but the
-  real-Claude-Code-CLI checker earns no learning signal; and the
-  fractional-GPU shared farm is proven on the \textbf{local L40S}
-  fallback rather than a remote g6 (the remote runs wedged on
-  health-check timeouts under sustained \texttt{nvcc}), so the
-  \emph{remote}-GPU claim rests on \texttt{demo\_gpu\_single}. No demo
-  has yet been run to convergence: this is a capability demonstration,
-  not a convergence result.
+  still earning reward, and the custom-Runtime angle grew from a
+  capability probe into a real KernelBench run. \textbf{Two honest
+  caveats remain:} \textbf{\texttt{demo\_cpu\_branching} is experimental
+  / blocked} --- the in-sandbox Claude Code CLI exits 1 before any model
+  call, so it produces no trajectories; and the fractional-GPU shared
+  farm is proven on the \textbf{local L40S} fallback rather than a
+  remote g6 (the remote runs wedged on health-check timeouts under
+  sustained \texttt{nvcc}), so the \emph{remote}-GPU claim rests on
+  \texttt{demo\_gpu\_single}. No demo has yet been run to convergence:
+  this is a capability demonstration, not a convergence result.
 \item
   \textbf{Grounding:} the concepts and lifecycle are cross-checked
   between the official AgentCore documentation {[}D1--D13, D17{]} and

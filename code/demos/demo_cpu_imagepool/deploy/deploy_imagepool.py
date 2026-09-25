@@ -9,7 +9,7 @@ No inbound port and no security-group ingress rule are opened (unlike the CLI de
 one SG→SG rule for the adapter). The images are self-contained (deps baked at build), so the
 runtime needs no internet at all — VPC mode with private endpoints suffices to boot + be invoked.
 
-Reuses the shared deploy_two_runtime helpers (account/ensure_ecr/_ensure_buildx/exec_role/
+Reuses the vendored deploy/agentcore_deploy.py helpers (account/ensure_ecr/_ensure_buildx/exec_role/
 managed_runtime) so it shares the SAME execution role + buildx builder as the rest of the fleet.
 
 Idempotent: existing ECR repos + Runtime names are reused (delete a Runtime to pick up a new image).
@@ -23,15 +23,13 @@ Real AWS mutation: up to 3 ECR repos + images and 3 managed serverless Runtimes 
 import json
 import os
 import sys
-
-# The shared deploy helpers live in code/deploy/. Add it to the path so this self-contained
-# demo-local script can reuse them rather than re-implementing build/push/register.
+# The vendored deploy helpers live in deploy/agentcore_deploy.py. Add it to the path so this
+# self-contained script can reuse them rather than re-implementing build/push/register.
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEMO_DIR = os.path.abspath(os.path.join(HERE, ".."))          # code/demos/demo_cpu_imagepool
-SHARED_DEPLOY = os.path.abspath(os.path.join(DEMO_DIR, "..", "..", "deploy"))
-sys.path.insert(0, SHARED_DEPLOY)
+sys.path.insert(0, HERE)  # this demo's vendored deploy/agentcore_deploy.py (no code/deploy dependency)
 
-import deploy_two_runtime as d  # noqa: E402
+import agentcore_deploy as d  # noqa: E402
 
 REGION = d.REGION
 PREFIX = d.PREFIX

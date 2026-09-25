@@ -14,7 +14,7 @@ dial-back is the ONLY inbound path we open, and it stays WITHIN THE VPC with NO 
     FROM SOURCE = the runtime security group. Source is a security-group id, never a CIDR — so the
     port is reachable only from the sandbox runtime's ENIs inside this VPC, never from the internet.
 
-Reuses the shared deploy_two_runtime helpers (account/ensure_ecr/_ensure_buildx/exec_role/
+Reuses the vendored deploy/agentcore_deploy.py helpers (account/ensure_ecr/_ensure_buildx/exec_role/
 managed_runtime/default_vpc/ensure_vpc_endpoints) so it shares the SAME exec role + buildx builder +
 VPC endpoints as the rest of the fleet. Idempotent: existing repo/Runtime/SG-rule are reused.
 
@@ -33,10 +33,9 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEMO_DIR = os.path.abspath(os.path.join(HERE, ".."))          # code/demos/demo_cpu_branching
-SHARED_DEPLOY = os.path.abspath(os.path.join(DEMO_DIR, "..", "..", "deploy"))
-sys.path.insert(0, SHARED_DEPLOY)
+sys.path.insert(0, HERE)  # this demo's vendored deploy/agentcore_deploy.py (no code/deploy dependency)
 
-import deploy_two_runtime as d  # noqa: E402
+import agentcore_deploy as d  # noqa: E402
 
 REGION = d.REGION
 PREFIX = d.PREFIX

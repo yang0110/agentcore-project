@@ -1,5 +1,10 @@
 # Smoke-sweep experiment plan — all 17 demos, end-to-end
 
+> **2026-09-25 (later):** `demo_cpu_bigimage` → `demo_cpu_tasks VARIANT=bigimage`; `demo_gpu_snapshot` →
+> `demo_gpu_single SNAPSHOT_EVERY=1`; `demo_gpu_customruntime` → `demo_gpu_single` (custom-Runtime angle, `LOCAL_GPU=1`).
+> The set is now **9 demos** (8 main: 6 CPU + 2 GPU, plus the experimental, blocked `demo_cpu_branching`), each with
+> step scripts `1_prepare_data.sh` … `6_cleanup.sh`. The offline probe entry is now `demo_gpu_single` → `snapshot_demo.py`.
+
 > **2026-09-25:** `demo_gpu_shared_single`, `demo_gpu_shared_multi` and `demo_gpu_local` were merged into
 > `demo_gpu_farm` (`FARM=fractional|whole`; launcher modes `fractional|whole`, old names still aliased).
 > The log below keeps the names the runs used.

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Demo B (KernelBench) — standalone runner. REAL slime training, ASYNC (decoupled).
+# demo_gpu_single (KernelBench) — REAL slime training, ASYNC (decoupled), on ONE warm custom GPU Runtime (g6).
 # Runs INSIDE the persistent container (agentcore_p4). This dir owns its data/ + ckpt/ and imports
 # its own vendored agentcore_slime_demo copy in this dir (PYTHONPATH); it references only genuinely
 # SHARED infrastructure (the container, the base Megatron checkpoint, /root/slime). No DEMO branch — Demo B is baked in.
@@ -19,14 +19,24 @@
 # GPU). slime's async driver (train_async.py) runs trainer GPUs and SGLang inference GPUs DISJOINT
 # and generates rollout N+1 while training on rollout N. Async hard-requires no --colocate.
 #
+# ONE DEMO, THREE ANGLES (merged 2026-09-25 from demo_gpu_single + demo_gpu_snapshot + demo_gpu_customruntime):
+#   * default               warm-shared g6 custom Runtime, KernelBench CUDA checker remote.
+#   * SNAPSHOT_EVERY=1      + APPLICATION-LEVEL snapshot/resume (was demo_gpu_snapshot): the harness
+#                           restores each task's workspace from a store you own at episode ENTER and
+#                           snapshots it at EXIT. AgentCore has no VM/GPU snapshot (docs/gpu-snapshot.md);
+#                           see agentcore_slime_demo/app_snapshot.py, offline animation: snapshot_demo.py.
+#   * WHY A CUSTOM RUNTIME  (was demo_gpu_customruntime): the managed Code Interpreter (SANDBOX=agentcore)
+#                           is a CPU-only microVM (torch.cuda.is_available() is False), so this training
+#                           needs YOUR custom Runtime on a g6 Instance. Offline probe: gpu_torch_smoke.py.
+#
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
 # runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train (SMOKE; no more needed).
 set -euo pipefail
 
 # ON-BOX SMOKE (no remote g6): LOCAL_GPU=1 serves the SAME sandbox_server_agent GPU image as a LOCAL
 # whole-GPU Ray farm on this box's reserved GPUs 6,7 (identical to demo_gpu_farm FARM=whole), with slime on GPUs
-# 0-5. Two-step, exactly like demo_gpu_farm FARM=whole / demo_gpu_customruntime:
-#     bash code/deploy/run_local_gpu_runtime.sh whole     # start the farm on 6,7 (host)
+# 0-5. Two-step, exactly like demo_gpu_farm FARM=whole:
+#     bash code/deploy/run_local_gpu_runtime.sh whole     # start the farm on 6,7 (host; or: bash 4_deploy_runtime.sh with LOCAL_GPU=1)
 #     LOCAL_GPU=1 bash code/demos/demo_gpu_single/run.sh   # then run this (inside agentcore_p4)
 #     bash code/deploy/run_local_gpu_runtime.sh stop       # tear down after
 # The farm speaks the SAME warm-shared contract this demo already defaults to (agentcore-ray-farm +
@@ -81,6 +91,15 @@ EVAL_NS="${EVAL_NS:-2}"              # samples per eval prompt (eval solve-rate 
 # save-interval means the periodic save never fires; the ONLY checkpoint is the final one.
 SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"
 
+# ---- Application-snapshot knobs (SNAPSHOT_EVERY=1 turns on the snapshot/resume angle) -----------
+# Every episode opens a fresh sandbox sub_session, so each episode boundary is effectively a recycle;
+# the store, not the session, is the durable source of truth. Off by default.
+SNAPSHOT_EVERY="${SNAPSHOT_EVERY:-0}"            # snapshot cadence in episodes (0 = off)
+SNAPSHOT_DIR="${SNAPSHOT_DIR:-/work/code/demos/demo_gpu_single/snapshots}"  # LocalSnapshotStore root
+SNAPSHOT_PATHS="${SNAPSHOT_PATHS:-progress.json,work.log,solution.py}"      # workspace files to keep
+RECYCLE_AFTER="${RECYCLE_AFTER:-0}"              # >0 => log a simulated instance recycle after N episodes
+# SNAPSHOT_S3_BUCKET (optional): if set, use S3SnapshotStore (production; no mount, AZ-agnostic).
+
 SLIME=/root/slime
 DEMO_DIR=/work/code/demos/demo_gpu_single
 # Base Megatron checkpoint is SHARED (7.5 GB) — referenced, not copied. Override via $CKPT_BASE.
@@ -98,12 +117,13 @@ SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-}"
 AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-}"
 # Remote path requires the g6 ARN; the LOCAL_GPU on-box path uses the local endpoint instead (no ARN).
 if [ "$LOCAL_GPU" != "1" ]; then
-  AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to the GPU sandbox Runtime #2 ARN — for an on-box GPU run with no remote g6, use LOCAL_GPU=1 (or demo_gpu_farm)}"
+  AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set to your custom GPU sandbox Runtime ARN (a g6 Instance with CUDA — bash 4_deploy_runtime.sh). The managed Code Interpreter has no GPU; for an on-box GPU run with no remote g6, use LOCAL_GPU=1 (or demo_gpu_farm)}"
 fi
 DATA="${DATA:-$DEMO_DIR/data/kernelbench_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-kernelbench}"
-SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_async}"
+_SNAP=""; [ "$SNAPSHOT_EVERY" != "0" ] && _SNAP=_snapshot
+SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench${_SNAP}_async}"
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -119,20 +139,24 @@ CKPT_ARGS=(
    --load "$CKPT"
    --save "$SAVE"
    --save-interval "$SAVE_INTERVAL"
-   # ---- Checkpoint-save deadlock fix (two flags that MUST go together) ---------------------
-   # The end-of-training save intermittently DEADLOCKED: Megatron's checkpoint writer forks a
-   # writer off the MAIN training process; forking a process holding CUDA/NCCL/inductor threads
-   # can inherit a locked mutex with no thread to release it -> the writer hangs forever AFTER
-   # the .distcp files are written. The safe backend is the SPAWN-based PersistentAsyncCaller,
-   # selected only when --async-save is set AND init_persistent_async_worker() is called. slime
-   # forces use_persistent_ckpt_worker=True but its own init() never makes that call, so
-   # --async-save alone falls back to the fork-based caller and can still deadlock. So we do both:
-   #   1. --async-save
-   #   2. --custom-megatron-init-path ...enable_persistent_async_ckpt (the one line slime omits;
-   #      see agentcore_slime_demo/megatron_init.py).
-   --async-save
-   --custom-megatron-init-path agentcore_slime_demo.megatron_init.enable_persistent_async_ckpt
 )
+# ---- Checkpoint-save mode -----------------------------------------------------------------------
+# REMOTE (g6) path: ASYNC persistent-ckpt save (two flags that MUST go together). The end-of-training
+# save intermittently DEADLOCKED: Megatron's checkpoint writer forks off the MAIN training process;
+# forking while holding CUDA/NCCL/inductor threads can inherit a locked mutex with no thread to release
+# it -> the writer hangs forever AFTER the .distcp files are written. The safe backend is the
+# SPAWN-based PersistentAsyncCaller, selected only when --async-save is set AND
+# init_persistent_async_worker() is called; slime forces use_persistent_ckpt_worker=True but never
+# makes that call, so we add it via --custom-megatron-init-path (agentcore_slime_demo/megatron_init.py).
+# LOCAL_GPU on-box path saves SYNCHRONOUSLY instead: the local Ray-farm runtime container's seccomp
+# blocks pidfd_getfd (which the persistent async-ckpt child uses to grab CUDA storage fds), so async
+# save hangs on-box — matching demo_gpu_farm's sync-save fix.
+if [ "$LOCAL_GPU" != "1" ]; then
+   CKPT_ARGS+=(
+      --async-save
+      --custom-megatron-init-path agentcore_slime_demo.megatron_init.enable_persistent_async_ckpt
+   )
+fi
 
 # Held-out EVAL every EVAL_INTERVAL steps (routed through our SAME custom generate with
 # evaluation=True). The held-out eval set is 20 KernelBench level_2 fusions, disjoint from the
@@ -224,9 +248,15 @@ RUNTIME_ENV_JSON="{
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AGENTCORE_REGION\": \"${AGENTCORE_REGION:-${AWS_REGION:-us-west-2}}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
-    \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\",
+    \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
     \"AGENTCORE_LOCAL_ENDPOINT\": \"${AGENTCORE_LOCAL_ENDPOINT}\",
-    \"B4_SHARED_RUNTIME_SESSION\": \"${B4_SHARED_RUNTIME_SESSION:-}\"
+    \"B4_SHARED_RUNTIME_SESSION\": \"${B4_SHARED_RUNTIME_SESSION:-}\",
+    \"INVOKE_MAX_RETRIES\": \"${INVOKE_MAX_RETRIES:-8}\",
+    \"SNAPSHOT_EVERY\": \"${SNAPSHOT_EVERY}\",
+    \"SNAPSHOT_DIR\": \"${SNAPSHOT_DIR}\",
+    \"SNAPSHOT_PATHS\": \"${SNAPSHOT_PATHS}\",
+    \"RECYCLE_AFTER\": \"${RECYCLE_AFTER}\",
+    \"SNAPSHOT_S3_BUCKET\": \"${SNAPSHOT_S3_BUCKET:-}\"
   }
 }"
 

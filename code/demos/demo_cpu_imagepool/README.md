@@ -72,34 +72,22 @@ Runtimes) or `agentcore` (Code-Interpreter microVM — but that has only the gen
 
 ---
 
-## Reproduce (run one by one, inside the `agentcore_p4` container)
+## Step by step (numbered scripts; run from this dir on the HOST — container steps `docker exec` themselves)
 
 ```bash
-# 0. Build + deploy the THREE sandbox images (one Runtime per image). Build context = this demo dir.
-for img in datasci scipy sklearn; do
-  docker build -f code/demos/demo_cpu_imagepool/deploy/Dockerfile.sandbox.$img \
-      -t <ecr>/acs-sandbox-$img:latest code/demos/demo_cpu_imagepool/
-done
-# push each to ECR and register a Runtime per image (CreateAgentRuntime, or your
-# deploy_two_runtime.py --sandbox-only --dockerfile deploy/Dockerfile.sandbox.<img>), then collect
-# the three ARNs into the image->ARN map:
-export AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE='{"datasci":"arn:aws:bedrock-agentcore:us-west-2:ACCT:runtime/acs_sandbox_datasci-XXXX","scipy":"arn:aws:bedrock-agentcore:us-west-2:ACCT:runtime/acs_sandbox_scipy-XXXX","sklearn":"arn:aws:bedrock-agentcore:us-west-2:ACCT:runtime/acs_sandbox_sklearn-XXXX"}'
-
-# 1. Build the MIXED dataset (offline, stdlib-only — no network, no GPU). Interleaves the families.
-docker exec agentcore_p4 bash /work/code/demos/demo_cpu_imagepool/prepare_data.sh
-#    -> data/mixed_train.jsonl (datasci+scipy+sklearn, balanced) + data/mixed_eval.jsonl
-
-# 2. REAL RL train + eval through the REMOTE image pool (async/decoupled slime). Smoke = NR=3.
-#    Requires AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE (step 0) + AWS creds in the container.
-docker exec -e NR=3 -e EVAL_INTERVAL=2 \
-    -e AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE="$AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE" agentcore_p4 \
-    bash -lc 'cd /work && bash code/demos/demo_cpu_imagepool/run.sh 2>&1 | tee code/demos/demo_cpu_imagepool/smoke_run.log'
-
-# 3. Parse the log into CSVs + a PNG of the curves.
-docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_imagepool/metrics.py \
-    /work/code/demos/demo_cpu_imagepool/smoke_run.log \
-    --csv train.csv --eval-csv train.eval.csv --plot train.png
+bash 1_prepare_data.sh     # 1. container: mixed dataset, offline/stdlib -> data/mixed_{train,eval}.jsonl (+ per-family eval)
+bash 2_build_image.sh      # 2. three arm64 images: datasci, scipy, sklearn (deploy/Dockerfile.sandbox.<img>)
+bash 3_push_ecr.sh         # 3. -> ECR acs-sandbox-{datasci,scipy,sklearn} (deploy/images.env)
+bash 4_deploy_runtime.sh   # 4. deploy/deploy_imagepool.py: one VPC-mode Runtime per image, acs_sandbox_{datasci,scipy,sklearn}
+                           #    -> deploy/runtime.env: AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE={"datasci":…,"scipy":…,"sklearn":…}
+bash 5_run.sh              # 5. container: 10 train steps + 1 eval through the pool; logs/<tag>.{log,csv,eval.csv,png}
+bash 6_cleanup.sh          # 6. delete the three Runtimes
 ```
+
+There is no baked default map: `run.sh` refuses to start without `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE`
+(or a fallback `AGENTCORE_SANDBOX_RUNTIME_ARNS`), so run step 4 first. The Runtimes are
+`networkMode=VPC` with private endpoints only and no inbound rule. Step 4 is idempotent (existing
+names are reused), so to pick up a new image run `6_cleanup.sh` first.
 
 The harness extracts the agent's submission from a fenced ` ```python ` block in each completion and
 writes it into the sandbox session — no Anthropic `tool_use` parsing, so no special SGLang tool-call
@@ -111,8 +99,7 @@ parser is required here.
 # any subset of the custom-image families: datasci scipy sklearn
 # (add generic-CPU families too, e.g. `math`, to show cpu + pool coexisting — but then also set a
 #  cpu ARN via AGENTCORE_SANDBOX_RUNTIME_ARNS so the "cpu"-tagged episodes have somewhere to land)
-FAMILIES=datasci,scipy,sklearn BALANCED=1 REPEAT=6 \
-    docker exec agentcore_p4 bash /work/code/demos/demo_cpu_imagepool/prepare_data.sh
+FAMILIES=datasci,scipy,sklearn BALANCED=1 REPEAT=6 bash 1_prepare_data.sh
 ```
 
 - `BALANCED=1` (default) round-robin interleaves families so **every step spans them evenly**;
@@ -235,7 +222,7 @@ The mechanics differ by substrate because their persistence differs:
   whole-disk restore you can additionally take an **EBS volume snapshot** at the barrier and boot the
   replacement instance from it (heavier, but no per-file replay).
 
-The canonical implementation is **`demo_gpu_snapshot`** (app-level snapshot/resume across a
+The canonical implementation is **`demo_gpu_single SNAPSHOT_EVERY=1`** (app-level snapshot/resume across a
 GPU-instance recycle). It composes with the two session-lifetime controls above: the keep-warm
 heartbeat holds a session alive *within* a run, and `AGENTCORE_STOP_SESSION` governs teardown; the
 snapshot is what lets you **rebuild** a session's workspace after the session itself is gone.
@@ -309,7 +296,8 @@ one instance per GPU.
   `sandbox._runtime_arn_for_image`, the task registry `task_families.py` incl. `DataSciTask` /
   `ScipyTask` / `SklearnTask`, the sandbox server `sandbox_server_agent.py`). Imported only from here.
 - `build_mixed_datasets.py` — builds the interleaved multi-family dataset (offline, stdlib).
-- `prepare_data.sh` — step 1 · `run.sh` — the remote RL run (step 2) · `metrics.py` — step 3.
+- `1_…6_*.sh` + `deploy/` (`demo.env`, `steps_common.sh`, `agentcore_deploy.py`, `deploy_imagepool.py`) — the numbered steps.
+- `prepare_data.sh` — step 1 · `run.sh` — the remote RL run (step 5) · `metrics.py` — run by step 5.
 - `deploy/Dockerfile.sandbox.{datasci,scipy,sklearn}` — the **three** custom sandbox images in the
   pool (each = the generic exec server + one baked toolchain). `Dockerfile.sandbox.cpu` is the
   generic image, kept for any stdlib family you add to the mix.

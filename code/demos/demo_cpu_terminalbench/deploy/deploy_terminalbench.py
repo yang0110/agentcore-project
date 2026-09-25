@@ -61,10 +61,9 @@ HERE = Path(__file__).resolve().parent
 DEMO_DIR = HERE.parent                                   # code/demos/demo_cpu_terminalbench
 TASKS_DIR = DEMO_DIR / "tasks"
 ACS_CTX = HERE / "acs_ctx"                               # named build context `acs` (python + server)
-SHARED_DEPLOY = (DEMO_DIR / ".." / ".." / "deploy").resolve()
-sys.path.insert(0, str(SHARED_DEPLOY))
+sys.path.insert(0, str(HERE))  # this demo's vendored deploy/agentcore_deploy.py
 
-import deploy_two_runtime as d  # noqa: E402
+import agentcore_deploy as d  # noqa: E402
 
 REGION = d.REGION
 PREFIX = d.PREFIX

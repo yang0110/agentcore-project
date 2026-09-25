@@ -1,102 +1,88 @@
 # Demos — the sandbox demo set
 
-Every demo here is about **the sandbox**: the agent harness stays **in-process** (a warm
-`run_episode` loop next to the trainer), and each demo varies the **task** and the **AgentCore
-sandbox substrate** it talks to. The policy is always Qwen3-4B trained by slime (async/decoupled
-GRPO), talking to the agent loop through slime's Anthropic adapter; only the task and the sandbox
-change.
+Every demo here is about **the sandbox**. The agent harness stays **in-process**: a warm
+`run_episode` loop next to the trainer. Each demo varies the **task** and the **AgentCore sandbox
+substrate** it talks to. The policy is always Qwen3-4B trained by slime (async/decoupled GRPO).
 
-The demo directories are each **fully self-contained**. Every demo owns its `data/` (train +
-held-out eval jsonl), its `ckpt/` output dir, its `run.sh`, a **vendored copy of the
-`agentcore_slime_demo/` library** (it imports only this local copy — `PYTHONPATH` puts the demo dir
-first and no longer includes `/work/code`), and its own **`deploy/`** with the exact Dockerfile(s)
-its sandbox Runtime image is built from. So a client can read one folder end-to-end and see the
-whole recipe: task → dataset → Dockerfile → launch → run → terminate. Each README carries the
-AgentCore **launch / terminate / latency** basics inline.
+Each demo directory is **self-contained**. It owns its `data/`, `ckpt/`, `run.sh`, a vendored
+copy of `agentcore_slime_demo/` (`PYTHONPATH` puts the demo dir first), and its own `deploy/`. The
+`deploy/` dir holds the Dockerfile(s), a vendored AgentCore helper (`agentcore_deploy.py`), and the
+settings for the step scripts (`demo.env`). A reader can follow one folder end to end: dataset,
+Dockerfile, image build, ECR push, Runtime deploy, run, cleanup. Two things are referenced rather
+than copied: the base Megatron checkpoint (`code/p4_slime_train/ckpt/Qwen3-4B_torch_dist`) and the
+slime install (`/root/slime`) in the `agentcore_p4` container.
 
-Three things a demo *references* rather than copies (shared infra that would only drift if
-duplicated): the base Megatron checkpoint at `code/p4_slime_train/ckpt/Qwen3-4B_torch_dist`, the
-slime install at `/root/slime`, and the **shared deploy orchestrator** `code/deploy/deploy_two_runtime.py`
-(+ its `redeploy_*`/`smoke_*` helpers) that creates the IAM roles, ECR repos, VPC endpoints, and the
-GPU capacity provider. The top-level `code/agentcore_slime_demo/` still exists because `code/deploy/`
-builds the Runtime images from it and `code/tests/` imports it.
+## Run any demo step by step
+
+Every demo ships the same six numbered scripts. Run them from the demo dir **on the host**. The
+steps that belong in the container (data prep, training) `docker exec` into `agentcore_p4`
+themselves, and they also work if you are already inside the container.
+
+```bash
+cd code/demos/<demo>
+bash 1_prepare_data.sh     # download + prepare data/ (container)
+bash 2_build_image.sh      # docker build the sandbox image(s) (host; arm64 via buildx for microVMs, amd64 for Instances)
+bash 3_push_ecr.sh         # create the ECR repo(s) + push -> deploy/images.env
+bash 4_deploy_runtime.sh   # create the AgentCore Runtime(s) -> deploy/runtime.env (ARNs for run.sh)
+bash 5_run.sh              # 10 train steps + 1 eval + final ckpt (container), then metrics.py -> logs/<tag>.{csv,eval.csv,png}
+bash 6_cleanup.sh          # delete the Runtime(s) (and the capacity provider with DELETE_CP=1)
+```
+
+Knobs pass straight through, for example `DATASET=gsm8k bash 5_run.sh` or `NR=51 bash 5_run.sh`.
+Without a `deploy/runtime.env`, `5_run.sh` falls back to the defaults in `run.sh`. For most CPU demos
+those are the baked shared `acs_sandbox_cpu` ARNs.
 
 ## The demos
 
-**12 demos** — 8 CPU + 4 GPU. One of them, `demo_cpu_tasks`, is a single folder that trains
-**any of ~19 datasets, or any mix of them,** through a `DATASET=` selector (`DATASET=mbpp`,
-`DATASET=gsm8k,gretelsql`, or the prebuilt `DATASET=mixed`). It replaces the ten former
-per-dataset folders `demo_cpu_mbpp` … `demo_cpu_mcp` and the mixed-task `demo_cpu_mixtask`, which
-differed only in their data — a single dataset is the one-element mix. Likewise `demo_gpu_farm` picks its GPU split through `FARM=fractional|whole` (it
-replaces `demo_gpu_shared_single`, `demo_gpu_shared_multi` and `demo_gpu_local`, which differed
-only in the farm knobs).
+There are **9 demos**: 8 main (6 CPU + 2 GPU) plus one experimental.
 
-**Sandbox mode by substrate.** The **CPU** demos are **remote-only** — they run only on remote
-managed serverless AgentCore sandbox sessions (`SANDBOX=agentcore-runtime` default, or `agentcore`
-Code-Interpreter); their `run.sh` **rejects `SANDBOX=local`**, so a CPU training run can never
-silently fall off the AgentCore substrate (the serverless CPU sandbox is always available). The
-**GPU** demos keep a `local` fallback, because a remote g6 instance may be unavailable.
+- `demo_cpu_tasks` trains **any of ~19 datasets, or any mix**, via `DATASET=`. `VARIANT=bigimage`
+  moves the same trainer onto a large image on a CPU capacity-provider Instance.
+- `demo_gpu_single` covers the warm g6 GPU sandbox, the custom-Runtime angle and snapshot/resume
+  (`SNAPSHOT_EVERY=1`).
+- `demo_gpu_farm` covers the local GPU-sharing splits (`FARM=fractional|whole`).
 
-| Substrate | Demo | Task / point |
+| Substrate | Demo | Use case |
 |---|---|---|
-| **CPU serverless microVM** | [`demo_cpu_tasks/`](demo_cpu_tasks/) | the reference — ONE demo, many RLVR datasets via `DATASET=`: real HF `mbpp` (default) `gsm8k` `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, plus the synthetic task-family zoo (`math` `swe` `sql` `ctf` `rag` `tool_use` …); **mixed-task** batches via a comma list or `DATASET=mixed` (math+sql+ctf+datasci); 4 train + 4 infer + 0 env |
-| | [`demo_cpu_imagepool/`](demo_cpu_imagepool/) | mixed-task RL over a pool of prebuilt images (one image → one Runtime per task family) |
-| | [`demo_cpu_terminalbench/`](demo_cpu_terminalbench/) | a LARGE image pool (one image per Terminal-Bench task, ~229), one isolated microVM per episode, pre-opened to hide the cold start |
-| | [`demo_cpu_branching/`](demo_cpu_branching/) | one episode → many training samples ("fan-out") |
-| | [`demo_cpu_customruntime/`](demo_cpu_customruntime/) | real RL training on YOUR custom AgentCore Runtime (CPU) |
-| | [`demo_cpu_heartbeat/`](demo_cpu_heartbeat/) | **resilience** — heartbeat that keeps the microVM warm across the weight-sync barrier |
-| **CPU capacity-provider Instance** | [`demo_cpu_bigimage/`](demo_cpu_bigimage/) | a LARGE sandbox image (past the 2 GB microVM cap) on a warm CPU Instance |
-| **rollout scaling** (scales harness + inference + sandbox together) | [`demo_cpu_scale_lanes/`](demo_cpu_scale_lanes/) | one task (DeepScaleR) on **4 × 4 × 4 lanes** — 4 warm mini-Claude harness workers : 4 SGLang engines : 4 persistent microVMs, each worker pinned 1:1:1; `LANES=N` scales them together → the async-RL scaling law `throughput = min(inference, sandbox, harness)` |
-| **GPU Runtime instance** (g6 capacity provider) | [`demo_gpu_single/`](demo_gpu_single/) | KernelBench (level_1 CUDA); checker's GPU is the remote g6 sandbox Runtime, so the trainer box stays 4 train + 4 infer + 0 env |
-| | [`demo_gpu_customruntime/`](demo_gpu_customruntime/) | real KernelBench RL on YOUR custom GPU Runtime |
-| | [`demo_gpu_snapshot/`](demo_gpu_snapshot/) | **resilience** — application-level snapshot & resume across a GPU instance recycle |
-| **local GPU Ray farm** (this box's GPUs 6,7) | [`demo_gpu_farm/`](demo_gpu_farm/) | KernelBench on a local Ray farm: `FARM=fractional` (default) packs two episodes onto ONE GPU (0.5 + 0.5); `FARM=whole` gives each episode a whole GPU across 6,7 |
+| **CPU serverless microVM** | [`demo_cpu_tasks/`](demo_cpu_tasks/) | **The reference.** RLVR on any dataset: real HF `mbpp` (default) `gsm8k` `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, plus the synthetic family zoo (`math` `swe` `sql` `ctf` `rag` `tool_use` …). **Mixed-task** batches via `DATASET=a,b,c` or `DATASET=mixed` |
+| **CPU capacity-provider Instance** | `demo_cpu_tasks` `VARIANT=bigimage` | Side note, not a separate demo: a ~4 GB image (over the 2 GB microVM cap) on a warm m5. Warm-shared session, fresh env per episode |
+| | [`demo_cpu_imagepool/`](demo_cpu_imagepool/) | Mixed-task RL over a pool of custom images (pandas / scipy / sklearn), routed per family via `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` |
+| | [`demo_cpu_terminalbench/`](demo_cpu_terminalbench/) | A large image pool (one image + Runtime per Terminal-Bench task, ~229), a fresh microVM per episode, pre-opened to hide the cold start |
+| | [`demo_cpu_customruntime/`](demo_cpu_customruntime/) | Real RL on **your own** custom CPU Runtime; `compare_backends.py` shows the same reward as the managed sandbox |
+| | [`demo_cpu_heartbeat/`](demo_cpu_heartbeat/) | **Resilience**: a heartbeat keeps the microVM warm across the weight-sync barrier |
+| **Rollout scaling** | [`demo_cpu_scale_lanes/`](demo_cpu_scale_lanes/) | **4 × 4 × 4 lanes**: 4 harness workers : 4 SGLang engines : 4 persistent microVMs, pinned 1:1:1. Shows `throughput = min(inference, sandbox, harness)` |
+| **GPU capacity-provider Instance** (g6) | [`demo_gpu_single/`](demo_gpu_single/) | KernelBench CUDA RL on **one warm custom GPU Runtime**. Only a custom Runtime has CUDA (`gpu_torch_smoke.py`). `SNAPSHOT_EVERY=1` adds app-level snapshot/resume. `LOCAL_GPU=1` runs the on-box farm |
+| **Local GPU Ray farm** (GPUs 6,7) | [`demo_gpu_farm/`](demo_gpu_farm/) | GPU sharing: `FARM=fractional` (two episodes on ONE GPU, 0.5 + 0.5) or `FARM=whole` (a whole GPU each across 6,7) |
+| *Experimental* | [`demo_cpu_branching/`](demo_cpu_branching/) | One episode → many samples ("fan-out") with the real Claude Code CLI in the sandbox. **Blocked:** the in-sandbox CLI exits 1 before any model call, so there are no trajectories yet |
 
-`demo_cpu_tasks` is one in-process-harness loop; each `DATASET` differs only in its seed rows +
-hidden RLVR checker, and gets its own `data/<name>_{train,eval}.jsonl`, `eval/<name>` metric and
-`ckpt/Qwen3-4B_<name>_async` (see its README for the dataset table). Because every row names its own
-task, a comma list (`DATASET=a,b,c`, interleaved by `run.sh`, `eval/mix`) or the prebuilt
-`DATASET=mixed` (`eval/mixed`) trains one batch across families with no harness change.
+**Merge history.**
+- 2026-09-23: the ten per-dataset CPU folders (`demo_cpu_mbpp` … `demo_cpu_mcp`) became `demo_cpu_tasks`.
+- 2026-09-25: `demo_cpu_mixtask` → `demo_cpu_tasks DATASET=mixed`.
+- 2026-09-25: `demo_gpu_shared_single`, `demo_gpu_shared_multi` and `demo_gpu_local` → `demo_gpu_farm`.
+- 2026-09-25: `demo_cpu_bigimage` → `demo_cpu_tasks VARIANT=bigimage`.
+- 2026-09-25: `demo_gpu_snapshot` and `demo_gpu_customruntime` → `demo_gpu_single`.
 
-The demos above vary the **sandbox**; `demo_cpu_scale_lanes` is the exception — it fixes the task
-and scales the **rollout tiers themselves** as 1:1:1 lanes (default 4 harness workers : 4 SGLang
-engines : 4 microVMs), to show the rollout scaling law and how the three tiers route/load-balance. See
-[`../../docs/harness-scaling.md`](../../docs/harness-scaling.md).
+Older logs and docs keep the old names.
 
-In the other demos the **harness is in-process and single**; the sandbox is the AgentCore surface that changes (a
-CPU Code-Interpreter microVM, or a GPU Runtime instance on a capacity provider). A prior variant that
-hosted the harness on its *own* AgentCore Runtime (the "two-Runtime" demos) has been removed — see
-[`../../docs/harness-sandbox-decoupling.md`](../../docs/harness-sandbox-decoupling.md) for why
-in-process is the recommended path.
+**Sandbox mode by substrate.** The CPU demos are **remote-only**. Their `run.sh` rejects
+`SANDBOX=local`, so a CPU run can never silently fall off AgentCore. The GPU demos keep an on-box
+path (`LOCAL_GPU=1`, or `demo_gpu_farm`), because a remote g6 may be unavailable.
 
-## Which to run
+## Which to run first
 
-- **`demo_cpu_tasks`** — the reference. `DATASET=<name> bash run.sh` on remote AWS CPU microVMs
-  (`SANDBOX=agentcore-runtime`, or `agentcore` Code Interpreter). Most battle-tested.
-  `DATASET=a,b,c` or `DATASET=mixed` for a mixed-task batch.
-- **`demo_gpu_single`** — GPU-sandbox path; the KernelBench checker's GPU is the remote g6 sandbox Runtime, so
-  the trainer box stays 4 train + 4 infer + 0 env. Trains on
-  the real KernelBench (level_1, 100 single-op CUDA problems; 20 held-out level_2 fusions for eval).
-  Defaults `RB=4/NS=8/NR=20`; keep `NR × RB ≤ 100` (see its README).
-- **`demo_gpu_farm`** — GPU sharing on a LOCAL Ray farm on this box's GPUs 6,7 (two-step launch:
-  start the host farm via `run_local_gpu_runtime.sh fractional|whole`, then run
-  `FARM=<same> bash run.sh` inside `agentcore_p4`). `fractional` packs two episodes onto ONE GPU
-  (0.5 + 0.5); `whole` gives each episode a whole GPU across 6,7.
-- **`demo_cpu_heartbeat` / `demo_gpu_snapshot`** — the two **resilience** demos (keeping a paused
-  sandbox alive / recovering a lost one across the weight-sync barrier). Both run offline in seconds,
-  no AWS or GPU. See [`../../docs/demos-program.md`](../../docs/demos-program.md).
+- **`demo_cpu_tasks`**: the reference and the most battle-tested. Try `DATASET=gsm8k bash 5_run.sh`.
+- **`demo_gpu_single`**: the GPU-sandbox path. The KernelBench checker's GPU is the remote g6, so this
+  box stays 4 train + 4 infer.
+- **`demo_gpu_farm`**: GPU sharing on this box with no AWS GPU needed.
+- **`demo_cpu_heartbeat`** and **`demo_gpu_single SNAPSHOT_EVERY=1`**: the resilience angles. Their
+  offline probes (`heartbeat_demo.py`, `snapshot_demo.py`) run in seconds with no AWS or GPU.
 
-The training demos share the training path: slime async/decoupled (`train_async.py`), Qwen3-4B,
-GRPO, the checkpoint-deadlock fix (`--async-save` + `--custom-megatron-init-path …enable_persistent_async_ckpt`),
-and save-only-at-end. They differ only in the **task** and the **sandbox**.
+All trainers share one training path: slime `train_async.py`, Qwen3-4B, GRPO, the
+checkpoint-deadlock fix and save-only-at-end. They differ only in the **task** and the **sandbox**.
 
-**`run.sh` vs `train.sh`.** Every demo has `run.sh`, the full runner
-(all env knobs, defaults to a short smoke). Five also ship **`train.sh`** (`demo_cpu_tasks`,
-`demo_cpu_imagepool`, `demo_cpu_terminalbench`, `demo_cpu_branching`, `demo_gpu_single`), a thin train-to-convergence wrapper
-over it that exposes just the three top-level knobs a client tunes — training **steps** (`STEPS` →
-`NR`), eval **cadence** (`EVAL_EVERY` → `EVAL_INTERVAL`), and the **sandbox** counts (`SANDBOX_CONC` →
-`CONC`, and on CPU `SANDBOX_RUNTIMES` → the # of distinct sandbox Runtimes `K`) — passing everything
-else through. Example: `STEPS=50 EVAL_EVERY=10 SANDBOX_CONC=4 ./train.sh`. See each README's
-"Train to convergence" section.
-
-Each directory has its own `README.md` with exact build/run commands and knobs.
+**`run.sh` vs `train.sh`.** `run.sh` is the full runner (all env knobs; defaults to a short smoke).
+Four demos also ship **`train.sh`**, a train-to-convergence wrapper: `demo_cpu_tasks`,
+`demo_cpu_imagepool`, `demo_cpu_terminalbench` and `demo_gpu_single` (`demo_cpu_branching` has one
+too, but it is blocked). `train.sh` exposes `STEPS` → `NR`, `EVAL_EVERY` → `EVAL_INTERVAL`,
+`SANDBOX_CONC` → `CONC` and, on CPU, `SANDBOX_RUNTIMES` → `K`. For the 100–200-step runs, see
+[`convergence/`](convergence/).

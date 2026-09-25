@@ -1,0 +1,45 @@
+# Sandbox AgentCore Runtime #2 — GPU, DEMO B4 (KernelBench + Ray GPU-sharing farm).
+# Runs on a g6 CAPACITY PROVIDER instance (x86_64). Build context MUST be code/:
+#   docker build -f code/deploy/Dockerfile.sandbox.gpu.b4 -t <ecr>/acs-sandbox-gpu-b4:latest code/
+#
+# HOW THIS DIFFERS FROM Dockerfile.sandbox.gpu (the b2/b3 base):
+#  1. b4's farm path uses RELATIVE imports (sandbox_server_agent -> .sandbox_ray_farm -> .sandbox),
+#     which fail if the server is run as a FLAT top-level module (as the base image does with
+#     `python -m sandbox_server_agent`). So b4 ships the modules as a real PACKAGE
+#     (/app/agentcore_slime_demo/) and runs `python -m agentcore_slime_demo.sandbox_server_agent`.
+#     The package's __init__.py is deliberately EMPTY (a stub written below) — the real package
+#     __init__ imports slime/policy/harness, none of which exist (or are needed) in the sandbox.
+#  2. `ray` is baked in (the server-side RayGpuFarm needs it). Ray core is small (~tens of MB), so it
+#     fits under AgentCore's 2048 MB image cap; torch (~2.7 GB) is still installed at startup (below).
+#  3. B4_* farm knobs + B4_FARM_GPUS are injected as runtime environmentVariables by
+#     redeploy_gpu_sandbox_b4.py (single source of truth, retunable without a rebuild). B4_FARM_GPUS
+#     MUST be set there: python:slim has no nvidia-smi, so Ray cannot autodetect the L4 and the
+#     fractional actors would never schedule — the farm passes this count to ray.init() explicitly.
+#
+# Torch-at-startup rationale is identical to the base image: the CUDA torch stack is >2 GB (over the
+# maxImageSizeMb=2048 quota), so it is pip-installed in the CMD before the server binds, onto a fresh
+# g6's ample root volume; the g6 capacity-provider instance has the egress to download the wheels.
+FROM public.ecr.aws/docker/library/python:3.12-slim
+
+WORKDIR /app
+# bedrock-agentcore = the runtime app framework; ray = the GPU-sharing farm backend.
+RUN pip install --no-cache-dir bedrock-agentcore ray
+
+# Ship ONLY the three modules the server + farm need, as a package with an EMPTY __init__ (so Python
+# resolves the relative imports without executing the heavy real package __init__).
+RUN mkdir -p /app/agentcore_slime_demo && : > /app/agentcore_slime_demo/__init__.py
+COPY agentcore_slime_demo/sandbox_server_agent.py /app/agentcore_slime_demo/sandbox_server_agent.py
+COPY agentcore_slime_demo/sandbox_ray_farm.py     /app/agentcore_slime_demo/sandbox_ray_farm.py
+COPY agentcore_slime_demo/sandbox.py              /app/agentcore_slime_demo/sandbox.py
+
+# LD_LIBRARY_PATH MUST be set at PROCESS START (the loader caches its search path). AgentCore injects
+# the NVIDIA driver (libcuda.so.1) into /usr/lib64 at runtime; inherited by the Ray actors + the
+# checker subprocess so torch finds the injected driver. (Same fix use case 08 needed.)
+ENV LD_LIBRARY_PATH=/usr/lib64
+ENV SANDBOX_WORKDIR=/workspace
+# B4_* farm knobs are injected as runtime env by the deploy script; documented there. SANDBOX_PYLIB
+# stays UNSET (torch is in default site-packages, no volume plumbing needed).
+
+EXPOSE 8080
+# Install the CUDA torch stack, THEN exec the server AS A PACKAGE so relative imports resolve.
+CMD ["sh", "-c", "pip install --no-cache-dir torch==2.5.1 numpy --index-url https://download.pytorch.org/whl/cu124 --extra-index-url https://pypi.org/simple && exec python -m agentcore_slime_demo.sandbox_server_agent"]

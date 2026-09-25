@@ -38,42 +38,28 @@ which sidesteps the non-MIG nvcc-wedge that fractional sharing can hit under sus
 | `demo_gpu_single` | one dedicated **remote g6** (`SANDBOX=agentcore-runtime`) | 1 episode ↔ 1 whole remote GPU |
 | **`demo_gpu_farm FARM=fractional`** | one **local** runtime + Ray **fractional** farm (`agentcore-ray-farm`) | 2 episodes share ONE GPU |
 | **`demo_gpu_farm FARM=whole`** | one **local** runtime + Ray **whole-GPU** farm (`agentcore-ray-farm`) | N episodes ↔ N whole local GPUs |
-| `demo_gpu_snapshot`, `demo_gpu_customruntime` | the `whole` farm (with `LOCAL_GPU=1`) or a remote g6 | + snapshot/resume, + custom Runtime |
+| `demo_gpu_single LOCAL_GPU=1` / `SNAPSHOT_EVERY=1` | the `whole` farm, or the remote g6 | + on-box fallback, + snapshot/resume |
 
-## Step by step
+## Step by step (numbered scripts; run from this dir on the HOST — container steps `docker exec` themselves)
 
-### 0. Prereqs
-The trainer runs inside the persistent slime container `agentcore_p4` (repo at `/work/code`, slime at
-`/root/slime`); region `us-west-2`. The **local runtime container** is launched on the **HOST**
-(needs docker + the nvidia container runtime), not inside `agentcore_p4`. No AWS control-plane calls
-and no capacity provider are needed — everything is on-box.
+Everything is on-box: no ECR push, no AWS control-plane calls, no capacity provider. The farm
+container runs on the HOST (docker + the nvidia container runtime); the trainer runs in `agentcore_p4`.
 
-### 1. Build the dataset
-Already shipped in `data/` (train = 100 KernelBench level_1, eval = 20 level_2). To rebuild:
 ```bash
-python3 build_dataset.py --dataset kernelbench --level level_1 --limit 100 --out data/kernelbench_train.jsonl
-python3 build_dataset.py --dataset kernelbench --level level_2 --limit 20  --out data/kernelbench_eval.jsonl
+bash 1_prepare_data.sh               # 1. container: verify shipped KernelBench data (100 level_1 / 20 level_2; REBUILD=1 re-downloads)
+bash 2_build_image.sh                # 2. amd64 image acs-gpufarm-gpu from deploy/Dockerfile.sandbox.gpu.shared
+bash 3_push_ecr.sh                   # 3. skipped (local-gpu)
+bash 4_deploy_runtime.sh             # 4. tag -> acs-local-gpu-sbx:fractional, start the farm on 127.0.0.1:8080 -> deploy/runtime.env (FARM=)
+bash 5_run.sh                        # 5. container: 10 train steps + 1 eval; logs/<tag>.{log,csv,eval.csv,png}
+bash 6_cleanup.sh                    # 6. stop the local farm
+FARM=whole bash 4_deploy_runtime.sh  #    whole-GPU variant: GPUs 6,7, one GPU each (then 5_run.sh / 6_cleanup.sh as above)
 ```
 
-### 2. Start the local farm (on the HOST) — same mode as `FARM`
-This builds the shared-GPU sandbox image (context = this demo dir, so the `COPY agentcore_slime_demo/…`
-lines resolve against the vendored copy), reserves the farm GPU(s), and serves the farm at
-`http://127.0.0.1:8080` with that mode's knobs baked in:
-```bash
-bash code/deploy/run_local_gpu_runtime.sh fractional   # GPU 6, 0.5 + 0.5
-bash code/deploy/run_local_gpu_runtime.sh whole        # GPUs 6,7, one GPU each
-# reuse an already-built image:
-SKIP_BUILD=1 bash code/deploy/run_local_gpu_runtime.sh whole
-```
-(The old mode names still work: `shared_single` = `fractional`; `shared_multi` / `local` = `whole`.)
-The image pip-installs the CUDA torch stack on first boot (kept out of the image for the 2 GB
-AgentCore cap), so the first `/ping` can take a couple of minutes; the launcher polls until healthy.
+`5_run.sh` picks `FARM` up from `deploy/runtime.env`, so the trainer always matches the running farm.
+The image pip-installs the CUDA torch stack on first boot (kept out of the image for the 2 GB cap), so
+the first `/ping` can take a couple of minutes; step 4 polls until healthy. Old mode names still work
+(`shared_single` = `fractional`; `shared_multi` / `local` = `whole`).
 
-### 3. Run RL training (inside agentcore_p4)
-```bash
-docker exec agentcore_p4 bash -lc 'cd /work && AWS_REGION=us-west-2 FARM=fractional \
-    bash code/demos/demo_gpu_farm/run.sh'
-```
 Knobs (defaults in `run.sh`): `FARM` (`fractional`), `RB` (4), `NS` (8), `NR` (11 ⇒ real steps =
 NR−1 = 10 — keep **`NR × RB ≤ 100`**), `TEMP` (1.0), `CONC` (2 ⇒ `--sglang-server-concurrency`; keep
 **`CONC ≤ B4_MAX_SANDBOXES = 2`** so episodes don't block on the farm's checkout gate), `EVAL_INTERVAL`
@@ -85,31 +71,20 @@ as `b4farm-<32 hex>` if unset). Checkpoints go to `ckpt/Qwen3-4B_kernelbench_far
 > `B4_MAX_SANDBOXES = floor(B4_FARM_GPUS / B4_GPU_FRACTION)` (server) must agree — both are 2 under
 > either `FARM` default. If you retune one, retune the other.
 
-### 4. Scale the farm
+### Scale the farm
 Reserve more GPUs for the farm and raise `B4_FARM_GPUS` to match. E.g. a 3-GPU whole farm (5,6,7),
 slime on 5:
 ```bash
-# HOST:
-LOCAL_RT_GPUS=5,6,7 B4_FARM_GPUS=3 bash code/deploy/run_local_gpu_runtime.sh whole
-# agentcore_p4:
-FARM=whole SLIME_CUDA_VISIBLE=0,1,2,3,4 SLIME_NUM_GPUS=5 ROLLOUT_GPUS=1 \
-  B4_FARM_GPUS=3 CONC=3 bash code/demos/demo_gpu_farm/run.sh
+FARM=whole LOCAL_RT_GPUS=5,6,7 B4_FARM_GPUS=3 bash 4_deploy_runtime.sh
+SLIME_CUDA_VISIBLE=0,1,2,3,4 SLIME_NUM_GPUS=5 ROLLOUT_GPUS=1 B4_FARM_GPUS=3 CONC=3 bash 5_run.sh
 ```
 `B4_FARM_MAX_CONCURRENT` recomputes to `floor(3/1.0)=3`; keep `CONC ≤ 3`. For more fractional
 packing, lower `B4_GPU_FRACTION` on both sides (e.g. 0.25 ⇒ 4 slots on one GPU) — watch for the
 non-MIG wedge.
 
-### 5. Read metrics / latency
-```bash
-python3 metrics.py train.log --csv train.csv --eval-csv train.eval.csv --plot train.png
-```
-Watch that concurrent episodes actually overlap (per-episode `sub_session`s active at once) — on
-one GPU for `fractional`, on distinct GPUs for `whole`.
-
-### 6. Terminate
-```bash
-bash code/deploy/run_local_gpu_runtime.sh stop
-```
+### Key metrics
+`rollout/raw_reward`, `eval/kernelbench`, and that concurrent episodes actually overlap (per-episode
+`sub_session`s active at once) — on one GPU for `fractional`, on distinct GPUs for `whole`.
 
 ## Results
 Both modes passed the 2026-09-21 GPU smoke sweep (`NR=11`: 10 train steps + 1 held-out eval,
@@ -123,8 +98,8 @@ Both modes passed the 2026-09-21 GPU smoke sweep (`NR=11`: 10 train steps + 1 he
   `sandbox.py`.
 - `deploy/Dockerfile.sandbox.gpu.shared` — the shared-GPU sandbox image (bakes `ray`, runs
   `python -m agentcore_slime_demo.sandbox_server_agent`); used by the local farm in both modes.
-- `build_dataset.py`, `data/`, `run.sh`, `metrics.py`, `logs/`.
+- `1_…6_*.sh` + `deploy/` (`demo.env`, `steps_common.sh`, `local_gpu_runtime.sh` = the farm launcher).
+- `build_dataset.py`, `prepare_data.sh`, `data/`, `run.sh`, `metrics.py`, `logs/`.
 
-Shared infra referenced by path (NOT vendored): `code/deploy/run_local_gpu_runtime.sh` (serves the
-local farm). Base checkpoint (`/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist`), the
-`agentcore_p4` container and `/root/slime` are shared.
+Shared by path (NOT vendored): the base checkpoint (`/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist`),
+the `agentcore_p4` container and `/root/slime`.

@@ -1,5 +1,10 @@
 # demo_cpu_branching — one episode → many training samples ("fan-out")
 
+> **EXPERIMENTAL / BLOCKED — not part of the main 8-demo set.** The in-sandbox Claude Code CLI exits 1
+> before it makes any model call, so every episode has `fan_out=0` and produces no trajectories; the
+> demo cannot train yet. The empty-group crash this used to cause is fixed (18ccb91 / 3ecddc9), and
+> that fix is what exposed the CLI failure. The deploy path below works; the training run does not.
+
 Every other demo treats one episode as one training sample. This one does not. It runs the **real
 Claude Code CLI** as the harness and deliberately provokes the two CLI behaviors that split a single
 episode into several trainable branches — **sub-agents** (the `Task` tool) and **context
@@ -92,21 +97,21 @@ meant to exercise. Use `SANDBOX=agentcore-runtime` (default). It **requires**:
 
 ---
 
-## Reproduce (run one by one, inside the `agentcore_p4` container)
+## Step by step (numbered scripts; run from this dir on the HOST — container steps `docker exec` themselves)
 
 ```bash
-# 1. Build the SINGLE-family SWE bug-fix dataset (offline). REPEAT (default 8) replicates the pool.
-docker exec agentcore_p4 bash /work/code/demos/demo_cpu_branching/prepare_data.sh
-#    -> data/swe_train.jsonl + data/swe_eval.jsonl   (built by build_swe_dataset.py)
-
-# 2. REAL RL train + eval through the REMOTE CLI sandbox (MODE=A). Smoke = NR=3.
-#    Requires AGENTCORE_SANDBOX_RUNTIME_ARN (CLI-capable image) + ADAPTER_PUBLIC_HOST + AWS creds.
-docker exec \
-    -e AGENTCORE_SANDBOX_RUNTIME_ARN=<cli-capable-arn> \
-    -e ADAPTER_PUBLIC_HOST=<private-vpc-ip-of-this-box> \
-    -e NR=3 -e EVAL_INTERVAL=2 agentcore_p4 \
-    bash -lc 'cd /work && bash code/demos/demo_cpu_branching/run.sh 2>&1 | tee code/demos/demo_cpu_branching/smoke_run.log'
+bash 1_prepare_data.sh     # 1. container: single-family SWE bug-fix set -> data/swe_{train,eval}.jsonl (REPEAT, default 8)
+bash 2_build_image.sh      # 2. arm64 image from deploy/Dockerfile.sandbox.cli (node 22 + claude CLI)
+bash 3_push_ecr.sh         # 3. -> ECR acs-sandbox-cli (deploy/images.env)
+bash 4_deploy_runtime.sh   # 4. deploy/deploy_branching.py: VPC-mode Runtime acs_sandbox_cli + one SG->SG ingress rule
+                           #    (TCP ADAPTER_PORT on the host SG, source = the runtime SG)
+                           #    -> deploy/runtime.env: AGENTCORE_SANDBOX_RUNTIME_ARN + ADAPTER_PUBLIC_HOST
+bash 5_run.sh              # 5. container: MODE=A train + eval (BLOCKED: fan_out=0, see the banner)
+bash 6_cleanup.sh          # 6. delete the Runtime (the SG ingress rule is left in place)
 ```
+
+`HOST_SG` overrides the auto-detected (IMDS) host security group. Step 4 is idempotent: the existing
+repo, Runtime and SG rule are reused.
 
 The reward is the episode's SWE outcome (bug-fix accepted or not); every leaf of the fanned-out
 episode inherits it.
@@ -140,7 +145,8 @@ advantage and loss stay **per-episode** no matter how the leaf count moves.
   `finish_session` tree→leaf linearization), `rollout_advantage.py` (rollout-level GRPO advantage),
   the remote sandbox client, and the task registry. Imported only from here.
 - `build_swe_dataset.py` — builds the single-family SWE bug-fix dataset (offline).
-- `prepare_data.sh` — step 1 wrapper · `run.sh` — the remote RL run (step 2).
+- `1_…6_*.sh` + `deploy/` (`demo.env`, `steps_common.sh`, `agentcore_deploy.py`, `deploy_branching.py`) — the numbered steps.
+- `prepare_data.sh` — step 1 wrapper · `run.sh` — the remote RL run (step 5).
 - `deploy/Dockerfile.sandbox.cli` — the CLI-capable CPU sandbox image (node 22 + `claude`).
   `deploy/Dockerfile.sandbox.cpu` — the plain checker image (reference).
 - `data/` — `swe_train.jsonl` / `swe_eval.jsonl` (built by step 1; currently empty until you run it).

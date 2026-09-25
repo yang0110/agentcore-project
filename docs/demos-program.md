@@ -55,8 +55,10 @@ AgentCore **Code Interpreter** microVM (CPU); the harness is in-process.
 > `swe` `tool_use` `sql` `ctf` `rag` `regex` `planning` `config` `data`). It replaced the ten
 > per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`, …) that differed only in data. Mixed-task
 > batches are the same demo: `DATASET=a,b,c` (interleaved) or `DATASET=mixed` (math+sql+ctf+datasci,
-> formerly `demo_cpu_mixtask`). The full set is 12 demos (8 CPU + 4 GPU, after the 2026-09-25 merges);
-> see `code/demos/README.md`.
+> formerly `demo_cpu_mixtask`). `VARIANT=bigimage` (formerly `demo_cpu_bigimage`) runs the same trainer
+> on a ~4 GB image on a CPU capacity-provider Instance. The full set is 9 demos after the 2026-09-25
+> merges: 8 main (6 CPU + 2 GPU) plus the experimental, blocked `demo_cpu_branching`. Every demo runs
+> the same six step scripts (`1_prepare_data.sh` … `6_cleanup.sh`); see `code/demos/README.md`.
 
 \* *Hypothesis only — Tier 3 replaces it with a measurement.* Note most cheap-checker CPU tasks are
 expected to be **generation-bound**; the clear **sandbox-bound** case is CUDA (Tier 2). That
@@ -69,7 +71,7 @@ instance** (a `g6`, x86_64/amd64); the trainer box keeps all its GPUs for policy
 
 | Demo folder | Task | Notes |
 |---|---|---|
-| `demo_gpu_kernelbench` | KernelBench (level_1 CUDA) | checker = allclose vs torch ref, on `cuda` |
+| `demo_gpu_kernelbench` → built as `demo_gpu_single` | KernelBench (level_1 CUDA) | checker = allclose vs torch ref, on `cuda`; one warm g6. Also carries the custom-Runtime angle (`gpu_torch_smoke.py`, `LOCAL_GPU=1`) and `SNAPSHOT_EVERY=1` (merged 2026-09-25 from `demo_gpu_customruntime` / `demo_gpu_snapshot`) |
 | `demo_gpu_farm` (`FARM=fractional` \| `whole`) | KernelBench + Ray pack-many farm | many envs share one GPU (bursty, memory-bound); `fractional` = 0.5+0.5 on one GPU, `whole` = one whole GPU per session (merged 2026-09-25 from `demo_gpu_shared_single` / `demo_gpu_shared_multi` / `demo_gpu_local`) |
 
 ### Tier 3 — Advanced: scale the *measured* bottleneck
@@ -102,18 +104,18 @@ pull queue). Full write-up: [harness-scaling.md](harness-scaling.md).
 
 This is why disaggregation matters: each component is sized to its own bottleneck, per task.
 
-### Advanced: keeping a paused sandbox alive across the weight-sync barrier — two demos
+### Advanced: keeping a paused sandbox alive across the weight-sync barrier — two mechanisms
 
 During slime's trainer→inference **weight sync**, generation stalls, so open sandbox sessions sit
-idle. Surviving that pause is **two patterns on two substrates** — one demo each:
+idle. Surviving that pause is **two patterns on two substrates**:
 
 | Demo | Substrate | Lever | Survives |
 |---|---|---|---|
 | [`demo_cpu_heartbeat`](../code/demos/demo_cpu_heartbeat/) | serverless CPU **Code-Interpreter microVM** | **heartbeat** (+ quiesce gate) | the *idle timeout* — keep the warm session from being reclaimed during the pause |
-| [`demo_gpu_snapshot`](../code/demos/demo_gpu_snapshot/) | **GPU Runtime instance** | **application-level snapshot & resume** | a genuine *recycle* — restore workspace state onto a fresh session (there is no VM snapshot; [gpu-snapshot.md](gpu-snapshot.md)) |
+| [`demo_gpu_single`](../code/demos/demo_gpu_single/) `SNAPSHOT_EVERY=1` (formerly `demo_gpu_snapshot`) | **GPU Runtime instance** | **application-level snapshot & resume** | a genuine *recycle* — restore workspace state onto a fresh session (there is no VM snapshot; [gpu-snapshot.md](gpu-snapshot.md)) |
 
-**Heartbeat keeps a *live* session warm; snapshot restores a *lost* one.** Both are standalone,
-offline (no AWS/GPU), runnable in seconds. Reusable mechanisms:
+**Heartbeat keeps a *live* session warm; snapshot restores a *lost* one.** Both have an offline
+probe (no AWS/GPU) that runs in seconds (`heartbeat_demo.py`, `snapshot_demo.py`). Reusable mechanisms:
 `agentcore_slime_demo/session_keeper.py` (`SessionKeeper` + `KeptSandbox`) and
 `agentcore_slime_demo/snapshot_store.py` (`snapshot_workspace`/`restore_workspace`).
 
@@ -148,14 +150,14 @@ which is exactly why the demo shows the failure first. The robust pattern:
    `recovery.py` self-heal: restart the session and re-seed/restore the workspace, don't crash the
    episode. The *restore-with-progress* form (application-level snapshot to S3, since there is no VM
    snapshot — [gpu-snapshot.md](gpu-snapshot.md)) is built + demonstrated in
-   [`code/demos/demo_gpu_snapshot/`](../code/demos/demo_gpu_snapshot/) (`snapshot_store.py`).
+   [`code/demos/demo_gpu_single/`](../code/demos/demo_gpu_single/) with `SNAPSHOT_EVERY=1` (`snapshot_store.py`).
 
 Demo arc: naive "stop invoking" (anti-pattern, silently loses the GPU instance) → heartbeat quiesce
 that survives the idle timeout → resume → recover-if-reclaimed. This deliberately re-couples the
 sandbox to the trainer's sync barrier — a **cost** optimization, not a correctness fix (async RL
 episodes are otherwise designed to span weight versions).
 
-#### Demo 2 — runtime-instance application-level snapshot & resume (`demo_gpu_snapshot`)
+#### Demo 2 — runtime-instance application-level snapshot & resume (`demo_gpu_single SNAPSHOT_EVERY=1`)
 
 For the **GPU Runtime instance**, the failure mode is not idle reclamation but a **recycle** that
 comes back blank — and AgentCore offers **no VM/EC2 snapshot** ([gpu-snapshot.md](gpu-snapshot.md)).

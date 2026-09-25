@@ -99,11 +99,9 @@ AGENTCORE_SANDBOX_RUNTIME_ARNS="${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}"
 # three custom families here (plus "cpu" for any stdlib family you add). make_sandbox routes an
 # episode to the Runtime whose baked image matches its tag, via this JSON map (image -> ARN):
 #     {"datasci": <pandas ARN>, "scipy": <scipy ARN>, "sklearn": <scikit-learn ARN>, "cpu": <CPU ARN>}
-# BUILD the three images (build context = this demo dir) and deploy one Runtime per image:
-#     for img in datasci scipy sklearn; do
-#       docker build -f deploy/Dockerfile.sandbox.$img -t <ecr>/acs-sandbox-$img:latest . ; done
-#     # push to ECR + register each with CreateAgentRuntime (or your deploy_two_runtime.py
-#     # --sandbox-only --dockerfile deploy/Dockerfile.sandbox.<img>), then paste the ARNs below.
+# BUILD the three images and deploy one Runtime per image with the step scripts (from this demo dir):
+#     bash 2_build_image.sh && bash 3_push_ecr.sh && bash 4_deploy_runtime.sh
+# Step 4 writes this map to deploy/runtime.env, which 5_run.sh forwards here.
 # This map is REQUIRED for this demo: every default family is a custom image, so if a tag is missing
 # its episodes fall back to the round-robin CPU pool (or nothing), solution.py's import fails inside
 # the wrong sandbox, the checker errors, and that family scores reward 0 — which is exactly what

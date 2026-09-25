@@ -72,26 +72,64 @@ harness and the slime trainer stay on the training box.
   throughput ablation.
 
 ## AgentCore basics: launch / terminate / latency
-- **Launch:** the shared deploy orchestrator (`code/deploy/deploy_two_runtime.py`) builds/pushes the
-  image, provisions IAM/roles, and creates the base `acs_sandbox_cpu` Runtime. The sandbox comes up
-  serverless — a session is created lazily on the first `invoke_agent_runtime`. There is no fixed
-  cold-start number for the CPU sandbox.
-- **Terminate:** `python3 deploy_two_runtime.py cleanup` (from `code/deploy/`) deletes
-  `acs_sandbox_cpu`. **Fleet caveat:** extra fleet runtimes `acs_sandbox_cpu_1..N` are NOT deleted by
-  cleanup — delete them manually via the control-plane `delete_agent_runtime` API. The demo `run.sh`
-  does NO runtime teardown; it only cleans up local processes (`pkill -9 sglang`, `ray stop`).
+- **Launch:** `2_build_image.sh` → `3_push_ecr.sh` → `4_deploy_runtime.sh` (vendored
+  `deploy/agentcore_deploy.py`) creates the demo's own Runtimes. The sandbox comes up serverless — a
+  session is created lazily on the first `invoke_agent_runtime`. There is no fixed cold-start number
+  for the CPU sandbox.
+- **Terminate:** `6_cleanup.sh` deletes the Runtimes it created. `run.sh` itself does NO runtime
+  teardown; it only cleans up local processes (`pkill -9 sglang`, `ray stop`).
 - **Latency:** each step's train CSV carries the sandbox round-trip time
   `perf/sandbox_ms_{mean,p50,p95}` (with `perf/sandbox_count` = number of `invoke_agent_runtime`
   round-trips) and, split out separately, pure SGLang decode time `perf/sglang_gen_ms_{mean,p50,p95}`.
   Because the harness is in-process, **both** latency splits are fully present in `train.log`.
   `metrics.py` also writes raw per-op CSVs `<log>.sandbox_ops.csv` and `<log>.sglang_gen.csv`.
 
+## Variant: `VARIANT=bigimage`: a large image on a CPU Instance (was `demo_cpu_bigimage`)
+
+The Code Interpreter microVM caps the image at ~2 GB, so a heavy checker environment (torch, a full
+scientific stack) won't fit. The escape hatch is **purely a deployment change**: build a large custom
+Runtime image (`deploy/Dockerfile.sandbox.bigcpu`, ~4 GB) and run it on an AgentCore
+**capacity-provider Instance** (`CPU_INSTANCE`, default `m5.xlarge`). The harness, reward path and slime
+args are unchanged. Default task is `DATASET=deepscaler`; any dataset works.
+
+| | Code Interpreter microVM | `VARIANT=bigimage`: Runtime on a CPU Instance |
+|---|---|---|
+| Image cap | ~2 GB | instance root disk (`ROOT_FREE_GIB`, default 40 GB) |
+| Heavy deps (torch, scipy, sklearn) | won't fit | baked in |
+| Compute | AWS-managed microVM | your EC2 family (`CPU_INSTANCE`) |
+| Session length | ~8 h | 14 days |
+
+The variant runs **warm-shared** (`SANDBOX=agentcore-ray-farm`). All episodes share one
+`runtimeSessionId` (`B4_SHARED_RUNTIME_SESSION`, minted per run), so they land on the same warm m5
+and the ~60–80 s cold-boot is paid **once per run**. The server-side `SANDBOX_FARM=cpu` farm
+(`sandbox_cpu_farm.py`) gives every per-episode `sub_session` a fresh workdir plus its own
+`HOME`/`TMPDIR`/caches, all wiped on close. `SANDBOX=agentcore-runtime` falls back to one fresh
+instance per episode, which pays a cold-boot every time. See
+[`docs/sandbox-fresh-env-on-persistent-instance.md`](../../../docs/sandbox-fresh-env-on-persistent-instance.md).
+
+```bash
+python3 probe_bigimage.py                  # offline: image size vs the microVM cap + LocalSandbox contract parity
+python3 netcheck.py                        # offline: safe-networking checklist (see docs/agentcore-networking.md)
+VARIANT=bigimage bash 2_build_image.sh     # host: ~4 GB amd64 image
+VARIANT=bigimage bash 3_push_ecr.sh        # host: -> ECR acs-sandbox-bigcpu
+VARIANT=bigimage bash 4_deploy_runtime.sh  # host: CPU capacity provider acs_cpu_cp_bigimage + Runtime -> deploy/runtime.bigimage.env
+VARIANT=bigimage bash 5_run.sh             # container: 10 train steps + 1 eval on the warm m5
+VARIANT=bigimage bash 6_cleanup.sh         # host: delete the Runtime + the CP
+```
+
+Networking stays pull-only (`networkMode=PUBLIC`, IAM `invoke_agent_runtime`, no inbound port).
+Deploy knobs: `CPU_INSTANCE`, `ROOT_FREE_GIB`, `FORCE_RECREATE=1`. Smoke results from the old folder
+are in `logs/bigimage/`.
+
 ## Folder layout (self-contained)
 - `agentcore_slime_demo/` — vendored shared library (this demo imports only this copy;
   `run.sh` puts `$DEMO_DIR` on `PYTHONPATH`, not `/work/code`), incl. `build_real_datasets.py` +
   `real_datasets.py` (the HuggingFace loaders → task rows)
+- `1_…6_*.sh` — the numbered step scripts (settings in `deploy/demo.env`, shared logic in `deploy/steps_common.sh`)
 - `deploy/` — `Dockerfile.sandbox.cpu`, the Dockerfile the sandbox image is built from, and
-  `Dockerfile.sandbox.datasci` (the same server + pandas, for `DATASET=mixed`)
+  `Dockerfile.sandbox.datasci` (the same server + pandas, for `DATASET=mixed`), and for
+  `VARIANT=bigimage` `Dockerfile.sandbox.bigcpu` + `deploy_bigimage.py` (CPU capacity provider + Runtime)
+- `probe_bigimage.py`, `netcheck.py` (+ `netcheck_sample_{good,bad}.json`): offline probes for the bigimage variant
 - `prepare_data.sh` — **download + prepare the datasets** (step 1; all, or `DATASET=<name>`); idempotent
 - `verify_data.py` — offline checker proof per real dataset (reference PASSES, wrong FAILS)
 - `build_dataset.py` — the MBPP loader; `build_mixed_datasets.py` — builds `DATASET=mixed`
@@ -100,134 +138,59 @@ harness and the slime trainer stay on the training box.
 - `run.sh` — the RL training run (async/decoupled slime)
 - `metrics.py` — reward + latency parsing (CSVs + PNG)
 
-## Step by step
+## Step by step (numbered scripts; run from this dir on the HOST — container steps `docker exec` themselves)
 
-### 0. Prereqs
-- Run everything INSIDE the persistent container `agentcore_p4` (slimerl/slime); the repo is at
-  `/work/code`, this demo at `/work/code/demos/demo_cpu_tasks`.
-- Region `us-west-2` (`AWS_REGION`), plus AWS creds (`AWS_BEARER_TOKEN_BEDROCK`) for the
-  `invoke_agent_runtime` calls.
-- Shared, NOT vendored (reference by path): the deploy orchestrator under `code/deploy/`, and the
-  base Megatron checkpoint at `code/p4_slime_train/ckpt/Qwen3-4B_torch_dist` (override with
-  `CKPT_BASE`). The Qwen3-4B HF snapshot must be in the container HF cache (baked into `run.sh` as
-  `$HF`).
+Prereqs: the `agentcore_p4` container (repo at `/work/code`), `AWS_REGION=us-west-2` + AWS creds,
+the base checkpoint `code/p4_slime_train/ckpt/Qwen3-4B_torch_dist` (`CKPT_BASE`) and the Qwen3-4B HF
+snapshot in the container cache.
 
-### 1. Download + prepare the datasets
-`data/` is already populated; step 1 re-pulls the whole zoo from scratch (one-time network for the
-HF rows). One idempotent script builds every dataset's train+eval JSONL, or just one:
 ```bash
-bash prepare_data.sh                  # all nine real datasets (row counts in the table above)
-DATASET=gsm8k bash prepare_data.sh    # just one
-DATASET=mixed bash prepare_data.sh    # the prebuilt mix (offline); change it with FAMILIES / BALANCED / REPEAT
-FAMILIES=math,sql,swe,rag DATASET=mixed bash prepare_data.sh
-```
-Ad-hoc mixes (`DATASET=a,b,c`) need no build step — `run.sh` interleaves the per-dataset files.
-It calls the two vendored builders — `build_dataset.py` (MBPP) and
-`agentcore_slime_demo/build_real_datasets.py` (the HF zoo) — with the exact splits/limits/offsets
-that produced the on-disk files (see the script header). Each file's prefix == the `DATASET` label,
-so training needs no `DATA`/`EVAL_DATA` overrides. Keep the train set `>= NR*RB` prompts so one epoch
-spans the whole run (e.g. 500 ≥ 11×4) — that keeps save-only-at-end holding.
-
-Verify the checkers offline before any GPU run (reference solution PASSES, a wrong one FAILS):
-```bash
-python3 verify_data.py                # every real dataset
-python3 verify_data.py gsm8k xlam     # just these
+bash 1_prepare_data.sh     # 1. container: prepare_data.sh (all datasets, or DATASET=<name>) + verify_data.py
+bash 2_build_image.sh      # 2. arm64 images cpu (Dockerfile.sandbox.cpu) + datasci (Dockerfile.sandbox.datasci)
+bash 3_push_ecr.sh         # 3. -> ECR acs-tasks-cpu, acs-tasks-datasci (deploy/images.env)
+bash 4_deploy_runtime.sh   # 4. Runtimes acs_tasks_cpu, acs_tasks_datasci -> deploy/runtime.env
+                           #    (ARNS = cpu; ARN_BY_IMAGE {cpu,datasci} for DATASET=mixed)
+bash 5_run.sh              # 5. container: 10 train steps + 1 eval; logs/<tag>.{log,csv,eval.csv,png}
+bash 6_cleanup.sh          # 6. delete the Runtimes (ECR repos, data, logs, ckpt are kept)
 ```
 
-### 2. Build the sandbox image
-Build from INSIDE this demo dir so `COPY agentcore_slime_demo/...` resolves against the vendored
-copy. Platform `linux/arm64`, ECR repo `acs-sandbox-cpu`. No torch/prepare step (CPU):
-```bash
-docker build --platform linux/arm64 -f deploy/Dockerfile.sandbox.cpu .
-```
+- **Single-dataset runs** only need the `cpu` image: prefix steps 2/3/4/6 with
+  `IMAGES=cpu:Dockerfile.sandbox.cpu`. `datasci` is only routed to by `DATASET=mixed`.
+- **Without step 4**, `5_run.sh` falls back to the baked shared K=2 `acs_sandbox_cpu` ARNs in `run.sh`.
+- **`VARIANT=bigimage`** runs the same six steps on a CPU Instance (see the section above).
+- `FORCE_RECREATE=1 bash 4_deploy_runtime.sh` recreates the Runtimes.
 
-### 3. Launch the Runtime
-From `code/deploy/` (the shared orchestrator handles ECR/IAM/roles):
+Pick the dataset at run time; the file prefix == `DATASET`, so nothing else changes:
 ```bash
-python3 deploy_two_runtime.py all        # creates the base acs_sandbox_cpu runtime
+DATASET=gsm8k bash 5_run.sh                       # easiest — good first run
+DATASET=gsm8k,gretelsql,hotpotqa bash 5_run.sh    # ad-hoc mix, eval/mix (no build step)
+DATASET=mixed bash 5_run.sh                       # prebuilt math+sql+ctf+datasci, eval/mixed
+FAMILIES=math,sql,swe,rag DATASET=mixed bash 1_prepare_data.sh   # rebuild the prebuilt mix
 ```
-For the runtime-count fleet (ablation only):
-```bash
-FLEET_N=4 python3 deploy_cpu_sandbox_fleet.py    # prints the export line for ARNS below
-```
+Only knobs matching `PASS_RE` in `deploy/steps_common.sh` are forwarded by `docker exec`; add new ones there
+(all demo copies are identical).
+Keep the train set `>= NR*RB` prompts so one epoch spans the whole run (save-only-at-end holds).
+`verify_data.py [names…]` re-checks the checkers offline (reference PASSES, a wrong one FAILS).
 
-### 4. Export the ARN(s)
-Single Runtime:
-```bash
-export AGENTCORE_SANDBOX_RUNTIME_ARN=<arn>
-```
-Fleet (plural, comma-separated, round-robin across endpoints):
-```bash
-export AGENTCORE_SANDBOX_RUNTIME_ARNS=<arn0>,<arn1>,...
-```
-`run.sh` requires either the plural `AGENTCORE_SANDBOX_RUNTIME_ARNS` or the single
-`AGENTCORE_SANDBOX_RUNTIME_ARN` when `SANDBOX=agentcore-runtime` (the default). It ships pinned to a
-K=2 default ARNS list; override by exporting your own.
+### Knobs (env vars, defaults from `run.sh`)
+| Knob | Default | Meaning |
+|---|---|---|
+| `DATASET` (alias `FAMILY`) | `mbpp` | dataset, comma list to mix, or `mixed` |
+| `SANDBOX` | `agentcore-runtime` | remote Runtime; `agentcore` = Code Interpreter. `local` is rejected |
+| `MODE` | `B` | fully-async (staleness grows with `CONC`); `A` = 1-step-async |
+| `RB` / `NS` / `NR` / `TEMP` | 4 / 8 / 11 / 1.0 | prompts/step, GRPO group, 10 train + 1 eval, temperature |
+| `CONC` | `4` | concurrent episodes `S = CONC×2`; Mode B buffer depth |
+| `INFER_CONC` | `0` (off) | caps decode concurrency while sweeping `CONC` |
+| `EVAL_INTERVAL` / `EVAL_NS` / `SAVE_INTERVAL` | 10 / 2 / 1000000 | eval cadence / samples / save-only-at-end |
+| `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` | from `deploy/runtime.env` | image → ARN map; only `DATASET=mixed` needs it |
 
-### 5. Run RL training
-Pick a dataset with `DATASET` (defaults to `mbpp`); the file prefix == `DATASET`, so nothing else
-changes between datasets:
-```bash
-DATASET=mbpp       ./run.sh 2>&1 | tee train.log   # MBPP coding (default)
-DATASET=gsm8k      ./run.sh 2>&1 | tee train.log   # grade-school math (easiest — good first run)
-DATASET=math500    ./run.sh 2>&1 | tee train.log   # competition math
-DATASET=deepscaler ./run.sh 2>&1 | tee train.log   # olympiad math
-DATASET=humaneval  ./run.sh 2>&1 | tee train.log
-DATASET=gretelsql  ./run.sh 2>&1 | tee train.log   # text-to-SQL
-DATASET=hotpotqa   ./run.sh 2>&1 | tee train.log   # multi-hop RAG
-DATASET=xlam       ./run.sh 2>&1 | tee train.log   # function calling
-DATASET=mcp        ./run.sh 2>&1 | tee train.log   # MCP-style tool calling (ToolACE)
+Runtime-count ablation (`RUNTIMES={1 2 4}`): `./run_runtime_ablation.sh`. Train to convergence
+(inside the container): `DATASET=mbpp STEPS=50 EVAL_EVERY=10 SANDBOX_CONC=4 SANDBOX_RUNTIMES=2 ./train.sh`
+(`STEPS` → `NR=STEPS+1`, `EVAL_EVERY` → `EVAL_INTERVAL`, `SANDBOX_CONC` → `CONC`,
+`SANDBOX_RUNTIMES` → K). For a mix, `eval/mix` can rise while one family lags; the `[demo]` per-family
+signal in the log shows each family.
 
-# mixes — one batch spans several families
-DATASET=gsm8k,gretelsql,hotpotqa ./run.sh 2>&1 | tee train.log   # ad-hoc mix, eval/mix
-AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE='{"cpu":"<cpu arn>","datasci":"<pandas arn>"}' \
-DATASET=mixed      ./run.sh 2>&1 | tee train.log   # prebuilt math+sql+ctf+datasci, eval/mixed
-```
-Key knobs (env vars, defaults from `run.sh`):
-- `SANDBOX` (`agentcore-runtime`) — remote Runtime; `agentcore` = Code Interpreter microVM.
-  `local` is rejected (CPU demos are remote-only).
-- `MODE` (`B`) — fully-async (deep buffer, staleness grows with `CONC`); `A` = 1-step-async.
-- `RB` (`4`) prompts/step, `NS` (`8`) GRPO group size (`GBS=RB×NS`), `NR` (`11`) num-rollout ⇒
-  real steps = `NR-1` = 10 train + 1 eval (smoke).
-- `TEMP` (`1.0`) rollout temperature.
-- `CONC` (`4`) sglang-server-concurrency ⇒ concurrent episodes `S = CONC×2`; in Mode B it also sets
-  buffer depth (the sandbox-concurrency ablation knob). `INFER_CONC` (`0`=off) caps decode
-  concurrency to hold inference load constant while sweeping `CONC`.
-- `EVAL_INTERVAL` (`10`), `EVAL_NS` (`2`), `SAVE_INTERVAL` (`1000000`, save-only-at-end).
-- `DATASET` (`mbpp`; alias `FAMILY`) — selects the dataset (data-file prefix + eval label + ckpt
-  dir), a comma list to mix, or `mixed`. See the tables up top.
-- `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` (unset) — JSON image-tag → Runtime ARN map; only
-  `DATASET=mixed` (its `datasci` family) needs it.
-
-Runtime-count ablation (sweeps `RUNTIMES={1 2 4}`): `./run_runtime_ablation.sh`.
-
-**One-command train-to-convergence.** `train.sh` wraps `run.sh` with three top-level knobs —
-training **steps**, eval **cadence**, and the two **sandbox** counts — passing `DATASET` (and
-everything else) through:
-```bash
-DATASET=mbpp STEPS=50 EVAL_EVERY=10 SANDBOX_CONC=4 SANDBOX_RUNTIMES=2 ./train.sh 2>&1 | tee train.log
-```
-`STEPS` → `NR=STEPS+1` (real GRPO updates; `STEPS=2` = smoke); `EVAL_EVERY` → `EVAL_INTERVAL`;
-`SANDBOX_CONC` → `CONC` (concurrent episodes, `S=CONC×2`); `SANDBOX_RUNTIMES` → # distinct sandbox
-Runtimes (K, truncates the ARN list). Convergence is dataset-dependent — watch `eval/<dataset>` and raise
-`STEPS`. For a mix, the aggregate `eval/mix` can rise while one family lags; the `[demo]` per-family
-signal in the log shows each family's reward.
-
-### 6. Read metrics / latency
-```bash
-python3 metrics.py train.log \
-    --csv train.csv --eval-csv train.eval.csv --plot train.png
-```
-Produces a per-step train CSV, a per-eval held-out solve-rate CSV, and a multi-panel PNG, plus the
-raw per-op latency CSVs `train.log.sandbox_ops.csv` and `train.log.sglang_gen.csv` and a run-level
-per-op latency summary. Watch `rollout/raw_reward` (learning signal), `train/grad_norm` (policy
-moving), and the `perf/sandbox_ms_*` vs `perf/sglang_gen_ms_*` split (is the remote sandbox or the
-trainer/SGLang the bottleneck).
-
-### 7. Terminate
-```bash
-cd code/deploy && python3 deploy_two_runtime.py cleanup   # deletes acs_sandbox_cpu
-```
-**Fleet caveat:** `cleanup` does NOT delete the extra fleet runtimes `acs_sandbox_cpu_1..N` — delete
-those manually via the control-plane `delete_agent_runtime` API. `run.sh` itself tears down nothing
-remote (only local `pkill sglang` / `ray stop`).
+### Key metrics
+`rollout/raw_reward` (learning signal), `train/grad_norm`, `eval/<dataset>`, and the
+`perf/sandbox_ms_*` vs `perf/sglang_gen_ms_*` split (is the sandbox or SGLang the bottleneck).
+`metrics.py` also writes the raw per-op CSVs `<log>.sandbox_ops.csv` and `<log>.sglang_gen.csv`.

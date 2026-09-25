@@ -82,6 +82,6 @@ EBS. `python3 deploy_two_runtime.py cleanup` deletes the runtimes and the capaci
 ## Then run the demos
 
 This orchestrator provisions the **sandbox** Runtimes (the harness itself is in-process, not a
-Runtime). The GPU sandbox ARN feeds the GPU demos — see `code/demos/demo_gpu_single/README.md`,
-`code/demos/demo_gpu_customruntime/README.md`, and `code/demos/demo_gpu_snapshot/README.md`; the CPU
+Runtime). The GPU sandbox ARN feeds the GPU demos — see `code/demos/demo_gpu_single/README.md`
+(which now also covers the former `demo_gpu_customruntime` / `demo_gpu_snapshot`); the CPU
 sandbox ARN feeds `code/demos/demo_cpu_tasks/README.md` (`SANDBOX=agentcore`).

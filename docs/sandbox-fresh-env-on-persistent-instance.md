@@ -9,9 +9,9 @@ the same warm instance), give every episode a per-episode **`sub_session`**, and
 give each `sub_session` a **fresh environment** — its own workdir *and* `HOME`/`TMPDIR`/caches,
 wiped on close. The CPU farm isolates *everything* (nothing warm to protect); the GPU farm isolates
 writes but keeps caches *shared* (to preserve the warm compiled-CUDA-kernel cache). This is
-implemented in [`agentcore_slime_demo/sandbox_farm_env.py`](../code/demos/demo_cpu_bigimage/agentcore_slime_demo/sandbox_farm_env.py)
-+ [`sandbox_cpu_farm.py`](../code/demos/demo_cpu_bigimage/agentcore_slime_demo/sandbox_cpu_farm.py)
-(CPU) and the opt-in block in [`sandbox_ray_farm.py`](../code/demos/demo_cpu_bigimage/agentcore_slime_demo/sandbox_ray_farm.py) (GPU).
+implemented in [`agentcore_slime_demo/sandbox_farm_env.py`](../code/demos/demo_cpu_tasks/agentcore_slime_demo/sandbox_farm_env.py)
++ [`sandbox_cpu_farm.py`](../code/demos/demo_cpu_tasks/agentcore_slime_demo/sandbox_cpu_farm.py)
+(CPU) and the opt-in block in [`sandbox_ray_farm.py`](../code/demos/demo_cpu_tasks/agentcore_slime_demo/sandbox_ray_farm.py) (GPU).
 
 ## When reuse matters: Instances, not microVMs
 
@@ -22,7 +22,8 @@ microVM), which is cheaper, faster, and perfectly isolated for free. Reuse only 
 that applies to **both** Instance flavours:
 
 - the **GPU `g6`** (`demo_gpu_farm`), and
-- the **CPU `m5`** (`demo_cpu_bigimage`, the big-image demo this doc ships with).
+- the **CPU `m5`** (`demo_cpu_tasks` `VARIANT=bigimage`, the big-image variant this doc ships with; formerly the
+  separate `demo_cpu_bigimage`).
 
 Both use the *same* shared-session + `sub_session` mechanism below; they differ only in what the
 `sub_session` multiplexes (a fractional-GPU actor vs. an isolated CPU env) and the cache policy.
@@ -103,8 +104,8 @@ per-episode freshness.
 
 ## Related
 
-- [`demo_cpu_bigimage/README.md`](../code/demos/demo_cpu_bigimage/README.md) — the CPU demo that
-  carries this farm (§ "Warm-instance reuse").
+- [`demo_cpu_tasks/README.md`](../code/demos/demo_cpu_tasks/README.md) — its `VARIANT=bigimage`
+  section carries this farm (formerly `demo_cpu_bigimage`).
 - [`sandbox-concurrency-ablation.md`](sandbox-concurrency-ablation.md) — the CONC sweep the shared
   instance makes cheap to run.
 - [`gpu-snapshot.md`](gpu-snapshot.md) — why we reuse a *live* warm instance rather than snapshot one.

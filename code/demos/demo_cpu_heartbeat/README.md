@@ -38,7 +38,7 @@ lever.
 
 Heartbeat backstops **idle reclaim**, not an instance *recycle* (a GPU-instance recycle kills the
 session regardless) — for that you need episode-level recovery (`recovery.resilient_episode`) and/or
-application snapshot (see the sibling [`demo_gpu_snapshot`](../demo_gpu_snapshot/)).
+application snapshot (see [`demo_gpu_single`](../demo_gpu_single/) `SNAPSHOT_EVERY=1`).
 
 ## Remote-only (no local sandbox)
 
@@ -46,20 +46,19 @@ application snapshot (see the sibling [`demo_gpu_snapshot`](../demo_gpu_snapshot
 substrate it is meant to exercise. Use `agentcore-runtime` (default; the K=2 CPU Runtime pool) or
 `agentcore` (Code-Interpreter microVM).
 
-## Reproduce (inside the `agentcore_p4` container)
+## Step by step (numbered scripts; run from this dir on the HOST — container steps `docker exec` themselves)
 
 ```bash
-# 1. build data (deepscaler numeric-answer math; ships in data/, rebuild is idempotent)
-docker exec agentcore_p4 bash /work/code/demos/demo_cpu_heartbeat/prepare_data.sh
-
-# 2. REAL 10-step train + 1 eval through the REMOTE CPU sandbox, sessions held warm across sync
-docker exec -e NR=11 -e EVAL_INTERVAL=10 -e EVAL_NS=2 agentcore_p4 \
-    bash -lc 'cd /work && bash code/demos/demo_cpu_heartbeat/run.sh 2>&1 | tee code/demos/demo_cpu_heartbeat/smoke_run.log'
-
-# 3. parse the log into CSVs + a curve PNG
-docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_heartbeat/metrics.py \
-    /work/code/demos/demo_cpu_heartbeat/smoke_run.log --csv train.csv --eval-csv train.eval.csv --plot train.png
+bash 1_prepare_data.sh     # 1. container: deepscaler numeric-answer math (ships in data/; idempotent)
+bash 2_build_image.sh      # 2. arm64 image from deploy/Dockerfile.sandbox.cpu
+bash 3_push_ecr.sh         # 3. -> ECR acs-heartbeat-cpu (deploy/images.env)
+bash 4_deploy_runtime.sh   # 4. Runtime acs_heartbeat_cpu -> deploy/runtime.env (AGENTCORE_SANDBOX_RUNTIME_ARNS)
+bash 5_run.sh              # 5. container: 10 train steps + 1 eval, sessions held warm; logs/<tag>.{log,csv,eval.csv,png}
+bash 6_cleanup.sh          # 6. delete the Runtime
 ```
+
+Without step 4, `5_run.sh` uses the baked shared K=2 `acs_sandbox_cpu` ARNs. The A/B is
+`HEARTBEAT_KEEP_WARM=0 bash 5_run.sh`.
 
 ## Knobs (env vars; defaults in `run.sh`)
 
@@ -106,6 +105,7 @@ mode.
   keep-warm wiring, `mini_agent.py`), the remote sandbox client (`agentcore_runtime_sandbox.py`),
   the keep-warm lever (`session_keeper.py`), the dataset builder (`build_real_datasets.py`), the
   task registry (`task_families.py`).
-- `prepare_data.sh` (step 1) · `run.sh` (the real RL run, step 2) · `metrics.py` (step 3).
+- `1_…6_*.sh` + `deploy/` (`demo.env`, `steps_common.sh`, `agentcore_deploy.py`, `Dockerfile.sandbox.cpu`) — the numbered steps.
+- `prepare_data.sh` · `run.sh` (the real RL run) · `metrics.py` — called by steps 1 and 5.
 - `heartbeat_demo.py` / `agentcore_idle_sim.py` — the offline animation of the same mechanism.
 - `data/` — `deepscaler_{train,eval}.jsonl`.

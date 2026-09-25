@@ -71,30 +71,27 @@ docker exec agentcore_p4 python3 /work/code/demos/$DEMO/metrics.py $LOG \
 
 ## The demos (flat, equal — one row each)
 
-**Needs** column = what to do *before* the standard recipe. When it says an ARN/map, pass it via
-`EXTRA_ENV` (step 2). Blank Needs = just run the recipe (baked ARN, ships `data/` or has `prepare_data.sh`).
+**Needs** column = what to do *before* the standard recipe. Every demo now ships the numbered step scripts (`1_prepare_data.sh` → `2_build_image.sh` → `3_push_ecr.sh` → `4_deploy_runtime.sh`, then `5_run.sh`, `6_cleanup.sh`; see `README.md`), so a Needs cell usually just means "run steps 1–4 first" — `4_deploy_runtime.sh` writes `deploy/runtime.env`, which `5_run.sh` picks up. When it says an ARN/map, you can also pass it via
+`EXTRA_ENV` (recipe step 2). Blank Needs = just run the recipe (baked ARN, ships `data/` or has `prepare_data.sh`).
 
 | Demo (standalone dir) | Substrate | Needs before running |
 |---|---|---|
-| `demo_cpu_tasks` (one run per `DATASET`: mbpp gsm8k math math500 deepscaler humaneval gretelsql hotpotqa xlam mcp mixed) | CPU sandbox (baked ARNs) | — (set `DS=<dataset>`; replaces the ten former `demo_cpu_<ds>` folders, merged 2026-09-23 as `demo_cpu_datasets`, and `demo_cpu_mixtask` = `DS=mixed`, merged 2026-09-25 — older `_smoke_logs/demo_cpu_<ds>.*` / `demo_cpu_datasets-*` / `demo_cpu_mixtask.*` files are those runs) |
+| `demo_cpu_tasks` (one run per `DATASET`: mbpp gsm8k math math500 deepscaler humaneval gretelsql hotpotqa xlam mcp mixed) | CPU sandbox (baked ARNs) | — (set `DS=<dataset>`; replaces the ten former `demo_cpu_<ds>` folders, merged 2026-09-23 as `demo_cpu_datasets`, and `demo_cpu_mixtask` = `DS=mixed`, merged 2026-09-25 — older `_smoke_logs/demo_cpu_<ds>.*` / `demo_cpu_datasets-*` / `demo_cpu_mixtask.*` files are those runs). **`VARIANT=bigimage`** (formerly `demo_cpu_bigimage`, merged 2026-09-25): a ~4 GB image on a CPU **capacity-provider Instance** — run `VARIANT=bigimage bash 2_build_image.sh` → `3_push_ecr.sh` → `4_deploy_runtime.sh` (image → ECR → CPU CP → Runtime → `deploy/runtime.bigimage.env`) first; no baked default. Old bigimage logs are in `demo_cpu_tasks/logs/bigimage/`. |
 | `demo_cpu_heartbeat` | CPU sandbox (baked ARNs) | — (heartbeat on by default: `HEARTBEAT_KEEP_WARM=1`) |
 | `demo_cpu_scale_lanes` (formerly `demo_cpu_harness_scale`) | CPU sandbox (baked ARNs), 4 persistent microVMs | — (`LANES=4`: 4 workers : 4 TP1 engines on rollout GPUs 4–7 : 4 microVMs; the old smoke ran the pre-rework topology) |
 | `demo_cpu_customruntime` | your custom CPU Runtime (`SANDBOX=agentcore-runtime`) | — (baked custom-Runtime ARN) |
 | `demo_cpu_imagepool` | pool of custom CPU images | deploy 3 images (pandas/scipy/sklearn), pass `-e AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE='{...}'`. Without it, custom-image families import-fail → reward 0. |
-| `demo_cpu_branching` | real Claude Code CLI in a CPU Runtime | deploy a CLI-capable image, pass `-e AGENTCORE_SANDBOX_RUNTIME_ARN="$CLI_ARN"`. First run = bring-up (README header stale; trust `run.sh`). |
+| `demo_cpu_branching` (**experimental, blocked**) | real Claude Code CLI in a CPU Runtime | steps 2–4 deploy the CLI-capable image, or pass `-e AGENTCORE_SANDBOX_RUNTIME_ARN="$CLI_ARN"`. First run = bring-up (README header stale; trust `run.sh`). **Blocked:** the in-sandbox CLI exits 1 before any model call → no trajectories. |
 | `demo_cpu_terminalbench` | pool of per-task CPU images (~229 Runtimes), fresh microVM per episode | `fetch_terminalbench.py`, then `deploy/deploy_terminalbench.py` (one image + Runtime per task; `TB_LIMIT=2` to validate), pass the resulting `AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE` map (see its README); run `validate_oracle.py` and rebuild the dataset from usable tasks. Look-ahead pre-open keeps `TB_PREOPEN_BATCHES` × RB × NS (default 64) sessions booted — check the account's concurrent-session quota first. Not run yet. |
-| `demo_cpu_bigimage` | large image (>2 GB) on a CPU **capacity-provider Instance** | `python3 code/demos/demo_cpu_bigimage/deploy/deploy_bigimage.py` (builds image → ECR → CPU CP → Runtime), then pass `-e AGENTCORE_SANDBOX_RUNTIME_ARN="$BIGIMG_ARN"`. No baked default. |
 | `demo_gpu_farm` (`FARM=whole`) | LOCAL whole-GPU Ray farm (GPUs 6,7, 1 GPU/session) — was `demo_gpu_local` / `demo_gpu_shared_multi` | two-step: host `bash code/deploy/run_local_gpu_runtime.sh whole` first; run with `-e FARM=whole`; sync save; `bash …/run_local_gpu_runtime.sh stop` after. Warm-shared (`B4_SHARED_RUNTIME_SESSION`). Ships `data/`. |
 | `demo_gpu_farm` (`FARM=fractional`) | LOCAL fractional-GPU Ray farm (1 GPU, 2×0.5 actors share it) — was `demo_gpu_shared_single` | two-step: host `bash code/deploy/run_local_gpu_runtime.sh fractional` first; run with `-e FARM=fractional` (default); `…/run_local_gpu_runtime.sh stop` after. Warm-shared (`B4_SHARED_RUNTIME_SESSION`). Ships `data/`. |
-| `demo_gpu_single` | ONE warm g6 shared across episodes (remote) — OR local farm for on-box smoke | **On-box smoke (no g6 needed):** two-step like `demo_gpu_farm FARM=whole` — host `bash code/deploy/run_local_gpu_runtime.sh whole`, then run with `-e LOCAL_GPU=1`, `…/run_local_gpu_runtime.sh stop` after. **Remote:** live g6 ARN instead. Warm-shared (`B4_SHARED_RUNTIME_SESSION`). |
-| `demo_gpu_snapshot` | ONE warm g6 + app-level snapshot/resume (remote) — OR local farm for on-box smoke | **On-box smoke (no g6 needed):** two-step like `demo_gpu_farm FARM=whole` — host `run_local_gpu_runtime.sh whole`, then run with `-e LOCAL_GPU=1 -e SNAPSHOT_EVERY=1`, stop after. **Remote:** live g6 ARN. Warm-shared (`B4_SHARED_RUNTIME_SESSION`). Snapshot/resume persists to the store, so it works on the local farm too. |
-| `demo_gpu_customruntime` | ONE warm remote g6 custom Runtime (KernelBench CUDA) — OR local farm for on-box smoke | **On-box smoke (no g6 needed):** two-step like `demo_gpu_farm FARM=whole` — host `bash code/deploy/run_local_gpu_runtime.sh whole` first, then run with `-e LOCAL_GPU=1` (local whole-GPU farm on GPUs 6,7, slime on 0-5), `…/run_local_gpu_runtime.sh stop` after. **Remote:** live g6 ARN instead. Warm-shared (`B4_SHARED_RUNTIME_SESSION`) either way. (Last on-box attempt OOM-killed the local trainer — reduce train GPUs / `--max-tokens-per-gpu` if it recurs.) |
+| `demo_gpu_single` (incl. `SNAPSHOT_EVERY=1` and the custom-Runtime angle — formerly `demo_gpu_snapshot` / `demo_gpu_customruntime`, merged 2026-09-25) | ONE warm g6 custom Runtime shared across episodes (remote) — OR local whole-GPU farm for on-box smoke | **Remote:** steps 2–4 (`4_deploy_runtime.sh` → Runtime on the g6 CP → `deploy/runtime.env`), then `5_run.sh`. **On-box smoke (no g6 needed):** `LOCAL_GPU=1 bash 4_deploy_runtime.sh` (starts the local whole-GPU farm on 6,7), `LOCAL_GPU=1 bash 5_run.sh` (slime on 0–5, sync save), `LOCAL_GPU=1 bash 6_cleanup.sh`. Warm-shared (`B4_SHARED_RUNTIME_SESSION`) either way. Add `SNAPSHOT_EVERY=1` for the snapshot/resume angle (default 0 = off; the store works on the local farm too). `gpu_torch_smoke.py` is the offline CUDA-contract probe. (A former customruntime on-box attempt OOM-killed the local trainer — reduce train GPUs / `--max-tokens-per-gpu` if it recurs.) |
 
 ### Offline pre-checks (seconds, no AWS/GPU)
 
 A few demos ship offline probes worth running first — they import the harness/glue and verify a
 mechanism without AWS: property-demo animations (`heartbeat_demo.py`, `snapshot_demo.py`,
-`harness_scaling_demo.py`, `gpu_torch_smoke.py`), and `demo_cpu_bigimage`'s `probe_bigimage.py`
+`harness_scaling_demo.py`, `demo_gpu_single`'s `gpu_torch_smoke.py`), and `demo_cpu_tasks`'s `probe_bigimage.py`
 (image-size vs the microVM cap + LocalSandbox contract parity) and `netcheck.py` (safe-networking
 checklist). These are **not** the trainers — the trainers all run via the recipe above.
 
@@ -109,7 +106,7 @@ checklist). These are **not** the trainers — the trainers all run via the reci
 There is no tiering, but two ordering facts still hold:
 
 1. **One demo at a time** — each trainer reserves all 8 local GPUs (4 train + 4 inference).
-2. **Prerequisites first** — a demo with a non-empty **Needs** cell (imagepool, branching, bigimage,
+2. **Prerequisites first** — a demo with a non-empty **Needs** cell (imagepool, branching, `demo_cpu_tasks VARIANT=bigimage`,
    the g6 GPU demos, gpu_farm's host step) must have that deploy/ARN ready before its run. Demos with
    an empty **Needs** cell can run in any order with no extra setup.
 

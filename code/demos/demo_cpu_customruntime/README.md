@@ -20,7 +20,7 @@ on `local` / `agentcore` / `agentcore-runtime`; **only the operational trade-off
 | `local`             | `LocalSandbox`            | offline subprocess (dev/CI only)            | nothing               | the host env; **not** isolated             | n/a |
 
 ¹ This demo is CPU. The **exact same custom-Runtime path** puts a GPU under the sandbox on a
-capacity-provider Instance — see the sibling **`demo_gpu_customruntime`**.
+capacity-provider Instance — see [`demo_gpu_single`](../demo_gpu_single/) (`gpu_torch_smoke.py`).
 
 Why choose a custom Runtime as the training substrate: you own every dependency, tool, user,
 filesystem layout, and the VPC/IAM posture (a hidden checker can need packages, a private endpoint,
@@ -35,27 +35,19 @@ silently fall back off the AgentCore substrate it is meant to exercise. It is **
 
 ---
 
-## Reproduce (inside the `agentcore_p4` container)
+## Step by step (numbered scripts; run from this dir on the HOST — container steps `docker exec` themselves)
 
 ```bash
-# 0. Deploy the custom CPU Runtime once (build -> ECR -> CreateAgentRuntime). This repo has tooling:
-#    code/deploy/deploy_two_runtime.py builds+pushes acs-sandbox-cpu and creates acs_sandbox_cpu.
-#    Export its ARN (or a comma-separated pool) — run.sh ships a K=2 baked default you can override:
-export AGENTCORE_SANDBOX_RUNTIME_ARNS='arn:aws:bedrock-agentcore:us-west-2:<acct>:runtime/<cpu-rt>'
-
-# 1. Build the dataset (offline; agentica-org/DeepScaleR numeric-answer subset, RLVR numeric match).
-docker exec agentcore_p4 bash /work/code/demos/demo_cpu_customruntime/prepare_data.sh
-#    -> data/deepscaler_{train,eval}.jsonl (400/40)
-
-# 2. REAL RL train + eval on the custom Runtime: 10 train steps + 1 eval, single final ckpt.
-docker exec -e NR=11 -e EVAL_INTERVAL=10 -e EVAL_NS=2 agentcore_p4 \
-    bash -lc 'cd /work && bash code/demos/demo_cpu_customruntime/run.sh 2>&1 | tee code/demos/demo_cpu_customruntime/smoke_run.log'
-
-# 3. Parse the log into CSVs + a PNG of the curves.
-docker exec agentcore_p4 python3 /work/code/demos/demo_cpu_customruntime/metrics.py \
-    /work/code/demos/demo_cpu_customruntime/smoke_run.log \
-    --csv train.csv --eval-csv train.eval.csv --plot train.png
+bash 1_prepare_data.sh     # 1. container: DeepScaleR numeric-answer subset -> data/deepscaler_{train,eval}.jsonl (400/40)
+bash 2_build_image.sh      # 2. arm64 image from deploy/Dockerfile.sandbox.cpu (your custom Runtime)
+bash 3_push_ecr.sh         # 3. -> ECR acs-customrt-cpu (deploy/images.env)
+bash 4_deploy_runtime.sh   # 4. CreateAgentRuntime acs_customrt_cpu -> deploy/runtime.env (AGENTCORE_SANDBOX_RUNTIME_ARNS)
+bash 5_run.sh              # 5. container: 10 train steps + 1 eval on the custom Runtime; logs/<tag>.{log,csv,eval.csv,png}
+bash 6_cleanup.sh          # 6. delete the Runtime
 ```
+
+Without step 4, `5_run.sh` uses the baked K=2 `acs_sandbox_cpu` ARNs. `SANDBOX=agentcore bash 5_run.sh`
+trains on the managed Code Interpreter instead (no image, no Runtime).
 
 ## Offline contract-parity probe (no training, no AWS needed for `local`)
 
@@ -98,10 +90,10 @@ and shows the custom Runtime is not the bottleneck.
 ## Deploying the custom Runtime
 
 `deploy/Dockerfile.sandbox.cpu` is tiny — `python:3.12-slim` + `bedrock-agentcore` +
-`sandbox_server_agent.py`, serving `/invocations` on 8080. Build (native amd64) with the demo dir as
-context, push to ECR, `CreateAgentRuntime`. Tooling: `code/deploy/deploy_two_runtime.py` (base CPU
-Runtime `acs_sandbox_cpu`), `code/deploy/deploy_cpu_sandbox_fleet.py` (`FLEET_N=4 …` mints identical
-Runtimes and prints the `AGENTCORE_SANDBOX_RUNTIME_ARNS` list). The Code Interpreter backend
+`sandbox_server_agent.py`, serving `/invocations` on 8080. Steps 2–4 build it (arm64, demo dir as
+context), push it to ECR and `CreateAgentRuntime` via the vendored `deploy/agentcore_deploy.py`; edit
+the Dockerfile and rerun them with `FORCE_RECREATE=1 bash 4_deploy_runtime.sh`. For a pool, pass
+several ARNs comma-separated in `AGENTCORE_SANDBOX_RUNTIME_ARNS`. The Code Interpreter backend
 (`SANDBOX=agentcore`) needs none of this — just AWS credentials.
 
 ## Folder layout (self-contained)
@@ -111,5 +103,6 @@ Runtimes and prints the `AGENTCORE_SANDBOX_RUNTIME_ARNS` list). The Code Interpr
 - `compare_backends.py` — the offline contract-parity probe (same episode across backends).
 - `agentcore_slime_demo/` — vendored harness/sandbox/task lib (`sandbox.py::make_sandbox` is the
   backend factory). Imported only from here.
-- `deploy/Dockerfile.sandbox.cpu` — the custom-Runtime image.
+- `1_…6_*.sh` + `deploy/` (`Dockerfile.sandbox.cpu` = the custom-Runtime image, `demo.env`,
+  `steps_common.sh`, `agentcore_deploy.py`) — the numbered steps.
 - `data/` — `deepscaler_{train,eval}.jsonl`.
