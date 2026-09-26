@@ -481,6 +481,38 @@ class RayFarmRuntimeSandbox:
             gate.release()
             raise
 
+    def keepalive_anchor(self):
+        """(key, pinger) that keeps the SHARED runtimeSessionId itself warm (HEARTBEAT, via KeptSandbox).
+
+        Per-episode heartbeats only cover sub_sessions that are open. Between rollouts (a long train
+        step, eval, checkpoint save) no episode may be open, and without an invoke the warm instance
+        behind the shared id would idle out. The keeper registers this anchor once per shared id and
+        never drops it, so the instance stays warm for the whole run. A plain {"op":"ping"} (no
+        sub_session) touches no episode's state. None for the local farm (no idle timeout)."""
+        if self._local_url or not self._arn:
+            return None
+        arn, region, sid, wd = self._arn, self._region, self._session_id, self._workdir
+        box: dict = {}
+
+        def _ping_sync() -> None:
+            import boto3
+            from botocore.config import Config
+            if "c" not in box:
+                box["c"] = boto3.client("bedrock-agentcore", region_name=region,
+                                        config=Config(read_timeout=60, connect_timeout=30,
+                                                      retries={"max_attempts": 2}))
+            resp = _timed_invoke(
+                lambda: box["c"].invoke_agent_runtime(
+                    agentRuntimeArn=arn, runtimeSessionId=sid,
+                    payload=json.dumps({"op": "ping", "workdir": wd}).encode()),
+                op="keepalive", arn=arn, session=sid, what=f"shared-session keepalive {sid}")
+            resp["response"].read()
+
+        async def ping() -> None:
+            await asyncio.to_thread(_ping_sync)
+
+        return (f"shared-{sid}", ping)
+
     async def __aexit__(self, *exc) -> None:
         try:
             if self._client is not None or self._local_url:

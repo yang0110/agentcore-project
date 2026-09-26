@@ -55,6 +55,7 @@ class _Session:
     idle_timeout: float   # seconds AgentCore tolerates with no invoke before reclaiming
     last: float           # monotonic clock of the last invoke (real op OR heartbeat)
     pings: int = 0
+    ping_failures: int = 0
 
 
 class SessionKeeper:
@@ -98,6 +99,7 @@ class SessionKeeper:
         self._task: asyncio.Task | None = None
         # Observability for the demo / metrics.
         self.total_pings = 0
+        self.total_ping_failures = 0
         self.quiesce_count = 0
 
     # --- lifecycle ---------------------------------------------------------------------------
@@ -124,6 +126,9 @@ class SessionKeeper:
     # --- registry (called by KeptSandbox) ----------------------------------------------------
     def register(self, session_id: str, pinger: Pinger, idle_timeout: float) -> None:
         self._sessions[session_id] = _Session(session_id, pinger, float(idle_timeout), self._clock())
+
+    def is_registered(self, session_id: str) -> bool:
+        return session_id in self._sessions
 
     def unregister(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
@@ -185,7 +190,15 @@ class SessionKeeper:
                             try:
                                 await s.pinger()          # a raw no-op invoke; resets the idle clock
                             except Exception as exc:      # noqa: BLE001 — a failed ping != a crash
+                                # Do NOT reset the idle clock: a failed ping did not reach AgentCore,
+                                # so retry on the next tick instead of waiting another full interval.
+                                s.ping_failures += 1
+                                self.total_ping_failures += 1
                                 logger.warning("[keeper] heartbeat failed for %s: %r", s.session_id, exc)
+                                print(f"[demo] heartbeat_failed={s.session_id} "
+                                      f"idle_s={now - s.last:.0f} total_ping_failures={self.total_ping_failures}",
+                                      flush=True)
+                                continue
                             s.last = self._clock()
                             s.pings += 1
                             self.total_pings += 1
@@ -226,6 +239,13 @@ class KeptSandbox:
         await self._inner.__aenter__()
         self.sandbox_id = self._inner.sandbox_id
         self._keeper.register(self.sandbox_id, self._heartbeat, self._idle_timeout)
+        # Warm-shared farms: also keep the SHARED runtimeSessionId alive between episodes. Registered
+        # once per shared id and never unregistered, so the warm instance survives gaps with no
+        # episode open (train step, eval, checkpoint save).
+        anchor = getattr(self._inner, "keepalive_anchor", None)
+        got = anchor() if callable(anchor) else None
+        if got and not self._keeper.is_registered(got[0]):
+            self._keeper.register(got[0], got[1], self._idle_timeout)
         return self
 
     async def __aexit__(self, *exc) -> None:
@@ -261,7 +281,7 @@ class KeptSandbox:
         return getattr(self._inner, name)
 
 
-# ---- HEARTBEAT=1: the opt-in keep-warm feature every demo shares --------------------------------
+# ---- HEARTBEAT=1: the keep-warm feature every demo shares (default on own remote Runtimes) ------
 # One process-wide SessionKeeper per worker process, started lazily on whatever event loop first
 # runs an episode and re-armed if the loop changes (Mode B fully-async worker loop vs the eval
 # loop). It heartbeats any registered session that goes idle past ping_fraction*idle_timeout — the
@@ -271,7 +291,8 @@ _KEEPER_LOOP: asyncio.AbstractEventLoop | None = None
 
 
 def heartbeat_enabled() -> bool:
-    """HEARTBEAT=1 (or the older HEARTBEAT_KEEP_WARM=1). Default off."""
+    """HEARTBEAT=1 (or the older HEARTBEAT_KEEP_WARM=1). Off if unset; run.sh resolves the per-demo
+    default (on for our own remote Runtimes) and always exports HEARTBEAT."""
     v = os.environ.get("HEARTBEAT", os.environ.get("HEARTBEAT_KEEP_WARM", "0"))
     return (v or "").strip().lower() in ("1", "true", "yes", "on")
 

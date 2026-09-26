@@ -8,7 +8,7 @@ across a weight sync)?
 **application-level** snapshot inside your own container is feasible, and even that loses to a plain
 heartbeat for the one case we actually care about (weight-sync quiesce). Use the heartbeat +
 re-seed model instead — see [`demos-program.md`](demos-program.md) and
-the opt-in `HEARTBEAT=1` knob of every demo (formerly `demo_cpu_heartbeat`; offline probe
+the `HEARTBEAT` knob of every demo (on by default for remote own Runtimes since 2026-09-26) (formerly `demo_cpu_heartbeat`; offline probe
 [`code/demos/demo_cpu_tasks/heartbeat_demo.py`](../code/demos/demo_cpu_tasks/heartbeat_demo.py)).
 
 ## Wall 1 — you don't own the instance
@@ -83,5 +83,5 @@ max-lifetime**, which weight sync never is. So the architecture is:
 - **Re-seed** (tier-a serialization) to recover from a genuine loss — `recovery.py`.
 - **Snapshot never needed.**
 
-Demonstrated end-to-end by the opt-in `HEARTBEAT=1` knob of every demo (formerly `demo_cpu_heartbeat`; offline probe
+Demonstrated end-to-end by the `HEARTBEAT` knob of every demo (on by default for remote own Runtimes since 2026-09-26) (formerly `demo_cpu_heartbeat`; offline probe
 [`code/demos/demo_cpu_tasks/heartbeat_demo.py`](../code/demos/demo_cpu_tasks/heartbeat_demo.py)).

@@ -199,11 +199,19 @@ fi
 DATA="${DATA:-$DEMO_DIR/data/${_DS}_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/${_DS}_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-$_EVAL_NAME}"
-# HEARTBEAT=1 (opt-in; was the standalone demo_cpu_heartbeat): a process-wide SessionKeeper
-# heartbeats every open sandbox session that goes idle past HEARTBEAT_PING_FRACTION*HEARTBEAT_IDLE,
-# so the weight-sync stall can't idle-reclaim it (agentcore_slime_demo/session_keeper.py).
-# Watch the [demo] heartbeat_session=… lines (0 with HEARTBEAT=0).
-HEARTBEAT="${HEARTBEAT:-${HEARTBEAT_KEEP_WARM:-0}}"
+# HEARTBEAT (default ON for our own remote Runtimes, SANDBOX=agentcore-* with no local endpoint; off
+# for the Code Interpreter and the local farm, which has no idle timeout): a process-wide
+# SessionKeeper heartbeats every open sandbox session that goes idle past
+# HEARTBEAT_PING_FRACTION*HEARTBEAT_IDLE, so a trainer stall can't idle-reclaim it — a reclaimed
+# session id silently comes back EMPTY (agentcore_slime_demo/session_keeper.py). HEARTBEAT=0 is the
+# A/B baseline. Watch the [demo] heartbeat_session=… lines (0 with HEARTBEAT=0).
+HEARTBEAT="${HEARTBEAT:-${HEARTBEAT_KEEP_WARM:-auto}}"
+if [ "$HEARTBEAT" = auto ]; then
+  case "$SANDBOX" in agentcore-*) HEARTBEAT=1 ;; *) HEARTBEAT=0 ;; esac
+  if [ -n "${AGENTCORE_LOCAL_ENDPOINT:-}" ]; then HEARTBEAT=0; fi
+fi
+# HEARTBEAT_IDLE must be <= the Runtime's idleRuntimeSessionTimeout. 600 s is safe for every Runtime:
+# older ones were created with 600 s, new ones get RUNTIME_IDLE_TIMEOUT (3600 s, deploy/agentcore_deploy.py).
 HEARTBEAT_IDLE="${HEARTBEAT_IDLE:-600}"
 HEARTBEAT_PING_FRACTION="${HEARTBEAT_PING_FRACTION:-0.5}"
 # The managed Code Interpreter (SANDBOX=agentcore) ends a session at its session timeout whatever the
@@ -215,7 +223,7 @@ if [ "$HEARTBEAT" = "1" ] && { [ "$SANDBOX" = agentcore ] || [ "$SANDBOX" = aws 
         "AGENTCORE_CI_SESSION_TIMEOUT=${AGENTCORE_CI_SESSION_TIMEOUT}s regardless of pings. Disabling; use SANDBOX=agentcore-runtime for heartbeats." >&2
    HEARTBEAT=0
 fi
-_HB=""; [ "$HEARTBEAT" = "1" ] && _HB="_heartbeat"
+_HB=""; [ "$HEARTBEAT" = "0" ] && [ -z "${AGENTCORE_LOCAL_ENDPOINT:-}" ] && case "$SANDBOX" in agentcore-*) _HB="_noheartbeat" ;; esac
 SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}${_HB}_async}"
 
 # clean any prior ray/sglang from a previous run

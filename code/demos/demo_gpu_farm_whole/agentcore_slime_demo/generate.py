@@ -144,7 +144,7 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     sandbox = make_sandbox(os.environ.get("SANDBOX", "agentcore"),
                            region=os.environ.get("AGENTCORE_REGION"))
 
-    # HEARTBEAT=1 (opt-in, every demo): wrap the sandbox in a KeptSandbox so a process-wide
+    # HEARTBEAT=1 (default on our own remote Runtimes, every demo): wrap the sandbox in a KeptSandbox so a process-wide
     # SessionKeeper heartbeats it if it goes idle across the weight-sync barrier. Off => unchanged.
     sandbox = await maybe_keep_warm(sandbox)
     async with sandbox as sb:

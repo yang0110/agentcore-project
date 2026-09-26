@@ -64,7 +64,7 @@ NR−1 = 10 — keep **`NR × RB ≤ 100`**), `TEMP` (1.0), `CONC` (2 ⇒ `--sgl
 `B4_SHARED_RUNTIME_SESSION` (pin the shared session id to reuse a warm farm across runs; auto-minted
 as `b4farm-<32 hex>` if unset), and `HEARTBEAT` (0; `1` = a `SessionKeeper` pings any sandbox
 session idle past `HEARTBEAT_PING_FRACTION × HEARTBEAT_IDLE` = 0.5 × 600 s, so it survives the
-weight-sync stall — the former `demo_cpu_heartbeat`, now an opt-in knob of every demo). The heartbeat
+weight-sync stall — the former `demo_cpu_heartbeat`, now a knob of every demo, default on only for remote Runtimes — so off here). The heartbeat
 only helps sessions that can idle out, i.e. our own AgentCore Runtimes; it does **not** extend a
 managed Code Interpreter session, and the local farm container here has no idle timeout at all, so
 it is a no-op in this demo unless you point it at a remote Runtime. Checkpoints go to

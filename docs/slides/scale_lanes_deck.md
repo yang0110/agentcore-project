@@ -96,6 +96,30 @@ September 25, 2026
 
 - Weight sync waits for the rollout to finish, so rollouts are **one step off-policy**.
 
+## DeepSeek DSec moved the agent loop out of the trainer [31]
+
+- **Why:** DeepSeek's GPU jobs are routinely **preempted**. With the loop in the GPU pod, the loop died but the sandbox survived, so recovery **replayed a command log**.
+- **Where:** from V4.1 on, the harness runs on DSec, **outside the GPU pool**: an agent sandbox (scaffold + tools) and a worker container (rollout state). A preempted trainer **reconnects**, with no replay.
+
+| | DSec (V4.1+) | This demo |
+|------------------|------------------------------|--------------------------------|
+| Harness | agent sandbox, with its tools | **slime's rollout process** |
+| Token record | worker container | slime's in-process adapter |
+| Trainer lost | reconnect, continue | abort in-flight: one batch |
+| Trainer stalls | pause/resume sandbox | **heartbeat** keeps sessions |
+
+: Agent-loop placement, DSec vs this demo
+
+## What we did, and why: the harness stays in-process
+
+- **No preemption here:** the trainer has a dedicated 8×L40S box. A stall is the real risk, and the heartbeat covers it. A crash costs one batch, not correctness.
+- **Moving only the harness saves nothing:** the token record and the SGLang engines die with the slime job anyway. DSec's gain also needs an external record and a "reconnect to episode X" path **in slime**.
+- **Harness in each microVM has costs:**
+  - the policy's commands would run next to its own transcript and reward, so it could tamper with them;
+  - every microVM needs a network path back to inference (VPC mode plus a security-group rule);
+  - it re-ties the harness tier to the sandbox tier, which is the coupling this demo removes.
+- **When to move it:** preemptible/Spot GPUs or multi-hour episodes. Then run the harness plus its token record as its own service, and have slime fetch episodes by ID.
+
 # 4 · Results
 
 ## Offline: tiers must scale together
@@ -159,6 +183,7 @@ The engines keep up only if **N · G / T ≤ C**: N sandboxes, G tokens per epis
 |------|------------------------------------------------------------|--------------------------------------------|
 | [Q2] | `aws service-quotas list-service-quotas --service-code bedrock-agentcore` (us-west-2, 2026-09-23) | Active sessions 5000 · new sessions 25/s |
 | [D3] | <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html> | Session = dedicated microVM; 15-min idle, 8 h max |
+| [31] | DSec (DeepSeek Elastic Compute) <https://arxiv.org/abs/2609.22978>, §6.2–6.3 | Agent loop outside the preemptible GPU pool; pause/resume |
 | Code | `demo_cpu_scale_lanes/`: `harness_pool.py`, `harness_scaling_demo.py` | Decoupled pool, sweep |
 | Logs | `_smoke_logs/lanes_tb_0923/`, `_smoke_logs/demo_cpu_harness_scale.*` | Measured numbers |
 

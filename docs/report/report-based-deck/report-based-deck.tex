@@ -1294,8 +1294,9 @@ eval 0.65 \\
 \textbf{whole} GPU per episode & KernelBench & passed (2026-09-21): 0.65
 / 0.70 \\
 8 & \texttt{demo\_cpu\_branching} \emph{(exp.)} & µVM with node +
-\texttt{claude} & SWE bug-fix, real Claude Code CLI & unblocked;
-{[}PENDING: branching RL smoke fan\_out and reward{]} \\
+\texttt{claude} & SWE bug-fix, real Claude Code CLI & runs end to end:
+fan-out p50 4, eval 0.47; advantage bug fixed, {[}PENDING: branching
+re-run with the advantage fix{]} \\
 \bottomrule\noalign{}
 \end{longtable}
 
@@ -2343,9 +2344,9 @@ unbiased.
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{Ch. 8 --- \texttt{demo\_cpu\_branching}: no
-longer blocked}
-\protect\hypertarget{ch.-8-demo_cpu_branching-no-longer-blocked}{}
+\begin{frame}[fragile,allowframebreaks]{Ch. 8 --- \texttt{demo\_cpu\_branching}: runs end
+to end}
+\protect\hypertarget{ch.-8-demo_cpu_branching-runs-end-to-end}{}
 \textbf{Three blockers, all fixed:}
 
 \begin{enumerate}
@@ -2369,9 +2370,43 @@ longer blocked}
 \textbf{Verified without a trainer:} the session starts, \texttt{claude}
 2.1.278 runs as root, the dial-back to \texttt{:18021} works, the parser
 extracts the tool call, and the checker scores 0 / 0 / 1.
+\end{frame}
 
-\textbf{RL result:} {[}PENDING: branching RL smoke fan\_out and
-reward{]}.
+\begin{frame}[fragile,allowframebreaks]{Ch. 8 --- \texttt{demo\_cpu\_branching}: RL smoke
+and a fourth bug}
+\protect\hypertarget{ch.-8-demo_cpu_branching-rl-smoke-and-a-fourth-bug}{}
+\textbf{RL smoke 2026-09-25} (NR=3: 2 train steps + 1 eval, job
+succeeded). \texttt{eval/swe} = \textbf{0.47}. Fan-out and reward work;
+\textbf{the gradient was zero}: \texttt{rollout\_advantage.py} grouped
+by \texttt{sample.index}, which slime makes unique per rollout, so every
+group had one member. Fixed: group =
+\texttt{index\ //\ n\_samples\_per\_prompt}, plus a regression test.
+Learning {[}PENDING: branching re-run with the advantage fix{]}.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2727}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3636}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3636}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Metric
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Step 1
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+Step 2
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Episodes (CLI \texttt{exit≠0}) & 33 (0) & 35 (0) \\
+Leaf samples · \texttt{fan\_out} mean / p50 / max & 193 · 5.8 / 4 / 37 &
+167 · 4.8 / 4 / 10 \\
+\texttt{rollout/raw\_reward} & 0.61 & 0.48 \\
+Sandbox op p50 / p95 & 88 / 136 ms & 87 / 135 ms \\
+Step time (actor train) & 49 min (30 min) & 32 min (24 min) \\
+\texttt{advantages} · \texttt{pg\_loss} · \texttt{grad\_norm} &
+\textbf{0 · 0 · 0} & \textbf{0 · 0 · 0} \\
+\bottomrule\noalign{}
+\end{longtable}
 \end{frame}
 
 \hypertarget{cross-cutting-mechanisms}{%
@@ -2648,8 +2683,9 @@ sample} (token-mean loss), so an incidental fan-out can't reweight the
 update. \texttt{MODE=A}, \texttt{dp=1} (TP2×PP2), sync save.
 
 \emph{\texttt{demo\_cpu\_branching} (§5, Ch. 8) implements this; its
-three blockers are fixed and verified without a trainer --- RL result
-{[}PENDING: branching RL smoke fan\_out and reward{]}.}
+three blockers are fixed and verified without a trainer --- RL smoke
+fans out (p50 4) and scores (eval 0.47); an all-zero-advantage bug is
+fixed, learning {[}PENDING: branching re-run with the advantage fix{]}.}
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{Mechanism spotlight --- resilience: heartbeat \&

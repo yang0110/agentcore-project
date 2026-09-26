@@ -440,9 +440,9 @@ RL}. It is grounded in a working slime + AgentCore project and in the
 \item
   \textbf{How to hide the sandbox cold start} --- pre-open the next one
   or two batches' sessions, and keep idle own-Runtime sessions alive
-  across a weight sync with a \textbf{heartbeat} (\texttt{HEARTBEAT=1},
-  an opt-in knob of every demo; always on in
-  \texttt{demo\_cpu\_terminalbench}). On the Code Interpreter a
+  across a weight sync with a \textbf{heartbeat} (\texttt{HEARTBEAT}, on
+  by default in every demo whose sandbox is a remote own Runtime; always
+  on in \texttt{demo\_cpu\_terminalbench}). On the Code Interpreter a
   heartbeat has no effect; the session timeout is the lever.
 \item
   \textbf{How isolation is guaranteed when sessions share one instance}
@@ -3735,6 +3735,122 @@ GPU kernel / CUDA (KernelBench) {[}7{]} & ◑ & Instances only; 1 session
 = 1 GPU; \textbf{no MIG on L4} \\
 \end{longtable}
 
+\hypertarget{related-work-deepseek-dsec-a-purpose-built-sandbox-platform}{%
+\subsection{Related work --- DeepSeek DSec, a purpose-built sandbox
+platform}\label{related-work-deepseek-dsec-a-purpose-built-sandbox-platform}}
+
+DSec (DeepSeek Elastic Compute) {[}31{]} is DeepSeek's in-house sandbox
+platform for agentic RL, evaluation and environment building. It has
+served every sandbox workload from DeepSeek V3.2 to V4.1. It is the best
+published reference point for what a sandbox layer looks like when it is
+built for RL rather than rented. One unit is about 160 CPU nodes with
+30K cores. It serves about \textbf{3M sandboxes a day}, with peaks of
+\textbf{380K running at once} and \textbf{more than 5,000 created per
+second}.
+
+Its design choices line up closely with the questions this report asks
+of AgentCore:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Four backends behind one SDK:}
+
+  \begin{itemize}
+  \tightlist
+  \item
+    warm pre-created containers for short stateless calls, including GPU
+    kernels on MIG slices;
+  \item
+    containers for SWE and tool use;
+  \item
+    Firecracker microVMs for security-sensitive and computer-use tasks;
+  \item
+    QEMU VMs for Android and GUI tasks.
+  \end{itemize}
+
+  The caller picks the backend, which is the same idea as our three
+  sandbox tiers.
+\item
+  \textbf{Layered images, loaded on demand.} Base OS, task workspace and
+  toolkit are versioned separately (11K bases × 100K workspaces in one
+  week) and stacked at start time. They are read on demand from
+  DeepSeek's shared filesystem: a sandbox reads only 4--13 \% of its
+  image, and on an 8,192-container burst a full pull took 1.71× longer.
+\item
+  \textbf{Heavy overcommit.} About 90 \% of sandboxes use at most 5 \%
+  of the CPU they request, so one node runs about 3,200 containers or
+  800 microVMs. Latency-sensitive sandboxes get protected CPU
+  scheduling.
+\item
+  \textbf{Coupled to the trainer.} The agent loop runs on the sandbox
+  platform, outside the preemptible GPU job. When a job is preempted,
+  its sandboxes are paused (containers frozen, microVMs snapshotted) and
+  resume on the next request.
+\item
+  \textbf{Reward-hacking controls.} Their agents forged requests to the
+  in-sandbox shell service, overwrote \texttt{/bin/bash}, port-scanned
+  for code mirrors and crashed the kernel through \texttt{/proc}. The
+  fixes are AppArmor rules plus per-sandbox network allowlists that can
+  change between task stages.
+\end{itemize}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+DSec {[}31{]}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+AgentCore (this account, us-west-2, 2026-09-26)
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Sandbox creation rate & \textgreater{} 5,000 /s & \textbf{25 /s} new
+Runtime sessions (adjustable) \\
+Running at once & 380K & 5,000 Runtime sessions · 1,000 Code Interpreter
+sessions \\
+Distinct environments & 11K bases × 100K workspaces, composed at start &
+one image per Runtime; max \textbf{1,000} Runtimes per account \\
+Image delivery & on demand; start time barely depends on image size &
+full image per cold boot (≈ 15 s for 447 MB); 2 GB microVM cap \\
+Hiding the cold boot & not needed: lazy loading keeps the pull time low;
+pre-warming rejected, since DSec's bottleneck is I/O volume, not latency
+& \textbf{pre-open (ours)}: while the current batch runs, the sandboxes
+of the next 1--2 batches are opened (image pulled, microVM booted),
+which hides the image boot time; median wait for a ready sandbox 774 ms
+→ \textbf{5 ms} (warm-start probe, small stdlib image), makespan −20
+\% \\
+Sandbox lifetime & p50 15--17 min, p99 \textgreater{} 3 h & 15-min idle
+timeout by default; max lifetime 8 h on a microVM, 14 days on a Runtime
+Instance \\
+Survives a trainer stall & pause/resume, state kept & \textbf{no
+pause/resume, no state kept}; a heartbeat keeps the sandbox alive \\
+Agent loop & outside the GPU job & in the trainer process (this
+project) \\
+Reward-hack controls & AppArmor + network allowlists & microVM boundary;
+Landlock and no TCP on shared pools; VPC mode \\
+\end{longtable}
+
+The headline gaps are the three things AgentCore does not expose: image
+layers, session pause, and a creation rate in the thousands. One number
+bears directly on this project. DSec's median sandbox lives 15--17
+minutes, almost exactly AgentCore's default idle timeout, so bridging
+trainer stalls --- now the default: heartbeat on for every remote own
+Runtime, plus a 3600 s idle timeout --- (§``\texttt{HEARTBEAT=1} and
+\texttt{demo\_gpu\_single} \texttt{SNAPSHOT\_EVERY=1} in depth'') is the
+normal case rather than an edge case. Two DSec ideas can be copied
+cheaply on AgentCore: moving the agent loop out of the trainer process,
+and allowlisting the network per task through VPC mode. We also adopted
+three of its metrics (batch time-to-ready, peak creation rate and
+concurrency compared with the quotas, and session lifetime compared with
+the idle limit); see §``The shared skeleton --- one pipeline, one set of
+metrics'' for how they are computed and what the first log shows.
+
 In this project the policy is always \textbf{Qwen3-4B}, trained by
 slime, with the harness in-process and AgentCore as the sandbox. What
 varies from demo to demo is only the \textbf{sandbox substrate} and the
@@ -3933,9 +4049,10 @@ eval 0.65 \\
 \textbf{whole} GPU per episode & KernelBench & passed (2026-09-21): 0.65
 / 0.70 \\
 8 & \texttt{demo\_cpu\_branching} \emph{(exp.)} & microVM with node +
-\texttt{claude} & SWE bug-fix, real Claude Code CLI & 3 blockers fixed,
-verified without a trainer; {[}PENDING: branching RL smoke fan\_out and
-reward{]} \\
+\texttt{claude} & SWE bug-fix, real Claude Code CLI & smoke ran: fan-out
+p50 4 (max 37), reward 0.61 / 0.48, eval 0.47, but every advantage was 0
+(grouping bug, fixed); learning {[}PENDING: branching re-run with the
+advantage fix{]} \\
 \end{longtable}
 
 \textbf{How to read the status column.} Only \texttt{demo\_cpu\_tasks}
@@ -4397,8 +4514,17 @@ own-Runtime session idle past its timeout is reclaimed. A
 open session and pings (\texttt{exec("true")}) any that has been idle
 past \texttt{WARM\_PING\_FRACTION\ ×\ WARM\_IDLE\_TIMEOUT} (0.5 × 900
 s). In \texttt{demo\_cpu\_terminalbench} it is always on; every other
-demo has it as the opt-in knob \texttt{HEARTBEAT=1} (default off, so a
-run is unchanged unless set).
+demo has it as the knob \texttt{HEARTBEAT}, \textbf{on by default} when
+the sandbox is a remote own Runtime (\texttt{SANDBOX=agentcore-*} with
+no local endpoint) and off on the Code Interpreter and the local GPU
+farm; \texttt{HEARTBEAT=0} is the A/B baseline. As a backstop, Runtimes
+created by \texttt{deploy/agentcore\_deploy.py} now get an idle timeout
+of \texttt{RUNTIME\_IDLE\_TIMEOUT} = 3600 s (was a fixed 600 s), above
+the worst trainer stall we measured (≈ 800 s steps on
+\texttt{demo\_gpu\_single}). Existing Runtimes keep 600 s until
+recreated with \texttt{FORCE\_RECREATE=1}, which is why
+\texttt{HEARTBEAT\_IDLE} stays 600 s. The cost is that an abandoned
+session is billed for up to an hour.
 
 \textbf{The \texttt{warmstart/} probe isolates both mechanisms}
 (\texttt{bash\ warmstart/run\_warmstart.sh}; host-only, no GPU, no
@@ -4518,7 +4644,9 @@ run instead of once per episode. Each episode is assigned to the
 own per-episode \texttt{sub\_session} on it; closing an episode closes
 only its \texttt{sub\_session}, never the pool session. One Runtime
 serves the whole pool, so the pool size is purely client-side. Idle pool
-Instances are reclaimed after the Runtime idle timeout (600 s). Runtime
+Instances are reclaimed after the Runtime idle timeout (600 s on the
+deployed Runtime; 3600 s for Runtimes created from 2026-09-26,
+\texttt{RUNTIME\_IDLE\_TIMEOUT}). Runtime
 \texttt{acs\_sandbox\_bigcpu-ZM6bXj80yC} on capacity provider
 \texttt{acs\_cpu\_cp\_bigimage-tNyZnyHYGr}.
 
@@ -5055,9 +5183,10 @@ out into a \texttt{list{[}Sample{]}}. A custom generate hook
 (\texttt{claude\_code\_generate.py}) linearizes the trajectory tree, and
 a custom advantage (\texttt{rollout\_advantage.py}) baselines over
 \textbf{distinct episodes, not leaves} (§``When one episode becomes many
-samples''). \textbf{Status: no longer blocked} (details below the design
-considerations); the RL result is {[}PENDING: branching RL smoke
-fan\_out and reward{]}.
+samples''). \textbf{Status: runs end to end} (details below the design
+considerations): the 2026-09-25 RL smoke fanned out and scored, but a
+fourth bug zeroed every advantage; fixed, learning {[}PENDING: branching
+re-run with the advantage fix{]}.
 
 \textbf{Use case covered.} A real coding-agent CLI (Claude Code) as the
 harness, where one episode fans out into sub-agents and compacted
@@ -5087,8 +5216,9 @@ spawning more leaves).
   \texttt{-\/-sglang-tool-call-parser\ qwen25\ -\/-sglang-reasoning-parser\ qwen3},
   and the per-turn cap is \texttt{MAX\_RESPONSE\_LEN} (default 2048).
 \item
-  \textbf{Kept experimental} until an RL smoke shows fan-out and a
-  non-zero reward.
+  \textbf{Kept experimental} until a re-run with the advantage fix shows
+  a non-zero gradient {[}PENDING: branching re-run with the advantage
+  fix{]}.
 \end{itemize}
 
 \textbf{Status --- three blockers, all fixed.}
@@ -5116,8 +5246,38 @@ spawning more leaves).
 
 \textbf{Verified without a trainer:} the session starts, \texttt{claude}
 2.1.278 runs as root, the dial-back to \texttt{:18021} works, the parser
-extracts the tool call, and the checker scores 0 / 0 / 1. The RL result
-is {[}PENDING: branching RL smoke fan\_out and reward{]}.
+extracts the tool call, and the checker scores 0 / 0 / 1.
+
+\textbf{RL smoke (2026-09-25,
+\texttt{logs/smoke\_fix\_20260925\_132440.*}, NR=3 = 2 train steps + 1
+eval, GPUs 2--7, job succeeded):}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Fan-out works.} 68 episodes, none with CLI \texttt{exit≠0},
+  produced 360 leaf samples: \texttt{fan\_out} mean 5.8 / 4.8 per step,
+  p50 4, p95 13.8, max 37 (sub-agents and compaction both fire).
+\item
+  \textbf{Reward is non-zero.} \texttt{rollout/raw\_reward} 0.61 then
+  0.48; \texttt{eval/swe} \textbf{0.47}.
+\item
+  \textbf{Sandbox cost is small.} 749 / 733 sandbox ops per step at p50
+  88 ms, p95 136 ms; session open p50 ≈ 0.5 s, p95 ≈ 10 s (11 and 9 cold
+  boots). A step takes 49 / 32 min, dominated by actor training on the
+  long fanned-out sequences (1778 / 1424 s).
+\item
+  \textbf{Fourth bug: no gradient.} \texttt{rollout/advantages},
+  \texttt{pg\_loss} and \texttt{grad\_norm} were \textbf{0.0 on both
+  steps}. \texttt{rollout\_advantage.py} grouped rollouts by
+  \texttt{sample.index}, but slime gives every one of the \texttt{NS}
+  rollouts of a prompt its \textbf{own} index, so each ``prompt group''
+  held one rollout and its baseline was its own reward. Fixed: the group
+  is \texttt{index\ //\ n\_samples\_per\_prompt} (slime's
+  \texttt{group\_index}), with a regression test in
+  \texttt{tests/test\_rollout\_advantage.py}. Learning {[}PENDING:
+  branching re-run with the advantage fix{]}.
+\end{itemize}
 
 \hypertarget{demos-in-depth-architecture-pipeline-lifecycle-and-measured-results}{%
 \section{Demos in depth --- architecture, pipeline, lifecycle, and
@@ -5264,8 +5424,9 @@ sync back to SGLang.
 \textbf{Lifecycle.} One session = one episode: the first invoke
 cold-starts the microVM (or launches the g6), the same
 \texttt{runtimeSessionId} re-routes to the warm VM, and the session is
-reclaimed on idle (\textasciitilde15 min CPU / 600 s GPU) or on max
-lifetime (8 h microVM / up to 14 d instance). Under asynchronous
+reclaimed on idle (\textasciitilde15 min CPU / 600 s GPU on the deployed
+Runtimes; new Runtimes get \texttt{RUNTIME\_IDLE\_TIMEOUT} = 3600 s) or
+on max lifetime (8 h microVM / up to 14 d instance). Under asynchronous
 training, the pause during weight sync can trip the idle clock --- which
 is what the resilience demos address.
 
@@ -5385,6 +5546,47 @@ On the demo-22 warm-farm log that split reads correctly as 8 real cold
 boots against 416 warm reopens --- the
 one-shared-\texttt{runtimeSessionId} reuse the farm exists to
 demonstrate.
+
+\textbf{Burst and session-lifetime metrics (after DSec {[}31{]}).} Three
+more signals are now computed by every demo's \texttt{metrics.py} from
+the \texttt{{[}sbx-op{]}} lines already in the logs, so old logs can be
+re-parsed. Each op's start time is its log timestamp minus its duration.
+
+\begin{itemize}
+\tightlist
+\item
+  \texttt{perf/sandbox\_ready\_span\_s}: per step, the time from the
+  first session-open starting to the last one being ready. This is the
+  batch time-to-ready.
+\item
+  \texttt{perf/sandbox\_open\_peak\_per\_s}: the most session opens in
+  any 1-second window, compared with the 25/s new-session quota.
+\item
+  \texttt{\textless{}log\textgreater{}.sessions.csv} plus a printed
+  summary: one row per session with its lifetime, op count and longest
+  idle gap. The summary gives p50/p95/p99/max, how many sessions idled
+  or lived past \texttt{IDLE\_TIMEOUT\_S} (default 900 s), and peak live
+  sessions compared with the 5,000 quota.
+\end{itemize}
+
+On warm-shared farms a ``session'' here is the per-episode
+\texttt{sub\_session}, and only cold boots count against the new-session
+quota.
+
+Re-parsing the first Terminal-Bench smoke gives 414 sessions, with
+lifetime p50 \textbf{471 s} and p95 \textbf{1841 s}. The longest idle
+gap has a p50 of 449 s, which is time spent pre-opened and waiting.
+\textbf{55} sessions outlived 900 s; the heartbeat kept them alive, and
+every open pinged back healthy. Opens peaked at \textbf{36 per second},
+above the 25/s quota, with \textbf{no throttling} observed. That
+suggests the quota is applied per Runtime or tolerates bursts, but this
+is an observation, not an AWS statement. By contrast, the warm instance
+pool peaks at 4 opens per second with 4 live sessions.
+
+CPU and memory used versus requested, DSec's overcommit signal, is
+\textbf{not measured yet}. It needs per-exec resource usage reported
+from inside the sandbox server, which means an image rebuild and
+redeploy.
 
 \hypertarget{sizing-the-config-response-length-per-turn-and-turns-per-episode}{%
 \subsection{Sizing the config --- response length per turn, and turns
@@ -6667,8 +6869,9 @@ demos already exercise.
   \tightlist
   \item
     \texttt{demo\_cpu\_branching} has its three blockers fixed and
-    verified without a trainer, but its RL smoke is pending ({[}PENDING:
-    branching RL smoke fan\_out and reward{]});
+    verified without a trainer, but its RL smoke ran end to end (fan-out
+    p50 4, eval 0.47) but exposed an all-zero-advantage bug, now fixed
+    ({[}PENDING: branching re-run with the advantage fix{]});
   \item
     the \texttt{demo\_gpu\_single} 2026-09-25 remote smoke failed at
     step 4 on runtime 500s ({[}PENDING: root cause of the
@@ -6803,6 +7006,8 @@ of RL. \url{https://arxiv.org/abs/2505.22617} · {[}26{]} GiGPO
 (active partial rollouts). \url{https://arxiv.org/abs/2509.18521} ·
 {[}29{]} Moonshot checkpoint-engine.
 \url{https://github.com/MoonshotAI/checkpoint-engine} · {[}30{]} AdaRFT
-(difficulty curriculum). \url{https://arxiv.org/abs/2504.05520}
+(difficulty curriculum). \url{https://arxiv.org/abs/2504.05520} ·
+{[}31{]} DSec: DeepSeek Elastic Compute, a sandbox platform for agentic
+RL. \url{https://arxiv.org/abs/2609.22978}
 
 \end{document}

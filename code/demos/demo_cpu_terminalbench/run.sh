@@ -179,7 +179,9 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus 8 \
+# Shared box only: SLIME_CUDA_VISIBLE=2,3,4,5,6,7 SLIME_NUM_GPUS=6 pins ray to a subset (default: all 8).
+[ -n "${SLIME_CUDA_VISIBLE:-}" ] && export CUDA_VISIBLE_DEVICES="$SLIME_CUDA_VISIBLE"
+ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${SLIME_NUM_GPUS:-8}" \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 # The isolation/pre-open/heartbeat knobs and the image-pool map are read by TerminalBenchPool INSIDE the

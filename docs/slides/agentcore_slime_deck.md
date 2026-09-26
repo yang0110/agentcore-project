@@ -109,7 +109,7 @@ Scale two tiers and the bottleneck moves, so **diagnose first** with `perf/sglan
 
 | Limit | Value [D14] | Adj. | Impact · what we do |
 |--------------|------------|---|----------------------|
-| **Idle timeout** | 15 min default; Runtime 60 s–8 h (we set 600 s) | cfg | a reclaimed id silently returns an **empty** sandbox → `HEARTBEAT=1` |
+| **Idle timeout** | 15 min default; Runtime 60 s–8 h (we set 3600 s) | cfg | a reclaimed id silently returns an **empty** sandbox → heartbeat on by default |
 | Max lifetime | microVM **8 h** · Instance **14 d** · CI ≤ 8 h | no | long episodes need snapshot / re-seed; CI pings don't extend it |
 | **New Runtime sessions** | **25 /s** | yes | caps the cold-start burst per batch → pre-open ahead |
 | Concurrent Runtime sessions | **5000** | yes | one per in-flight microVM episode |
@@ -152,6 +152,37 @@ Scale two tiers and the bottleneck moves, so **diagnose first** with `perf/sglan
 - A Runtime points at **one image URI**, so the binding limit is **1000 Runtimes per account**. That caps distinct custom images at about 1000, unless tasks share an image.
 - Push rate: `PutImage` 10 /s, which matters when building hundreds of task images. Pulls (`GetDownloadUrlForLayer` 3000 /s) are not a concern.
 - Image size drives cold launch: the microVM cold boot grows with the image, and the Terminal-Bench images run p50 128 MB to max 2 GB.
+
+## Related work — DeepSeek DSec vs AgentCore [31]
+
+```{=latex}
+\scriptsize
+```
+
+DSec: DeepSeek's in-house RL sandbox platform (V3.2 → V4.1), **3M sandboxes/day**.
+
+| | DSec | AgentCore (this account) |
+|-----------|------------------------------|--------------------------------------|
+| Creation rate | > 5000 /s | **25 /s** new Runtime sessions (adj.) |
+| Running at once | 380K | 5000 Runtime · 1000 CI sessions |
+| Environments | 11K bases × 100K workspaces, layered | one image per Runtime, max **1000** |
+| Images | lazy: fetch only the 4–13 % a sandbox touches | full image per boot (≈ 15 s / 447 MB), 2 GB cap |
+| Hide boot | lazy loading → low pull time; no pre-warming (volume, not latency, is the bottleneck) | **pre-open (ours)**: next 1–2 batches boot during this one (774 → **5 ms**) |
+| Lifetime | p50 15–17 min, p99 > 3 h | 15-min idle; max 8 h microVM / 14 d Instance |
+| Trainer stall | pause / resume, state kept | **no pause/resume, no state kept** |
+| Agent loop | outside the GPU job | in the trainer process (ours) |
+| Reward hacking | AppArmor + per-task network allowlists | microVM boundary; Landlock on shared pools; VPC mode |
+
+## Related work — what we take from DSec
+
+- **Their median sandbox lives about as long as our idle timeout.** Heartbeat is now **on by default** for our own remote Runtimes, and new Runtimes get a 3600 s idle timeout.
+- **New in `metrics.py`, in every demo:**
+  - `perf/sandbox_ready_span_s`: first open start → last open ready, per step (DSec's batch time-to-ready);
+  - `perf/sandbox_open_peak_per_s`: peak opens in any 1 s window, compared with the 25/s quota;
+  - `<log>.sessions.csv` + summary: lifetime and longest idle gap per session vs the idle limit, peak live sessions vs 5000.
+- **Terminal-Bench smoke, re-parsed:** 414 sessions, lifetime p50 **471 s** / p95 **1841 s**; **55** outlived 900 s (pre-open idle, kept alive by heartbeat); peak **36 opens/s**, above 25/s, with **0 throttles** (observed, not an AWS statement).
+- **Not yet:** CPU/RAM used vs requested (needs a sandbox-server change + redeploy); co-located-load latency on shared Instances; reward-hack incident counts.
+- **What AgentCore doesn't expose:** image layers, session pause, and a creation rate in the thousands. **What we can copy cheaply:** move the agent loop out of the trainer; allowlist the network per task.
 
 ## Build and deploy a Runtime
 
@@ -468,7 +499,7 @@ Host-only, ~7 min: 24 MockPolicy `sql` episodes in batches of 6, **cold** (open 
 
 While slime syncs weights no ops reach the sandbox, and **your own Runtime** reclaims an idle session after its idle timeout. A `SessionKeeper` outside the harness pings any session idle past `fraction × timeout` with `exec("true")`. Probe: 3 sessions idle **150 s** against a **60 s** timeout.
 
-**Silent reclaim is the trap:** the id still answers, nothing errors, the files are gone. Terminal-Bench's keeper is always on; other demos opt in with `HEARTBEAT=1`; on the Code Interpreter, set a long session timeout.
+**Silent reclaim is the trap:** the id still answers, nothing errors, the files are gone. Terminal-Bench's keeper is always on; it is **on by default** for every remote own Runtime (`HEARTBEAT=0` = baseline), with a 3600 s idle timeout as the backstop; on the Code Interpreter, set a long session timeout.
 
 ```{=latex}
 \small
@@ -591,6 +622,31 @@ bash 4_deploy_runtime.sh && bash 5_run.sh && bash 6_cleanup.sh
 **Isolation.** A session serves **one episode at a time** from a free-list, in a fresh `ep-<hex>` dir that is `rm -rf`'d before the session is handed out again; different sessions are different microVMs. `/tmp`, packages and stray processes are *not* reset, which is safe for DeepScaleR (writes only its workdir); OS-level tasks use `SANDBOX_SESSIONS=0`.
 
 **Metrics.** Live pool check, no trainer (W = M = 64, 192 episodes, real Runtimes): 1280 ops ok; engines 48 / 48 / 47 / 49; a worker used up to 2 sessions and a session served up to 2 workers (the tiers mix). [PENDING: 4 : 256 : 256 RL smoke]. The old 4 × 4 × 4 lane topology passed on AWS (2026-09-23, eval/deepscaler 0.358).
+
+## `demo_cpu_scale_lanes` — where the agent loop runs (vs DSec [31])
+
+```{=latex}
+\small
+```
+
+**Why DeepSeek moved it out.** DeepSeek's GPU jobs are routinely **preempted**. With the loop inside the GPU pod, the loop died but the sandbox survived, so recovery **replayed a command log**. From V4.1 on, the harness runs on DSec, **outside the GPU pool**: an agent sandbox (scaffold + tools) and a worker container (rollout state). A preempted trainer **reconnects**, with no replay.
+
+| | DSec (V4.1+) | `demo_cpu_scale_lanes` |
+|---|---|---|
+| Harness runs | agent sandbox, with its tools | **slime's rollout process** (256 workers) |
+| Tools run | same agent sandbox | 256 pooled AgentCore microVMs |
+| Token record | worker container | slime's in-process `AnthropicAdapter` |
+| Trainer lost | reconnect, continue | in-flight episodes abort: one batch |
+| Trainer stalls | pause/resume the sandbox | **heartbeat** (default on) |
+
+## `demo_cpu_scale_lanes` — why the agent loop stays in the trainer
+
+**Why we keep it in-process.**
+
+- **No preemption here.** The trainer runs on a dedicated 8×L40S box. A stall is the real risk, and the heartbeat covers it; a crash costs one batch, not correctness.
+- **Moving only the harness saves nothing.** The token record and the SGLang engines die with the slime job anyway. DSec's gain also needs an external record and a "reconnect to episode X" path **in slime**.
+- **Harness in the tool sandbox has costs.** The policy's commands run next to its transcript and reward, so it could tamper with them. Every microVM needs a network path back to inference (VPC + security-group rule). It would also re-tie the harness tier to the sandbox tier, which is the coupling this demo removes.
+- **When to move it:** preemptible or Spot GPUs, or multi-hour episodes. Then put the harness plus its token record in its own service, and have slime fetch episodes by ID. `demo_cpu_branching` already runs a loop (the Claude Code CLI) inside the Runtime session.
 
 # 11 · GPU demos
 
@@ -779,7 +835,7 @@ bash 5_run.sh && bash 6_cleanup.sh
 \tiny
 ```
 
-**Papers & code.** [1] Agent Lightning <https://arxiv.org/abs/2508.03680> · [2] DeepSeek-R1 <https://arxiv.org/abs/2501.12948> · [3] Qwen3 <https://arxiv.org/abs/2505.09388> · [5] Kimi K2 <https://arxiv.org/abs/2507.20534> · [7] KernelBench <https://huggingface.co/datasets/ScalingIntelligence/KernelBench> · [9] slime <https://github.com/THUDM/slime>
+**Papers & code.** [1] Agent Lightning <https://arxiv.org/abs/2508.03680> · [2] DeepSeek-R1 <https://arxiv.org/abs/2501.12948> · [3] Qwen3 <https://arxiv.org/abs/2505.09388> · [5] Kimi K2 <https://arxiv.org/abs/2507.20534> · [7] KernelBench <https://huggingface.co/datasets/ScalingIntelligence/KernelBench> · [9] slime <https://github.com/THUDM/slime> · [31] DSec (DeepSeek Elastic Compute) <https://arxiv.org/abs/2609.22978>
 
 **AgentCore docs.** [D1] What is AgentCore <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html> · [D2] Runtime <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html> · [D3] How it works <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html> · [D4] Lifecycle <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-lifecycle-settings.html> · [D5] Instances (GPU) <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-how-it-works.html> · [D6] Code Interpreter <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-tool.html> · [D8] InvokeAgentRuntime <https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_InvokeAgentRuntime.html> · [D9] CreateAgentRuntime <https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_CreateAgentRuntime.html> · [D10] NetworkConfiguration <https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_NetworkConfiguration.html> · [D11] VPC endpoints <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/vpc-interface-endpoints.html> · [D12] StopRuntimeSession <https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html> · [D13] Observability <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability.html> · [D14] AgentCore quotas <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html> (values: Service Quotas, this account, us-west-2, 2026-09-26) · [D15] ECR quotas <https://docs.aws.amazon.com/AmazonECR/latest/userguide/service-quotas.html>
 

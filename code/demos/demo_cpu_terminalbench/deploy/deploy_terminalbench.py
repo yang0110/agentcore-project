@@ -259,6 +259,7 @@ def register_all(rows: list[dict], xrole: str) -> None:
     art = lambda uri: {"containerConfiguration": {"containerUri": uri}}  # noqa: E731
     common = dict(roleArn=xrole, protocolConfiguration={"serverProtocol": "HTTP"},
                   networkConfiguration={"networkMode": "PUBLIC"},
+                  lifecycleConfiguration=d.runtime_lifecycle(d.MICROVM_MAX_LIFETIME),  # RUNTIME_IDLE_TIMEOUT
                   environmentVariables={"AWS_REGION": REGION})
 
     def one(row: dict) -> None:

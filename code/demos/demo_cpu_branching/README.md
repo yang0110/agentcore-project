@@ -2,7 +2,7 @@
 
 **Sandbox tier 3: own Runtime, custom image.** The image bakes node 22 + the real Claude Code CLI (microVM). See the tier table in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
 
-> **EXPERIMENTAL — not part of the main 7-demo set; fixes pending a live re-run.** History of the blockers:
+> **EXPERIMENTAL — not part of the main 7-demo set; runs end to end; learning pending a re-run with the advantage fix.** History of the blockers:
 > 1. *CLI exits 1 before any model call* (`fan_out=0`): the CLI refuses `--permission-mode
 >    bypassPermissions` as root. Fixed by `IS_SANDBOX=1` (confirmed on the sandbox 2026-09-19; the empty-group
 >    crash it exposed is fixed in 18ccb91 / 3ecddc9).
@@ -17,6 +17,12 @@
 > `IS_SANDBOX=1`, the sandbox dials back to `PRIVATE-IP-f99864bc:18021`, the qwen25 parser turns a Qwen3
 > `<tool_call>` into a tool call, and the checker scores no/buggy/fixed `solution.py` 0 / 0 / 1. Whether the
 > policy now reaches sub-agents / compaction (`fan_out>1`) needs the RL smoke.
+> 4. *Zero gradient* (RL smoke 2026-09-25, `logs/smoke_fix_20260925_132440.*`, NR=3, job succeeded): 68 episodes,
+>    0 CLI errors, `fan_out` p50 4 / max 37, `rollout/raw_reward` 0.61 / 0.48, `eval/swe` 0.47, sandbox op
+>    p50 88 ms, but `rollout/advantages` = `pg_loss` = `grad_norm` = 0 on both steps. `rollout_advantage.py`
+>    grouped by `sample.index`, which slime makes unique per rollout, so every group had one rollout and its
+>    own reward as baseline. Fixed: group = `index // n_samples_per_prompt` (slime's `group_index`);
+>    regression test `tests/test_rollout_advantage.py::test_groups_follow_slime_index_layout`. Re-run pending.
 
 Every other demo treats one episode as one training sample. This one does not. It runs the **real
 Claude Code CLI** as the harness and deliberately provokes the two CLI behaviors that split a single

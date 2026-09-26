@@ -89,7 +89,7 @@ container. `STEPS` maps to `NR=STEPS+1`. Keep `STEPS × RB ≤ 100`.
 | `NR` / `RB` / `NS` / `TEMP` | 11 / 4 / 8 / 1.0 | 10 train + 1 eval; keep `NR × RB ≤ 100` |
 | `EVAL_INTERVAL` / `EVAL_NS` | 10 / 2 | held-out eval cadence / samples |
 | `INVOKE_MAX_RETRIES` | 8 | retries on transient invoke 5xx (cold g6) |
-| `HEARTBEAT` / `HEARTBEAT_IDLE` / `HEARTBEAT_PING_FRACTION` | 0 / 600 / 0.5 | `1` = a `SessionKeeper` pings a sandbox session idle past `fraction × idle` s, so the warm g6 session survives the weight-sync stall (was `demo_cpu_heartbeat`; opt-in knob of every demo). Helps only our own Runtimes (the g6 here); it does **not** extend a managed Code Interpreter session, and the `LOCAL_GPU=1` farm has no idle timeout |
+| `HEARTBEAT` / `HEARTBEAT_IDLE` / `HEARTBEAT_PING_FRACTION` | auto (1 on the remote g6) / 600 / 0.5 | `1` = a `SessionKeeper` pings a sandbox session idle past `fraction × idle` s, so the warm g6 session survives the weight-sync stall (was `demo_cpu_heartbeat`; on by default for remote Runtimes in every demo, off with `LOCAL_GPU=1`). Helps only our own Runtimes (the g6 here); it does **not** extend a managed Code Interpreter session, and the `LOCAL_GPU=1` farm has no idle timeout |
 
 ## Key metrics
 `rollout/raw_reward` (the RL signal) and `eval/kernelbench` (held-out solve rate). Latency:

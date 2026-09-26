@@ -84,6 +84,14 @@ _SKIP_OPS = {"stop_session", "close"}
 # (~60-80 s); microVM opens (~1-2 s) also fall below it. Override with env COLD_BOOT_MS.
 COLD_BOOT_MS = float(os.environ.get("COLD_BOOT_MS", "5000"))
 
+# The AgentCore limits the session-level metrics are read against (us-west-2 defaults; see the deck's
+# "AgentCore limits" slides). A session whose longest gap between ops reaches IDLE_TIMEOUT_S would
+# have been reclaimed without a heartbeat; the peak session-open rate is compared with the 25/s
+# new-session quota and the peak live-session count with the 5000 concurrent-session quota.
+IDLE_TIMEOUT_S = float(os.environ.get("IDLE_TIMEOUT_S", "900"))
+NEW_SESSION_RATE_QUOTA = float(os.environ.get("NEW_SESSION_RATE_QUOTA", "25"))
+CONCURRENT_SESSION_QUOTA = float(os.environ.get("CONCURRENT_SESSION_QUOTA", "5000"))
+
 
 def _kv(s: str) -> dict[str, str]:
     """Parse a space-separated `k=v k=v` tail into a dict (values stay strings)."""
@@ -132,6 +140,53 @@ def _agg_plain(vals: list[float], prefix: str) -> dict[str, float]:
         f"{prefix}_p50": round(_pct(s, 0.50), 4),
         f"{prefix}_p95": round(_pct(s, 0.95), 4),
     }
+
+def _op_start(r: dict) -> float:
+    """Wall-clock start of a [sbx-op] round-trip: `ts` is stamped when the op RETURNS."""
+    return r["ts"] - r["ms"] / 1000.0
+
+
+def _peak_per_window(times: list[float], window_s: float = 1.0) -> int:
+    """Most events inside any `window_s`-long window (two-pointer sweep over sorted times)."""
+    s = sorted(times)
+    best = lo = 0
+    for hi, t in enumerate(s):
+        while t - s[lo] >= window_s:
+            lo += 1
+        best = max(best, hi - lo + 1)
+    return best
+
+
+def _peak_overlap(intervals: list[tuple[float, float]]) -> int:
+    """Most intervals live at the same instant."""
+    events = sorted([(a, 1) for a, _ in intervals] + [(b, -1) for _, b in intervals])
+    best = cur = 0
+    for _, d in events:
+        cur += d
+        best = max(best, cur)
+    return best
+
+
+def session_records(op_records: list[dict]) -> list[dict]:
+    """One row per sandbox session, built from its [sbx-op] round-trips: first-op start to last-op
+    end (`lifetime_s`), op count, and the longest gap between one op returning and the next starting
+    (`max_idle_s`). A gap >= IDLE_TIMEOUT_S is one AgentCore would have reclaimed without a
+    heartbeat. On the warm-shared farms the session is the shared one, so its lifetime is the run's."""
+    by_sess: dict[str, list[dict]] = {}
+    for r in op_records:
+        if r.get("session") not in (None, "", "?") and r.get("ts"):
+            by_sess.setdefault(r["session"], []).append(r)
+    out = []
+    for sess, recs in by_sess.items():
+        recs.sort(key=_op_start)
+        start, end = _op_start(recs[0]), max(r["ts"] for r in recs)
+        gaps = [_op_start(b) - a["ts"] for a, b in zip(recs, recs[1:])]
+        out.append({"session": sess, "start_ts": round(start, 3), "end_ts": round(end, 3),
+                    "lifetime_s": round(end - start, 3), "ops": len(recs),
+                    "max_idle_s": round(max(gaps, default=0.0), 3),
+                    "first_step": recs[0].get("step"), "last_step": recs[-1].get("step")})
+    return sorted(out, key=lambda s: s["start_ts"])
+
 
 # --- Goodput & MFU (see docs/sandbox-concurrency-ablation.md "Metrics" table) ------------------
 # MFU = achieved trainer FLOPs / peak. slime already logs per-GPU training TFLOPS as
@@ -201,6 +256,8 @@ KEY_COLUMNS = [
     "perf/sandbox_open_ms_p50",
     "perf/sandbox_open_ms_p95",
     "perf/sandbox_coldboot_count",  # session-opens slow enough to be a real instance boot (>=COLD_BOOT_MS)
+    "perf/sandbox_ready_span_s",    # first session-open issued -> last one returned, this step (burst readiness)
+    "perf/sandbox_open_peak_per_s", # most session-opens started in any 1 s this step (quota: 25/s new sessions)
     # SGLang decode time — pure /generate round-trips, split OUT of sandbox+harness time
     # (from [sglang-gen] records; count = #decode turns attributed to the step).
     "perf/sglang_gen_count",
@@ -371,6 +428,14 @@ def parse_log(path: Path):
         # NOT count. This per-step count is ~0 on warm steps and jumps only when an instance booted.
         if opens:
             row["perf/sandbox_coldboot_count"] = sum(1 for ms in opens if ms >= COLD_BOOT_MS)
+        # Burst readiness: from the step's first session-open being issued to its last one returning,
+        # i.e. how long this step's batch took to get all its sandboxes ready, plus the step's peak
+        # session-open rate (compare with the 25/s new-session quota).
+        open_recs = [r for r in recs if r["op"] in _OPEN_OPS and r["ts"]]
+        if open_recs:
+            row["perf/sandbox_ready_span_s"] = round(
+                max(r["ts"] for r in open_recs) - min(_op_start(r) for r in open_recs), 3)
+            row["perf/sandbox_open_peak_per_s"] = _peak_per_window([_op_start(r) for r in open_recs])
     for sid, ms_list in gen_buckets.items():
         train_rows.setdefault(sid, {"rollout_id": sid}).update(_agg(ms_list, "perf/sglang_gen"))
     for sid, keyvals in demo_step_vals.items():
@@ -517,6 +582,33 @@ def summarize_latency(op_records: list[dict], gen_records: list[dict]) -> None:
         print(agg_line("decode", [r["ms"] for r in gen_records]))
 
 
+def summarize_sessions(sessions: list[dict], op_records: list[dict]) -> None:
+    """Print the RUN-LEVEL session view: how long sandboxes lived and idled (vs the idle timeout),
+    how fast they were opened and how many were live at once (vs the AgentCore quotas). On the
+    warm-shared farms a "session" is the per-episode sub_session and most opens are attaches to a
+    running instance, so only the cold boots among them count against the new-session quota."""
+    if not sessions:
+        return
+
+    def line(label: str, xs: list[float]) -> str:
+        s = sorted(xs)
+        return (f"    {label:<22} n={len(s):<5} p50={_pct(s, 0.50):9.1f}  p95={_pct(s, 0.95):9.1f}  "
+                f"p99={_pct(s, 0.99):9.1f}  max={s[-1]:9.1f}  (s)")
+
+    print(f"\nsandbox sessions ({len(sessions)} session(s), from [sbx-op] session=/ts=):")
+    print(line("lifetime", [s["lifetime_s"] for s in sessions]))
+    print(line("longest idle gap", [s["max_idle_s"] for s in sessions]))
+    idle_hits = sum(1 for s in sessions if s["max_idle_s"] >= IDLE_TIMEOUT_S)
+    long_lived = sum(1 for s in sessions if s["lifetime_s"] >= IDLE_TIMEOUT_S)
+    print(f"    -> {idle_hits} session(s) idled >= {IDLE_TIMEOUT_S:.0f} s (reclaimed without a heartbeat); "
+          f"{long_lived} lived >= {IDLE_TIMEOUT_S:.0f} s")
+    opens = [_op_start(r) for r in op_records if r["op"] in _OPEN_OPS and r.get("ts")]
+    peak_rate = _peak_per_window(opens) if opens else 0
+    peak_live = _peak_overlap([(s["start_ts"], s["end_ts"]) for s in sessions])
+    print(f"    -> peak session-opens = {peak_rate}/s (new-session quota {NEW_SESSION_RATE_QUOTA:.0f}/s); "
+          f"peak live sessions = {peak_live} (quota {CONCURRENT_SESSION_QUOTA:.0f})")
+
+
 def summarize_demo(demo_records: list[dict]) -> None:
     """Print the RUN-LEVEL summary of this demo's OWN [demo] metric channel: numeric keys get
     count/mean/p50/p95/max; non-numeric keys get a value-count. Nothing prints if the demo emitted
@@ -652,6 +744,12 @@ def main() -> int:
         print(f"wrote {len(gen_records)} raw SGLang decodes -> {gen_out}")
     if op_records or gen_records:
         summarize_latency(op_records, gen_records)
+    sessions = session_records(op_records)
+    if sessions:
+        sess_out = log.with_suffix(".sessions.csv")
+        write_raw_csv(sessions, sess_out, list(sessions[0]))
+        print(f"wrote {len(sessions)} per-session records -> {sess_out}")
+        summarize_sessions(sessions, op_records)
 
     if router_records:
         router_out = Path(args.router_csv) if args.router_csv else log.with_suffix(".router.csv")

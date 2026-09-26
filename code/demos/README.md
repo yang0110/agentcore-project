@@ -59,14 +59,22 @@ hiding the container launch, a warm CPU instance pool, rollout scaling, and fina
 | 5 | [`demo_gpu_single/`](demo_gpu_single/) | **Tier 3.** GPU capacity-provider Instance (g6), one warm custom Runtime | KernelBench CUDA RL. Only a custom Runtime has CUDA (`gpu_torch_smoke.py`). `SNAPSHOT_EVERY=1` adds app-level snapshot/resume |
 | 6 | [`demo_gpu_farm_fractional/`](demo_gpu_farm_fractional/) | **Tier 3.** Ray GPU farm, **one GPU split in fractions** (GPU 6, 0.5 + 0.5) | Two episodes share one GPU: separate CUDA contexts, with a per-process memory fraction |
 | 7 | [`demo_gpu_farm_whole/`](demo_gpu_farm_whole/) | **Tier 3.** Ray GPU farm, **one whole GPU per session** (GPUs 6,7) | One shared warm instance, one GPU per sub_session |
-| exp. | [`demo_cpu_branching/`](demo_cpu_branching/) | **Tier 3.** CPU Runtime whose image bakes node 22 + the real Claude Code CLI | One episode → many samples ("fan-out"). Unblocked 2026-09-25 (tool parser + per-turn cap fixed); RL smoke in progress |
+| exp. | [`demo_cpu_branching/`](demo_cpu_branching/) | **Tier 3.** CPU Runtime whose image bakes node 22 + the real Claude Code CLI | One episode → many samples ("fan-out"). RL smoke 2026-09-25 ran end to end (fan-out p50 4, eval 0.47) but every advantage was 0; grouping bug fixed, re-run pending |
 
-**Heartbeat.** `HEARTBEAT=1` is an opt-in `SessionKeeper` in every demo. It keeps idle sessions on
-**your own Runtime** warm across the weight-sync barrier, and defaults to off, which leaves the run
-unchanged. It is a no-op on the Code Interpreter: those sessions end at their session timeout whatever
+**Heartbeat.** `HEARTBEAT` is a `SessionKeeper` in every demo. It keeps idle sessions on **your own
+Runtime** warm across the weight-sync barrier and other trainer stalls. It is **on by default** whenever
+the sandbox is a remote Runtime (`SANDBOX=agentcore-*` with no local endpoint) and off otherwise; set
+`HEARTBEAT=0` for the A/B baseline. It is a no-op on the Code Interpreter: those sessions end at their session timeout whatever
 the traffic, so the lever there is `AGENTCORE_CI_SESSION_TIMEOUT`. `demo_cpu_terminalbench` always runs
 its own keeper. Without pings, a reclaimed Runtime session silently returns a fresh, empty sandbox
 under the same session id (measured by the warmstart probe).
+
+**Idle timeout.** Runtimes created by `deploy/agentcore_deploy.py` get `idleRuntimeSessionTimeout =
+RUNTIME_IDLE_TIMEOUT` (default **3600 s**, range 60–28800), sized above the worst trainer stall; it is
+the backstop if the heartbeat does not fire. It applies only when a Runtime is created: an existing one
+keeps its old timeout (600 s for Runtimes made before 2026-09-26; step 4 prints a note), so recreate
+it with `FORCE_RECREATE=1`. `HEARTBEAT_IDLE` stays 600 s, which is safe for both. The cost is that an
+abandoned session is billed for up to the timeout; normal episode ends call `StopRuntimeSession`.
 
 **Isolation on a shared instance (demos 3, 6, 7).** Several episodes share one warm instance, so
 there is no VM boundary between them. The farm puts back as much isolation as one kernel allows:

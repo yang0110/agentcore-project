@@ -22,9 +22,12 @@ WHY A CUSTOM FUNCTION IS NEEDED (the built-in path is wrong under fan-out):
 WHAT THIS FUNCTION DOES:
   1. A "rollout" = one episode = all Samples sharing a `rollout_ids` value. Every sibling carries the
      SAME outcome reward, so the rollout's reward is just any sibling's reward.
-  2. A "prompt group" = all rollouts sharing a `sample_indices` value (the base_sample's dataset
-     index; the `n_samples_per_prompt` distinct rollouts of one prompt share it but each has its own
-     rollout_id).
+  2. A "prompt group" = the `n_samples_per_prompt` distinct rollouts of one prompt. slime gives every
+     rollout its OWN `index` (data_source.py: `sample.index = self.sample_index; self.sample_index += 1`
+     for each of the NS copies), so `sample_indices` is NOT shared within a group; the group is
+     `index // n_samples_per_prompt` (== slime's `group_index`, which rollout_data does not carry).
+     Grouping by the raw index made every group a single rollout, baseline == its own reward, and
+     every advantage 0 (seen in the 2026-09-25 smoke: pg_loss = grad_norm = 0 on every step).
   3. GRPO baseline for a prompt group = mean reward over the DISTINCT ROLLOUTS in that group (each
      rollout counts once, regardless of how many leaves it fanned into). Advantage of a rollout =
      reward - baseline, optionally / (std_over_distinct_rollouts + eps) when
@@ -55,12 +58,13 @@ def rollout_level_grpo_advantage(args, rollout_data) -> None:
     """Populate rollout_data["advantages"] and ["returns"] with per-episode GRPO advantages.
 
     See the module docstring for the full rationale. Grouping is by rollout_ids (one episode) then
-    by sample_indices (one prompt); the baseline is taken over DISTINCT rollouts, never leaves."""
+    by prompt group (index // n_samples_per_prompt); the baseline is taken over DISTINCT rollouts, never leaves."""
     kl: list[torch.Tensor] = rollout_data["kl"]
     rewards: list[float] = rollout_data["rewards"]
     rollout_ids: list = rollout_data["rollout_ids"]
     sample_indices: list = rollout_data["sample_indices"]
     n = len(kl)
+    n_per_prompt = max(1, int(getattr(args, "n_samples_per_prompt", 1) or 1))
 
     # --- 1. Collapse leaves → distinct rollouts. Every sibling shares the reward; keep one. ---
     rollout_reward: dict = {}
@@ -69,7 +73,7 @@ def rollout_level_grpo_advantage(args, rollout_data) -> None:
         rid = rollout_ids[i]
         if rid not in rollout_reward:
             rollout_reward[rid] = float(rewards[i])
-            rollout_of_prompt[sample_indices[i]].append(rid)
+            rollout_of_prompt[int(sample_indices[i]) // n_per_prompt].append(rid)
 
     # --- 2. GRPO baseline per prompt group, over DISTINCT rollouts. ---
     std_norm = getattr(args, "grpo_std_normalization", True)

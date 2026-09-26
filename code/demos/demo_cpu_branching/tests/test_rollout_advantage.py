@@ -22,8 +22,9 @@ sys.path.insert(0, os.path.abspath(_PKG))
 import rollout_advantage  # noqa: E402
 
 
-def _args(grpo_std_normalization: bool):
-    return types.SimpleNamespace(grpo_std_normalization=grpo_std_normalization)
+def _args(grpo_std_normalization: bool, n_samples_per_prompt: int = 2):
+    return types.SimpleNamespace(grpo_std_normalization=grpo_std_normalization,
+                                 n_samples_per_prompt=n_samples_per_prompt)
 
 
 def _leaf(reward, rollout_id, sample_index, n_tokens):
@@ -49,7 +50,7 @@ def test_baseline_over_distinct_rollouts_not_leaves():
         _leaf(1.0, "A", 0, 4),
         _leaf(1.0, "A", 0, 2),
         _leaf(1.0, "A", 0, 7),
-        _leaf(0.0, "B", 0, 3),
+        _leaf(0.0, "B", 1, 3),   # slime: each rollout has its own index; A,B = group 0 at NS=2
     ])
     rollout_advantage.rollout_level_grpo_advantage(_args(False), rd)
 
@@ -70,7 +71,7 @@ def test_baseline_over_distinct_rollouts_not_leaves():
 def test_std_normalization():
     rd = _build([
         _leaf(1.0, "A", 0, 2),
-        _leaf(0.0, "B", 0, 2),
+        _leaf(0.0, "B", 1, 2),
     ])
     rollout_advantage.rollout_level_grpo_advantage(_args(True), rd)
     # baseline 0.5, population std over {1,0} = 0.5 => adv = ±0.5/(0.5+1e-6) ≈ ±1.0
@@ -83,9 +84,9 @@ def test_multiple_prompt_groups_are_independent():
     rd = _build([
         _leaf(1.0, "A", 0, 2),
         _leaf(1.0, "A", 0, 3),
-        _leaf(0.0, "B", 0, 2),
-        _leaf(1.0, "C", 1, 2),
-        _leaf(1.0, "D", 1, 2),
+        _leaf(0.0, "B", 1, 2),
+        _leaf(1.0, "C", 2, 2),
+        _leaf(1.0, "D", 3, 2),
     ])
     rollout_advantage.rollout_level_grpo_advantage(_args(False), rd)
     adv = rd["advantages"]
@@ -96,8 +97,23 @@ def test_multiple_prompt_groups_are_independent():
     assert round(adv[4][0].item(), 6) == 0.0  # D vs baseline 1.0
 
 
+def test_groups_follow_slime_index_layout():
+    # Regression (2026-09-25 smoke: every advantage 0). slime numbers rollouts 0,1,2,3 with NS=2, so
+    # {0,1} and {2,3} are the prompt groups. Grouping by the raw index would make 4 singleton groups.
+    rd = _build([
+        _leaf(1.0, "r0", 0, 2), _leaf(1.0, "r0", 0, 2),   # r0 fanned into 2 leaves
+        _leaf(0.0, "r1", 1, 2),
+        _leaf(0.0, "r2", 2, 2),
+        _leaf(0.0, "r3", 3, 2),                           # group 1 all-zero -> adv 0
+    ])
+    rollout_advantage.rollout_level_grpo_advantage(_args(False, 2), rd)
+    got = [round(a[0].item(), 6) for a in rd["advantages"]]
+    assert got == [0.5, 0.5, -0.5, 0.0, 0.0], got
+
+
 if __name__ == "__main__":
     test_baseline_over_distinct_rollouts_not_leaves()
     test_std_normalization()
     test_multiple_prompt_groups_are_independent()
+    test_groups_follow_slime_index_layout()
     print("OK: all rollout-advantage tests passed")

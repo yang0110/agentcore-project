@@ -356,6 +356,90 @@ It binds when
 \end{itemize}
 \end{frame}
 
+\begin{frame}{DeepSeek DSec moved the agent loop out of the trainer
+{[}31{]}}
+\protect\hypertarget{deepseek-dsec-moved-the-agent-loop-out-of-the-trainer-31}{}
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Why:} DeepSeek's GPU jobs are routinely \textbf{preempted}.
+  With the loop in the GPU pod, the loop died but the sandbox survived,
+  so recovery \textbf{replayed a command log}.
+\item
+  \textbf{Where:} from V4.1 on, the harness runs on DSec,
+  \textbf{outside the GPU pool}: an agent sandbox (scaffold + tools) and
+  a worker container (rollout state). A preempted trainer
+  \textbf{reconnects}, with no replay.
+\end{itemize}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2250}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3750}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.4000}}@{}}
+\caption{Agent-loop placement, DSec vs this demo}\tabularnewline
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+DSec (V4.1+)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+This demo
+\end{minipage} \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+DSec (V4.1+)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+This demo
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Harness & agent sandbox, with its tools & \textbf{slime's rollout
+process} \\
+Token record & worker container & slime's in-process adapter \\
+Trainer lost & reconnect, continue & abort in-flight: one batch \\
+Trainer stalls & pause/resume sandbox & \textbf{heartbeat} keeps
+sessions \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}{What we did, and why: the harness stays in-process}
+\protect\hypertarget{what-we-did-and-why-the-harness-stays-in-process}{}
+\begin{itemize}
+\tightlist
+\item
+  \textbf{No preemption here:} the trainer has a dedicated 8×L40S box. A
+  stall is the real risk, and the heartbeat covers it. A crash costs one
+  batch, not correctness.
+\item
+  \textbf{Moving only the harness saves nothing:} the token record and
+  the SGLang engines die with the slime job anyway. DSec's gain also
+  needs an external record and a ``reconnect to episode X'' path
+  \textbf{in slime}.
+\item
+  \textbf{Harness in each microVM has costs:}
+
+  \begin{itemize}
+  \tightlist
+  \item
+    the policy's commands would run next to its own transcript and
+    reward, so it could tamper with them;
+  \item
+    every microVM needs a network path back to inference (VPC mode plus
+    a security-group rule);
+  \item
+    it re-ties the harness tier to the sandbox tier, which is the
+    coupling this demo removes.
+  \end{itemize}
+\item
+  \textbf{When to move it:} preemptible/Spot GPUs or multi-hour
+  episodes. Then run the harness plus its token record as its own
+  service, and have slime fetch episodes by ID.
+\end{itemize}
+\end{frame}
+
 \hypertarget{results}{%
 \section{4 · Results}\label{results}}
 
@@ -520,6 +604,9 @@ Supports
 {[}D3{]} &
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}
 & Session = dedicated microVM; 15-min idle, 8 h max \\
+{[}31{]} & DSec (DeepSeek Elastic Compute)
+\url{https://arxiv.org/abs/2609.22978}, §6.2--6.3 & Agent loop outside
+the preemptible GPU pool; pause/resume \\
 Code & \texttt{demo\_cpu\_scale\_lanes/}: \texttt{harness\_pool.py},
 \texttt{harness\_scaling\_demo.py} & Decoupled pool, sweep \\
 Logs & \texttt{\_smoke\_logs/lanes\_tb\_0923/},

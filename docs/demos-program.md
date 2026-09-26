@@ -58,7 +58,7 @@ AgentCore **Code Interpreter** microVM (CPU); the harness is in-process.
 > formerly `demo_cpu_mixtask`). All of them run on the DEFAULT managed Code Interpreter
 > (`SANDBOX=agentcore`): no image, no Runtime. The pandas/scipy/sklearn tasks (formerly `demo_cpu_imagepool`,
 > 3 custom images) are `DATASET=libs` there, since the Code Interpreter already has those libraries. The
-> heartbeat (formerly `demo_cpu_heartbeat`) is the opt-in `HEARTBEAT=1` knob (own Runtime only; a no-op on the
+> heartbeat (formerly `demo_cpu_heartbeat`) is the `HEARTBEAT` knob (default on for remote own Runtimes; a no-op on the
 > Code Interpreter), and the custom-vs-managed Runtime check (formerly `demo_cpu_customruntime`) is
 > `demo_cpu_tasks/compare_backends.py`. The ~4 GB image on a CPU capacity-provider Instance (formerly
 > `demo_cpu_bigimage`, then `demo_cpu_tasks VARIANT=bigimage`) is its own demo, `demo_cpu_instance_pool`

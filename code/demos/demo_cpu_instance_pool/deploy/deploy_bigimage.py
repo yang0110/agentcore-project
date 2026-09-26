@@ -89,7 +89,8 @@ def cpu_capacity_provider(name: str, operator_arn: str) -> str:
                 "instanceRequirements": {"allowedInstanceTypes": [CPU_INSTANCE]}}},
             "vpcConfiguration": {"subnets": subnets, "securityGroups": [sg]},
             "rootVolume": {"freeSpaceGiB": ROOT_FREE_GIB, "volumeType": "gp3"},
-            "lifecycleConfiguration": {"idleInstanceTimeout": 600, "maxLifetime": 86400}}},
+            "lifecycleConfiguration": {"idleInstanceTimeout": d.CP_IDLE_INSTANCE_TIMEOUT,
+                                       "maxLifetime": d.INSTANCE_MAX_LIFETIME}}},
     )
     cp_id = resp["capacityProviderId"]
     d.err(f"waiting for {cp_id} READY (launches NO instances yet)")
@@ -126,7 +127,7 @@ def runtime_on_cp(name: str, image_uri: str, exec_arn: str, cp_arn: str, env: di
         agentRuntimeArtifact={"containerConfiguration": {"containerUri": image_uri}},
         protocolConfiguration={"serverProtocol": "HTTP"},
         capacityProviderConfiguration={"capacityProviderArn": cp_arn},
-        lifecycleConfiguration={"idleRuntimeSessionTimeout": 600, "maxLifetime": 86400},
+        lifecycleConfiguration=d.runtime_lifecycle(d.INSTANCE_MAX_LIFETIME),  # RUNTIME_IDLE_TIMEOUT
         environmentVariables=env,
     )
     d._wait_runtime(control, resp["agentRuntimeId"])

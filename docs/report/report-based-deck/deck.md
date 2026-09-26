@@ -543,7 +543,7 @@ Each demo stands in for a **real agent a client would train**. Find yours:
 | 7 | `demo_gpu_single` | one `g6.xlarge` (L4) per session | KernelBench | **trained**; [PENDING: root cause of the op=open 500s] |
 | 7 | `demo_gpu_farm_fractional` | shared GPU instance, 0.5 + 0.5 of **one** GPU | KernelBench | **passed** (2026-09-25): eval 0.65 |
 | 7 | `demo_gpu_farm_whole` | shared GPU instance, one **whole** GPU per episode | KernelBench | passed (2026-09-21): 0.65 / 0.70 |
-| 8 | `demo_cpu_branching` *(exp.)* | µVM with node + `claude` | SWE bug-fix, real Claude Code CLI | unblocked; [PENDING: branching RL smoke fan_out and reward] |
+| 8 | `demo_cpu_branching` *(exp.)* | µVM with node + `claude` | SWE bug-fix, real Claude Code CLI | runs end to end: fan-out p50 4, eval 0.47; advantage bug fixed, [PENDING: branching re-run with the advantage fix] |
 
 ```{=latex}
 \normalsize
@@ -927,7 +927,7 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 - **`MODE=A`, `dp_size=1`** (TP2 × PP2), sync checkpoint save.
 - **The CLI needs the tool parser** (`qwen25` / `qwen3`) and **a per-turn cap above Qwen3's `<think>`** (`MAX_RESPONSE_LEN` 2048).
 
-## Ch. 8 — `demo_cpu_branching`: no longer blocked
+## Ch. 8 — `demo_cpu_branching`: runs end to end
 
 **Three blockers, all fixed:**
 
@@ -937,7 +937,19 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 
 **Verified without a trainer:** the session starts, `claude` 2.1.278 runs as root, the dial-back to `:18021` works, the parser extracts the tool call, and the checker scores 0 / 0 / 1.
 
-**RL result:** [PENDING: branching RL smoke fan_out and reward].
+## Ch. 8 — `demo_cpu_branching`: RL smoke and a fourth bug
+
+**RL smoke 2026-09-25** (NR=3: 2 train steps + 1 eval, job succeeded). `eval/swe` = **0.47**. Fan-out and reward work; **the gradient was zero**: `rollout_advantage.py` grouped by `sample.index`, which slime makes unique per rollout, so every group had one member. Fixed: group = `index // n_samples_per_prompt`, plus a regression test. Learning [PENDING: branching re-run with the advantage fix].
+
+| Metric | Step 1 | Step 2 |
+|---|---:|---:|
+| Episodes (CLI `exit≠0`) | 33 (0) | 35 (0) |
+| Leaf samples · `fan_out` mean / p50 / max | 193 · 5.8 / 4 / 37 | 167 · 4.8 / 4 / 10 |
+| `rollout/raw_reward` | 0.61 | 0.48 |
+| Sandbox op p50 / p95 | 88 / 136 ms | 87 / 135 ms |
+| Step time (actor train) | 49 min (30 min) | 32 min (24 min) |
+| `advantages` · `pg_loss` · `grad_norm` | **0 · 0 · 0** | **0 · 0 · 0** |
+
 
 # 6. Cross-cutting mechanisms
 
@@ -1114,7 +1126,7 @@ The reconciliation `cpu_branching` implements, and the reason a **real** agent n
 
 **Solution:** the CLI runs **inside a CLI-capable CPU Runtime** (image bakes node22 + `claude`); one episode returns a `list[Sample]`, all tagged with the shared `rollout_id ρ` and the episode's terminal reward $R$. **Advantage baseline + loss are normalized per rollout, not per sample** (token-mean loss), so an incidental fan-out can't reweight the update. `MODE=A`, `dp=1` (TP2×PP2), sync save.
 
-*`demo_cpu_branching` (§5, Ch. 8) implements this; its three blockers are fixed and verified without a trainer — RL result [PENDING: branching RL smoke fan_out and reward].*
+*`demo_cpu_branching` (§5, Ch. 8) implements this; its three blockers are fixed and verified without a trainer — RL smoke fans out (p50 4) and scores (eval 0.47); an all-zero-advantage bug is fixed, learning [PENDING: branching re-run with the advantage fix].*
 
 ## Mechanism spotlight — resilience: heartbeat & snapshot
 

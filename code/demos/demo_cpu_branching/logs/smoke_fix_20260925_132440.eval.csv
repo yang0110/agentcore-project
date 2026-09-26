@@ -1,0 +1,2 @@
+eval/step,eval/swe,eval/swe-truncated_ratio,eval/swe/avg_cached_tokens_per_sample,eval/swe/prefix_cache_hit_rate,eval/swe/repetition_frac,eval/swe/response_len/max,eval/swe/response_len/mean,eval/swe/response_len/median,eval/swe/response_len/min,eval/swe/truncated_ratio
+1,0.4666666666666667,0.0,0.0,0.0,0.0,1115,573.7333333333333,528.0,199,0.0

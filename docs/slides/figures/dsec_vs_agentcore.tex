@@ -1,0 +1,46 @@
+\documentclass[border=12pt]{standalone}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,array,xcolor,colortbl}
+\renewcommand{\familydefault}{\sfdefault}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+% palette
+\definecolor{ink}{HTML}{1F2933}
+\definecolor{dsec}{HTML}{2B5CAB}     % DeepSeek blue
+\definecolor{aws}{HTML}{FF9900}      % AWS orange
+\definecolor{awsink}{HTML}{232F3E}   % AWS squid ink
+\definecolor{band}{HTML}{E6ECF5}     % section band
+\definecolor{zebra}{HTML}{F7F9FC}
+\definecolor{adjc}{HTML}{0A8A4A}     % adjustable
+\definecolor{ourc}{HTML}{C45A00}     % our mitigation
+\definecolor{gapc}{HTML}{C0262D}     % AgentCore gap
+\newcommand{\adj}[1]{\textbf{\color{adjc}#1}}
+\newcommand{\ours}[1]{\textbf{\color{ourc}#1}}
+\newcommand{\gap}[1]{\textbf{\color{gapc}#1}}
+\newcommand{\sect}[1]{\rowcolor{band}\multicolumn{3}{l}{\color{dsec}\bfseries\scshape #1}\\}
+\newcommand{\lab}[1]{\textbf{#1}}
+\begin{document}
+\color{ink}\small
+\renewcommand{\arraystretch}{1.45}
+\setlength{\tabcolsep}{7pt}
+\begin{tabular}{L{3.2cm}L{5.8cm}L{6.9cm}}
+\multicolumn{3}{l}{\Large\bfseries DeepSeek DSec \ vs \ AgentCore as an RL sandbox}\\[1pt]
+\multicolumn{3}{l}{\footnotesize\color{gray}DSec: arXiv 2609.22978 (V3.2 $\to$ V4.1, 3M sandboxes/day). AgentCore: Service Quotas, this account, us-west-2, 2026-09-26.}\\[6pt]
+\rowcolor{awsink}
+ & \cellcolor{dsec}\color{white}\bfseries DSec (DeepSeek) & \cellcolor{aws}\color{awsink}\bfseries AgentCore (AWS)\\
+\sect{Scale}
+\lab{Creation rate} & $>$ 5,000 sandboxes /s & \adj{25 /s} new Runtime sessions\\
+\rowcolor{zebra}\lab{Running at once} & 380K & \adj{5,000} Runtime $\cdot$ \adj{1,000} Code Interpreter sessions\\
+\lab{Environments} & 11K bases $\times$ 100K workspaces, layered at start time & one image per Runtime; max \adj{1,000} Runtimes per account\\
+\sect{Images and start time}
+\lab{Image delivery} & lazy loading: only the 4--13\,\% of the image a sandbox touches is fetched & full image pulled per cold boot ($\approx$ 15 s for 447 MB); \gap{2 GB cap} on microVMs; larger images on a Runtime Instance\\
+\rowcolor{zebra}\lab{Hiding the cold boot} & not needed: lazy loading keeps pull time low; pre-warming rejected (the bottleneck is I/O volume, not latency) & \ours{pre-open (ours)}: while the current batch runs, the next 1--2 batches' sandboxes are opened (image pulled, microVM booted); ready-wait p50 774 ms $\to$ \ours{5 ms}, makespan $-20$\,\%\\
+\sect{Lifecycle}
+\lab{Sandbox lifetime} & p50 15--17 min, p99 $>$ 3 h & \adj{15-min idle timeout} by default; max 8 h (microVM), 14 days (Runtime Instance)\\
+\rowcolor{zebra}\lab{Trainer stall} & pause/resume, state kept & \gap{no pause/resume, no state kept}; \ours{heartbeat (ours)} keeps the sandbox alive\\
+\sect{Architecture and safety}
+\lab{Agent loop} & outside the GPU training job & inside the trainer process (this project)\\
+\rowcolor{zebra}\lab{Reward hacking} & AppArmor + per-task network allowlists & microVM boundary; Landlock jail and no TCP on shared pools; VPC mode for the network\\[2pt]
+\arrayrulecolor{awsink}\hline
+\multicolumn{3}{l}{\rule{0pt}{12pt}\footnotesize \adj{green} adjustable (quota or per-Runtime setting) \quad \ours{orange} our mitigation \quad \gap{red} AgentCore limit / missing}\\
+\end{tabular}
+\end{document}

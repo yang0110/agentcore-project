@@ -423,7 +423,7 @@ compute unit per session.}
 \end{itemize}
 \end{frame}
 
-\begin{frame}[fragile,allowframebreaks]{AgentCore limits (1/4) --- lifetime and rates}
+\begin{frame}[allowframebreaks]{AgentCore limits (1/4) --- lifetime and rates}
 \protect\hypertarget{agentcore-limits-14-lifetime-and-rates}{}
 \footnotesize
 
@@ -444,9 +444,9 @@ Impact · what we do
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
-\textbf{Idle timeout} & 15 min default; Runtime 60 s--8 h (we set 600 s)
-& cfg & a reclaimed id silently returns an \textbf{empty} sandbox →
-\texttt{HEARTBEAT=1} \\
+\textbf{Idle timeout} & 15 min default; Runtime 60 s--8 h (we set 3600
+s) & cfg & a reclaimed id silently returns an \textbf{empty} sandbox →
+heartbeat on by default \\
 Max lifetime & microVM \textbf{8 h} · Instance \textbf{14 d} · CI ≤ 8 h
 & no & long episodes need snapshot / re-seed; CI pings don't extend
 it \\
@@ -551,6 +551,89 @@ GPU Instance (\texttt{g6}) & \textbf{≈ 207 s} & 0.15--0.19 s \\
 \item
   Image size drives cold launch: the microVM cold boot grows with the
   image, and the Terminal-Bench images run p50 128 MB to max 2 GB.
+\end{itemize}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{Related work --- DeepSeek DSec vs AgentCore {[}31{]}}
+\protect\hypertarget{related-work-deepseek-dsec-vs-agentcore-31}{}
+\scriptsize
+
+DSec: DeepSeek's in-house RL sandbox platform (V3.2 → V4.1), \textbf{3M
+sandboxes/day}.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.1392}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3797}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.4810}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+DSec
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+AgentCore (this account)
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Creation rate & \textgreater{} 5000 /s & \textbf{25 /s} new Runtime
+sessions (adj.) \\
+Running at once & 380K & 5000 Runtime · 1000 CI sessions \\
+Environments & 11K bases × 100K workspaces, layered & one image per
+Runtime, max \textbf{1000} \\
+Images & lazy: fetch only the 4--13 \% a sandbox touches & full image
+per boot (≈ 15 s / 447 MB), 2 GB cap \\
+Hide boot & lazy loading → low pull time; no pre-warming (volume, not
+latency, is the bottleneck) & \textbf{pre-open (ours)}: next 1--2
+batches boot during this one (774 → \textbf{5 ms}) \\
+Lifetime & p50 15--17 min, p99 \textgreater{} 3 h & 15-min idle; max 8 h
+microVM / 14 d Instance \\
+Trainer stall & pause / resume, state kept & \textbf{no pause/resume, no
+state kept} \\
+Agent loop & outside the GPU job & in the trainer process (ours) \\
+Reward hacking & AppArmor + per-task network allowlists & microVM
+boundary; Landlock on shared pools; VPC mode \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{Related work --- what we take from DSec}
+\protect\hypertarget{related-work-what-we-take-from-dsec}{}
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Their median sandbox lives about as long as our idle timeout.}
+  Heartbeat is now \textbf{on by default} for our own remote Runtimes,
+  and new Runtimes get a 3600 s idle timeout.
+\item
+  \textbf{New in \texttt{metrics.py}, in every demo:}
+
+  \begin{itemize}
+  \tightlist
+  \item
+    \texttt{perf/sandbox\_ready\_span\_s}: first open start → last open
+    ready, per step (DSec's batch time-to-ready);
+  \item
+    \texttt{perf/sandbox\_open\_peak\_per\_s}: peak opens in any 1 s
+    window, compared with the 25/s quota;
+  \item
+    \texttt{\textless{}log\textgreater{}.sessions.csv} + summary:
+    lifetime and longest idle gap per session vs the idle limit, peak
+    live sessions vs 5000.
+  \end{itemize}
+\item
+  \textbf{Terminal-Bench smoke, re-parsed:} 414 sessions, lifetime p50
+  \textbf{471 s} / p95 \textbf{1841 s}; \textbf{55} outlived 900 s
+  (pre-open idle, kept alive by heartbeat); peak \textbf{36 opens/s},
+  above 25/s, with \textbf{0 throttles} (observed, not an AWS
+  statement).
+\item
+  \textbf{Not yet:} CPU/RAM used vs requested (needs a sandbox-server
+  change + redeploy); co-located-load latency on shared Instances;
+  reward-hack incident counts.
+\item
+  \textbf{What AgentCore doesn't expose:} image layers, session pause,
+  and a creation rate in the thousands. \textbf{What we can copy
+  cheaply:} move the agent loop out of the trainer; allowlist the
+  network per task.
 \end{itemize}
 \end{frame}
 
@@ -1310,9 +1393,10 @@ Runtime} reclaims an idle session after its idle timeout. A
 sessions idle \textbf{150 s} against a \textbf{60 s} timeout.
 
 \textbf{Silent reclaim is the trap:} the id still answers, nothing
-errors, the files are gone. Terminal-Bench's keeper is always on; other
-demos opt in with \texttt{HEARTBEAT=1}; on the Code Interpreter, set a
-long session timeout.
+errors, the files are gone. Terminal-Bench's keeper is always on; it is
+\textbf{on by default} for every remote own Runtime
+(\texttt{HEARTBEAT=0} = baseline), with a 3600 s idle timeout as the
+backstop; on the Code Interpreter, set a long session timeout.
 
 \small
 
@@ -1617,6 +1701,75 @@ real Runtimes): 1280 ops ok; engines 48 / 48 / 47 / 49; a worker used up
 to 2 sessions and a session served up to 2 workers (the tiers mix).
 {[}PENDING: 4 : 256 : 256 RL smoke{]}. The old 4 × 4 × 4 lane topology
 passed on AWS (2026-09-23, eval/deepscaler 0.358).
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_scale\_lanes} --- where the
+agent loop runs (vs DSec {[}31{]})}
+\protect\hypertarget{demo_cpu_scale_lanes-where-the-agent-loop-runs-vs-dsec-31}{}
+\small
+
+\textbf{Why DeepSeek moved it out.} DeepSeek's GPU jobs are routinely
+\textbf{preempted}. With the loop inside the GPU pod, the loop died but
+the sandbox survived, so recovery \textbf{replayed a command log}. From
+V4.1 on, the harness runs on DSec, \textbf{outside the GPU pool}: an
+agent sandbox (scaffold + tools) and a worker container (rollout state).
+A preempted trainer \textbf{reconnects}, with no replay.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+DSec (V4.1+)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+\texttt{demo\_cpu\_scale\_lanes}
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Harness runs & agent sandbox, with its tools & \textbf{slime's rollout
+process} (256 workers) \\
+Tools run & same agent sandbox & 256 pooled AgentCore microVMs \\
+Token record & worker container & slime's in-process
+\texttt{AnthropicAdapter} \\
+Trainer lost & reconnect, continue & in-flight episodes abort: one
+batch \\
+Trainer stalls & pause/resume the sandbox & \textbf{heartbeat} (default
+on) \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{\texttt{demo\_cpu\_scale\_lanes} --- why the
+agent loop stays in the trainer}
+\protect\hypertarget{demo_cpu_scale_lanes-why-the-agent-loop-stays-in-the-trainer}{}
+\textbf{Why we keep it in-process.}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{No preemption here.} The trainer runs on a dedicated 8×L40S
+  box. A stall is the real risk, and the heartbeat covers it; a crash
+  costs one batch, not correctness.
+\item
+  \textbf{Moving only the harness saves nothing.} The token record and
+  the SGLang engines die with the slime job anyway. DSec's gain also
+  needs an external record and a ``reconnect to episode X'' path
+  \textbf{in slime}.
+\item
+  \textbf{Harness in the tool sandbox has costs.} The policy's commands
+  run next to its transcript and reward, so it could tamper with them.
+  Every microVM needs a network path back to inference (VPC +
+  security-group rule). It would also re-tie the harness tier to the
+  sandbox tier, which is the coupling this demo removes.
+\item
+  \textbf{When to move it:} preemptible or Spot GPUs, or multi-hour
+  episodes. Then put the harness plus its token record in its own
+  service, and have slime fetch episodes by ID.
+  \texttt{demo\_cpu\_branching} already runs a loop (the Claude Code
+  CLI) inside the Runtime session.
+\end{itemize}
 \end{frame}
 
 \hypertarget{gpu-demos}{%
@@ -2026,7 +2179,8 @@ microVM & fans out, eval 0.47; advantage fix re-run pending \\
 \url{https://arxiv.org/abs/2505.09388} · {[}5{]} Kimi K2
 \url{https://arxiv.org/abs/2507.20534} · {[}7{]} KernelBench
 \url{https://huggingface.co/datasets/ScalingIntelligence/KernelBench} ·
-{[}9{]} slime \url{https://github.com/THUDM/slime}
+{[}9{]} slime \url{https://github.com/THUDM/slime} · {[}31{]} DSec
+(DeepSeek Elastic Compute) \url{https://arxiv.org/abs/2609.22978}
 
 \textbf{AgentCore docs.} {[}D1{]} What is AgentCore
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html}

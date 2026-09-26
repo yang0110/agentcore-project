@@ -40,6 +40,15 @@ PREFIX = os.environ.get("NAME_PREFIX", "acs")
 ADAPTER_PORT = int(os.environ.get("ADAPTER_PORT", "18021"))
 GPU_INSTANCE = os.environ.get("GPU_INSTANCE", "g6.xlarge")
 MODELS_GIB = int(os.environ.get("MODELS_GIB", "40"))
+# Session lifecycle of every Runtime created here. The idle timeout must outlast the worst trainer
+# stall (train step + weight sync + eval + checkpoint save): past it AgentCore reclaims the session and
+# the same runtimeSessionId silently comes back as an EMPTY sandbox. HEARTBEAT=1 (default on our own
+# Runtimes) bridges shorter gaps; this is the backstop. AgentCore range 60 s–8 h; a longer timeout
+# bills an abandoned session longer. Applies to NEW Runtimes only — FORCE_RECREATE=1 to change one.
+RUNTIME_IDLE_TIMEOUT = int(os.environ.get("RUNTIME_IDLE_TIMEOUT", "3600"))
+MICROVM_MAX_LIFETIME = 28800    # managed microVM hard max (8 h)
+INSTANCE_MAX_LIFETIME = 86400   # capacity-provider Runtime sessions
+CP_IDLE_INSTANCE_TIMEOUT = 600  # an instance with NO session left is released after this (g6 is costly)
 MODELS_VOL = "models"
 MODELS_MOUNT = "/mnt/models"
 
@@ -300,6 +309,26 @@ def _existing_runtime_arn(control, name: str):
             return None, None, None
 
 
+def runtime_lifecycle(max_lifetime: int) -> dict:
+    if not 60 <= RUNTIME_IDLE_TIMEOUT <= 28800:
+        die(f"RUNTIME_IDLE_TIMEOUT={RUNTIME_IDLE_TIMEOUT} outside AgentCore's 60–28800 s range")
+    return {"idleRuntimeSessionTimeout": RUNTIME_IDLE_TIMEOUT,
+            "maxLifetime": max(max_lifetime, RUNTIME_IDLE_TIMEOUT)}
+
+
+def _warn_lifecycle(control, name, rid):
+    """A reused Runtime keeps the idle timeout it was created with; say so if it differs, because
+    HEARTBEAT_IDLE (run.sh) must stay <= the timeout the Runtime actually has."""
+    try:
+        lc = control.get_agent_runtime(agentRuntimeId=rid).get("lifecycleConfiguration") or {}
+    except ClientError:
+        return
+    have = lc.get("idleRuntimeSessionTimeout")
+    if have is not None and have != RUNTIME_IDLE_TIMEOUT:
+        err(f"note: reused runtime {name} keeps idleRuntimeSessionTimeout={have}s "
+            f"(RUNTIME_IDLE_TIMEOUT={RUNTIME_IDLE_TIMEOUT}s applies only on create; FORCE_RECREATE=1)")
+
+
 def _reuse_or_clear(control, name):
     """Return an existing runtime ARN to reuse, or None if it should be (re)created.
     A CREATE_FAILED leftover is deleted so we can create it cleanly."""
@@ -309,6 +338,8 @@ def _reuse_or_clear(control, name):
         control.delete_agent_runtime(agentRuntimeId=rid)
         time.sleep(10)
         return None
+    if arn:
+        _warn_lifecycle(control, name, rid)
     return arn
 
 
@@ -325,6 +356,7 @@ def managed_runtime(name, image_uri, exec_arn, env, network) -> str:
         agentRuntimeArtifact={"containerConfiguration": {"containerUri": image_uri}},
         protocolConfiguration={"serverProtocol": "HTTP"},
         networkConfiguration=network,
+        lifecycleConfiguration=runtime_lifecycle(MICROVM_MAX_LIFETIME),
         environmentVariables=env,
     )
     _wait_runtime(control, resp["agentRuntimeId"])
@@ -349,7 +381,8 @@ def capacity_provider(name, operator_arn, instance, root_free_gib=30, volume_gib
             "instanceRequirements": {"allowedInstanceTypes": [instance]}}},
         "vpcConfiguration": {"subnets": subnets, "securityGroups": [sg]},
         "rootVolume": {"freeSpaceGiB": root_free_gib, "volumeType": "gp3"},
-        "lifecycleConfiguration": {"idleInstanceTimeout": 600, "maxLifetime": 86400}}
+        "lifecycleConfiguration": {"idleInstanceTimeout": CP_IDLE_INSTANCE_TIMEOUT,
+                                   "maxLifetime": INSTANCE_MAX_LIFETIME}}
     if volume_gib:
         ec2cfg["volumes"] = [{"ebsConfiguration": {
             "name": MODELS_VOL, "sizeGiB": volume_gib, "volumeType": "gp3", "encrypted": True}}]
@@ -390,7 +423,7 @@ def runtime_on_cp(name, image_uri, exec_arn, cp_arn, env, volume=False) -> str:
         agentRuntimeArtifact={"containerConfiguration": {"containerUri": image_uri}},
         protocolConfiguration={"serverProtocol": "HTTP"},
         capacityProviderConfiguration={"capacityProviderArn": cp_arn},
-        lifecycleConfiguration={"idleRuntimeSessionTimeout": 600, "maxLifetime": 86400},
+        lifecycleConfiguration=runtime_lifecycle(INSTANCE_MAX_LIFETIME),
         environmentVariables=env,
         **kw,
     )
