@@ -101,6 +101,58 @@ Scale two tiers and the bottleneck moves, so **diagnose first** with `perf/sglan
 - **Terminate:** idle timeout (15 min, resets per invoke), max lifetime (microVM 8 h, Instances 14 d), or `StopRuntimeSession` [D3, D4, D12]; memory is sanitized.
 - **Latency:** no published cold-start number, so **measure it**. Every sandbox op logs `[sbx-op]` and every generation `[sglang-gen]` → `perf/sandbox_ms_*`, `perf/sandbox_open_*` (cold vs warm), `perf/sglang_gen_ms_*`.
 
+## AgentCore limits (1/4) — lifetime and rates
+
+```{=latex}
+\footnotesize
+```
+
+| Limit | Value [D14] | Adj. | Impact · what we do |
+|--------------|------------|---|----------------------|
+| **Idle timeout** | 15 min default; Runtime 60 s–8 h (we set 600 s) | cfg | a reclaimed id silently returns an **empty** sandbox → `HEARTBEAT=1` |
+| Max lifetime | microVM **8 h** · Instance **14 d** · CI ≤ 8 h | no | long episodes need snapshot / re-seed; CI pings don't extend it |
+| **New Runtime sessions** | **25 /s** | yes | caps the cold-start burst per batch → pre-open ahead |
+| Concurrent Runtime sessions | **5000** | yes | one per in-flight microVM episode |
+| Runtime invoke (data plane) | 1000 /s | yes | why high fan-out moves to tier 2 |
+| Code Interpreter | 1000 concurrent · **30 /s** start · **30 /s** invoke | yes | ≈ 75 episodes in flight |
+
+## AgentCore limits (2/4) — resources and compute
+
+```{=latex}
+\footnotesize
+```
+
+| Limit | Value [D14] | Adj. | Impact · what we do |
+|--------------|------------|---|----------------------|
+| **Runtimes per account** | **1000** (10 endpoints, 1000 versions each) | yes | one per image; Terminal-Bench ≈ 229, account has **234** |
+| Control-plane writes | 50 /s | no | creating hundreds of Runtimes: throttle + retry |
+| Per request | **15 min** · 100 MB payload | no | a longer `exec` runs async and is polled |
+| Image | microVM **2 GB**, arm64 only · CI disk 10 GB | no | bigger image → CPU Instance (`m5`) |
+| GPU | Instances only · 1 session = 1 instance · no MIG | no | Ray farm to share a GPU |
+| Privileges | container has **no Linux capabilities** | no | no per-episode uid / cgroup → Landlock jail |
+
+## AgentCore limits (3/4) — launch time
+
+```{=latex}
+\small
+```
+
+**Launch time (measured by us, not published by AWS):**
+
+| Substrate | Cold launch | Warm / reused open |
+|---|---|---|
+| Code Interpreter (managed microVM) | `start_session` p50 **1.8 s**, p95 3.5 s | – (fresh per episode) |
+| Own Runtime, microVM | **≈ 15 s** for a 447 MB image, grows with size; 0.7–2.5 s when AgentCore has a spare VM | pre-open wait p50 5 ms |
+| CPU Instance (`m5.xlarge`, ~4 GB image) | **≈ 83 s** | 0.12–0.33 s |
+| GPU Instance (`g6`) | **≈ 207 s** | 0.15–0.19 s |
+
+## AgentCore limits (4/4) — how many images
+
+- ECR itself is not the limit. Defaults [D15] are **100,000 repositories per region** and **20,000 images per repository**, both adjustable. This account has **247** repositories.
+- A Runtime points at **one image URI**, so the binding limit is **1000 Runtimes per account**. That caps distinct custom images at about 1000, unless tasks share an image.
+- Push rate: `PutImage` 10 /s, which matters when building hundreds of task images. Pulls (`GetDownloadUrlForLayer` 3000 /s) are not a concern.
+- Image size drives cold launch: the microVM cold boot grows with the image, and the Terminal-Bench images run p50 128 MB to max 2 GB.
+
 ## Build and deploy a Runtime
 
 1. Build the sandbox image (`docker buildx`: **arm64** for microVM, **amd64** for Instances) and push to ECR.
@@ -695,7 +747,7 @@ bash 4_deploy_runtime.sh          # VPC Runtime + SG->SG dial-back rule
 bash 5_run.sh && bash 6_cleanup.sh
 ```
 
-**Status.** Three blockers found and fixed: the CLI's root guard (`IS_SANDBOX=1`), the missing `qwen25` tool parser (every episode ended after one turn, reward 0), and CLI `exit=1` at the 1024-token per-turn cap (now 2048). Sandbox, CLI, dial-back, parser and checker verified without a trainer. [PENDING: branching RL smoke fan_out and reward]
+**Status.** Three blockers found and fixed: the CLI's root guard (`IS_SANDBOX=1`), the missing `qwen25` tool parser (every episode ended after one turn, reward 0), and CLI `exit=1` at the 1024-token per-turn cap (now 2048). Sandbox, CLI, dial-back, parser and checker verified without a trainer. **RL smoke 2026-09-25:** 68 episodes, 0 CLI errors, `fan_out` p50 4 (max 37), reward 0.61 / 0.48, `eval/swe` 0.47. But every advantage was 0 (grouped by per-rollout `index`, not the prompt group); fixed with a regression test, learning [PENDING: branching re-run with the advantage fix].
 
 ## Summary — 7 demos + 1 experimental
 
@@ -712,7 +764,7 @@ bash 5_run.sh && bash 6_cleanup.sh
 | `demo_gpu_single` | KernelBench on one warm g6 | `sub_session` on a shared g6 | trained; smoke 0.525 |
 | `demo_gpu_farm_fractional` | one GPU split 0.5 + 0.5 | own CUDA context, shared card | eval 0.65; 181 / 178 split |
 | `demo_gpu_farm_whole` | one whole GPU per session | own GPU | eval 0.65 / 0.70 |
-| *`demo_cpu_branching`* | CLI fan-out (experimental) | microVM | fixes in; RL re-run pending |
+| *`demo_cpu_branching`* | CLI fan-out (experimental) | microVM | fans out, eval 0.47; advantage fix re-run pending |
 
 ## Takeaways
 
@@ -729,7 +781,7 @@ bash 5_run.sh && bash 6_cleanup.sh
 
 **Papers & code.** [1] Agent Lightning <https://arxiv.org/abs/2508.03680> · [2] DeepSeek-R1 <https://arxiv.org/abs/2501.12948> · [3] Qwen3 <https://arxiv.org/abs/2505.09388> · [5] Kimi K2 <https://arxiv.org/abs/2507.20534> · [7] KernelBench <https://huggingface.co/datasets/ScalingIntelligence/KernelBench> · [9] slime <https://github.com/THUDM/slime>
 
-**AgentCore docs.** [D1] What is AgentCore <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html> · [D2] Runtime <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html> · [D3] How it works <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html> · [D4] Lifecycle <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-lifecycle-settings.html> · [D5] Instances (GPU) <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-how-it-works.html> · [D6] Code Interpreter <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-tool.html> · [D8] InvokeAgentRuntime <https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_InvokeAgentRuntime.html> · [D9] CreateAgentRuntime <https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_CreateAgentRuntime.html> · [D10] NetworkConfiguration <https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_NetworkConfiguration.html> · [D11] VPC endpoints <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/vpc-interface-endpoints.html> · [D12] StopRuntimeSession <https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html> · [D13] Observability <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability.html>
+**AgentCore docs.** [D1] What is AgentCore <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html> · [D2] Runtime <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html> · [D3] How it works <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html> · [D4] Lifecycle <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-lifecycle-settings.html> · [D5] Instances (GPU) <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-how-it-works.html> · [D6] Code Interpreter <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-interpreter-tool.html> · [D8] InvokeAgentRuntime <https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_InvokeAgentRuntime.html> · [D9] CreateAgentRuntime <https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_CreateAgentRuntime.html> · [D10] NetworkConfiguration <https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_NetworkConfiguration.html> · [D11] VPC endpoints <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/vpc-interface-endpoints.html> · [D12] StopRuntimeSession <https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html> · [D13] Observability <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability.html> · [D14] AgentCore quotas <https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html> (values: Service Quotas, this account, us-west-2, 2026-09-26) · [D15] ECR quotas <https://docs.aws.amazon.com/AmazonECR/latest/userguide/service-quotas.html>
 
 **Tasks.** MBPP <https://huggingface.co/datasets/google-research-datasets/mbpp> · HumanEval <https://huggingface.co/datasets/openai/openai_humaneval> · GSM8K <https://huggingface.co/datasets/openai/gsm8k> · MATH-500 <https://huggingface.co/datasets/HuggingFaceH4/MATH-500> · DeepScaleR <https://huggingface.co/datasets/agentica-org/DeepScaleR-Preview-Dataset> · Gretel SQL <https://huggingface.co/datasets/gretelai/synthetic_text_to_sql> · HotpotQA <https://huggingface.co/datasets/hotpotqa/hotpot_qa> · xLAM <https://huggingface.co/datasets/minpeter/xlam-function-calling-60k-parsed> · ToolACE <https://huggingface.co/datasets/Team-ACE/ToolACE> · Terminal-Bench <https://github.com/laude-institute/terminal-bench>
 

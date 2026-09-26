@@ -423,6 +423,137 @@ compute unit per session.}
 \end{itemize}
 \end{frame}
 
+\begin{frame}[fragile,allowframebreaks]{AgentCore limits (1/4) --- lifetime and rates}
+\protect\hypertarget{agentcore-limits-14-lifetime-and-rates}{}
+\footnotesize
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2745}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2353}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.0588}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.4314}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Limit
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Value {[}D14{]}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Adj.
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Impact · what we do
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\textbf{Idle timeout} & 15 min default; Runtime 60 s--8 h (we set 600 s)
+& cfg & a reclaimed id silently returns an \textbf{empty} sandbox →
+\texttt{HEARTBEAT=1} \\
+Max lifetime & microVM \textbf{8 h} · Instance \textbf{14 d} · CI ≤ 8 h
+& no & long episodes need snapshot / re-seed; CI pings don't extend
+it \\
+\textbf{New Runtime sessions} & \textbf{25 /s} & yes & caps the
+cold-start burst per batch → pre-open ahead \\
+Concurrent Runtime sessions & \textbf{5000} & yes & one per in-flight
+microVM episode \\
+Runtime invoke (data plane) & 1000 /s & yes & why high fan-out moves to
+tier 2 \\
+Code Interpreter & 1000 concurrent · \textbf{30 /s} start · \textbf{30
+/s} invoke & yes & ≈ 75 episodes in flight \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{AgentCore limits (2/4) --- resources and compute}
+\protect\hypertarget{agentcore-limits-24-resources-and-compute}{}
+\footnotesize
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2745}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2353}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.0588}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.4314}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Limit
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Value {[}D14{]}
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Adj.
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Impact · what we do
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\textbf{Runtimes per account} & \textbf{1000} (10 endpoints, 1000
+versions each) & yes & one per image; Terminal-Bench ≈ 229, account has
+\textbf{234} \\
+Control-plane writes & 50 /s & no & creating hundreds of Runtimes:
+throttle + retry \\
+Per request & \textbf{15 min} · 100 MB payload & no & a longer
+\texttt{exec} runs async and is polled \\
+Image & microVM \textbf{2 GB}, arm64 only · CI disk 10 GB & no & bigger
+image → CPU Instance (\texttt{m5}) \\
+GPU & Instances only · 1 session = 1 instance · no MIG & no & Ray farm
+to share a GPU \\
+Privileges & container has \textbf{no Linux capabilities} & no & no
+per-episode uid / cgroup → Landlock jail \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{AgentCore limits (3/4) --- launch time}
+\protect\hypertarget{agentcore-limits-34-launch-time}{}
+\small
+
+\textbf{Launch time (measured by us, not published by AWS):}
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Substrate
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Cold launch
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Warm / reused open
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+Code Interpreter (managed microVM) & \texttt{start\_session} p50
+\textbf{1.8 s}, p95 3.5 s & -- (fresh per episode) \\
+Own Runtime, microVM & \textbf{≈ 15 s} for a 447 MB image, grows with
+size; 0.7--2.5 s when AgentCore has a spare VM & pre-open wait p50 5
+ms \\
+CPU Instance (\texttt{m5.xlarge}, \textasciitilde4 GB image) & \textbf{≈
+83 s} & 0.12--0.33 s \\
+GPU Instance (\texttt{g6}) & \textbf{≈ 207 s} & 0.15--0.19 s \\
+\bottomrule\noalign{}
+\end{longtable}
+\end{frame}
+
+\begin{frame}[fragile,allowframebreaks]{AgentCore limits (4/4) --- how many images}
+\protect\hypertarget{agentcore-limits-44-how-many-images}{}
+\begin{itemize}
+\tightlist
+\item
+  ECR itself is not the limit. Defaults {[}D15{]} are \textbf{100,000
+  repositories per region} and \textbf{20,000 images per repository},
+  both adjustable. This account has \textbf{247} repositories.
+\item
+  A Runtime points at \textbf{one image URI}, so the binding limit is
+  \textbf{1000 Runtimes per account}. That caps distinct custom images
+  at about 1000, unless tasks share an image.
+\item
+  Push rate: \texttt{PutImage} 10 /s, which matters when building
+  hundreds of task images. Pulls (\texttt{GetDownloadUrlForLayer} 3000
+  /s) are not a concern.
+\item
+  Image size drives cold launch: the microVM cold boot grows with the
+  image, and the Terminal-Bench images run p50 128 MB to max 2 GB.
+\end{itemize}
+\end{frame}
+
 \begin{frame}[fragile,allowframebreaks]{Build and deploy a Runtime}
 \protect\hypertarget{build-and-deploy-a-runtime}{}
 \begin{enumerate}
@@ -1811,8 +1942,12 @@ In Agent Lightning only 36\% of rollouts stay one sample {[}1{]}.
 (\texttt{IS\_SANDBOX=1}), the missing \texttt{qwen25} tool parser (every
 episode ended after one turn, reward 0), and CLI \texttt{exit=1} at the
 1024-token per-turn cap (now 2048). Sandbox, CLI, dial-back, parser and
-checker verified without a trainer. {[}PENDING: branching RL smoke
-fan\_out and reward{]}
+checker verified without a trainer. \textbf{RL smoke 2026-09-25:} 68
+episodes, 0 CLI errors, \texttt{fan\_out} p50 4 (max 37), reward 0.61 /
+0.48, \texttt{eval/swe} 0.47. But every advantage was 0 (grouped by
+per-rollout \texttt{index}, not the prompt group); fixed with a
+regression test, learning {[}PENDING: branching re-run with the
+advantage fix{]}.
 \end{frame}
 
 \begin{frame}[fragile,allowframebreaks]{Summary --- 7 demos + 1 experimental}
@@ -1854,7 +1989,7 @@ CUDA context, shared card & eval 0.65; 181 / 178 split \\
 \texttt{demo\_gpu\_farm\_whole} & one whole GPU per session & own GPU &
 eval 0.65 / 0.70 \\
 \emph{\texttt{demo\_cpu\_branching}} & CLI fan-out (experimental) &
-microVM & fixes in; RL re-run pending \\
+microVM & fans out, eval 0.47; advantage fix re-run pending \\
 \bottomrule\noalign{}
 \end{longtable}
 \end{frame}
@@ -1917,6 +2052,11 @@ microVM & fixes in; RL re-run pending \\
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_StopRuntimeSession.html}
 · {[}D13{]} Observability
 \url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability.html}
+· {[}D14{]} AgentCore quotas
+\url{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html}
+(values: Service Quotas, this account, us-west-2, 2026-09-26) ·
+{[}D15{]} ECR quotas
+\url{https://docs.aws.amazon.com/AmazonECR/latest/userguide/service-quotas.html}
 
 \textbf{Tasks.} MBPP
 \url{https://huggingface.co/datasets/google-research-datasets/mbpp} ·
