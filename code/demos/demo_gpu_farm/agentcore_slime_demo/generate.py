@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import os
 
-from .harness import Trajectory, run_episode
-from . import preopen
-from .policy import SGLangPolicy
+from .app_snapshot import maybe_restore, maybe_snapshot
+from .harness import Trajectory
+from . import harness_pool
 from .sandbox import make_sandbox
 from .session_keeper import maybe_keep_warm
 from .task import CodingTask
@@ -112,8 +112,8 @@ def build_token_stream(
 async def generate(args, sample, sampling_params, evaluation: bool = False):
     """slime per-sample rollout. Returns a single Sample.
 
-    We flatten the whole multi-turn episode into ONE trainable Sample (see
-    build_token_stream), so we return a bare Sample — not a 1-element list. This matters:
+    mini_claude_episode.run flattens the episode (the adapter's per-session record) into ONE
+    trainable Sample, so we return a bare Sample — not a 1-element list. This matters:
     slime's dispatch (generate_and_rm) treats a LIST return as the "fan-out" case and hands
     back list[list[Sample]] from generate_and_rm_group. The stock rollout path tolerates that
     nesting everywhere via `isinstance(group[0], list)` guards, but the fully-async path
@@ -121,82 +121,58 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     sort key and crashes on the nested shape. Returning a bare Sample keeps us on slime's
     primary (non-fan-out) shape, which BOTH the stock and fully-async paths handle. Behavior
     is identical for the stock demos (one flattened sample per episode either way)."""
-    from slime.utils.types import Sample  # lazy
+    from . import mini_claude_episode, router_trace
 
-    from . import router_trace
-
+    if os.environ.get("HARNESS", "mini_claude") != "mini_claude":
+        raise RuntimeError(f"HARNESS={os.environ['HARNESS']!r} is not supported: the only harness is "
+                           "mini_claude, run inside the sandbox session (HARNESS=direct was removed)")
     task = _task_from_sample(sample)
-    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-    # PIN INFERENCE per episode. slime's SGLang router load-balances every /generate across the E
-    # engines (cache-aware), so one episode's turns could scatter across engines. We pick ONE engine
-    # deterministically from the episode key and point THIS episode's policy straight at it, so every
-    # turn of the episode is served by the same engine — inference becomes sticky per episode, like
-    # the sandbox. Degrades gracefully to the router URL if engine discovery fails (unpinned, still
-    # recorded). Uses only SGLangPolicy's public router_url arg — no slime patch. See router_trace.
-    episode_key = f"{task.task_id}#{getattr(sample, 'index', 0)}"
-    engine, _engine_idx, num_engines = router_trace.pin_engine(episode_key, router_url)
-    policy = SGLangPolicy(
-        router_url=engine,
-        model_path=args.hf_checkpoint,
-        # Qwen3 emits <think> blocks by default; suppress for codegen rollouts so the
-        # trainable span stays the actual solution, not a long reasoning trace.
-        chat_template_kwargs={"enable_thinking": False},
-    )
+    # THE HARNESS TIER (harness_pool.py, every demo's default): a free dispatch worker (W =
+    # HARNESS_WORKERS, default RB x NS) pulls this episode, takes its sandbox FIRST, then the SGLang
+    # engine with the fewest in-flight episodes (sticky for all its turns). The agent loop itself runs
+    # INSIDE the sandbox session, so the harness scales with the sandbox tier, not the trainer. Here
+    # the sandbox tier is the GPU farm, which bounds concurrency (CONC), so W rarely binds.
     kind = os.environ.get("SANDBOX", "agentcore")
+    pool = harness_pool.get_pool(args)
+    # App-level snapshot/resume (SNAPSHOT_EVERY=1): every episode opens a FRESH sandbox session, so
+    # each boundary is effectively a GPU-instance recycle. Restore this task's workspace from the
+    # store we own at ENTER (resume), snapshot it back at EXIT (quiescent, before the weight-sync
+    # barrier). SNAPSHOT_EVERY=0 (default) disables both. See app_snapshot.py.
+    snap_key = f"ep-{task.task_id}"
 
-    # HEARTBEAT=1 (default on our own remote Runtimes, every demo): wrap the sandbox in a KeptSandbox so a process-wide
-    # SessionKeeper heartbeats it if it goes idle across the weight-sync barrier. Off => unchanged.
-    # PREOPEN=N (opt-in) keeps N fresh sessions booted ahead; ignored on the warm-shared ray farm.
-    sandbox = await preopen.take(kind, lambda: maybe_keep_warm(
-        make_sandbox(kind, region=os.environ.get("AGENTCORE_REGION"))), kind=kind)
-    async with sandbox as sb:
-        # ONE [router] record per episode: the join that ties this episode's sandbox session (also
-        # stamped on every [sbx-op]) to the engine its turns were pinned to and the Runtime it used.
-        # metrics.py parses these into <log>.router.csv and check_stickiness asserts each episode is
-        # sticky to one engine / sandbox session / runtime ARN.
-        router_trace.emit(
-            task_id=task.task_id,
-            rollout_id=getattr(sample, "index", "?"),
-            engine=engine,
-            engine_pinned=int(num_engines > 1),
-            sandbox_id=router_trace.sandbox_id_of(sb),
-            sandbox_session=router_trace.session_of(sb),
-            runtime_arn=router_trace.arn_of(sb),
-            sandbox_image=getattr(task, "image", "cpu"),
-            family=getattr(task, "family", "?"),
-        )
-        # HARNESS=mini_claude (default): tool-calling agent via slime's AnthropicAdapter, hidden
-        # grader after the episode (mini_claude_episode.py). HARNESS=direct: the fenced-block loop below.
-        if os.environ.get("HARNESS", "mini_claude") == "mini_claude":
-            from . import mini_claude_episode
-            return await mini_claude_episode.run(args, sample, task, sampling_params, sb, engine)
-        traj = await run_episode(policy, sb, task, sampling_params)
+    async def episode(worker):
+        # HEARTBEAT=1 (default on our own remote Runtimes, every demo): wrap the sandbox in a KeptSandbox so a process-wide
+        # SessionKeeper heartbeats it if it goes idle across the weight-sync barrier. Off => unchanged.
+        # PREOPEN=N (opt-in) keeps N fresh sessions booted ahead; ignored on the warm-shared ray farm.
+        async with pool.sandbox(kind, lambda: maybe_keep_warm(
+                make_sandbox(kind, region=os.environ.get("AGENTCORE_REGION")))) as (sb, wait_ms, slot):
+            with pool.engine() as (e, engine):
+                # ONE [router] record per episode: the join that ties this episode's sandbox session (also
+                # stamped on every [sbx-op]) to the worker that drove it, the engine its turns ran on and
+                # the Runtime it used. metrics.py parses these into <log>.router.csv and check_stickiness
+                # asserts each episode is sticky to one engine / sandbox session / runtime ARN.
+                router_trace.emit(
+                    task_id=task.task_id,
+                    rollout_id=getattr(sample, "index", "?"),
+                    harness_worker=worker.wid,
+                    engine=engine,
+                    engine_pinned=int(len(pool._engine_urls) > 1),
+                    sandbox_id=router_trace.sandbox_id_of(sb),
+                    sandbox_session=router_trace.session_of(sb),
+                    runtime_arn=router_trace.arn_of(sb),
+                    sandbox_image=getattr(task, "image", "cpu"),
+                    family=getattr(task, "family", "?"),
+                )
+                await maybe_restore(sb, snap_key)
+                # The agent loop runs INSIDE this sandbox session (mini_claude_episode.py → in_session_harness):
+                # tool-calling agent via slime's AnthropicAdapter, hidden grader after the episode. The trainer
+                # only hosts the adapter (token record); there is no in-trainer harness.
+                out = await mini_claude_episode.run(args, sample, task, sampling_params, sb, engine,
+                                                    fields=pool.tier_fields(worker, e, wait_ms, slot))
+                await maybe_snapshot(sb, snap_key)
+                return out
 
-    tokens, response_length, loss_mask, rollout_log_probs = build_token_stream(
-        traj, policy.tokenizer
-    )
-
-    out = Sample(
-        index=getattr(sample, "index", 0),
-        prompt=getattr(sample, "prompt", task.prompt),
-        tokens=tokens,
-        response_length=response_length,
-        reward=traj.reward,
-        status=Sample.Status.COMPLETED,
-    )
-    # slime asserts len == response_length for both (mask + logprobs cover only the response
-    # region). rollout_log_probs is required when slime reuses rollout logprobs in the loss.
-    out.loss_mask = loss_mask
-    out.rollout_log_probs = rollout_log_probs
-    out.metadata = {
-        "task_id": task.task_id,
-        "solved": traj.solved,
-        "num_turns": traj.num_turns,
-        "sandbox_id": sb.sandbox_id,
-    }
-    # Bare Sample (NOT [out]) — see the docstring: keeps us on slime's non-fan-out shape so the
-    # fully-async rollout path's sort key doesn't choke on list[list[Sample]] nesting.
-    return out
+    return await pool.run(episode)
 
 
 def _task_from_sample(sample):

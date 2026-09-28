@@ -32,7 +32,7 @@ set -euo pipefail
 
 CONV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_gpu_farm"
-export FARM=fractional
+export FARM=fractional LOCAL_GPU=1   # the local farm on GPU 6 (12_gpu_farm_remote.sh = LOCAL_GPU=0)
 
 ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-http://127.0.0.1:8080}"
 if ! curl -fsS "${ENDPOINT}/ping" >/dev/null 2>&1; then

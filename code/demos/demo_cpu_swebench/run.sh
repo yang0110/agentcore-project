@@ -19,13 +19,14 @@
 # look-ahead data source, for the NEXT TB_PREOPEN_BATCHES rollouts before slime draws them. A
 # SessionKeeper heartbeat keeps open sessions alive across the weight-sync stall.
 #
-# POOL => STOCK (Mode A) DRIVER ONLY. terminalbench_pool_generate.generate (the shared image-pool hook,
-# vendored from demo_cpu_terminalbench) returns a fan-out LIST of Samples; slime's fully-async (Mode B)
-# sort key cannot order it. MODE=A only.
+# STOCK (Mode A) DRIVER ONLY. terminalbench_pool_generate.generate (the shared image-pool hook, vendored
+# from the former demo_cpu_terminalbench) returns one Sample per episode (the harness pool), but the look-ahead
+# pre-open data source feeds the stock driver, so MODE=A only.
 #
 # ADAPTER TOOL PARSER (the A3/B3 dead-reward fix): SGLANG_ARGS bakes in --sglang-tool-call-parser
 # qwen25 --sglang-reasoning-parser qwen3. Without them the tool loop is dead and reward is structurally 0.
 set -euo pipefail
+case "${HARNESS_WHERE:-session}" in session) ;; *) echo "HARNESS_WHERE=$HARNESS_WHERE is not supported: the agent loop always runs in the sandbox session" >&2; exit 1 ;; esac
 
 SANDBOX="${SANDBOX:-agentcore-runtime}"   # fresh AgentCore session per episode (the pool opens it).
 if [ "$SANDBOX" = "local" ]; then
@@ -49,7 +50,7 @@ TEMP="${TEMP:-1.0}"
 GBS=$(( RB * NS ))
 
 # ---- isolation + pre-open + heartbeat knobs (read by TerminalBenchPool inside the rollout process) --------
-HARNESS_WORKERS="${HARNESS_WORKERS:-4}"       # warm in-process harness workers
+HARNESS_WORKERS="${HARNESS_WORKERS:-$GBS}"    # harness tier: dispatch workers (default RB x NS = one step)
 EPISODE_MAX_TURNS="${EPISODE_MAX_TURNS:-12}"  # agentic turns per SWE-bench episode (= SWE_MAX_TURNS in the data rows)
 EPISODE_MAX_TOKENS="${EPISODE_MAX_TOKENS:-1024}"
 MINI_AGENT_MAX_TOOL_CHARS="${MINI_AGENT_MAX_TOOL_CHARS:-2000}"  # clip each tool result fed back (bounds trajectory length)
@@ -61,7 +62,7 @@ TB_PREOPEN_BATCHES="${TB_PREOPEN_BATCHES:-2}"   # THE pre-open knob: batches kep
 
 MODE="${MODE:-A}"
 case "$MODE" in A|a) MODE=A;;
-   B|b) echo "MODE=B (fully-async) unsupported: the pool returns a fan-out LIST of Samples. Use MODE=A." >&2; exit 1;;
+   B|b) echo "MODE=B (fully-async) unsupported here: the look-ahead pre-open data source feeds the stock driver. Use MODE=A." >&2; exit 1;;
    *) echo "MODE must be A (got '$MODE')" >&2; exit 1;; esac
 
 EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
@@ -193,7 +194,6 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"/root/Megatron-LM:${DEMO_DIR}:/root/slime\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
-    \"HARNESS_WHERE\": \"${HARNESS_WHERE:-}\",
     \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST:-}\",
     \"ADAPTER_PORT_BASE\": \"${ADAPTER_PORT_BASE:-18100}\",
     \"MINI_SESSION_POLL_SEC\": \"${MINI_SESSION_POLL_SEC:-25}\",

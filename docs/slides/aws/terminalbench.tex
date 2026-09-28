@@ -62,7 +62,7 @@
 \textbf{Warm-start probe} & Pre-open cuts wait p50 774 $\rightarrow$ \hl{5 ms} (own Runtime) / 1715 $\rightarrow$ \hl{0 ms} (Code Interpreter), makespan $-20$\,\% / $-15$\,\%. Heartbeat keeps own-Runtime sessions past the idle timeout (3/3 vs 0/3) (\srefs{fr:preopen}{fr:hb})\\
 \bottomrule
 \end{tabularx}
-\src{\tb{code/demos/demo\_cpu\_terminalbench/} (smoke run 2026-09-23, warm-start probe 2026-09-25); checked 2026-09-25.}
+\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} (smoke run 2026-09-23, warm-start probe 2026-09-25); checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -80,7 +80,7 @@
 \end{tabularx}
 \par\vspace{3mm}
 \plainen{every episode gets a brand-new computer built from its task's image, and we boot those computers ahead of time so the trainer never waits.}
-\src{\tb{code/demos/demo\_cpu\_terminalbench/}; checked 2026-09-25.}
+\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/}; checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -97,7 +97,7 @@
 \item \textbf{Session = microVM, 1:1.} A new \tb{runtimeSessionId} boots a fresh Firecracker VM (2 vCPU, 8 GB) from the pristine image; \tb{StopRuntimeSession} terminates and sanitizes it.
 \item The image is untouched except for one wrapper layer: a standalone Python + a stdlib HTTP server (\tb{exec}, files, boot timestamps). Hidden tests are injected \textbf{after} the agent finishes.
 \end{itemize}
-\src{\tb{code/demos/demo\_cpu\_terminalbench/} deploy; session model per AgentCore docs [D3] (\sref{fr:refs}); checked 2026-09-25.}
+\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} deploy; session model per AgentCore docs [D3] (\sref{fr:refs}); checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -121,7 +121,7 @@ Train / held-out eval & \hl{135 / 31} & 80/20, disjoint by task, stratified by d
 \item Images: p50 128 MB, p90 492 MB, max 2 GB (48 GB total). The heavy tail (ML models, TeX, toolchains) is what makes boot time vary.
 \item \hl{Reward = 1 only if every hidden test passes.}
 \end{itemize}
-\src{\tb{code/demos/demo\_cpu\_terminalbench/} data preparation and oracle check; 2 GB image cap [Q1] (\sref{fr:refs}); checked 2026-09-25.}
+\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} data preparation and oracle check; 2 GB image cap [Q1] (\sref{fr:refs}); checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -135,7 +135,7 @@ Train / held-out eval & \hl{135 / 31} & 80/20, disjoint by task, stratified by d
 \item There is no ``create session'' call: the first invoke with a new \tb{runtimeSessionId} \textbf{is} the boot.
 \item One step = RB 4 prompts $\times$ NS 8 samples = \hl{32 episodes = 32 fresh microVMs}; 4 harness workers run them.
 \end{itemize}
-\src{\tb{code/demos/demo\_cpu\_terminalbench/} run config (RB = 4, NS = 8, W = 4); checked 2026-09-25.}
+\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} run config (RB = 4, NS = 8, W = 4); checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -161,7 +161,7 @@ Per step, if on the critical path & 32 $\times$ 15 s $\approx$ \hl{8 min} of ser
 \item \textbf{Bursty:} all 8 GRPO siblings of a task start at once, on the same Runtime.
 \item \textbf{Idle reclaim:} a session silent for $\approx$\,15 min is reclaimed, and the weight-sync pause can be that long [D3] (\sref{fr:refs}).
 \end{itemize}
-\src{\tb{code/demos/demo\_cpu\_terminalbench/} session-open timings; idle timeout per [Q1], [D3]; checked 2026-09-25.}
+\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} session-open timings; idle timeout per [Q1], [D3]; checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -186,7 +186,7 @@ Fully-async rollout & \yes & \yes & Off-policy (stale weights); slime mode chang
 \hl{Look-ahead pre-open (used)} & \yes & \yes & Guesses can be wrong; booted VMs idle\\
 \bottomrule
 \end{tabularx}
-\src{\tb{code/demos/demo\_cpu\_terminalbench/} rollout config (CONC, engines); checked 2026-09-25.}
+\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} rollout config (CONC, engines); checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -202,7 +202,7 @@ Fully-async rollout & \yes & \yes & Off-policy (stale weights); slime mode chang
 \end{enumerate}
 \vspace{2mm}
 \colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\footnotesize Live microVMs $\le$ W + P = 4 + 64 = \hl{68}. The account quota is \textbf{5000} active sessions and 25 new/s [Q2] (\sref{fr:refs}); throttled opens back off and retry.}}
-\src{\tb{code/demos/demo\_cpu\_terminalbench/} (\tb{tb\_lookahead\_source.py}, \tb{TerminalBenchPool}); quotas [Q2] us-west-2, 2026-09-23; checked 2026-09-25.}
+\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} (\tb{tb\_lookahead\_source.py}, \tb{TerminalBenchPool}); quotas [Q2] us-west-2, 2026-09-23; checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -226,7 +226,7 @@ Step N+1 drawn & All its episodes already booted & \hl{No}\\
 \item \textbf{Sessions per Runtime are never configured.} A task sampled in a step gets NS = 8 sessions; others get 0.
 \item \textbf{The price is idle time:} each VM is booted about P\,$\cdot$\,E\,/\,W seconds before it's needed (E = episode time).
 \end{itemize}
-\src{\tb{code/demos/demo\_cpu\_terminalbench/} pool design (W = 4, TB\_PREOPEN\_BATCHES = 2); checked 2026-09-25.}
+\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} pool design (W = 4, TB\_PREOPEN\_BATCHES = 2); checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -250,7 +250,7 @@ Step N+1 drawn & All its episodes already booted & \hl{No}\\
 \item E = 21 s (measured episode p50), W = 4.
 \item Tune from the \tb{[demo]} lines: \tb{open\_wait\_ms} $\gg$ 0 $\rightarrow$ raise it; \tb{preopen\_idle\_ms} $\gg$ boot time $\rightarrow$ lower it.
 \end{itemize}
-\src{Smoke run 2026-09-23 (E, measured idle), \tb{code/demos/demo\_cpu\_terminalbench/logs}; checked 2026-09-25.}
+\src{Smoke run 2026-09-23 (E, measured idle), \tb{code/demos/\_smoke\_logs/lanes\_tb\_0923}; checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -275,7 +275,7 @@ Agent behaviour & Median 6 turns, 5 bash calls; 45\,\% hit the 8-turn budget\\
 \begin{itemize}\footnotesize
 \item \textbf{Sparse, not dead.} The tool loop works and the agent makes partial progress, but almost every GRPO group is all-0, so there is little gradient.
 \end{itemize}
-\src{Smoke run 2026-09-23, \tb{code/demos/demo\_cpu\_terminalbench/logs}; checked 2026-09-25.}
+\src{Smoke run 2026-09-23, \tb{code/demos/\_smoke\_logs/lanes\_tb\_0923}; checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -299,7 +299,7 @@ microVM-seconds per train step & $\approx$\,13\,000 (32 $\times$ 411 s); \hl{$\a
 \begin{itemize}\footnotesize
 \item \textbf{Every open was a warm hit.} AgentCore already had a spare VM up for each Runtime, so no $\approx$\,15 s cold boot occurred in this run. The per-image cold-start probe (\tb{probe\_coldstart.py}) is still to run.
 \end{itemize}
-\src{Smoke run 2026-09-23, \tb{code/demos/demo\_cpu\_terminalbench/logs}; checked 2026-09-25.}
+\src{Smoke run 2026-09-23, \tb{code/demos/\_smoke\_logs/lanes\_tb\_0923}; checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -324,7 +324,7 @@ Code Interpreter & preopen & \hl{0 ms} & 6 / 24 (first batch) & 70 s & 24.3 s (\
 \begin{itemize}\footnotesize
 \item \textbf{Only the first batch pays the boot.} The price is ``idle held'', the same trade-off \tb{preopen\_idle\_ms} shows at full scale (\sref{fr:cost}).
 \end{itemize}
-\src{Warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_terminalbench/warmstart/}; checked 2026-09-25.}
+\src{Warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_tasks/terminalbench/warmstart/}; checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -347,7 +347,7 @@ Code Interpreter & on / off & 0 / 3 & Ends at its \tb{sessionTimeoutSeconds} reg
 \begin{itemize}\footnotesize
 \item \textbf{Why the keeper is always on here:} a reclaimed session looks healthy but has lost its files. On the Code Interpreter the lever is a generous session timeout, not pings.
 \end{itemize}
-\src{Warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_terminalbench/warmstart/} (Runtime \tb{acs\_warmstart\_cpu}); checked 2026-09-25.}
+\src{Warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_tasks/terminalbench/warmstart/} (Runtime \tb{acs\_warmstart\_cpu}); checked 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -370,7 +370,7 @@ Re-run with \tb{TB\_PREOPEN\_BATCHES} = 1 and 0 & Measure the cost/wait trade-of
 Curriculum / partial-credit reward & Mixed GRPO groups $\rightarrow$ real gradient\\
 \bottomrule
 \end{tabularx}
-\src{Smoke run 2026-09-23 and warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_terminalbench/}; checked 2026-09-25.}
+\src{Smoke run 2026-09-23 and warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_tasks/terminalbench/}; checked 2026-09-25.}
 \end{frame}
 
 %====================================================================

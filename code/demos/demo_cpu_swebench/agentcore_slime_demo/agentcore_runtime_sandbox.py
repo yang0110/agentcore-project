@@ -445,7 +445,7 @@ class RayFarmRuntimeSandbox:
         return (f"shared-{sid}", ping)
 
     async def __aexit__(self, *exc) -> None:
-        if self._client is not None:
+        if self._client is not None or self._local_url:   # a local-endpoint farm has no boto3 client
             with contextlib.suppress(Exception):
                 await self._invoke({"op": "close", "sub_session": self._sub})
         self._client = None

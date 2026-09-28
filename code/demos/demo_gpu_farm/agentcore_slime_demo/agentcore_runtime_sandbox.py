@@ -170,8 +170,9 @@ def _farm_open_capacity() -> int:
             return max(1, int(v))
     try:
         gpus = max(1, int(os.environ.get("B4_FARM_GPUS", "1")))
-        frac = float(os.environ.get("B4_GPU_FRACTION", "0.25"))
-        return max(1, gpus * int(1.0 / frac)) if frac > 0 else 4
+        frac = float(os.environ.get("B4_GPU_FRACTION", "0.5"))
+        # == the server's slot count, floor(B4_FARM_GPUS / B4_GPU_FRACTION) (run.sh computes the same)
+        return max(1, int(gpus / frac + 1e-9)) if frac > 0 else 2
     except (ValueError, ZeroDivisionError):
         return 4
 

@@ -29,14 +29,13 @@ convergence/
   09_cpu_xlam.sh
   10_cpu_mcp.sh
   11_cpu_mixed.sh      <- demo_cpu_tasks DATASET=mixed (the multi-family batch)
-  12_gpu_single.sh     <- GPU demos (KernelBench; CUDA sandbox; remote g6 or LOCAL_GPU=1)
+  12_gpu_farm_remote.sh      <- GPU demos (KernelBench; CUDA sandbox): demo_gpu_farm LOCAL_GPU=0 (remote g6)
   13_gpu_farm_fractional.sh  <- demo_gpu_farm FARM=fractional (local, GPU 6 shared 0.5+0.5)
   14_gpu_farm_whole.sh       <- demo_gpu_farm FARM=whole (local, GPUs 6,7, one GPU each)
   15_cpu_tasks_heartbeat.sh  <- property runs, real trainers (headline knob default-ON;
-  16_cpu_scale_lanes.sh        set it OFF => byte-identical to the plain single-substrate trainer)
+  16_cpu_tasks_scale.sh        set it OFF => byte-identical to the plain single-substrate trainer)
   17_cpu_tasks_libs.sh       <- demo_cpu_tasks DATASET=libs (pandas/scipy/sklearn on the Code Interpreter)
-  18_gpu_single_snapshot.sh  <- demo_gpu_single SNAPSHOT_EVERY=1 (was demo_gpu_snapshot)
-  19_cpu_instance_pool.sh    <- demo_cpu_instance_pool [side note] (warm m5 pool, SANDBOX_POOL=2, isolated sub_sessions)
+  18_gpu_farm_snapshot.sh    <- demo_gpu_farm SNAPSHOT_EVERY=1 (was demo_gpu_snapshot)
 ```
 
 ## Where you run these
@@ -61,9 +60,6 @@ no Runtime, nothing to deploy or tear down. `SANDBOX=local` is rejected for CPU 
 valid AWS creds in the container (`AWS_BEARER_TOKEN_BEDROCK` / region). To run on your own
 Runtime instead, set `SANDBOX=agentcore-runtime` (the baked K=2 `acs_sandbox_cpu` ARNs, or
 `AGENTCORE_SANDBOX_RUNTIME_ARNS`). 15 and 16 do that by default.
-
-**Instance pool (19)** needs the demo's capacity provider + Runtime (`demo_cpu_instance_pool`
-steps 2–4 → `deploy/runtime.env`, which the wrapper sources).
 
 **GPU-single (12)** is **remote-only**: it *requires* `AGENTCORE_SANDBOX_RUNTIME_ARN`
 pointing at a live **g6** CUDA sandbox Runtime (one dedicated GPU per session). Without a
@@ -139,26 +135,25 @@ trainers** (each layers its distinctive operational property on top of the stand
 trainer as env-gated glue that stays live during the run). They therefore get
 convergence wrappers like everything else. Each demo's **headline knob defaults ON**;
 setting it to its off value makes the run byte-identical to the plain single-substrate
-trainer (`demo_cpu_tasks` / `demo_gpu_single`), so the wrapper doubles as an A/B for the
+trainer (`demo_cpu_tasks` / `demo_gpu_farm`), so the wrapper doubles as an A/B for the
 property's effect on convergence:
 
 | # | wrapper | substrate | property (default-on knob) |
 |---|---------|-----------|-----------------------------|
 | 15 | `15_cpu_tasks_heartbeat.sh` | your own CPU Runtime (`SANDBOX=agentcore-runtime`, baked ARNs) | `demo_cpu_tasks DATASET=deepscaler` + keep the session warm across the weight-sync barrier (`HEARTBEAT=1`; was `demo_cpu_heartbeat`). Not on the Code Interpreter, where pings don't extend a session |
-| 16 | `16_cpu_scale_lanes.sh` | CPU sandbox (baked ARNs) | decoupled tiers: 4 SGLang engines : 256 warm harness workers (`HARNESS_WORKERS`) : 256 pooled microVMs (`SANDBOX_SESSIONS`); MODE pinned to A |
+| 16 | `16_cpu_tasks_scale.sh` | your own CPU Runtime (`SANDBOX=agentcore-runtime`) | `demo_cpu_tasks SCALE=1` (was `demo_cpu_scale_lanes`): the default harness tier turned up, 4 SGLang engines : 256 dispatch workers (`HARNESS_WORKERS`) : 256 pooled sessions (`SANDBOX_SESSIONS`) |
 | 17 | `17_cpu_tasks_libs.sh` | default Code Interpreter | `demo_cpu_tasks DATASET=libs`: the pandas / scipy / sklearn families that once needed three custom images (was `17_cpu_tasks_imagepool.sh` / `demo_cpu_imagepool`) |
-| 18 | `18_gpu_single_snapshot.sh` | remote **g6** or `LOCAL_GPU=1` | `demo_gpu_single` with app-level workspace snapshot/resume every episode (`SNAPSHOT_EVERY=1`) |
-| 19 | `19_cpu_instance_pool.sh` | warm pool of `SANDBOX_POOL` m5 Instances | `demo_cpu_instance_pool`: ~4 GB image, each episode an isolated sub_session (own uid) on the least-loaded warm instance |
+| 18 | `18_gpu_farm_snapshot.sh` | remote **g6** or `LOCAL_GPU=1` | `demo_gpu_farm` with app-level workspace snapshot/resume every episode (`SNAPSHOT_EVERY=1`) |
 
 (The former `19_gpu_customruntime.sh` is gone: `demo_gpu_customruntime` was merged into
-`demo_gpu_single`, so `LOCAL_GPU=1 bash 12_gpu_single.sh` is the same run. The former
+`demo_gpu_single`, which is now `demo_gpu_farm LOCAL_GPU=0` (12); its on-box variant is 14. The former
 `17_cpu_customruntime.sh` is gone too: it was `05_cpu_deepscaler.sh` on a custom Runtime; the
 custom-vs-managed angle is now `demo_cpu_tasks/compare_backends.py`. `HEARTBEAT=1` works on
 every wrapper, not just 15.)
 
 The retained seconds-long **offline probes** (`heartbeat_demo.py`, `snapshot_demo.py`,
 `harness_scaling_demo.py`, `gpu_torch_smoke.py`, `isolation_probe.py`,
-`demo_cpu_terminalbench/warmstart/run_warmstart.sh`) are NOT trainers — invoke them directly
+`demo_cpu_tasks/terminalbench/warmstart/run_warmstart.sh`) are NOT trainers — invoke them directly
 for a fast legibility check, not via these wrappers.
 
 > **Hardware status.** 12's `LOCAL_GPU=1` path is validated on this 8×L40S box; the two
@@ -170,8 +165,9 @@ for a fast legibility check, not via these wrappers.
 Only **trainable** demos get a convergence script. Still excluded:
 
 - `convergence/` is not for **`demo_cpu_branching`** (needs a live CLI-capable sandbox +
-  bring-up) — add a wrapper once it is unblocked and smoke-verified. `demo_cpu_terminalbench`
-  ships its own `train.sh`.
+  bring-up) — add a wrapper once it is unblocked and smoke-verified. Terminal-Bench
+  (`demo_cpu_tasks DATASET=terminalbench`, formerly `demo_cpu_terminalbench`) has no wrapper yet;
+  use `DATASET=terminalbench ./train.sh` in `demo_cpu_tasks`.
 
 ## Teardown
 

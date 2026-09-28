@@ -5,9 +5,8 @@ principle is *direction of traffic*: prefer the "pull" shape (you call AWS), and
 ("dial-back") traffic when a task genuinely needs it — then lock it down with a VPC, PrivateLink, and
 security-group **references** (never CIDRs).
 
-Companion demo: [`demo_cpu_instance_pool`](../code/demos/demo_cpu_instance_pool/) (formerly `demo_cpu_tasks` `VARIANT=bigimage` / `demo_cpu_bigimage`) ships an executable version
-of this checklist (`netcheck.py`) and a large-image, instance-backed Runtime recipe that needs these
-controls. Related deep dives: [fault-recovery](fault-recovery.md), [sandbox-comparison](sandbox-comparison.md),
+Companion tool: `code/demos/demo_cpu_tasks/netcheck.py` is an executable version of this checklist
+(its large-image companion demo, `demo_cpu_instance_pool`, was removed 2026-09-28). Related deep dives: [fault-recovery](fault-recovery.md), [sandbox-comparison](sandbox-comparison.md),
 and the VPC-mode war story lives in the `agentcore-vpc-mode-harness` project memory.
 
 ---

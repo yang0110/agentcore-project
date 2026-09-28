@@ -68,9 +68,9 @@ render(
     ["#", "Demo", "Use case it demonstrates"],
     [
         ["1", "demo_cpu_tasks", "Literature RLVR tasks on the DEFAULT managed Code Interpreter — no image, no Runtime"],
-        ["2", "demo_cpu_terminalbench", "Custom images at scale — one image + Runtime per task (~229), fresh microVM per episode"],
+        ["2", "demo_cpu_tasks DATASET=terminalbench", "Custom images at scale — one image + Runtime per task (~229), fresh microVM per episode"],
+        ["", "demo_cpu_swebench", "SWE-bench Verified — one image + Runtime per dataset row on m5 Instances (images > 2 GB)"],
         ["", "  + warmstart/ probe", "Pre-open (boot next batch ahead) + heartbeat (survive weight-sync idle), cold vs warm"],
-        ["note", "demo_cpu_instance_pool", "SIDE NOTE: > 2 GB image on a warm m5 pool, Landlock-jailed sub_sessions (shared kernel: not full isolation)"],
     ],
     [0.04, 0.24, 0.72],
 )
@@ -107,7 +107,7 @@ render(
     "Scaling the tiers together",
     ["#", "Demo", "Use case"],
     [
-        ["3", "demo_cpu_scale_lanes", "Scaling as 4 × 4 × 4 lanes — harness worker : SGLang engine : microVM, strictly 1:1:1"],
+        ["3", "demo_cpu_tasks SCALE=1", "Harness scaling — the default harness tier at 4 engines : 256 workers : 256 fresh microVMs, joined per episode"],
     ],
     [0.05, 0.26, 0.69],
 )
@@ -118,8 +118,7 @@ render(
     "GPU demos (+ experimental)",
     ["#", "Demo", "Use case"],
     [
-        ["4", "demo_gpu_single", "KernelBench CUDA on one warm g6; + SNAPSHOT_EVERY=1, LOCAL_GPU=1"],
-        ["5", "demo_gpu_farm", "ONE GPU instance, many sessions — FARM=fractional (0.5 + 0.5) | whole (1 GPU each); trusted-only"],
+        ["4", "demo_gpu_farm", "KernelBench CUDA, one GPU box, many sessions: FARM=fractional|whole, local or remote g6"],
         ["exp", "demo_cpu_branching", "EXPERIMENTAL / blocked — real Claude Code CLI fan-out; CLI exits 1 before any model call"],
     ],
     [0.05, 0.25, 0.70],

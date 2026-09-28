@@ -233,6 +233,74 @@ async def generate(args, sample, sampling_params):        # slime hook
 %====================================================================
 \sect{Demo: Terminal-Bench}
 
+\begin{frame}{Every row names a task and an image; each image is one Runtime; RB $\times$ NS sets sessions per step}
+\flabel{fr:rowpattern}
+\figcap{CPU tasks + Terminal-Bench in one batch (\tc{DATASET=mbpp,terminalbench}): row $\rightarrow$ Runtime $\rightarrow$ sessions}
+\centering
+\begin{tikzpicture}[yscale=0.92,
+  row/.style={fill=panel,rounded corners=1.5pt,font=\tiny,text=bodytext,minimum width=19mm,minimum height=3.4mm,inner sep=1pt},
+  pr/.style={fill=panel,rounded corners=1.5pt,font=\tiny,text=bodytext,minimum width=21mm,minimum height=5.2mm,inner sep=1pt,align=center},
+  rt/.style={fill=panel,thick,rounded corners=2pt,font=\tiny,text=bodytext,minimum width=21mm,minimum height=5.2mm,inner sep=1pt,align=center},
+  ses/.style={minimum size=1.9mm,inner sep=0pt},
+  hd/.style={font=\scriptsize\bfseries,text=awsteal},
+  a/.style={-{Stealth[length=1.4mm]},semithick}]
+% column 1: dataset rows (colour = image)
+\node[hd] at (0,1.45) {Dataset rows};
+\node[row,draw=cat2] (r1) at (0,1.05) {mbpp\_601 \,$\cdot$\, cpu};
+\node[row,draw=cat2] (r2) at (0,0.66) {gsm8k\_12 \,$\cdot$\, cpu};
+\node[row,draw=cat3] (r3) at (0,0.27) {datasci\_2 \,$\cdot$\, libs};
+\node[row,draw=cat1] (r4) at (0,-0.12) {tb: 3d-model \,$\cdot$\, own};
+\node[row,draw=awspurple] at (0,-0.51) {tb: acl-perm \,$\cdot$\, own};
+\node[row,draw=cat2] at (0,-0.90) {mbpp\_77 \,$\cdot$\, cpu};
+\node[font=\tiny,text=inkmuted] at (0,-1.22) {\dots\ many rows, images shared};
+% column 2: the batch
+\node[hd] at (3.0,1.45) {Batch: RB = 4 prompts};
+\node[pr,draw=cat2] (p1) at (3.0,1.00) {mbpp\_601 \,$\times$\,NS 8};
+\node[pr,draw=cat2] (p2) at (3.0,0.35) {gsm8k\_12 \,$\times$\,NS 8};
+\node[pr,draw=cat3] (p3) at (3.0,-0.30) {datasci\_2 \,$\times$\,NS 8};
+\node[pr,draw=cat1] (p4) at (3.0,-0.95) {tb: 3d-model \,$\times$\,NS 8};
+% column 3: images = Runtimes
+\node[hd] at (6.1,1.45) {Image = Runtime (ARN)};
+\node[rt,draw=cat2] (k1) at (6.1,0.68) {\tc{cpu} Runtime};
+\node[rt,draw=cat3] (k2) at (6.1,-0.30) {\tc{libs} Runtime};
+\node[rt,draw=cat1] (k3) at (6.1,-0.95) {\tc{tb:3d-model} Runtime};
+\node[font=\tiny,text=inkmuted,align=center] at (6.1,-1.40) {+ \tc{tb:acl-perm} \dots\ (idle this step)};
+% column 4: sessions, one fresh microVM per sample
+\node[hd] at (9.55,1.45) {Sessions = RB $\times$ NS = \hl{32}};
+\foreach \j in {0,...,7} {
+  \node[ses,fill=cat2] at (8.45+0.3*\j,1.00) {};
+  \node[ses,fill=cat2] at (8.45+0.3*\j,0.36) {};
+  \node[ses,fill=cat3] at (8.45+0.3*\j,-0.30) {};
+  \node[ses,fill=cat1] at (8.45+0.3*\j,-0.95) {};
+}
+\coordinate (s1) at (8.3,1.00); \coordinate (s2) at (8.3,0.36);
+\coordinate (s3) at (8.3,-0.30); \coordinate (s4) at (8.3,-0.95);
+% arrows
+\draw[a,cat2] (r1.east) -- (p1.west);
+\draw[a,cat2] (r2.east) -- (p2.west);
+\draw[a,cat3] (r3.east) -- (p3.west);
+\draw[a,cat1] (r4.east) -- (p4.west);
+\draw[a,cat2] (p1.east) -- (k1.west);
+\draw[a,cat2] (p2.east) -- (k1.west);
+\draw[a,cat3] (p3.east) -- (k2.west);
+\draw[a,cat1] (p4.east) -- (k3.west);
+\draw[a,cat2] (k1.east) -- (s1);
+\draw[a,cat2] (k1.east) -- (s2);
+\draw[a,cat3] (k2.east) -- (s3);
+\draw[a,cat1] (k3.east) -- (s4);
+\node[font=\tiny,text=inkmuted] at (9.55,-1.40) {16 on \tc{cpu}, 8 on \tc{libs}, 8 on \tc{tb:3d-model}};
+\end{tikzpicture}
+\par\vspace{1.5mm}
+\raggedright
+\begin{itemize}\footnotesize\setlength{\itemsep}{0.6mm}
+\item \textbf{Row = task + image.} Rows may share one: every MBPP / GSM8K row $\rightarrow$ \tc{cpu}; pandas / scipy / sklearn $\rightarrow$ \tc{libs}; each Terminal-Bench task $\rightarrow$ its own image. The NS samples of a prompt share it.
+\item \textbf{Image = one Runtime}, via the map image $\rightarrow$ ARN. An unmapped image is an \hl{error, never a fallback}. \tc{cpu} + \tc{libs} = 2 Runtimes; Terminal-Bench adds one per task (166 usable of 218 deployed).
+\item \textbf{Sessions per step = RB $\times$ NS} (default 4 $\times$ 8 = \hl{32}), one fresh session each, spread over the Runtimes the batch touches.
+\end{itemize}
+\src{\tc{code/demos/demo\_cpu\_tasks} (row schema, \tc{image\_routing.py}) and the Terminal-Bench pool map (\tc{tasks/arn\_by\_image.json}), 2026-09-28.}
+\end{frame}
+
+%====================================================================
 \begin{frame}{Of 229 Terminal-Bench tasks, 166 are usable, each on its own image and Runtime}
 \flabel{fr:tbproblem}
 \begin{itemize}\footnotesize\setlength{\itemsep}{0.8mm}
@@ -246,7 +314,7 @@ async def generate(args, sample, sampling_params):        # slime hook
 \figcard[height=0.27\textheight]{tb_fig01_cardinality.pdf}
 \par\vspace{1.5mm}
 {\footnotesize\textbf{229 tasks $\rightarrow$ 218 deployable} (arm64, $\le$ 2 GB) \textbf{$\rightarrow$ 166 oracle-usable $\rightarrow$ \hl{135 train / 31 eval}.}\par}
-\src{Terminal-Bench task audit in \tc{code/demos/demo\_cpu\_terminalbench} (\tc{tasks/arn\_by\_image.json}); project deck, 2026-09-25.}
+\src{Terminal-Bench task audit in \tc{code/demos/demo\_cpu\_tasks/terminalbench} (\tc{tasks/arn\_by\_image.json}); project deck, 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -262,7 +330,7 @@ async def generate(args, sample, sampling_params):        # slime hook
 \item Hidden tests are injected only \textbf{after} the agent finishes; \tc{StopRuntimeSession} terminates the microVM.
 \item One step = RB 4 $\times$ NS 8 = \hl{32 episodes = 32 fresh microVMs}.
 \end{itemize}
-\src{\tc{demo\_cpu\_terminalbench} configuration (RB 4, NS 8); project deck, 2026-09-25.}
+\src{\tc{demo\_cpu\_tasks DATASET=terminalbench} configuration (RB 4, NS 8); project deck, 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -302,7 +370,7 @@ Idle reclaim & \textbf{Heartbeat} (\tc{SessionKeeper}) pings every open session 
 Infra failures & \textbf{Retry on a new id} (3$\times$); logged as \tc{infra\_error}, never scored as a wrong answer\\
 \bottomrule
 \end{tabularx}
-\src{\tc{code/demos/demo\_cpu\_terminalbench}; project deck, 2026-09-25.}
+\src{\tc{code/demos/demo\_cpu\_tasks/terminalbench}; project deck, 2026-09-25.}
 \end{frame}
 
 %====================================================================
@@ -324,7 +392,7 @@ own Runtime & cold $\rightarrow$ \textbf{preopen} & 774 $\rightarrow$ \hl{5 ms} 
 Code Interpreter & cold $\rightarrow$ \textbf{preopen} & 1715 $\rightarrow$ \hl{0 ms} & 24 $\rightarrow$ 6 /24 & 28.7 $\rightarrow$ 24.3 s (\textbf{$-$15\,\%})\\
 \bottomrule
 \end{tabular*}
-\src{Warm-start probe \tc{demo\_cpu\_terminalbench/warmstart/logs/warmstart\_20260925\_100103.*} (2026-09-25, us-west-2).}
+\src{Warm-start probe \tc{demo\_cpu\_tasks/terminalbench/warmstart/logs/warmstart\_20260925\_100103.*} (2026-09-25, us-west-2).}
 \end{frame}
 
 %====================================================================
@@ -368,7 +436,7 @@ Solves & \textbf{4 / 382} train, eval 0.0; 42\,\% pass $\ge$ 1 hidden test $\rig
 \end{tabularx}
 \par\vspace{3mm}
 \plainen{the sandbox side works: no infra errors and no visible boot wait. The open problem is the reward signal, not AgentCore.}
-\src{First Terminal-Bench AWS smoke, \tc{demo\_cpu\_terminalbench} (2026-09-23).}
+\src{First Terminal-Bench AWS smoke, \tc{demo\_cpu\_tasks DATASET=terminalbench} (2026-09-23).}
 \end{frame}
 
 %====================================================================
@@ -499,9 +567,9 @@ Earlier 4 $\times$ 4 $\times$ 4 lanes & eval \textbf{0.358}\\
 %====================================================================
 \sect{Other demos}
 
-\begin{frame}{Five more demo folders reuse the same hook and harness tier on other substrates}
+\begin{frame}{Five demo folders share the same hook, harness tier and step scripts, across microVMs, Instances, GPUs and EKS}
 \flabel{fr:other}
-{\footnotesize\raggedright\textbf{5 main folders} + a side note + one experimental, each standalone in \tc{code/demos/} with the same \tc{1\_prepare\_data.sh} \dots\ \tc{6\_cleanup.sh} steps and the same harness tier.\par}
+{\footnotesize\raggedright\textbf{3 main folders} + an EKS twin + one experimental, each standalone in \tc{code/demos/} with the same \tc{1\_prepare\_data.sh} \dots\ \tc{6\_cleanup.sh} steps and the same harness tier.\par}
 \vspace{1.5mm}
 \tabcap{Demo folders in the codebase}
 \scriptsize\renewcommand{\arraystretch}{1.12}
@@ -509,12 +577,10 @@ Earlier 4 $\times$ 4 $\times$ 4 lanes & eval \textbf{0.358}\\
 \toprule
 \textbf{Folder} & \textbf{What it shows}\\
 \midrule
-\tc{demo\_cpu\_tasks} & literature tasks (MBPP, GSM8K, MATH-500, DeepScaleR, HumanEval, SQL, HotpotQA, xLAM, MCP, mixes) on a generic stdlib Runtime; \tc{SCALE=1} is the harness-scaling run (\sref{fr:scaleuse})\\
-\tc{demo\_cpu\_terminalbench} & Terminal-Bench, one image + Runtime per task (\sref{fr:tbproblem})\\
+\tc{demo\_cpu\_tasks} & literature tasks (MBPP, GSM8K, MATH-500, DeepScaleR, HumanEval, SQL, HotpotQA, xLAM, MCP, mixes) on a generic stdlib Runtime, plus \textbf{Terminal-Bench} (\tc{DATASET=terminalbench}, one image + Runtime per task, \sref{fr:tbproblem}; was \tc{demo\_cpu\_tasks DATASET=terminalbench}); \tc{SCALE=1} is the harness-scaling run (\sref{fr:scaleuse})\\
 \tc{demo\_cpu\_swebench} & one image + Runtime per \textbf{SWE-bench Verified} instance on \textbf{m5 Instances} (images $>$ 2 GB microVM cap); reuses the Terminal-Bench pool\\
-\tc{demo\_gpu\_single} & \textbf{KernelBench} CUDA RL on a \textbf{g6 GPU Instance}, one warm custom Runtime; optional app-level snapshot\\
-\tc{demo\_gpu\_farm} & \hl{one GPU instance serving many sessions} via a Ray farm (\tc{FARM=fractional} 0.5 + 0.5 or \tc{whole}); trusted-only\\
-\tc{demo\_cpu\_instance\_pool} \textit{(side note)} & a warm \textbf{m5} pool for a \textasciitilde4 GB image, one Landlock jail per episode; shared kernel $\rightarrow$ not full isolation\\
+\tc{demo\_cpu\_swebench\_eks} & the same SWE-bench workload on \textbf{EKS}, one fresh \textbf{gVisor} pod per episode; cluster not created yet\\
+\tc{demo\_gpu\_farm} & \textbf{KernelBench} CUDA RL; \hl{one GPU instance serving many sessions} via a Ray farm (\tc{FARM=fractional} 0.5 + 0.5 or \tc{whole}), local or on a g6 (\tc{LOCAL\_GPU=0}); trusted-only\\
 \tc{demo\_cpu\_branching} \textit{(experimental)} & the \textbf{real Claude Code CLI} as harness; one episode fans out into many samples\\
 \bottomrule
 \end{tabularx}
@@ -593,8 +659,8 @@ Earlier 4 $\times$ 4 $\times$ 4 lanes & eval \textbf{0.358}\\
 \midrule
 \tc{docs/slides/agentcore\_slime\_deck.md} (2026-09-25) & source deck for all content\\
 \tc{docs/report/agentcore\_slime\_report.md} & launch costs, probe details, DSec comparison, GPU sweep (2026-09-21)\\
-\tc{demo\_cpu\_terminalbench/warmstart/logs/\allowbreak warmstart\_20260925\_100103.*} & pre-open and heartbeat probe (2026-09-25, us-west-2)\\
-\tc{code/demos/demo\_cpu\_terminalbench} & task audit (229 $\rightarrow$ 166), first AWS smoke (2026-09-23), \tc{tb\_lookahead\_source.py}, \tc{tasks/arn\_by\_image.json}\\
+\tc{demo\_cpu\_tasks/terminalbench/\allowbreak warmstart/logs/} & pre-open and heartbeat probe \tc{warmstart\_20260925\_100103.*} (2026-09-25, us-west-2)\\
+\tc{code/demos/demo\_cpu\_tasks/\allowbreak terminalbench} & task audit (229 $\rightarrow$ 166), first AWS smoke (2026-09-23), \tc{tb\_lookahead\_source.py}, \tc{tasks/arn\_by\_image.json}\\
 \tc{code/demos/demo\_cpu\_tasks/logs/scale/} & 256-worker \tc{SCALE=1} RL smoke (2026-09-28)\\
 \tc{code/demos/demo\_cpu\_tasks} & \tc{harness\_pool.py}, \tc{session\_runner.py}, \tc{harness\_scaling\_demo.py}\\
 \tc{docs/agentcore-networking.md} & pull-vs-dial-back networking, VPC endpoints\\

@@ -13,7 +13,7 @@ if [ "$SUBSTRATE" = local-gpu ] || [ "${LOCAL_GPU:-0}" = 1 ]; then
   log "step 4/6: start the LOCAL GPU farm ($MODE) on host GPUs — same image, served at 127.0.0.1:8080"
   docker tag "$(image_repo gpu):latest" "acs-local-gpu-sbx:$MODE"
   SKIP_BUILD=1 bash "$HERE/deploy/local_gpu_runtime.sh" "$MODE"
-  if [ "$SUBSTRATE" = local-gpu ]; then echo "FARM=$MODE" > "$RUNTIME_ENV"; else echo "LOCAL_GPU=1" > "$RUNTIME_ENV"; fi
+  echo "FARM=$MODE" > "$RUNTIME_ENV"
   cat "$RUNTIME_ENV"; log "done — next: bash 5_run.sh"; exit 0
 fi
 
@@ -41,6 +41,8 @@ else
       map="$(for k in "${!ARN[@]}"; do printf '"%s":"%s",' "$k" "${ARN[$k]}"; done)"
       echo "AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE='{${map%,}}'"
     fi
+    # Deploy-time choices the client must match (demo.env RUNTIME_RECORD, e.g. gpu_farm's FARM split).
+    for kv in "${RUNTIME_RECORD[@]}"; do echo "$kv"; done
   } > "$RUNTIME_ENV"
 fi
 echo "--- deploy/runtime.env"; cat "$RUNTIME_ENV"

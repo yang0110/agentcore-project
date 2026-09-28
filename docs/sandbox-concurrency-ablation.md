@@ -48,7 +48,7 @@ C  ≳  (mean episode wall-time / mean per-episode decode-time) × (inference co
 ```
 
 concurrent episodes to **hide the sandbox latency** — classic latency hiding. When the sandbox runs
-on a *remote* AgentCore Runtime (a Code-Interpreter microVM, or the GPU Runtime in `demo_gpu_single`)
+on a *remote* AgentCore Runtime (a Code-Interpreter microVM, or the GPU Runtime in `demo_gpu_farm LOCAL_GPU=0`, formerly `demo_gpu_single`)
 the sandbox phase is an `invoke_agent_runtime` round-trip, so its latency is large and `C` must be
 correspondingly larger before the engines stay busy.
 
@@ -175,7 +175,9 @@ reward curve.
 `CONC` (`--sglang-server-concurrency`, per engine × 2 engines): `S = CONC × 2`. Sweep e.g.
 **`S ∈ {2, 4, 8, 16, 32, 64}`** (`CONC ∈ {1,2,4,8,16,32}`; `demo_cpu_tasks` today runs `CONC=4` ⇒ `S=8`).
 
-**Decoupling inference concurrency `I` from sandbox count `S` (`INFER_CONC`).** By default slime's
+**Decoupling inference concurrency `I` from sandbox count `S` (`INFER_CONC`) — historical, the knob is gone.** It
+lived in the in-trainer `SGLangPolicy`, which was removed when the agent loop moved into the sandbox
+session (2026-09-28); no demo reads it now. What it did: by default slime's
 one semaphore ties both together, so raising `S` also raises how many episodes decode at once. To
 hold inference load **fixed** while varying `S` alone, set `INFER_CONC=I` (e.g. `8`): a
 process-global semaphore in `SGLangPolicy.complete` wraps only the SGLang decode POST, so at most
@@ -196,8 +198,8 @@ or two are warm-up; the smoke `NR=11` is fine for a quick pass, longer for publi
 **Two sandbox regimes, on purpose (same in-process harness, different sandbox location):**
 - **`demo_cpu_tasks` with `SANDBOX=local`** — cheapest, cleanest isolation of the knob; fast
   iteration, near-zero sandbox latency.
-- **`demo_cpu_tasks` with `SANDBOX=agentcore` (remote Code-Interpreter microVM), or `demo_gpu_single`
-  (remote GPU Runtime)** — has the **realistic sandbox latency** (remote `invoke_agent_runtime` per
+- **`demo_cpu_tasks` with `SANDBOX=agentcore` (remote Code-Interpreter microVM), or `demo_gpu_farm LOCAL_GPU=0`
+  (remote GPU Runtime, formerly `demo_gpu_single`)** — has the **realistic sandbox latency** (remote `invoke_agent_runtime` per
   tool call), which is exactly what makes the low-`C` starvation regime real. This is where `C*`
   actually matters operationally.
 

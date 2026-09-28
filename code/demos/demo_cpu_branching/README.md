@@ -2,14 +2,14 @@
 
 **Sandbox tier 3: own Runtime, custom image.** The image bakes node 22 + the real Claude Code CLI (microVM). See the tier table in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
 
-> **EXPERIMENTAL — not part of the main 7-demo set; runs end to end; learning pending a re-run with the advantage fix.** History of the blockers:
+> **EXPERIMENTAL — not part of the main 4-demo set; runs end to end; learning pending a re-run with the advantage fix.** History of the blockers:
 > 1. *CLI exits 1 before any model call* (`fan_out=0`): the CLI refuses `--permission-mode
 >    bypassPermissions` as root. Fixed by `IS_SANDBOX=1` (confirmed on the sandbox 2026-09-19; the empty-group
 >    crash it exposed is fixed in 18ccb91 / 3ecddc9).
 > 2. *One turn, reward 0* (`exit=0 fan_out=1`, no `solution.py`, the 2026-09-19 smoke): `run.sh` had no
 >    `--sglang-tool-call-parser`, so the adapter returned Qwen3's `<tool_call>` text as a plain `end_turn`
 >    reply and the CLI stopped. Fixed 2026-09-25: `--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3`
->    (the A3/B3 fix terminalbench/scale_lanes already carry).
+>    (the A3/B3 fix every other demo already carries).
 > 3. *CLI `exit=1` "response exceeded the output token maximum"*: a turn that hit the 1024-token per-turn cap
 >    came back as `stop_reason=max_tokens`, which the CLI treats as fatal. Now `MAX_RESPONSE_LEN` (default 2048).
 >
@@ -31,9 +31,12 @@ summarization / compaction** — so a single rollout fans out into a **list of `
 leaf of the trajectory tree). The interesting variable here is the *fan-out*, not the task; the
 dataset is a single family (SWE bug-fix).
 
-The policy is Qwen3-4B trained by slime. Unlike the other CPU demos, the harness is **not** the
-in-process mini-agent — it is the genuine Claude Code CLI, co-located with slime and wired to slime's
-`AnthropicAdapter`, whose **tools execute in a remote CPU AgentCore Runtime microVM**. Because the
+The policy is Qwen3-4B trained by slime. This demo is **the one exception** to the default every
+other demo shares (the mini_claude loop in the episode's session, dispatched by the `harness_pool.py`
+harness tier): its harness is the genuine Claude Code CLI, run **inside the sandbox microVM** (a
+remote CPU AgentCore Runtime, where its tools also execute) and wired back to slime's
+`AnthropicAdapter` in the trainer (dial-back on `ADAPTER_PORT` 18021). The harness still sits in the
+sandbox, not the trainer; what differs is the loop (sub-agents, compaction) and the fan-out. Because the
 sandbox has to host the CLI itself, its image is **not** the plain CPU checker image the other CPU
 demos use — it **bakes node 22 + the `claude` CLI** (`deploy/Dockerfile.sandbox.cli`).
 

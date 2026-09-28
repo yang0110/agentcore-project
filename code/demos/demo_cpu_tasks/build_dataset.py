@@ -16,8 +16,8 @@ task source (MBPP CPU code-repair vs KernelBench CUDA-op repair). Run inside the
     python /work/code/demos/demo_cpu_tasks/build_dataset.py \
         --dataset mbpp --split "train+test" --limit 500 --out /work/code/demos/demo_cpu_tasks/data/mbpp_train.jsonl
     # KernelBench (Demo B / B2 / B3): level_1 train (100) + level_2 held-out eval (20)
-    python /work/code/demos/demo_gpu_single/build_dataset.py \
-        --dataset kernelbench --level level_1 --limit 100 --out /work/code/demos/demo_gpu_single/data/kernelbench_train.jsonl
+    python /work/code/demos/demo_gpu_farm/build_dataset.py \
+        --dataset kernelbench --level level_1 --limit 100 --out /work/code/demos/demo_gpu_farm/data/kernelbench_train.jsonl
 """
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from agentcore_slime_demo.kernelbench import load_kernelbench_tasks
 def task_to_row(t, max_turns: int | None = None) -> dict:
     task_kwargs = {
         "task_id": t.task_id,
+        "image": t.image,              # the row's sandbox image (= its Runtime)
         "prompt": t.prompt,
         "checks": t.checks,
         "check_mode": t.check_mode,

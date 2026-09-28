@@ -8,10 +8,8 @@
 #                  few turns; RLVR checks the final answer. Train pool ~400 prompts,
 #                  disjoint held-out eval.
 # SUBSTRATE      : YOUR OWN AgentCore sandbox Runtime (SANDBOX=agentcore-runtime, set below),
-#                  K=2 CPU sandbox ARNs (deploy/runtime.env or the run.sh defaults). NOT the
-#                  default Code Interpreter: its sessions end at their session timeout whatever
-#                  the pings, so run.sh turns HEARTBEAT off there (the CI lever is
-#                  AGENTCORE_CI_SESSION_TIMEOUT).
+#                  K=2 CPU sandbox ARNs (deploy/runtime.env or the run.sh defaults). The heartbeat
+#                  only helps our own Runtimes (the managed Code Interpreter was removed).
 # PROPERTY (LIVE): this is the plain CPU trainer PLUS a session keep-warm layer.
 #                  HEARTBEAT=1 wraps every episode's sandbox in
 #                  KeptSandbox + a process-wide SessionKeeper heartbeat, so the

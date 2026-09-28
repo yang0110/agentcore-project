@@ -5,11 +5,16 @@ bar each must clear.** Every demo folder and its README conforms to this doc.
 
 ## Premise (from the architecture decision)
 
-**AgentCore is the sandbox.** The harness stays **in-process** (a warm agent loop next to the
-trainer); episodes are independent, so the harness needs *warmth*, not per-episode *isolation* —
-whereas the sandbox wants exactly the ad-hoc, isolated, per-session microVM AgentCore provides. See
-[harness-sandbox-decoupling.md](harness-sandbox-decoupling.md). The demos are therefore organized
-around **the sandbox and the task**, not around where the harness runs.
+**AgentCore is the sandbox, and the harness runs in it.** Since 2026-09-28 every demo runs the
+mini_claude agent loop **inside the episode's sandbox session** (`in_session_harness.py`), dialing the
+trainer's per-engine `AnthropicAdapter` back; the trainer keeps only a warm dispatch tier
+(`harness_pool.py`: `HARNESS_WORKERS` workers, least-loaded engine per episode) and the adapters. The
+harness scales with the sandbox, not the trainer (DSec's "move the agent loop out of the trainer"),
+and it must scale along with inference and the sandbox: `throughput = min(inference, sandbox, harness)`
+([harness-scaling.md](harness-scaling.md)). The one exception is the experimental `demo_cpu_branching`,
+which runs the real Claude Code CLI in its sandbox microVM. History of the earlier in-process design:
+[harness-sandbox-decoupling.md](harness-sandbox-decoupling.md). The demos are organized around **the
+sandbox and the task**.
 
 The policy is always **Qwen3-4B**, trained by **slime** (async/decoupled GRPO). The reward is a
 **programmatic checker** run in the sandbox — no LLM judge.
@@ -33,7 +38,8 @@ first demo*, framed as "how the workflow is built," not as loose scripts.
 
 **One self-contained demo folder per task** (layout B). Each folder is a complete, readable recipe:
 task → dataset → Dockerfile → launch → **train to convergence** → terminate. The sandbox is an
-AgentCore **Code Interpreter** microVM (CPU); the harness is in-process.
+AgentCore **Code Interpreter** microVM (CPU); the harness was in-process. *(Historical: since
+2026-09-28 the CPU tasks run on our own Runtime with the loop in the session; see the current set below.)*
 
 | Demo folder | Task | Dataset | Likely bottleneck* |
 |---|---|---|---|
@@ -61,20 +67,21 @@ AgentCore **Code Interpreter** microVM (CPU); the harness is in-process.
 > heartbeat (formerly `demo_cpu_heartbeat`) is the `HEARTBEAT` knob (default on for remote own Runtimes; a no-op on the
 > Code Interpreter), and the custom-vs-managed Runtime check (formerly `demo_cpu_customruntime`) is
 > `demo_cpu_tasks/compare_backends.py`. The ~4 GB image on a CPU capacity-provider Instance (formerly
-> `demo_cpu_bigimage`, then `demo_cpu_tasks VARIANT=bigimage`) is `demo_cpu_instance_pool` (warm pool
-> `SANDBOX_POOL=2`, a Landlock jail per exec), since 2026-09-26 a **side note**, not a main demo: the Instances
-> are AgentCore, but the pooling is our own code and a shared instance can't give full isolation.
+> `demo_cpu_bigimage`, then `demo_cpu_tasks VARIANT=bigimage`, then the side note `demo_cpu_instance_pool`) was
+> **removed 2026-09-28** with its AWS resources.
 >
-> **Current set (2026-09-26): 5 main demos + 1 side note + 1 experimental**, in storyline order:
-> `demo_cpu_tasks`, `demo_cpu_terminalbench` (with its `warmstart/` probe), `demo_cpu_scale_lanes`,
-> `demo_gpu_single` (KernelBench, one session per instance), `demo_gpu_farm` (ONE GPU instance serving MANY
-> sessions, `FARM=fractional|whole`, trusted-only; merged 2026-09-26 from `demo_gpu_farm_fractional` +
-> `demo_gpu_farm_whole`); side note `demo_cpu_instance_pool`; experimental `demo_cpu_branching`. Every demo
+> **Current set (2026-09-28): 3 main demos + the EKS twin `demo_cpu_swebench_eks` + 1 experimental**, in storyline order:
+> `demo_cpu_tasks` (with the `SCALE=1` harness-scaling preset, which replaced the `demo_cpu_scale_lanes`
+> folder, and Terminal-Bench as `DATASET=terminalbench` with its `terminalbench/warmstart/` probe, which replaced
+> `demo_cpu_terminalbench`), `demo_cpu_swebench`,
+> `demo_gpu_farm` (KernelBench; ONE GPU instance serving MANY sessions, `FARM=fractional|whole`, trusted-only;
+> local farm by default, `LOCAL_GPU=0` on a remote g6; merged 2026-09-26 from `demo_gpu_farm_fractional` +
+> `demo_gpu_farm_whole`, and 2026-09-28 with `demo_gpu_single`, now its `LOCAL_GPU=0` mode); experimental `demo_cpu_branching`. Every demo
 > runs the same six step scripts (`1_prepare_data.sh` … `6_cleanup.sh`); see `code/demos/README.md`.
 >
-> **In progress (2026-09-26, not done):** `demo_cpu_tasks`' default is switching from the Code Interpreter to
-> our own Runtime (generic stdlib image, VPC) with the harness running *inside* the sandbox session; the Code
-> Interpreter stays as a zero-setup opt-in. Until then the default is still `SANDBOX=agentcore`.
+> **Done (2026-09-28):** `demo_cpu_tasks` runs on our own Runtimes (`cpu` + `libs`, VPC) with the harness
+> *inside* the sandbox session; the Code Interpreter survives only as the `compare_backends.py` probe. The
+> decoupled harness tier (`harness_pool.py`) is the default rollout topology in every demo.
 
 \* *Hypothesis only — Tier 3 replaces it with a measurement.* Note most cheap-checker CPU tasks are
 expected to be **generation-bound**; the clear **sandbox-bound** case is CUDA (Tier 2). That
@@ -87,13 +94,13 @@ instance** (a `g6`, x86_64/amd64); the trainer box keeps all its GPUs for policy
 
 | Demo folder | Task | Notes |
 |---|---|---|
-| `demo_gpu_kernelbench` → built as `demo_gpu_single` | KernelBench (level_1 CUDA) | checker = allclose vs torch ref, on `cuda`; one warm g6. Also carries the custom-Runtime angle (`gpu_torch_smoke.py`, `LOCAL_GPU=1`) and `SNAPSHOT_EVERY=1` (merged 2026-09-25 from `demo_gpu_customruntime` / `demo_gpu_snapshot`) |
-| `demo_gpu_farm` `FARM=fractional` (default) | KernelBench + Ray pack-many farm | ONE GPU instance, MANY sessions: 0.5+0.5 on GPU 6, like a single-GPU `g6.xlarge` (before 2026-09-26 the folder `demo_gpu_farm_fractional`; originally `demo_gpu_shared_single`) |
+| `demo_gpu_kernelbench` → built as `demo_gpu_single`, since 2026-09-28 `demo_gpu_farm LOCAL_GPU=0` | KernelBench (level_1 CUDA) | checker = allclose vs torch ref, on `cuda`; one warm g6 (`FARM=fractional`: L4 at 0.5 → 2 slots; `whole`: L4 at 1.0 → 1 slot). Also carries the custom-Runtime angle (`gpu_torch_smoke.py`) and `SNAPSHOT_EVERY=1` (merged 2026-09-25 from `demo_gpu_customruntime` / `demo_gpu_snapshot`) |
+| `demo_gpu_farm` `FARM=fractional` (default, `LOCAL_GPU=1` default) | KernelBench + Ray pack-many farm | ONE GPU instance, MANY sessions: 0.5+0.5 on GPU 6, like a single-GPU `g6.xlarge` (before 2026-09-26 the folder `demo_gpu_farm_fractional`; originally `demo_gpu_shared_single`) |
 | `demo_gpu_farm` `FARM=whole` | KernelBench + Ray farm | ONE GPU instance, MANY sessions: one whole GPU per session on GPUs 6,7, like a multi-GPU `g6.12xlarge` (merged 2026-09-26 from `demo_gpu_farm_whole`; originally `demo_gpu_shared_multi` / `demo_gpu_local`) |
 
 `demo_gpu_farm` is **trusted-only: shared kernel + shared GPU** (no MIG on L4/L40S, a cooperative
-memory-fraction cap, no Landlock port, one shared uid on AgentCore). Full isolation on AgentCore is one
-session per episode, as in `demo_gpu_single`.
+memory-fraction cap, no Landlock port, one shared uid on AgentCore), in both `LOCAL_GPU` modes. Full isolation on
+AgentCore is one g6 session per episode, which no current demo runs.
 
 ### Tier 3 — Advanced: scale the *measured* bottleneck
 
@@ -115,13 +122,16 @@ Decision procedure:
 
 There is a **third** tier hiding behind those two: the **harness** that drives the episodes. Rollout
 throughput is `min(inference, sandbox, harness)`, so even after inference + sandbox are scaled, a
-single-process harness can cap everything. [`demo_cpu_scale_lanes`](../code/demos/demo_cpu_scale_lanes/)
-isolates that tier — one task, **decoupled tiers** by default (4 SGLang engines : 256 warm mini-Claude
-harness workers : 256 pooled persistent microVMs, joined per episode, none pinned to another; renamed
-from `demo_cpu_harness_scale` 2026-09-23, 4 × 4 × 4 pinned lanes until 2026-09-25) — and shows the knee
-(throughput rises ~linearly with `W`, then plateaus at `min(inference, sandbox)`) plus how the three
-tiers route/load-balance differently (least-loaded engine vs free-list of sandbox sessions vs per-episode
-pull queue). Full write-up: [harness-scaling.md](harness-scaling.md).
+few coroutines can cap everything. The **decoupled harness tier** (`harness_pool.py`) is therefore the
+default in every demo: W dispatch workers (default RB×NS) pull episodes off one queue, each episode takes
+its sandbox first and then the least-loaded engine, and the loop itself runs in the session, so the
+harness scales with the sandbox rather than the trainer. **`demo_cpu_tasks SCALE=1`** turns all three
+tiers up together (4 SGLang engines : 256 harness workers : 256 sessions in flight, DeepScaleR; formerly
+the `demo_cpu_scale_lanes` folder, renamed from `demo_cpu_harness_scale` 2026-09-23, 4 × 4 × 4 pinned
+lanes until 2026-09-25). The offline `demo_cpu_tasks/harness_scaling_demo.py` shows the knee
+(throughput rises ~linearly with `W`, then plateaus at `min(inference, sandbox)`); the per-episode
+`qdepth` / `sandbox_wait_ms` / `engine_inflight` fields show which tier binds in a real run. Full
+write-up: [harness-scaling.md](harness-scaling.md).
 
 This is why disaggregation matters: each component is sized to its own bottleneck, per task.
 
@@ -133,7 +143,7 @@ idle. Surviving that pause is **two patterns on two substrates**:
 | Demo | Substrate | Lever | Survives |
 |---|---|---|---|
 | `HEARTBEAT=1` on any demo (formerly `demo_cpu_heartbeat`; probe [`demo_cpu_tasks/heartbeat_demo.py`](../code/demos/demo_cpu_tasks/heartbeat_demo.py)) | serverless CPU **microVM** (or any warm session) | **heartbeat** (+ quiesce gate) | the *idle timeout* — keep the warm session from being reclaimed during the pause |
-| [`demo_gpu_single`](../code/demos/demo_gpu_single/) `SNAPSHOT_EVERY=1` (formerly `demo_gpu_snapshot`) | **GPU Runtime instance** | **application-level snapshot & resume** | a genuine *recycle* — restore workspace state onto a fresh session (there is no VM snapshot; [gpu-snapshot.md](gpu-snapshot.md)) |
+| [`demo_gpu_farm`](../code/demos/demo_gpu_farm/) `SNAPSHOT_EVERY=1` (formerly `demo_gpu_snapshot`, then `demo_gpu_single`) | **GPU Runtime instance** | **application-level snapshot & resume** | a genuine *recycle* — restore workspace state onto a fresh session (there is no VM snapshot; [gpu-snapshot.md](gpu-snapshot.md)) |
 
 **Heartbeat keeps a *live* session warm; snapshot restores a *lost* one.** Both have an offline
 probe (no AWS/GPU) that runs in seconds (`heartbeat_demo.py`, `snapshot_demo.py`). Reusable mechanisms:
@@ -171,14 +181,14 @@ which is exactly why the demo shows the failure first. The robust pattern:
    `recovery.py` self-heal: restart the session and re-seed/restore the workspace, don't crash the
    episode. The *restore-with-progress* form (application-level snapshot to S3, since there is no VM
    snapshot — [gpu-snapshot.md](gpu-snapshot.md)) is built + demonstrated in
-   [`code/demos/demo_gpu_single/`](../code/demos/demo_gpu_single/) with `SNAPSHOT_EVERY=1` (`snapshot_store.py`).
+   [`code/demos/demo_gpu_farm/`](../code/demos/demo_gpu_farm/) with `SNAPSHOT_EVERY=1` (`snapshot_store.py`).
 
 Demo arc: naive "stop invoking" (anti-pattern, silently loses the GPU instance) → heartbeat quiesce
 that survives the idle timeout → resume → recover-if-reclaimed. This deliberately re-couples the
 sandbox to the trainer's sync barrier — a **cost** optimization, not a correctness fix (async RL
 episodes are otherwise designed to span weight versions).
 
-#### Demo 2 — runtime-instance application-level snapshot & resume (`demo_gpu_single SNAPSHOT_EVERY=1`)
+#### Demo 2 — runtime-instance application-level snapshot & resume (`demo_gpu_farm SNAPSHOT_EVERY=1`)
 
 For the **GPU Runtime instance**, the failure mode is not idle reclamation but a **recycle** that
 comes back blank — and AgentCore offers **no VM/EC2 snapshot** ([gpu-snapshot.md](gpu-snapshot.md)).

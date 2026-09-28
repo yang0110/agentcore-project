@@ -20,6 +20,7 @@
 # with a plain `DATASET=<name> bash run.sh` (no DATA/EVAL_DATA overrides). Row counts (train/eval):
 #   mbpp 500/8   gsm8k 200/40   math500 160/40   deepscaler 400/40   humaneval 140/24
 #   gretelsql 300/40   hotpotqa 300/40   xlam 300/40   mcp 300/40   mixed 174/9   libs 72/6
+#   terminalbench 135/31 (not in `all`: DATASET=terminalbench, after the per-task Runtimes are deployed)
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL="python3 $DIR/agentcore_slime_demo/build_real_datasets.py"
@@ -77,18 +78,28 @@ build() {
     mcp)
       $REAL --dataset mcp --limit 300 --offset 0   --out "$OUT/mcp_train.jsonl"
       $REAL --dataset mcp --limit 40  --offset 300 --out "$OUT/mcp_eval.jsonl" ;;
-    # mixed — the prebuilt multi-family mix (every GRPO step spans families). datasci needs pandas,
-    # which the default Code Interpreter already has. Per-family evals land as mixed_<fam>_eval.jsonl.
+    # mixed — the prebuilt multi-family mix (every GRPO step spans families). datasci needs pandas:
+    # those rows route to the "libs" Runtime (deploy/Dockerfile.sandbox.libs). Per-family evals land as
+    # mixed_<fam>_eval.jsonl.
     mixed)
       BAL=(); [ "${BALANCED:-1}" = "1" ] && BAL=(--balanced)
       python3 "$DIR/build_mixed_datasets.py" --families "${FAMILIES:-math,sql,ctf,datasci}" \
           --out-dir "$OUT" --repeat "${REPEAT:-6}" "${BAL[@]}" ;;
     # libs — datasci+scipy+sklearn (pandas / scipy / scikit-learn tasks; was the custom-image pool).
-    # All three libraries are preinstalled in the default Code Interpreter, so no image is needed.
+    # All three run on the "libs" Runtime (deploy/Dockerfile.sandbox.libs; image_routing.py maps the tags).
     libs)
       BAL=(); [ "${BALANCED:-1}" = "1" ] && BAL=(--balanced)
       python3 "$DIR/build_mixed_datasets.py" --name libs --families "${FAMILIES:-datasci,scipy,sklearn}" \
           --out-dir "$OUT" --repeat "${REPEAT:-6}" "${BAL[@]}" ;;
+    # terminalbench — Terminal-Bench (laude-institute/terminal-bench): ONE row per task, each with its OWN
+    # image (row image = task name -> that task's Runtime), graded by its hidden pytest oracle. Offline
+    # from terminalbench/tasks/manifest.json (fetched once, needs network); rows are kept only for tasks
+    # whose Runtime is deployed + oracle-verified, so build it AFTER `VARIANT=terminalbench` steps 2-4.
+    # Not in ALL (needs git + the per-task pool). LIMIT=N / REPEAT=k.
+    terminalbench)
+      [ -f "$DIR/terminalbench/tasks/manifest.json" ] || python3 "$DIR/terminalbench/fetch_terminalbench.py"
+      TB=(); [ -n "${LIMIT:-}" ] && TB+=(--limit "$LIMIT"); [ -n "${REPEAT:-}" ] && TB+=(--repeat "$REPEAT")
+      python3 "$DIR/terminalbench/build_terminalbench_dataset.py" --out-dir "$OUT" "${TB[@]}" ;;
     *) # synthetic task-family zoo (math swe sql …): committed in data/, built by build_family_datasets.py
        if [ -f "$OUT/$1_train.jsonl" ]; then echo "$1: synthetic zoo dataset, already in $OUT (skip)"; return 0; fi
        echo "unknown DATASET=$1 (one of: all $ALL mixed, or a synthetic zoo name in data/)" >&2; exit 2 ;;

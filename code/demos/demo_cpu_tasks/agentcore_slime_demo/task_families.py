@@ -127,6 +127,7 @@ class EpisodicTask:
         return {
             "family": self.family,
             "task_id": self.task_id,
+            "image": self.image,
             "prompt": self.prompt,
             "max_turns": max_turns if max_turns is not None else self.max_turns,
             "spec": self.spec,
@@ -1097,9 +1098,61 @@ class SklearnTask(EpisodicTask):
         return seeds
 
 
+# ==============================================================================
+# 14. TERMINAL-BENCH — solve a real Terminal-Bench task in its own baked container
+# ==============================================================================
+@register_family
+class TerminalBenchTask(EpisodicTask):
+    """One Terminal-Bench task. Unlike the synthetic families, the WHOLE environment is baked into
+    the task's own container image (fetch_terminalbench.py + deploy_terminalbench.py build one image
+    -> one Runtime per task), so this class carries almost no data: just the English instruction and
+    the routing tag. The agent works in its own fresh session on that Runtime (one microVM per episode); grading
+    is the task's OWN hidden pytest oracle (`run-tests.sh`), injected + run after the agent's turns
+    (TerminalBenchPool._grade) — the RLVR reward.
+
+    Per-INSTANCE routing: every Terminal-Bench task has its OWN image, so the row's `image` (the task
+    name; task_from_dict sets it) routes each episode to that task's Runtime. The ClassVar below is
+    only the fallback for a row without one.
+    """
+
+    family = "terminalbench"
+    # The reward oracle is graded by TerminalBenchPool._grade: the task's hidden tests/ +
+    # run-tests.sh are injected into /tests AFTER the agent's turns (never baked into the image) and
+    # run Terminal-Bench style (TEST_DIR=/tests); solved iff pytest reports passes and no failures.
+    SYSTEM = (
+        "You are operating a Linux shell to complete a task inside a container, as root. You have a "
+        "bash tool (run shell commands), write_file, and read_file; paths are relative to the "
+        "current working directory. Complete the user's task by acting in the environment: inspect "
+        "it, make the required changes, and verify them with commands. Keep replies terse and prefer "
+        "taking a tool action over explaining. When the task is complete, stop."
+    )
+    submission_hint = "Use the bash / write_file tools to complete the task in the working directory."
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TerminalBenchTask":
+        task = super().from_dict(d)
+        task.image = str(task.spec.get("image") or task.task_id)   # older rows: image only in spec
+        return task
+
+    def system_prompt(self) -> str:
+        return self.SYSTEM
+
+    def initial_user_prompt(self) -> str:
+        return self.prompt
+
+    def setup_files(self) -> dict[str, str]:
+        return {}                      # the task's files are baked into its image
+
+    def runner_source(self) -> str:
+        return ""                      # unused: the checker is the baked run-tests.sh oracle
+
+    def extract_submission(self, text: str) -> str | None:
+        return None                    # terminal tasks act via tools, not a fenced code block
+
+
 # Every family class self-registers via @register_family on import; nothing else to do.
 FAMILY_CLASSES = [
     SweTask, ToolUseTask, SqlTask, MathTask, CtfTask, RagTask,
     RegexTask, PlanningTask, ConfigTask, DataTask, DataSciTask,
-    ScipyTask, SklearnTask,
+    ScipyTask, SklearnTask, TerminalBenchTask,
 ]

@@ -1,26 +1,17 @@
-"""slime custom-generate entry point.
+"""Shared episode helpers: `build_token_stream` and `_task_from_sample`.
 
-Wire into slime via:
-    --custom-generate-function-path agentcore_slime_demo.generate.generate
-(dispatch: slime/rollout/sglang_rollout.py:283-294).
+This module used to hold an in-trainer `generate` (the agent loop run in the trainer process via
+SGLangPolicy + run_episode). That path is gone: the agent loop runs in the episode's own sandbox
+session, outside the trainer. This demo's hook is
 
-Responsibility (Agent Lightning's "turn interactions into training data"): run one episode
-with the real harness in the AgentCore sandbox, then flatten the multi-turn Trajectory into
-a single token stream with a loss mask — assistant/action tokens are trainable (mask=1),
-prompt + observation/tool tokens are masked (mask=0) — and attach the episode reward.
+    --custom-generate-function-path agentcore_slime_demo.claude_code_generate.generate
 
 `build_token_stream` is a pure function (no slime, no network) so it can be unit-tested.
-The `generate` coroutine is the slime-facing adapter; slime imports are lazy so this module
-loads without slime installed.
 """
 
 from __future__ import annotations
 
-import os
-
-from .harness import Trajectory, run_episode
-from .policy import SGLangPolicy
-from .sandbox import make_sandbox
+from .harness import Trajectory
 from .task import CodingTask
 
 
@@ -108,84 +99,9 @@ def build_token_stream(
 
 
 async def generate(args, sample, sampling_params, evaluation: bool = False):
-    """slime per-sample rollout. Returns a single Sample.
-
-    We flatten the whole multi-turn episode into ONE trainable Sample (see
-    build_token_stream), so we return a bare Sample — not a 1-element list. This matters:
-    slime's dispatch (generate_and_rm) treats a LIST return as the "fan-out" case and hands
-    back list[list[Sample]] from generate_and_rm_group. The stock rollout path tolerates that
-    nesting everywhere via `isinstance(group[0], list)` guards, but the fully-async path
-    (slime.rollout.fully_async_rollout, used by demo_cpu_tasks's Mode B ablation) does NOT guard its
-    sort key and crashes on the nested shape. Returning a bare Sample keeps us on slime's
-    primary (non-fan-out) shape, which BOTH the stock and fully-async paths handle. Behavior
-    is identical for the stock demos (one flattened sample per episode either way)."""
-    from slime.utils.types import Sample  # lazy
-
-    from . import router_trace
-
-    task = _task_from_sample(sample)
-    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
-    # PIN INFERENCE per episode. slime's SGLang router load-balances every /generate across the E
-    # engines (cache-aware), so one episode's turns could scatter across engines. We pick ONE engine
-    # deterministically from the episode key and point THIS episode's policy straight at it, so every
-    # turn of the episode is served by the same engine — inference becomes sticky per episode, like
-    # the sandbox. Degrades gracefully to the router URL if engine discovery fails (unpinned, still
-    # recorded). Uses only SGLangPolicy's public router_url arg — no slime patch. See router_trace.
-    episode_key = f"{task.task_id}#{getattr(sample, 'index', 0)}"
-    engine, _engine_idx, num_engines = router_trace.pin_engine(episode_key, router_url)
-    policy = SGLangPolicy(
-        router_url=engine,
-        model_path=args.hf_checkpoint,
-        # Qwen3 emits <think> blocks by default; suppress for codegen rollouts so the
-        # trainable span stays the actual solution, not a long reasoning trace.
-        chat_template_kwargs={"enable_thinking": False},
-    )
-    sandbox = make_sandbox(os.environ.get("SANDBOX", "agentcore"),
-                           region=os.environ.get("AGENTCORE_REGION"))
-
-    async with sandbox as sb:
-        # ONE [router] record per episode: the join that ties this episode's sandbox session (also
-        # stamped on every [sbx-op]) to the engine its turns were pinned to and the Runtime it used.
-        # metrics.py parses these into <log>.router.csv and check_stickiness asserts each episode is
-        # sticky to one engine / sandbox session / runtime ARN.
-        router_trace.emit(
-            task_id=task.task_id,
-            rollout_id=getattr(sample, "index", "?"),
-            engine=engine,
-            engine_pinned=int(num_engines > 1),
-            sandbox_id=router_trace.sandbox_id_of(sb),
-            sandbox_session=router_trace.session_of(sb),
-            runtime_arn=router_trace.arn_of(sb),
-            sandbox_image=getattr(task, "image", "cpu"),
-            family=getattr(task, "family", "?"),
-        )
-        traj = await run_episode(policy, sb, task, sampling_params)
-
-    tokens, response_length, loss_mask, rollout_log_probs = build_token_stream(
-        traj, policy.tokenizer
-    )
-
-    out = Sample(
-        index=getattr(sample, "index", 0),
-        prompt=getattr(sample, "prompt", task.prompt),
-        tokens=tokens,
-        response_length=response_length,
-        reward=traj.reward,
-        status=Sample.Status.COMPLETED,
-    )
-    # slime asserts len == response_length for both (mask + logprobs cover only the response
-    # region). rollout_log_probs is required when slime reuses rollout logprobs in the loss.
-    out.loss_mask = loss_mask
-    out.rollout_log_probs = rollout_log_probs
-    out.metadata = {
-        "task_id": task.task_id,
-        "solved": traj.solved,
-        "num_turns": traj.num_turns,
-        "sandbox_id": sb.sandbox_id,
-    }
-    # Bare Sample (NOT [out]) — see the docstring: keeps us on slime's non-fan-out shape so the
-    # fully-async rollout path's sort key doesn't choke on list[list[Sample]] nesting.
-    return out
+    """Removed: the agent loop no longer runs in the trainer."""
+    raise RuntimeError("agentcore_slime_demo.generate.generate (in-trainer harness) was removed; "
+                       "use --custom-generate-function-path agentcore_slime_demo.claude_code_generate.generate")
 
 
 def _task_from_sample(sample):

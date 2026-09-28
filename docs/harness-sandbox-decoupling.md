@@ -129,7 +129,7 @@ ad-hoc, isolated, per-session GPU environment. It does **not** contradict "harne
   sandbox only. This is the four-component architecture, cleanly.
 - **Sharing lives on the remote Runtime.** If many episodes must share one g6, that is a concern
   of the remote Runtime image (a Ray GPU-sharing farm runs *inside* the sandbox Runtime — the
-  remote form of the local farm in `demo_gpu_farm`, `FARM=fractional|whole` — merged 2026-09-26 from `demo_gpu_farm_fractional` + `demo_gpu_farm_whole`; formerly `demo_gpu_shared`), not of the trainer box. That farm is **trusted-only** (shared kernel + shared GPU: no MIG, a cooperative memory cap, one shared uid on AgentCore); full isolation is one session per episode, as in `demo_gpu_single`.
+  remote form of the local farm in `demo_gpu_farm`, `FARM=fractional|whole` — merged 2026-09-26 from `demo_gpu_farm_fractional` + `demo_gpu_farm_whole`; formerly `demo_gpu_shared`), not of the trainer box. That farm is **trusted-only** (shared kernel + shared GPU: no MIG, a cooperative memory cap, one shared uid on AgentCore); full isolation is one session per episode (one g6 each), which no current demo runs; `demo_gpu_farm LOCAL_GPU=0` (formerly `demo_gpu_single`) shares one warm g6.
 - **Cost/lifecycle:** a GPU Runtime instance bills while up (~$0.80–1/hr + EBS on `g6.xlarge`) and
   must be torn down — see the 08/09 `OBSERVATIONS.md` and the
   capacity-provider/`securityGroups`/`LD_LIBRARY_PATH` gotchas found there. A rollout that

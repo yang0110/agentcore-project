@@ -5,8 +5,8 @@
 # TASK / DATASET : HumanEval Python programming. The policy completes a function
 #                  from its docstring; the checker EXECUTES the hidden unit tests
 #                  in the sandbox (multi-turn repair, same harness as MBPP).
-# SUBSTRATE      : the DEFAULT managed AgentCore Code Interpreter (SANDBOX=agentcore): one
-#                  microVM session per episode, no image / Runtime. Real code EXECUTION in the sandbox.
+# SUBSTRATE      : our own VPC CPU sandbox Runtime (SANDBOX=agentcore-runtime, steps 2-4): one
+#                  fresh microVM session per episode, loop in the session. Real code EXECUTION in the sandbox.
 # BOTTLENECK     : Sandbox exec is real work here (running tests), but still short
 #                  Python — inference + trainer remain dominant. Sandbox count K
 #                  flat in the ablation.

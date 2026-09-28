@@ -1,10 +1,57 @@
 # Progress / Handoff — AgentCore + slime demos
 
-_Last updated: 2026-09-26. Branch: `master`._
+_Last updated: 2026-09-28. Branch: `master`._
+
+> **2026-09-28 (newest) — `demo_cpu_terminalbench` merged into `demo_cpu_tasks` as `DATASET=terminalbench`.** One
+> row = one task + one image (`metadata.task.image` on every row, all `data/*.jsonl` backfilled), one image = one
+> Runtime, `RB × NS` = sessions per step. Terminal-Bench rows go to `terminalbench_pool.py` (fresh session,
+> look-ahead pre-open, always-on keeper), the other rows to the default harness tier, so they mix in one batch
+> (`DATASET=gsm8k,terminalbench`). Per-task pool: `VARIANT=terminalbench` steps 2-4 → `demo_cpu_tasks/terminalbench/tasks/arn_by_image.json`;
+> tooling in `demo_cpu_tasks/terminalbench/`; data `data/terminalbench_{train,eval}.jsonl` (135/31). Now **3 main demos
+> (`demo_cpu_tasks`, `demo_cpu_swebench`, `demo_gpu_farm`) + EKS twin `demo_cpu_swebench_eks` + 1 experimental**; the
+> notes below keep the old set. Next TB deploy rebuilds every image once (server-layer hash changed).
+
+> **2026-09-28 (latest) — `demo_cpu_instance_pool` removed** (folder, `convergence/19_cpu_instance_pool.sh`, smoke
+> entries). Its AWS resources were deleted first: Runtime `acs_sandbox_bigcpu`, ECR `acs-sandbox-bigcpu`, capacity
+> provider `acs_cpu_cp_bigimage`. Now **4 main demos + 1 experimental**; the notes below keep the old set. Uncommitted
+> folder edits backed up to `/tmp/demo_cpu_instance_pool_backup_20260928.tgz`.
 
 This file tracks the current work session so it can be picked up later. It has three
 sections: **Done**, **In progress**, **Next steps (to run)**.
 
+> **2026-09-28 — decoupled harness tier is every demo's default; `demo_cpu_scale_lanes` → `demo_cpu_tasks SCALE=1`;
+> `demo_gpu_single` → `demo_gpu_farm LOCAL_GPU=0` → 4 main demos + 1 side note + 1 experimental.**
+> - **Main demos (storyline order):** `demo_cpu_tasks` (+ `SCALE=1` harness-scaling preset), `demo_cpu_terminalbench`
+>   (+ `warmstart/`), `demo_cpu_swebench`, `demo_gpu_farm` (`FARM=fractional|whole`, `LOCAL_GPU=1|0`). Side note
+>   `demo_cpu_instance_pool`; experimental `demo_cpu_branching` (the one exception: real Claude Code CLI in its microVM).
+> - **Harness tier default everywhere** (as PREOPEN / HEARTBEAT were): `agentcore_slime_demo/harness_pool.py` in every
+>   demo lib. `throughput = min(inference, sandbox, harness)`: `HARNESS_WORKERS` = W pull-queue dispatch workers
+>   (default RB×NS, 32 at RB=4 NS=8); sandbox taken first (fresh session per episode; opt-in `SANDBOX_SESSIONS=M`
+>   pooled sessions per image + fresh `/workspace/ep-<hex>`, `SANDBOX_OPEN_RATE`=20/s, `demo_cpu_tasks` only); then the
+>   least-loaded SGLang engine, sticky per episode. Replaces `crc32` pinning (`router_trace.pin_engine`) and TB/SWE's
+>   4 workers pinned `w → w % E`. One bare Sample per episode, so `demo_cpu_tasks` keeps `MODE=B`. `[demo]` fields
+>   `worker qdepth sandbox_wait_ms engine engine_inflight` (+ `sandbox_slot session_episode`). TB/SWE: W default
+>   `$GBS`, `CONC` still `⌈2W/E⌉`, `MODE=B` still rejected (look-ahead pre-open data source).
+> - **Harness in the session everywhere:** mini_claude runs inside the episode's sandbox session and dials the
+>   trainer's per-engine `AnthropicAdapter` back (DSec: move the agent loop out of the trainer). Deleted
+>   `agentcore_runtime_generate.py` + `harness_runtime_agent.py` from every lib; the in-trainer `generate()`
+>   (`SGLangPolicy` + `run_episode`) of terminalbench / swebench / branching now raises.
+> - `metrics.py` `check_stickiness` (all demos): the decoupled report (sessions/engines per worker, workers per
+>   session; several is expected); `router.csv` gains `sandbox_slot`.
+> - **`SCALE=1`** (`demo_cpu_tasks`): `DATASET=deepscaler RB=32 GPUS_PER_ENGINE=1 HARNESS_WORKERS=256 MODE=A`,
+>   `CONC=⌈256/E⌉=64` → 256 in flight; ckpt `_scale`, log tag `-scale`. New `GPUS_PER_ENGINE` knob (default 2). The
+>   `demo_cpu_scale_lanes` folder was removed; its offline sweep → `demo_cpu_tasks/harness_scaling_demo.py`, its logs
+>   (256-worker smokes 2026-09-26 / 2026-09-28, 592 episodes each) → `demo_cpu_tasks/logs/scale/`.
+> - **`demo_gpu_single` merged into `demo_gpu_farm`** (folder removed). `LOCAL_GPU=1` (default) = the local farm,
+>   unchanged; `LOCAL_GPU=0` = the remote g6 capacity-provider Instance (slime gets all 8 GPUs, async save +
+>   `megatron_init`, ARN required, pass `LOCAL_GPU=0` on every step 2-6). `FARM=fractional|whole` on both sites
+>   (local: GPU 6 @0.5 → 2 slots / GPUs 6,7 → 2 slots; g6.xlarge: L4 @0.5 → 2 slots / L4 @1.0 → 1 slot); `CONC`
+>   defaults to the slot count. `SNAPSHOT_EVERY=1` (`SNAPSHOT_DIR=demo_gpu_farm/snapshots`), `app_snapshot.py`,
+>   `snapshot_store.py`, `snapshot_demo.py`, `gpu_torch_smoke.py`, `agentcore_idle_sim.py`, `train.sh` and
+>   `deploy/Dockerfile.sandbox.gpu` moved in; the old logs are in `demo_gpu_farm/logs/remote/` + `logs/snapshot/`.
+> - Docs updated: `code/demos/README.md` (+ "Harness tier" section), the demo READMEs, `docs/harness-scaling.md`,
+>   `docs/demos-program.md`, the report and decks, smoke tooling (`SCALE=1` entry replaces scale_lanes).
+>
 > **2026-09-26 — GPU farm folders merged; instance pool demoted → 5 main demos + 1 side note + 1 experimental.**
 > - **Main demos (storyline order):** `demo_cpu_tasks`, `demo_cpu_terminalbench` (+ `warmstart/` probe),
 >   `demo_cpu_scale_lanes`, `demo_gpu_single` (KernelBench, one session per instance), `demo_gpu_farm`.
@@ -224,7 +271,9 @@ GPU:
 - demo_cpu_customruntime, demo_cpu_scale_lanes, demo_cpu_heartbeat,
   demo_gpu_customruntime, demo_gpu_snapshot
   (2026-09-25: all but scale_lanes are now knobs/probes of demo_cpu_tasks / demo_gpu_single —
-  `HEARTBEAT=1`, `compare_backends.py`, `SNAPSHOT_EVERY=1`, `LOCAL_GPU=1`)
+  `HEARTBEAT=1`, `compare_backends.py`, `SNAPSHOT_EVERY=1`, `LOCAL_GPU=1`; 2026-09-28: scale_lanes too,
+  as `demo_cpu_tasks SCALE=1`, which the smoke drivers now run; the `demo_gpu_single` knobs now live in
+  `demo_gpu_farm`, with `LOCAL_GPU=0` for the remote g6)
 
 ### Suggested driver
 `code/demos/run_smoke_sweep.sh` already does a serial sweep with per-run ckpt cleanup (it used

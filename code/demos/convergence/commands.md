@@ -23,9 +23,9 @@ bash code/demos/convergence/10_cpu_mcp.sh         # MCP tool-use
 bash code/demos/convergence/11_cpu_mixed.sh      # DATASET=mixed (math+sql+ctf+datasci)
 
 # ---- GPU demos (KernelBench; CUDA sandbox) ----
-# 12 is REMOTE-ONLY: export a live g6 sandbox ARN first.
+# 12 is REMOTE-ONLY (demo_gpu_farm LOCAL_GPU=0): export a live g6 sandbox ARN first.
 AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/<g6> \
-  bash code/demos/convergence/12_gpu_single.sh    # one dedicated g6 GPU per session
+  bash code/demos/convergence/12_gpu_farm_remote.sh    # one warm g6, its L4 split 0.5+0.5 (FARM=whole: 1 slot)
 
 # 13/14 are LOCAL (demo_gpu_farm FARM=fractional / FARM=whole): start the farm on the HOST first, in the matching mode.
 #   (host)      bash code/deploy/run_local_gpu_runtime.sh fractional
@@ -36,13 +36,11 @@ bash code/demos/convergence/14_gpu_farm_whole.sh        # demo_gpu_farm FARM=who
 
 # ---- Property demos, now real trainers (headline knob default-ON) ----
 bash code/demos/convergence/15_cpu_tasks_heartbeat.sh  # demo_cpu_tasks deepscaler + keep-warm (HEARTBEAT=1, own Runtime)
-bash code/demos/convergence/16_cpu_scale_lanes.sh  # decoupled: 4 engines : 256 workers : 256 microVMs (MODE=A)
+bash code/demos/convergence/16_cpu_tasks_scale.sh     # demo_cpu_tasks SCALE=1: 4 engines : 256 workers : 256 sessions
 bash code/demos/convergence/17_cpu_tasks_libs.sh       # DATASET=libs (pandas/scipy/sklearn, Code Interpreter)
-bash code/demos/convergence/19_cpu_instance_pool.sh    # warm m5 pool, SANDBOX_POOL=2 (needs demo_cpu_instance_pool deploy/runtime.env)
-# 18 = demo_gpu_single + snapshot/resume; REMOTE (g6 ARN) or on-box (LOCAL_GPU=1, farm up on 6,7):
+# 18 = demo_gpu_farm + snapshot/resume; REMOTE (g6 ARN, default) or on-box (LOCAL_GPU=1, farm up):
 AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/<g6> \
-  bash code/demos/convergence/18_gpu_single_snapshot.sh   # app-level snapshot/resume (SNAPSHOT_EVERY=1)
-# 12 on-box (was 19_gpu_customruntime): LOCAL_GPU=1 bash code/demos/convergence/12_gpu_single.sh
+  bash code/demos/convergence/18_gpu_farm_snapshot.sh   # app-level snapshot/resume (SNAPSHOT_EVERY=1)
 ```
 
 ## Common overrides

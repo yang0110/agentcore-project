@@ -1,4 +1,4 @@
-"""HARNESS_WHERE=session: run the mini_claude loop INSIDE the sandbox session, not in the trainer.
+"""The mini_claude loop runs INSIDE the sandbox session, never in the trainer (every demo, no opt-out).
 
 DSec §6.2 pattern: one agent loop per sandbox, and the loop shares the sandbox's lifetime. The
 trainer only (1) hosts slime's AnthropicAdapter, which records every turn's tokens, and (2) drives
@@ -10,18 +10,24 @@ the episode through the sandbox's ordinary ops:
     read_file  .acs_h/status.json                     (turns, tool calls, stop, transcript)
     exec       kill + rm -rf .acs_h                   (before the hidden grader runs)
 
+MINI_SESSION_MODE=foreground (for a jailed CPU farm; used by the removed demo_cpu_instance_pool) replaces the nohup + long-poll with ONE exec that
+runs the runner to completion: on the jailed CPU farm every exec is a Landlock jail whose subreaper
+kills the command's whole process tree when the exec returns, so a detached runner would die at once.
+The loop's wall budget is then capped below INVOKE_READ_TIMEOUT (one invoke must outlive the loop).
+
 The runner dials the adapter back over the VPC (ADAPTER_PUBLIC_HOST:port; the host SG admits the
 runtime SG on the adapter port range, SG->SG). `InSessionHarness.run` has MiniClaudeHarness.run's
 signature and result type, so call sites swap the object and pass the adapter's public URL.
 
-Fallback to the in-trainer loop (same adapter, local URL) when the session cannot host it: no
-python3 on the image, or the adapter port is unreachable from the session (e.g. Code Interpreter,
-which has no path back to the trainer). The adapter has recorded nothing in either case, so the
-fallback starts from a clean session. `result.where` says which one ran.
+There is NO in-trainer fallback: if the session cannot host the loop (no python3 on the image, or the
+adapter port is unreachable from the session — a missing SG->SG rule, or a backend with no route back
+such as the Code Interpreter) the episode raises HarnessPlacementError. Fix the image or the network;
+the loop never silently moves into the trainer. HARNESS_WHERE=trainer is rejected.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -29,7 +35,7 @@ import socket
 import time
 from pathlib import Path
 
-from .mini_agent import _MAX_TOOL_OUTPUT_CHARS, TOOLS, MiniAgentResult, MiniClaudeHarness, _system_prompt
+from .mini_agent import _MAX_TOOL_OUTPUT_CHARS, TOOLS, MiniAgentResult, _system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +43,18 @@ _RUNNER_SRC = (Path(__file__).with_name("session_runner.py")).read_text()
 _DIR = ".acs_h"
 
 
+class HarnessPlacementError(RuntimeError):
+    """The sandbox session cannot host the agent loop (no python3, or no route back to the adapter)."""
+
+
 def harness_where() -> str:
-    """session (default) | trainer. Code Interpreter (SANDBOX=agentcore) has no route back to the
-    adapter, so it defaults to the trainer; everything else (own Runtimes, farms, local) to session."""
+    """Always ``session``: the agent loop runs in the sandbox session in every demo. HARNESS_WHERE is
+    accepted only as ``session`` (or unset); ``trainer`` was removed 2026-09-28."""
     where = os.environ.get("HARNESS_WHERE", "").strip().lower()
-    if where in ("session", "trainer"):
-        return where
-    return "trainer" if os.environ.get("SANDBOX", "agentcore") == "agentcore" else "session"
+    if where not in ("", "session"):
+        raise HarnessPlacementError(f"HARNESS_WHERE={where!r} is not supported: the agent loop always runs "
+                                    "in the sandbox session (the in-trainer harness was removed)")
+    return "session"
 
 
 def _public_host() -> str:
@@ -61,11 +72,8 @@ def _public_host() -> str:
 
 
 def adapter_bind(index: int) -> tuple[str, int]:
-    """(host, port) to bind the index-th AnthropicAdapter on. In session mode it must be reachable
-    from the sandbox: 0.0.0.0 on ADAPTER_PORT_BASE+index (the range the SG rule opens). Otherwise
-    loopback on an ephemeral port, as before."""
-    if harness_where() != "session":
-        return "127.0.0.1", 0
+    """(host, port) to bind the index-th AnthropicAdapter on. It must be reachable from the sandbox:
+    0.0.0.0 on ADAPTER_PORT_BASE+index (the range the SG rule opens)."""
     base = int(os.environ.get("ADAPTER_PORT_BASE", "18100"))
     span = int(os.environ.get("ADAPTER_PORT_SPAN", "64"))
     if index >= span:
@@ -90,22 +98,13 @@ class InSessionHarness:
         self.request_timeout_sec = request_timeout_sec
         self.exec_timeout_sec = exec_timeout_sec
         self.system_prompt = system_prompt
-        self._fallback = MiniClaudeHarness(max_turns=max_turns, request_timeout_sec=request_timeout_sec,
-                                           exec_timeout_sec=exec_timeout_sec, system_prompt=system_prompt)
 
     async def run(self, sb, *, session_id: str, adapter_url: str, prompt: str, max_tokens: int = 1024,
-                  model_label: str = "slime-actor", http=None, local_adapter_url: str | None = None,
-                  ) -> MiniAgentResult:
-        """``adapter_url`` = the URL the SESSION dials; ``local_adapter_url`` = the trainer's own
-        URL for the fallback (defaults to adapter_url)."""
-        res = await self._run_in_session(sb, session_id=session_id, adapter_url=adapter_url,
-                                         prompt=prompt, max_tokens=max_tokens, model_label=model_label)
-        if res is not None:
-            return res
-        res = await self._fallback.run(sb, session_id=session_id, adapter_url=local_adapter_url or adapter_url,
-                                       prompt=prompt, max_tokens=max_tokens, model_label=model_label, http=http)
-        res.where = "trainer_fallback"
-        return res
+                  model_label: str = "slime-actor", http=None) -> MiniAgentResult:
+        """``adapter_url`` = the URL the SESSION dials (adapter_urls()[1]). ``http`` is unused (the
+        runner makes its own requests); kept so the signature matches MiniClaudeHarness.run."""
+        return await self._run_in_session(sb, session_id=session_id, adapter_url=adapter_url,
+                                          prompt=prompt, max_tokens=max_tokens, model_label=model_label)
 
     async def _run_in_session(self, sb, *, session_id, adapter_url, prompt, max_tokens, model_label):
         cfg = {
@@ -117,33 +116,63 @@ class InSessionHarness:
             "wall_sec": int(os.environ.get("MINI_SESSION_WALL_SEC",
                                            str(self.max_turns * (self.request_timeout_sec + self.exec_timeout_sec)))),
         }
+        foreground = os.environ.get("MINI_SESSION_MODE", "detach").strip().lower() == "foreground"
+        if foreground:   # the whole loop lives inside one invoke: keep it under the read timeout
+            cfg["wall_sec"] = min(cfg["wall_sec"], int(os.environ.get("INVOKE_READ_TIMEOUT", "900")) - 90)
         await sb.write_file(f"{_DIR}/runner.py", _RUNNER_SRC)
         await sb.write_file(f"{_DIR}/cfg.json", json.dumps(cfg))
+        if foreground:
+            return await self._run_foreground(sb, cfg, session_id=session_id, adapter_url=adapter_url,
+                                              prompt=prompt)
         code, _out, err = await sb.exec(
             f"command -v python3 >/dev/null 2>&1 || exit 42; "
             f"nohup python3 {_DIR}/runner.py {_DIR}/cfg.json > {_DIR}/log 2>&1 < /dev/null & "
             f"echo $! > {_DIR}/pid", timeout=60)
         if code != 0:
-            logger.warning("[in_session] session=%s cannot start the runner (exit %s%s); loop falls back "
-                           "to the trainer", session_id, code, ", no python3" if code == 42 else f": {err[:200]}")
             await self._cleanup(sb)
-            return None
+            raise HarnessPlacementError(
+                f"session={session_id} cannot start the in-session runner (exit {code}"
+                f"{': no python3 on the sandbox image' if code == 42 else ': ' + err[:200]})")
 
         poll = int(os.environ.get("MINI_SESSION_POLL_SEC", "25"))
         hard_deadline = time.monotonic() + cfg["wall_sec"] + 120
         state = "done"
-        while True:
-            code, _out, _err = await sb.exec(
-                f"timeout {poll} bash -c 'while [ ! -f {_DIR}/done ]; do "
-                f"kill -0 $(cat {_DIR}/pid) 2>/dev/null || exit 3; sleep 0.5; done'", timeout=poll + 30)
-            if code == 0:
-                break
-            if code == 3:                        # runner gone without `done` (killed by the agent?)
-                state = "runner_died"
-                break
-            if time.monotonic() > hard_deadline:
-                state = "poll_deadline"
-                break
+        try:
+            while True:
+                code, _out, _err = await sb.exec(
+                    f"timeout {poll} bash -c 'while [ ! -f {_DIR}/done ]; do "
+                    f"kill -0 $(cat {_DIR}/pid) 2>/dev/null || exit 3; sleep 0.5; done'", timeout=poll + 30)
+                if code == 0:
+                    break
+                if code == 3:                        # runner gone without `done` (killed by the agent?)
+                    state = "runner_died"
+                    break
+                if time.monotonic() > hard_deadline:
+                    state = "poll_deadline"
+                    break
+        except BaseException:
+            # A failed/cancelled poll must not orphan the detached runner: on a pooled or shared
+            # session it would keep calling the adapter next to the following episode.
+            with contextlib.suppress(Exception):
+                await self._cleanup(sb)
+            raise
+        return await self._finish(sb, state, session_id=session_id, adapter_url=adapter_url, prompt=prompt)
+
+    async def _run_foreground(self, sb, cfg, *, session_id, adapter_url, prompt):
+        """One exec runs the runner to completion (the jailed farm kills anything an exec leaves behind)."""
+        code, _out, err = await sb.exec(
+            f"command -v python3 >/dev/null 2>&1 || exit 42; "
+            f"python3 {_DIR}/runner.py {_DIR}/cfg.json > {_DIR}/log 2>&1 < /dev/null", timeout=cfg["wall_sec"] + 60)
+        if code == 42:
+            await self._cleanup(sb)
+            raise HarnessPlacementError(f"session={session_id} cannot start the in-session runner "
+                                        "(exit 42: no python3 on the sandbox image)")
+        state = "done" if code == 0 else ("poll_deadline" if code == 124 else "runner_died")
+        if state != "done":
+            logger.warning("[in_session] session=%s foreground runner exit=%s %s", session_id, code, (err or "")[:200])
+        return await self._finish(sb, state, session_id=session_id, adapter_url=adapter_url, prompt=prompt)
+
+    async def _finish(self, sb, state, *, session_id, adapter_url, prompt):
         try:
             status = json.loads(await sb.read_file(f"{_DIR}/status.json") or "{}")
         except Exception:  # noqa: BLE001 — partial/missing status -> counters default to 0
@@ -151,9 +180,9 @@ class InSessionHarness:
         await self._cleanup(sb)
 
         if status.get("stop") == "unreachable":
-            logger.warning("[in_session] session=%s adapter %s unreachable from the session (%s); loop "
-                           "falls back to the trainer", session_id, adapter_url, status.get("error"))
-            return None
+            raise HarnessPlacementError(
+                f"session={session_id}: adapter {adapter_url} unreachable from the session ({status.get('error')}) "
+                "— check networkMode=VPC + the SG->SG rule on ADAPTER_PORT_BASE.. (docs/agentcore-networking.md)")
         if status.get("stop") == "error":
             raise RuntimeError(f"in-session runner failed: {status.get('error')}")
         res = MiniAgentResult(turns=int(status.get("turns", 0)), tool_calls=int(status.get("tool_calls", 0)),
@@ -175,6 +204,6 @@ class InSessionHarness:
 
 
 def make_harness(**kw):
-    """InSessionHarness when HARNESS_WHERE resolves to session, else the in-trainer MiniClaudeHarness."""
-    return InSessionHarness(**kw) if harness_where() == "session" else MiniClaudeHarness(**kw)
-
+    """The harness every demo uses: the loop in the sandbox session."""
+    harness_where()          # rejects HARNESS_WHERE=trainer up front
+    return InSessionHarness(**kw)

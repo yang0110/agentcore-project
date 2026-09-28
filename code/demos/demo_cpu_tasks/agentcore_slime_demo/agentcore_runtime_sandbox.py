@@ -235,7 +235,12 @@ class AgentCoreRuntimeSandbox:
             boto3.client, "bedrock-agentcore", region_name=self._region, config=cfg
         )
         # Best-effort workspace init + liveness check (also warms a cold GPU instance).
-        await self._invoke({"op": "ping", "workdir": self._workdir})
+        # The client-side epochs around this first ping + the server's reply (a server that reports
+        # boot timestamps, e.g. the Terminal-Bench images' acs_http_server) let callers decompose the
+        # cold start; other servers just return {"ok": true}.
+        self.open_sent_epoch = time.time()
+        self.open_reply = await self._invoke({"op": "ping", "workdir": self._workdir})
+        self.open_recv_epoch = time.time()
         return self
 
     async def __aexit__(self, *exc) -> None:
@@ -440,7 +445,7 @@ class RayFarmRuntimeSandbox:
         return (f"shared-{sid}", ping)
 
     async def __aexit__(self, *exc) -> None:
-        if self._client is not None:
+        if self._client is not None or self._local_url:   # a local-endpoint farm has no boto3 client
             with contextlib.suppress(Exception):
                 await self._invoke({"op": "close", "sub_session": self._sub})
         self._client = None

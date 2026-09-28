@@ -19,11 +19,11 @@ PIN4="SLIME_CUDA_VISIBLE=2,3,4,5 SLIME_NUM_GPUS=4"      # GPUs 6,7 belong to the
 # demo[:label] | extra env | deploy before (host) | cleanup after (host)   (label only names the log/row)
 ENTRIES=(
   "demo_cpu_tasks|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2||"
-  "demo_cpu_terminalbench|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2||"
-  "demo_cpu_swebench|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2||"
-  "demo_cpu_instance_pool|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2||"
-  "demo_cpu_scale_lanes|$PIN6 ACTOR_GPUS=2 ROLLOUT_GPUS=4||"
-  "demo_gpu_single|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2|2_build_image.sh 3_push_ecr.sh 4_deploy_runtime.sh|6_cleanup.sh"
+  "demo_cpu_tasks:mixed|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2 DATASET=mixed||"
+  "demo_cpu_tasks:terminalbench|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2 DATASET=terminalbench||"   # was demo_cpu_terminalbench
+  "demo_cpu_swebench|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2 RB=2 NS=4 TB_PREOPEN_BATCHES=1||"   # ~16 m5, not 64
+  "demo_cpu_tasks:scale|$PIN6 ACTOR_GPUS=2 ROLLOUT_GPUS=4 SCALE=1||"   # harness-scaling preset (was demo_cpu_scale_lanes): E=4 TP1, W=256
+  "demo_gpu_farm:remote|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2 LOCAL_GPU=0 FARM=fractional|2_build_image.sh 3_push_ecr.sh 4_deploy_runtime.sh|6_cleanup.sh"   # was demo_gpu_single
   "demo_gpu_farm:fractional|$PIN4 ACTOR_GPUS=2 ROLLOUT_GPUS=2 FARM=fractional|2_build_image.sh 4_deploy_runtime.sh|6_cleanup.sh"
   "demo_gpu_farm:whole|$PIN4 ACTOR_GPUS=2 ROLLOUT_GPUS=2 FARM=whole|2_build_image.sh 4_deploy_runtime.sh|6_cleanup.sh"
 )

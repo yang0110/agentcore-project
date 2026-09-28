@@ -1,6 +1,24 @@
 # Smoke-sweep experiment plan — all 17 demos, end-to-end
 
-> **2026-09-26 (latest):** now **5 main demos + 1 side note + 1 experimental**. `demo_gpu_farm_fractional` +
+> **2026-09-28 (newest):** `demo_cpu_terminalbench` is **merged into `demo_cpu_tasks`** as `DATASET=terminalbench`
+> (per-task pool: `VARIANT=terminalbench` steps 2-4; warm-start probe `demo_cpu_tasks/terminalbench/warmstart/`).
+> Now **3 main demos + the EKS twin `demo_cpu_swebench_eks` + 1 experimental**. The notes and log below keep the old names.
+
+> **2026-09-28 (newest):** `demo_cpu_instance_pool` is **removed** (with its Runtime, ECR repo and m5 capacity
+> provider); its trainer entry, `PHASE=2` and the `demo_cpu_instance_pool:isolation` offline probe are gone from
+> the drivers. The notes below keep the old names.
+
+> **2026-09-28 (latest):** `demo_cpu_scale_lanes` is **removed**: its decoupled harness tier (`harness_pool.py`) is
+> now every demo's default and its 4:256:256 run is **`demo_cpu_tasks SCALE=1`**. Driver entries: offline probe
+> `demo_cpu_tasks:harness_scaling` (`demo_cpu_tasks/harness_scaling_demo.py`), trainer
+> `demo_cpu_tasks:deepscaler+SCALE=1` (`run_all_demos_smoke.sh`: `demo_cpu_tasks:scale`). Old logs are in
+> `demo_cpu_tasks/logs/scale/`. **`demo_gpu_single` is removed too**, merged into `demo_gpu_farm` as `LOCAL_GPU=0`
+> (remote g6; `LOCAL_GPU=1`, the local farm, stays the default): driver entries `demo_gpu_farm:remote` (was
+> `demo_gpu_single`) and offline probe `demo_gpu_farm:snapshot` (`snapshot_demo.py`); its old logs are in
+> `demo_gpu_farm/logs/remote/` + `logs/snapshot/`. Now **4 main demos + 1 side note + 1 experimental**. The notes
+> and log below keep the old names.
+
+> **2026-09-26:** now **5 main demos + 1 side note + 1 experimental**. `demo_gpu_farm_fractional` +
 > `demo_gpu_farm_whole` are one `demo_gpu_farm` with `FARM=fractional|whole` (driver entries
 > `demo_gpu_farm:fractional` / `demo_gpu_farm:whole`), and `demo_cpu_instance_pool` is a side note (still smoked).
 
@@ -58,8 +76,8 @@ sandbox → slime train step → final checkpoint), and record a per-demo PASS/F
   `deploy/run_local_gpu_runtime.sh local` (a whole-GPU Ray farm: `B4_FARM_GPUS=2`,
   `B4_GPU_FRACTION=1.0` ⇒ 2 whole-GPU slots) while slime uses GPUs 0–5. Its `run.sh` needs **no
   `LOCAL_GPU` flag** — it is always local. This exercises the same AgentCore `/invocations` contract
-  over localhost. (The remote-only `demo_gpu_single` / `demo_gpu_shared` need a real g6 and are not
-  part of the on-box smoke.)
+  over localhost. (The remote `demo_gpu_single` / `demo_gpu_shared`, now `demo_gpu_farm LOCAL_GPU=0`, need a real g6 and are
+  not part of the on-box smoke.)
 - **Shared code.** All CPU trainers use the identical `run.sh` / in-process-harness shape and differ
   only in dataset + hidden checker, so a per-demo failure is almost always dataset/checker-specific.
 
@@ -76,8 +94,8 @@ Runs each property demo's **retained probe script directly** (NOT `run.sh`, whic
 logs to `offline_probe.log`. Behavior markers (not just exit 0) must appear.
 - `demo_cpu_heartbeat` (now `demo_cpu_tasks:heartbeat`) — `python3 heartbeat_demo.py` (naive→heartbeat→recover arc)
 - `demo_cpu_tasks:compare_backends` (was `demo_cpu_customruntime`, added 2026-09-25) — `python3 compare_backends.py --backends local`
-- `demo_gpu_snapshot` (now `demo_gpu_single`) — `python3 snapshot_demo.py` (app-level snapshot/resume across recycle)
-- `demo_cpu_scale_lanes`  — `python3 harness_scaling_demo.py …` (formerly `demo_cpu_harness_scale`) (`throughput = min(inference, sandbox, harness)` sweep)
+- `demo_gpu_snapshot` (then `demo_gpu_single`, now `demo_gpu_farm:snapshot`) — `python3 snapshot_demo.py` (app-level snapshot/resume across recycle)
+- `demo_cpu_scale_lanes` (now `demo_cpu_tasks:harness_scaling`) — `python3 harness_scaling_demo.py …` (formerly `demo_cpu_harness_scale`) (`throughput = min(inference, sandbox, harness)` sweep)
 
 **Phase 1 — CPU RL trainers (remote AgentCore CPU sandbox, ~10 min each, ckpt deleted after).** Same driver.
 `demo_cpu_tasks:mbpp`, `demo_cpu_tasks:math`, `demo_cpu_tasks:mixed` (then `demo_cpu_mixtask`), `demo_cpu_tasks:gsm8k`,
@@ -85,7 +103,7 @@ logs to `offline_probe.log`. Behavior markers (not just exit 0) must appear.
 `demo_cpu_tasks:gretelsql`, `demo_cpu_tasks:hotpotqa`, `demo_cpu_tasks:xlam`,
 `demo_cpu_tasks:mcp` (formerly the ten `demo_cpu_<ds>` folders), plus the three CPU property trainers `demo_cpu_heartbeat`,
 `demo_cpu_scale_lanes`, `demo_cpu_customruntime` (each now wraps a real slime run; since 2026-09-25 the
-entries are `demo_cpu_tasks:deepscaler+HEARTBEAT=1` and `demo_cpu_scale_lanes` — customruntime was the same
+entries are `demo_cpu_tasks:deepscaler+HEARTBEAT=1` and `demo_cpu_scale_lanes`, since 2026-09-28 `demo_cpu_tasks:deepscaler+SCALE=1` — customruntime was the same
 deepscaler run on a custom Runtime and was dropped). The two GPU
 property trainers (`demo_gpu_snapshot`, `demo_gpu_customruntime`) need a live g6 ARN → run with the
 GPU trainers, not in this on-box sweep.

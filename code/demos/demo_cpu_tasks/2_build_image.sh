@@ -30,7 +30,7 @@ for name in $(image_names); do
   mb=$(( $(docker image inspect -f '{{.Size}}' "$tag") / 1024 / 1024 ))
   echo "built $tag ($PLATFORM, ${mb} MB)"
   if [ "$SUBSTRATE" = microvm ] && [ "$mb" -gt 2048 ]; then
-    echo "!! $tag is over the 2048 MB microVM image cap — use a capacity-provider Instance (see demo_cpu_instance_pool)"
+    echo "!! $tag is over the 2048 MB microVM image cap — use a capacity-provider Instance (see demo_cpu_swebench, m5)"
   fi
 done
 log "done — next: bash 3_push_ecr.sh"

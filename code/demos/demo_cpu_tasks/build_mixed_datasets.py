@@ -4,10 +4,9 @@
 A single-`DATASET` run pins one task family. `DATASET=mixed` does the opposite: it interleaves
 SEVERAL families into ONE `mixed_train.jsonl` / `mixed_eval.jsonl`, so that every GRPO rollout
 step draws a batch of prompts that spans multiple tasks (math + sql + ctf + datasci by default).
-The default mix includes `datasci` (pandas), which the default managed Code Interpreter already
-ships (pandas/scipy/sklearn preinstalled), so no custom image is needed. Rows still carry `task.image`;
-the vendored lib's image routing (agentcore_slime_demo.sandbox._runtime_arn_for_image) only matters
-when you run on your own Runtimes with a per-image ARN map.
+The default mix includes `datasci` (pandas): its task class is tagged image="datasci", and run.sh
+(image_routing.py) routes that tag to the "libs" Runtime (deploy/Dockerfile.sandbox.libs) through
+agentcore_slime_demo.sandbox._runtime_arn_for_image; the other families run on the stdlib "cpu" one.
 
 Nothing in the harness or the sandbox has to change for this — the reason it works:
 
@@ -81,7 +80,7 @@ def main() -> int:
                          "(default mixed; DATASET=libs uses --name libs --families datasci,scipy,sklearn)")
     ap.add_argument("--families", default="math,sql,ctf,datasci",
                     help="comma-separated family labels to mix (default: math,sql,ctf,datasci; "
-                         "datasci needs pandas — preinstalled in the default Code Interpreter). "
+                         "datasci needs pandas — the libs Runtime). "
                          f"available: {','.join(sorted(_BY_FAMILY))}")
     ap.add_argument("--out-dir", default=str(Path(__file__).resolve().parent / "data"))
     ap.add_argument("--max-turns", type=int, default=None,

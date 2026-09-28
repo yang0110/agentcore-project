@@ -25,11 +25,12 @@ session is stopped. So this pool gives every episode its OWN brand-new session a
      across slime's trainer->inference weight-sync stall, when generation goes silent and AgentCore
      would otherwise idle-reclaim the microVM mid-episode.
 
-This subclasses the harness-scaling demo's HarnessPool (W warm in-process workers + one adapter per
-worker, so an episode is sticky to its worker => sticky to one SGLang engine) and swaps only the
-sandbox tier. The agentic loop is the SAME MiniClaudeHarness (Anthropic Messages API ->
-AnthropicAdapter -> policy under training; tools run in the sandbox), so this exercises the faithful
-tool-calling path (needs --sglang-tool-call-parser qwen25 + --sglang-reasoning-parser qwen3).
+This subclasses the shared decoupled HarnessPool (harness_pool.py, every demo's default: W dispatch
+workers pulling from one queue, each episode on the least-loaded SGLang engine, sticky for its turns)
+and swaps only the sandbox tier. The agentic loop is the SAME mini_claude loop, run INSIDE the
+episode's sandbox session (Anthropic Messages API -> AnthropicAdapter -> policy under training; tools
+run in the same session), so the harness scales with the sandbox tier, not the trainer. Needs
+--sglang-tool-call-parser qwen25 + --sglang-reasoning-parser qwen3.
 
 Wire with:
     --custom-generate-function-path agentcore_slime_demo.terminalbench_pool_generate.generate
@@ -47,7 +48,7 @@ import secrets
 import threading
 import time
 
-from .harness_pool import HarnessPool
+from .harness_pool import HarnessPool, adapter_for, one_sample
 from . import swebench as _swebench  # noqa: F401  swebench hook: registers family "swebench"
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,9 @@ class TerminalBenchPool(HarnessPool):
     def __init__(self, args) -> None:
         super().__init__(args)
         self.sandbox_kind = "agentcore-runtime"
+        self.max_turns = int(os.environ.get("EPISODE_MAX_TURNS", "4"))
+        self.max_tokens = int(os.environ.get("EPISODE_MAX_TOKENS", "1024"))
+        self._harness = None
         # "" = use the image's own WORKDIR (the server reports it); TB_WORKDIR forces one for all tasks.
         self.workdir = os.environ.get("TB_WORKDIR", "")
         # The hidden oracles live on the TRAINER (fetched tasks/ dir), never in the images.
@@ -164,7 +168,11 @@ class TerminalBenchPool(HarnessPool):
         first = not self._started
         await super()._ensure_started()
         if first:
+            from .in_session_harness import make_harness
             from .session_keeper import SessionKeeper
+
+            # The loop runs INSIDE the episode's sandbox session (always; no in-trainer harness).
+            self._harness = make_harness(max_turns=self.max_turns)
 
             self._keeper = await SessionKeeper(
                 ping_fraction=float(os.environ.get("WARM_PING_FRACTION", "0.5")),
@@ -317,13 +325,11 @@ class TerminalBenchPool(HarnessPool):
                                    float(task.spec.get("max_test_timeout_sec") or 180))
 
     # ---- the episode: its own fresh session on THIS task's Runtime -----------
-    async def _run_episode(self, wid: int, http, task, sampling_params, base_sample):
+    async def _run_episode(self, worker, task, sampling_params, base_sample):
         from . import router_trace
         from .agentcore_runtime_sandbox import _arn_tail
 
-        adapter = self._adapters[wid]
-        adapter_url = self._adapter_urls[wid]
-        engine = self._engine_urls[wid]
+        wid = worker.wid
 
         # Adapter Bearer session id == trajectory key.
         sid = getattr(base_sample, "session_id", None)
@@ -342,7 +348,15 @@ class TerminalBenchPool(HarnessPool):
         cold = self._cold_start(sb)
         spec = task.spec or {}
 
-        adapter.open_session(sid, sampling_defaults=sampling_params)
+        # Inference AFTER the sandbox: the least-loaded engine, sticky for all of this episode's turns.
+        e, engine = self.acquire_engine()
+        try:
+            adapter, _local_url, session_url = adapter_for(self.args, engine)
+            adapter.open_session(sid, sampling_defaults=sampling_params)
+        except BaseException:
+            self.release_engine(e)
+            await self._close_session(sb)
+            raise
         ep = {"task": task.task_id, "difficulty": spec.get("difficulty", "?"),
               "category": spec.get("category", "?"), "solved": 0, "infra_error": "none"}
         try:
@@ -351,7 +365,7 @@ class TerminalBenchPool(HarnessPool):
                 rollout_id=getattr(base_sample, "index", "?"),
                 harness_worker=wid,
                 engine=engine,
-                engine_pinned=int(len(self._engine_urls) > 0 and engine != ""),
+                engine_pinned=int(len(self._engine_urls) > 1),
                 adapter_session=sid,
                 sandbox_id=getattr(sb, "sandbox_id", "?"),
                 sandbox_session=sb._session_id,
@@ -362,8 +376,8 @@ class TerminalBenchPool(HarnessPool):
             # how much of that cold start the worker still had to wait for (the critical-path cost);
             # `preopen_idle_ms` is the reverse: how long the booted microVM waited for the worker.
             # open_ms / pull_boot_ms / ready_ms / warm_hit decompose the cold start itself.
-            print(f"[demo] worker={wid} qdepth={self._queue.qsize() if self._queue else 0} "
-                  f"fresh_session=1 preopened={int(pending is not None)} "
+            print(f"[demo] worker={wid} qdepth={worker.qdepth} engine={e} "
+                  f"engine_inflight={self.inflight(e)} fresh_session=1 preopened={int(pending is not None)} "
                   f"open_wait_ms={wait_ms:.1f} preopen_idle_ms={idle_ms:.1f} "
                   f"open_attempts={sb._tb_open_attempts} "
                   + " ".join(f"{k}={v}" for k, v in cold.items())
@@ -375,12 +389,10 @@ class TerminalBenchPool(HarnessPool):
             res = await self._harness.run(
                 sb,
                 session_id=sid,
-                adapter_url=(self._session_urls[wid] if getattr(self._harness, "in_session", False)
-                             else adapter_url),
-                local_adapter_url=adapter_url,
+                adapter_url=session_url,   # the URL the in-session loop dials back
                 prompt=self._problem_text(task),
                 max_tokens=self.max_tokens,
-                http=http,
+                http=worker.http,
             )
             ep.update(agent_ms=round((time.perf_counter() - ta) * 1000.0, 1), turns=res.turns,
                       tool_calls=res.tool_calls, stop=res.stop_reason,
@@ -400,11 +412,13 @@ class TerminalBenchPool(HarnessPool):
             ep["solved"] = int(g["solved"])
             reward = 1.0 if g["solved"] else 0.0
 
-            return await adapter.finish_session(
+            samples = await adapter.finish_session(
                 sid, base_sample=base_sample, reward=float(reward),
                 extra_metadata={"task_id": task.task_id, "solved": bool(g["solved"]),
                                 "harness_worker": wid, "sandbox_session": sb._session_id},
             )
+            out, ep["fan_out"] = one_sample(samples, float(reward))
+            return out
         except Exception as e:
             ep["infra_error"] = type(e).__name__
             raise
@@ -413,6 +427,7 @@ class TerminalBenchPool(HarnessPool):
             ep["session_s"] = round(time.perf_counter() - sb._tb_opened_at, 1)  # microVM-seconds paid
             print("[demo] episode_end " + " ".join(f"{k}={v}" for k, v in ep.items()), flush=True)
             await adapter.drop_session(sid, wait_timeout=30)
+            self.release_engine(e)
             await self._close_session(sb)
 
     # ---- public entry point: start the episode's cold start at enqueue time --
@@ -423,7 +438,7 @@ class TerminalBenchPool(HarnessPool):
             # Not announced by the look-ahead source (eval, or no source wired): start its boot now.
             self._demand.append(arn)
         self._refill()
-        return await super().submit(task, sampling_params, base_sample)
+        return await self.run(lambda worker: self._run_episode(worker, task, sampling_params, base_sample))
 
     # ---- shutdown: stop any still-pre-opened sessions + the keeper -----------
     async def aclose(self) -> None:

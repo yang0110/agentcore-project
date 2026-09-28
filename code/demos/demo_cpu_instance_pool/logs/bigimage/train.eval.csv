@@ -1,2 +1,0 @@
-eval/step,eval/deepscaler,eval/deepscaler-truncated_ratio,eval/deepscaler/avg_cached_tokens_per_sample,eval/deepscaler/prefix_cache_hit_rate,eval/deepscaler/repetition_frac,eval/deepscaler/response_len/max,eval/deepscaler/response_len/mean,eval/deepscaler/response_len/median,eval/deepscaler/response_len/min,eval/deepscaler/truncated_ratio
-9,0.7625,0.0,0.0,0.0,0.0,2353,388.975,201.0,17,0.0

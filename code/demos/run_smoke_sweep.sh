@@ -15,11 +15,11 @@ TRAIN_TIMEOUT="${TRAIN_TIMEOUT:-1800}"
 
 # Phase lists (override via env to resume a subset).
 # Entries are <demo> or <demo>:<probe> (a demo dir can ship several probes; the key picks one).
-OFFLINE_DEMOS="${OFFLINE_DEMOS-demo_cpu_tasks:heartbeat demo_cpu_tasks:compare_backends demo_cpu_terminalbench:warmstart demo_cpu_instance_pool:isolation demo_gpu_single demo_cpu_scale_lanes}"
+OFFLINE_DEMOS="${OFFLINE_DEMOS-demo_cpu_tasks:heartbeat demo_cpu_tasks:compare_backends demo_cpu_tasks:warmstart demo_gpu_farm:snapshot demo_cpu_tasks:harness_scaling}"
 # Entries are <demo>[:<DATASET>][+KEY=VAL...] — demo_cpu_tasks is ONE folder that trains many datasets,
 # so each dataset is its own entry (run with DATASET=<name>; logged/reported as <demo>-<name>). A
 # "+KEY=VAL" suffix adds env knobs, e.g. "+HEARTBEAT=1" (was the standalone demo_cpu_heartbeat).
-CPU_TRAINERS="${CPU_TRAINERS-demo_cpu_tasks:mbpp demo_cpu_tasks:math demo_cpu_tasks:mixed demo_cpu_tasks:gsm8k demo_cpu_tasks:math500 demo_cpu_tasks:deepscaler demo_cpu_tasks:humaneval demo_cpu_tasks:gretelsql demo_cpu_tasks:hotpotqa demo_cpu_tasks:xlam demo_cpu_tasks:mcp demo_cpu_tasks:libs demo_cpu_tasks:deepscaler+HEARTBEAT=1+SANDBOX=agentcore-runtime demo_cpu_scale_lanes}"
+CPU_TRAINERS="${CPU_TRAINERS-demo_cpu_tasks:mbpp demo_cpu_tasks:math demo_cpu_tasks:mixed demo_cpu_tasks:gsm8k demo_cpu_tasks:math500 demo_cpu_tasks:deepscaler demo_cpu_tasks:humaneval demo_cpu_tasks:gretelsql demo_cpu_tasks:hotpotqa demo_cpu_tasks:xlam demo_cpu_tasks:mcp demo_cpu_tasks:libs demo_cpu_tasks:deepscaler+HEARTBEAT=1+SANDBOX=agentcore-runtime demo_cpu_tasks:deepscaler+SCALE=1}"
 
 # Each offline demo's RETAINED probe script (run directly; run.sh is now the trainer). Args match the
 # pre-conversion run.sh so the behavior markers below still appear.
@@ -27,10 +27,9 @@ offline_cmd() {
   case "$1" in
     demo_cpu_tasks:heartbeat) echo "python3 heartbeat_demo.py" ;;   # HEARTBEAT=1 angle (was demo_cpu_heartbeat)
     demo_cpu_tasks:compare_backends) echo "python3 compare_backends.py --backends local" ;;   # was demo_cpu_customruntime
-    demo_cpu_terminalbench:warmstart) echo "env BACKENDS=local M=6 BATCH=3 THINK_S=0.2 IDLE_S=3 GAP_S=5 HB_SESSIONS=2 OUT=/tmp/offline_warmstart python3 warmstart/warmstart_demo.py" ;;   # was demo_cpu_warmstart
-    demo_cpu_instance_pool:isolation) echo "python3 isolation_probe.py" ;;   # per-uid isolation on a shared instance (needs root: the container)
-    demo_gpu_single)        echo "python3 snapshot_demo.py" ;;   # the SNAPSHOT_EVERY=1 angle (was demo_gpu_snapshot)
-    demo_cpu_scale_lanes) echo "python3 harness_scaling_demo.py --episodes 48 --workers 1,2,4,6,8,12 --cinf 4 --csbx 8 --tinf 0.10 --tsbx 0.05" ;;
+    demo_cpu_tasks:warmstart) echo "env BACKENDS=local M=6 BATCH=3 THINK_S=0.2 IDLE_S=3 GAP_S=5 HB_SESSIONS=2 OUT=/tmp/offline_warmstart python3 terminalbench/warmstart/warmstart_demo.py" ;;   # was demo_cpu_terminalbench:warmstart
+    demo_gpu_farm:snapshot) echo "python3 snapshot_demo.py" ;;   # the SNAPSHOT_EVERY=1 angle (was demo_gpu_snapshot)
+    demo_cpu_tasks:harness_scaling) echo "python3 harness_scaling_demo.py --episodes 48 --workers 1,2,4,6,8,12 --cinf 4 --csbx 8 --tinf 0.10 --tsbx 0.05" ;;
     *) echo "" ;;
   esac
 }
@@ -56,22 +55,19 @@ offline_markers() {
     demo_cpu_tasks:compare_backends) # same episode, same reward on each backend
       printf '%s\n' \
         "reward=1.0" ;;
-    demo_cpu_terminalbench:warmstart) # cold / preopen / heartbeat on/off all ran
+    demo_cpu_tasks:warmstart) # cold / preopen / heartbeat on/off all ran
       printf '%s\n' \
         "mode=preopen done" \
         "heartbeat_on" \
         "heartbeat_off" \
         "total wall" ;;
-    demo_cpu_instance_pool:isolation) # every A-vs-B check passed (exit 1 on any FAIL)
-      printf '%s\n' \
-        "checks passed" ;;
-    demo_gpu_single)       # no-snapshot reworks 2 steps; app-snapshot resumes (6 vs 4 executed)
+    demo_gpu_farm:snapshot) # no-snapshot reworks 2 steps; app-snapshot resumes (6 vs 4 executed)
       printf '%s\n' \
         "RUN A" \
         "RUN B" \
         "no-snapshot executed 6 steps; app-snapshot executed 4 steps" \
         "rework step" ;;
-    demo_cpu_scale_lanes) # 48/48 solved every W; throughput is the min of the three tiers
+    demo_cpu_tasks:harness_scaling) # (was demo_cpu_scale_lanes) 48/48 solved every W; throughput is the min of the three tiers
       printf '%s\n' \
         "48/48" \
         "throughput = min(inference, sandbox, harness)" \

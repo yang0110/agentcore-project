@@ -51,7 +51,7 @@ OUT = HERE / "swebench" / os.environ.get("CAPPROBE_OUT", "capprobe.csv")
 
 
 def base_uri() -> str:
-    tb = HERE.parent / "demo_cpu_terminalbench" / "tasks" / "images.csv"
+    tb = HERE.parent / "demo_cpu_tasks" / "terminalbench" / "tasks" / "images.csv"
     row = next(r for r in csv.DictReader(tb.open()) if r["task"] == BASE_TASK)
     return f"{d.account()}.dkr.ecr.{d.REGION}.amazonaws.com/{row['repo']}@{row['digest']}"
 

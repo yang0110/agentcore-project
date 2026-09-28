@@ -32,6 +32,7 @@ def _row(task, max_turns: int | None) -> dict:
     else:                                     # CodingTask (coding/humaneval): flat kwargs
         meta_task = {
             "task_id": task.task_id,
+            "image": task.image,              # the row's sandbox image (= its Runtime)
             "prompt": task.prompt,
             "checks": task.checks,
             "check_mode": task.check_mode,

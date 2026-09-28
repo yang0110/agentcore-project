@@ -6,8 +6,8 @@
 #                  schema, the policy must emit a well-formed tool call with the
 #                  right function name and arguments; the checker validates the
 #                  call against the gold invocation.
-# SUBSTRATE      : the DEFAULT managed AgentCore Code Interpreter (SANDBOX=agentcore): one
-#                  microVM session per episode, no image / Runtime. JSON-validity + arg-match checker.
+# SUBSTRATE      : our own VPC CPU sandbox Runtime (SANDBOX=agentcore-runtime, steps 2-4): one
+#                  fresh microVM session per episode, loop in the session. JSON-validity + arg-match checker.
 # BOTTLENECK     : Trainer + inference bound. The failure mode to watch is the
 #                  policy emitting malformed / hallucinated tool calls (cf. the b2
 #                  dead-reward finding) — early reward can sit near 0 until it

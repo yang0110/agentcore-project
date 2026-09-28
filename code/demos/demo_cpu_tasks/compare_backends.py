@@ -61,7 +61,7 @@ _OPS = {
         "image": "acs-sandbox-cpu (deploy/Dockerfile.sandbox.cpu) -> ECR",
         "deploy": "build+push image, CreateAgentRuntime, invoke_agent_runtime",
         "control": "you own deps/tools/user/filesystem, /invocations handlers, VPC/IAM",
-        "gpu": "CPU here; the SAME custom-Runtime path adds a GPU on Instances (see demo_gpu_single + gpu_torch_smoke.py)",
+        "gpu": "CPU here; the SAME custom-Runtime path adds a GPU on Instances (see demo_gpu_farm LOCAL_GPU=0 + gpu_torch_smoke.py)",
     },
     "local": {
         "kind": "LocalSandbox (offline)",

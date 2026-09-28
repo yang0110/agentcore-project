@@ -57,7 +57,7 @@ docs/slides/*.pdf
 # ============================================================================
 .DS_Store
 *.swp
-code/demos/demo_gpu_single/snapshots/
+code/demos/demo_gpu_farm/snapshots/
 
 # per-demo step-script outputs (account-specific ARNs / image URIs)
 code/demos/*/deploy/runtime*.env

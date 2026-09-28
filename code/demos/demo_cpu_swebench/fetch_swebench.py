@@ -25,7 +25,7 @@ Selection (all knobs env):
 
 The data files only list instances present in swebench/arn_by_image.json (once deployed) and, if
 swebench/oracle.csv exists, only those whose gold patch solved and whose empty patch did not
-(`usable=1`), the same filter demo_cpu_terminalbench applies. Re-run with --data-only after deploy/check.
+(`usable=1`), the same filter demo_cpu_tasks' Terminal-Bench rows use. Re-run with --data-only after deploy/check.
 
     python3 fetch_swebench.py              # fetch + select + manifest + data
     python3 fetch_swebench.py --data-only  # rebuild data/ from the existing manifest (+ pool/oracle filters)

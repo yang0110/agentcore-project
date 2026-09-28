@@ -1,0 +1,47 @@
+# eksctl ClusterConfig for demo_cpu_swebench_eks — RENDERED by `python3 deploy/eks_deploy.py render`
+# into deploy/eks/cluster.yaml (gitignored; it carries account-specific ids). Nothing here is created
+# until `EKS_CREATE=1 bash 4_deploy_runtime.sh` (or `EKS_CREATE=1 python3 deploy/eks_deploy.py up`).
+#
+#   * The trainer's VPC (${VPC_ID}), so the trainer reaches pod IPs directly (VPC CNI) and pods dial the
+#     adapter back on the trainer's private IP — the same path as the AgentCore demo's VPC Runtimes.
+#   * Nodes in the NAT-routed private ${PREFIX}-egress-* subnets (no public IPs). The NAT is for
+#     the nodes (ECR, EKS API, the gVisor download); the SANDBOX PODS get no egress beyond the trainer
+#     (NetworkPolicy, sandbox-namespace.yaml.tmpl) — VPC CNI network policy is switched on below.
+#   * One managed node group of ${NODE_TYPE} (x86_64: every official SWE-bench image runs, no size
+#     cap), labelled acs/role=sandbox. The gVisor DaemonSet (gvisor-installer.yaml) installs runsc on
+#     each node and labels it acs/gvisor=ready; RuntimeClass `gvisor` only schedules onto such nodes.
+#   * Disk ${NODE_DISK_GIB} GiB gp3: each SWE-bench image is ~3-6 GB unpacked and is cached per node.
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: ${CLUSTER}
+  region: ${REGION}
+  version: "${K8S_VERSION}"
+  tags: {acs/demo: demo_cpu_swebench_eks}
+accessConfig:
+  authenticationMode: API_AND_CONFIG_MAP
+  bootstrapClusterCreatorAdminPermissions: true   # the creating role (= the trainer's) is cluster admin
+vpc:
+  id: ${VPC_ID}
+  subnets:
+    private:
+${PRIVATE_SUBNETS}
+  clusterEndpoints: {privateAccess: true, publicAccess: true}
+  publicAccessCIDRs: [${PUBLIC_CIDRS}]
+addons:
+  - name: vpc-cni
+    configurationValues: '{"enableNetworkPolicy": "true"}'
+  - name: coredns
+  - name: kube-proxy
+managedNodeGroups:
+  - name: sandbox
+    amiFamily: AmazonLinux2023
+    instanceType: ${NODE_TYPE}
+    desiredCapacity: ${NODES}
+    minSize: ${NODES_MIN}
+    maxSize: ${NODES_MAX}
+    volumeSize: ${NODE_DISK_GIB}
+    volumeType: gp3
+    privateNetworking: true
+    subnets: [${SUBNET_IDS}]
+    labels: {acs/role: sandbox}                  # node role gets eksctl's defaults, incl. ECR read-only

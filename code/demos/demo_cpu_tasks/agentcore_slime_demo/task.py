@@ -125,7 +125,7 @@ class CodingTask:
 
     @classmethod
     def from_dict(cls, d: dict) -> "CodingTask":
-        return cls(**{k: v for k, v in d.items() if k != "family"})
+        return cls(**{k: v for k, v in d.items() if k not in ("family", "image")})
 
     # ---- prompts -------------------------------------------------------------
     def system_prompt(self) -> str:
@@ -207,14 +207,21 @@ def task_from_dict(d: dict):
     """Reconstruct the right family Task from a serialized dict (dataset `metadata.task`).
 
     Dispatches on the `family` key (default "coding" for legacy MBPP/KernelBench rows that
-    predate the task-family scaffold and carry no discriminator)."""
+    predate the task-family scaffold and carry no discriminator).
+
+    ONE ROW = ONE TASK + ONE IMAGE: the row's `image` names the sandbox image (= the AgentCore
+    Runtime) its episodes run on, and overrides the family's default tag. Rows may share an image
+    (every mbpp row is "cpu"); a Terminal-Bench row names its task's own image."""
     from . import task_families  # noqa: F401 — ensures every family self-registers
 
     fam = d.get("family", "coding")
     cls = FAMILY_REGISTRY.get(fam)
     if cls is None:
         raise ValueError(f"unknown task family: {fam!r} (known: {sorted(FAMILY_REGISTRY)})")
-    return cls.from_dict(d)
+    task = cls.from_dict(d)
+    if d.get("image"):
+        task.image = str(d["image"])
+    return task
 
 
 register_family(CodingTask)

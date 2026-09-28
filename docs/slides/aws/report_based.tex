@@ -617,7 +617,7 @@ app.run()                 # serves 0.0.0.0:8080  (/invocations + /ping)
 \begin{enumerate}\footnotesize\setlength{\itemsep}{2mm}
 \item \textbf{Files, not images} --- most CPU families (math \cc{sympy}, code \cc{unittest}, SQL \cc{sqlite3}, tool-use, light CTF) share \textbf{one generic Python image}; prompt, seed files, and hidden checker are written into \emph{that episode's session}.
 \item \textbf{Per-session install} --- heavier deps go into the ephemeral workspace: \textbf{\cc{CMD}-time} (the GPU image installs the $\sim$2.7 GB torch wheel at boot to stay under the $\sim$2 GB arm64 cap) or \textbf{seed-time} \cc{git clone}/\cc{pip}.
-\item \textbf{Per-capability image} --- only a genuine substrate difference (chiefly the \textbf{GPU} toolchain: \cc{nvcc} + a real GPU, or a prebuilt dependency set) needs its \hl{own Runtime ARN}, routed by \cc{task.image} (\cc{demo\_cpu\_terminalbench} at one image per task, the GPU demos). Most CPU families need none: one generic image carries pandas / scipy / sklearn.
+\item \textbf{Per-capability image} --- only a genuine substrate difference (chiefly the \textbf{GPU} toolchain: \cc{nvcc} + a real GPU, or a prebuilt dependency set) needs its \hl{own Runtime ARN}, routed by \cc{task.image} (\cc{demo\_cpu\_tasks DATASET=terminalbench} at one image per task, the GPU demos). Most CPU families need none: one generic image carries pandas / scipy / sklearn.
 \end{enumerate}
 \src{Project image builds (torch wheel size, arm64 image cap); checked 2026-09-28.}
 \end{frame}
@@ -634,13 +634,13 @@ app.run()                 # serves 0.0.0.0:8080  (/invocations + /ping)
 \textbf{Your workload} & \textbf{Demo}\\
 \midrule
 Coding / math / SQL / RAG / tool use / data science & \cc{demo\_cpu\_tasks} (\cc{DATASET=mbpp}, \cc{humaneval}, \cc{gsm8k}, \cc{math500}, \cc{deepscaler}, \cc{gretelsql}, \cc{hotpotqa}, \cc{xlam}, \cc{mcp}, \cc{libs}, \cc{mixed}) --- on \hl{one generic stdlib Runtime}, no custom image\\
-Terminal / DevOps agents that act on the whole OS & \cc{demo\_cpu\_terminalbench} (one image per task)\\
-SWE agents on real repos & \cc{demo\_cpu\_swebench} (SWE-bench Verified, one image + Runtime per row on m5 Instances)\\
+Terminal / DevOps agents that act on the whole OS & \cc{demo\_cpu\_tasks DATASET=terminalbench} (one image per task)\\
+SWE agents on real repos & \cc{demo\_cpu\_swebench} (SWE-bench Verified, one image + Runtime per row on m5 Instances); twin \cc{demo\_cpu\_swebench\_eks} (one gVisor pod per episode on EKS, not deployed)\\
 A high-throughput rollout fleet & \cc{demo\_cpu\_tasks SCALE=1} (4 engines : 256 harness workers : 256 microVMs; the harness tier is the default in every demo)\\
 GPU kernels / systems & \cc{demo\_gpu\_farm}: one warm GPU instance serving many sessions, on this box's GPUs 6,7 (\cc{LOCAL\_GPU=1}, default) or a remote \cc{g6} (\cc{LOCAL\_GPU=0}); \cc{FARM=fractional|whole}; trusted-only\\
 A real coding-agent CLI as the harness & \cc{demo\_cpu\_branching} (experimental)\\
 \midrule
-\textit{Side note:} a trusted checker with a $>$ 2 GB toolchain & \cc{demo\_cpu\_instance\_pool} (warm m5 pool, Landlock jail, not full isolation)\\
+\textit{Side note (folder removed 2026-09-28):} a trusted checker with a $>$ 2 GB toolchain & warm m5 pool + Landlock jail, not full isolation; results kept (\sref{fr:pool})\\
 \bottomrule
 \end{tabularx}
 \end{frame}
@@ -650,18 +650,18 @@ A real coding-agent CLI as the harness & \cc{demo\_cpu\_branching} (experimental
 \flabel{fr:storyline}
 \begin{columns}[T]
 \column{0.58\textwidth}
-{\footnotesize\textbf{4 demos + 1 side note + 1 experimental, 7 chapters}\par}
+{\footnotesize\textbf{4 demos + 1 EKS twin + 1 experimental, 7 chapters}\par}
 \begin{enumerate}\scriptsize\setlength{\itemsep}{0.8mm}
 \item \textbf{The tasks} --- dataset, URL, env deps, image or not (\sref{fr:tasks1}).
 \item \textbf{Most tasks need no custom image} --- one generic stdlib Runtime, harness in the sandbox session (\cc{demo\_cpu\_tasks}; \sref{fr:cputasks}).
-\item \textbf{Custom images at scale} --- one image + Runtime per task (\cc{demo\_cpu\_terminalbench}), and per dataset row on m5 Instances (\cc{demo\_cpu\_swebench}; \sref{fr:tb}).
+\item \textbf{Custom images at scale} --- one image + Runtime per task (\cc{demo\_cpu\_tasks DATASET=terminalbench}), and per dataset row on m5 Instances (\cc{demo\_cpu\_swebench}, with an EKS + gVisor twin \cc{demo\_cpu\_swebench\_eks}; \sref{fr:tb}).
 \item \textbf{Hiding the container launch} --- pre-open + heartbeat (\cc{warmstart/} probe; \sref{fr:warm}).
 \item \textbf{Harness scaling} --- the decoupled harness tier (default in every demo) scaled to 4 : 256 : 256 (\cc{demo\_cpu\_tasks SCALE=1}; \sref{fr:scale}).
 \item \textbf{GPU sandboxes} --- ONE GPU instance serving MANY sessions (\cc{demo\_gpu\_farm}): local farm (\cc{LOCAL\_GPU=1}) or remote \cc{g6} (\cc{LOCAL\_GPU=0}, formerly \cc{demo\_gpu\_single}), \cc{FARM=fractional|whole}, trusted-only (\sref{fr:gpushare}).
 \item \textbf{Experimental} --- one episode, many samples, real Claude Code CLI (\cc{demo\_cpu\_branching}; \sref{fr:branch}).
 \end{enumerate}
 \column{0.38\textwidth}
-\colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\scriptsize\textbf{Side note} --- a warm m5 pool shared by \cc{sub\_session}s (\cc{demo\_cpu\_instance\_pool}; \sref{fr:pool}): our pooling on AgentCore Instances, not full isolation.}}
+\colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\scriptsize\textbf{Side note} --- a warm m5 pool shared by \cc{sub\_session}s (\sref{fr:pool}): our pooling on AgentCore Instances, not full isolation. The \cc{demo\_cpu\_instance\_pool} folder was removed 2026-09-28; its results are kept.}}
 \vspace{3mm}
 \plainen{policy \textbf{Qwen3-4B}, trainer \textbf{slime}, harness \textbf{in the sandbox session} (the decoupled harness tier, \cc{harness\_pool.py}, in every demo); the same six step scripts everywhere. Every run is a \hl{smoke} (10 train steps \textperiodcentered{} 1 eval) --- not convergence.}
 \end{columns}
@@ -687,7 +687,7 @@ A real coding-agent CLI as the harness & \cc{demo\_cpu\_branching} (experimental
 \end{frame}
 
 %--------------------------------------------------------------------
-\begin{frame}{All five CPU demos ran end to end on AWS; SWE-bench still scores reward 0}
+\begin{frame}{All four deployed CPU demos ran end to end on AWS; SWE-bench still scores reward 0}
 \flabel{fr:glance1}
 \tabcap{All demos at a glance (1/2) --- CPU}
 \scriptsize\setlength{\tabcolsep}{3.5pt}
@@ -696,10 +696,10 @@ A real coding-agent CLI as the harness & \cc{demo\_cpu\_branching} (experimental
 \textbf{Ch.} & \textbf{Demo} & \textbf{Sandbox substrate} & \textbf{Task} & \textbf{Status}\\
 \midrule
 1--2 & \cc{demo\_cpu\_tasks} & own \textbf{generic-image} $\mu$VM Runtime, fresh session per episode & any literature RLVR dataset, or a mix & \textbf{passed} on CI (2026-09-25, before the switch): gsm8k \hl{0.90}, libs \hl{1.0}\\
-3--4 & \cc{demo\_cpu\_terminalbench} & $\mu$VM, one image + Runtime \textbf{per task} (218) & Terminal-Bench & \textbf{passed} (2026-09-23): boot hidden, 4/382 solved\\
+3--4 & \cc{demo\_cpu\_tasks DATASET=terminalbench} & $\mu$VM, one image + Runtime \textbf{per task} (218) & Terminal-Bench & \textbf{passed} (2026-09-23): boot hidden, 4/382 solved\\
 3 & \cc{demo\_cpu\_swebench} & \textbf{m5 Instance}, one image + Runtime \textbf{per row} (20) & SWE-bench Verified & deployed 20/20; oracle 1/20 usable; smoke 24 episodes, 0 infra errors, reward 0\\
 5 & \cc{demo\_cpu\_tasks SCALE=1} & 256 fresh $\mu$VM sessions in flight & DeepScaleR & 256-worker RL smoke (2026-09-28): 592 episodes, eval 0.27; pool check ok (old 4$\times$4$\times$4 lanes: eval 0.358)\\
-side note & \cc{demo\_cpu\_instance\_pool} & warm \textbf{m5} pool, Landlock jail per exec & DeepScaleR, $>$ 2 GB image & RL smoke \textbf{passed} 2026-09-25, eval 0.7875, 2 cold boots\\
+3 & \cc{demo\_cpu\_swebench\_eks} & \textbf{EKS}, one fresh \textbf{gVisor} pod per episode, shared m5 nodes & SWE-bench Verified & code complete; \textbf{not deployed} (cluster not created)\\
 \bottomrule
 \end{tabularx}
 \par\vspace{2mm}
@@ -895,7 +895,7 @@ Concurrent CI sessions & L-CAF6F552 & 1000 & \cc{CONC} $\times$ engines = \textb
 \end{frame}
 
 %--------------------------------------------------------------------
-\begin{frame}{Ch.\ 3: demo\_cpu\_terminalbench runs hundreds of custom images with one image and Runtime per task}
+\begin{frame}{Ch.\ 3: Terminal-Bench (demo\_cpu\_tasks) runs hundreds of custom images with one image and Runtime per task}
 \flabel{fr:tb}
 \begin{columns}[T]
 \column{0.42\textwidth}
@@ -914,7 +914,7 @@ Concurrent CI sessions & L-CAF6F552 & 1000 & \cc{CONC} $\times$ engines = \textb
 \item \textbf{Quota:} pre-opened + running sessions vs Active Session Workloads (5000).
 \end{itemize}
 \end{columns}
-\src{Terminal-Bench [6]; \cc{demo\_cpu\_terminalbench} deploy + oracle check, 2026-09-23; AgentCore quota (Active Session Workloads); checked 2026-09-28.}
+\src{Terminal-Bench [6]; \cc{demo\_cpu\_tasks DATASET=terminalbench} deploy + oracle check, 2026-09-23; AgentCore quota (Active Session Workloads); checked 2026-09-28.}
 \end{frame}
 
 %--------------------------------------------------------------------
@@ -937,7 +937,7 @@ Concurrent CI sessions & L-CAF6F552 & 1000 & \cc{CONC} $\times$ engines = \textb
 \vspace{2mm}
 \colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\scriptsize\textbf{Next:} \cc{TB\_PREOPEN\_BATCHES=1} (cost), an easy-first curriculum or partial-credit reward (signal).}}
 \end{columns}
-\src{\cc{demo\_cpu\_terminalbench} AWS smoke, us-west-2, 2026-09-23; \cc{tasks/arn\_by\_image.json}; checked 2026-09-28.}
+\src{\cc{demo\_cpu\_tasks DATASET=terminalbench} AWS smoke, us-west-2, 2026-09-23; \cc{tasks/arn\_by\_image.json}; checked 2026-09-28.}
 \end{frame}
 
 %--------------------------------------------------------------------
@@ -949,7 +949,7 @@ Concurrent CI sessions & L-CAF6F552 & 1000 & \cc{CONC} $\times$ engines = \textb
 {\scriptsize Any rollout that opens a fresh sandbox per episode (a container launch each time), and any run whose sandboxes sit idle across the weight-sync pause.\par}
 \vspace{2mm}
 {\footnotesize\textbf{\color{awsteal}Why this probe.}\par}
-{\scriptsize The Terminal-Bench smoke showed pre-open works but wastes $\sim$95\,\% of booted time --- too costly to tune at full scale ($\sim$70 min, 229 Runtimes). The probe answers \emph{how much does pre-open save?} and \emph{does a heartbeat keep a session alive?} in \hl{$\sim$7 min for a few cents}. A probe folder inside \cc{demo\_cpu\_terminalbench}, not a demo: it tests that demo's two mechanisms.\par}
+{\scriptsize The Terminal-Bench smoke showed pre-open works but wastes $\sim$95\,\% of booted time --- too costly to tune at full scale ($\sim$70 min, 229 Runtimes). The probe answers \emph{how much does pre-open save?} and \emph{does a heartbeat keep a session alive?} in \hl{$\sim$7 min for a few cents}. A probe folder inside \cc{demo\_cpu\_tasks DATASET=terminalbench}, not a demo: it tests that demo's two mechanisms.\par}
 \column{0.52\textwidth}
 {\footnotesize\textbf{\color{awsteal}Design considerations.}\par}
 \begin{itemize}\scriptsize\setlength{\itemsep}{1.4mm}
@@ -959,7 +959,7 @@ Concurrent CI sessions & L-CAF6F552 & 1000 & \cc{CONC} $\times$ engines = \textb
 \item \textbf{Pre-open depth} 1 batch here; \cc{TB\_PREOPEN\_BATCHES} (default 2) in the real demo.
 \end{itemize}
 \end{columns}
-\src{\cc{demo\_cpu\_terminalbench/warmstart/} probe design; Terminal-Bench smoke 2026-09-23; checked 2026-09-28.}
+\src{\cc{demo\_cpu\_tasks/terminalbench/warmstart/} probe design; Terminal-Bench smoke 2026-09-23; checked 2026-09-28.}
 \end{frame}
 
 %--------------------------------------------------------------------
@@ -972,7 +972,7 @@ Concurrent CI sessions & L-CAF6F552 & 1000 & \cc{CONC} $\times$ engines = \textb
 \item \textbf{Mispredictions} are trimmed at the next draw and open on demand. \cc{TB\_PREOPEN\_BATCHES=0} turns it off.
 \item \textbf{Heartbeat:} a \cc{SessionKeeper} pings (\cc{exec("true")}) any session idle past \cc{WARM\_PING\_FRACTION} $\times$ \cc{WARM\_IDLE\_TIMEOUT} (0.5 $\times$ 900 s). Always on here; \cc{HEARTBEAT=1} (default off) in every other demo.
 \end{itemize}
-\src{\cc{demo\_cpu\_terminalbench} code (\cc{tb\_lookahead\_source.py}, pool + \cc{SessionKeeper} defaults); checked 2026-09-28.}
+\src{\cc{demo\_cpu\_tasks DATASET=terminalbench} code (\cc{tb\_lookahead\_source.py}, pool + \cc{SessionKeeper} defaults); checked 2026-09-28.}
 \end{frame}
 
 %--------------------------------------------------------------------

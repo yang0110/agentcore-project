@@ -1,12 +1,18 @@
 #!/bin/bash
-# demo_cpu_tasks — ONE demo over many RLVR datasets AND their mixes (DATASET=mbpp|gsm8k|…, default
-# mbpp; DATASET=a,b,c or DATASET=mixed for a MIXED-task batch — see the DATASET selector below; a single
-# dataset is just the one-element mix). REMOTE-sandbox, MiniClaudeHarness (HARNESS=mini_claude). REAL slime
-# training, on OUR OWN AgentCore Runtime by default (SANDBOX=agentcore-runtime: deploy/Dockerfile.sandbox.cpu,
-# a stdlib microVM image, networkMode=VPC) with the agent loop INSIDE each episode's session
-# (HARNESS_WHERE=session, dialling this box's adapter back SG->SG); the session is stopped when the episode
-# ends. Zero-setup opt-in: SANDBOX=agentcore = the managed Code Interpreter (no image/ECR/Runtime; ships
-# pandas/scipy/sklearn/torch-cpu/gcc/node) — it has no route back to the adapter, so the loop runs here.
+# demo_cpu_tasks — ONE demo over many RLVR datasets AND their mixes (DATASET=mbpp|gsm8k|…|terminalbench,
+# default mbpp; DATASET=a,b,c or DATASET=mixed for a MIXED-task batch — see the DATASET selector below; a
+# single dataset is just the one-element mix).
+#
+# THE GENERAL PATTERN: ONE ROW = ONE TASK + ONE IMAGE, ONE IMAGE = ONE AgentCore Runtime. Every row names
+# its sandbox image (metadata.task.image); rows may share one (every mbpp row is "cpu", the libs rows
+# "libs"), and each Terminal-Bench task has its own. image_routing.py maps each image to its Runtime
+# (strict: an unmapped image stops the run). Each of the RB x NS samples of a step gets its OWN fresh
+# session on its row's Runtime, so sessions per step = RB x NS, spread over the Runtimes the batch touches. REMOTE-sandbox, MiniClaudeHarness (HARNESS=mini_claude). REAL slime
+# training, on OUR OWN AgentCore Runtimes (SANDBOX=agentcore-runtime, the only backend: deploy/Dockerfile.sandbox.cpu,
+# a stdlib microVM image, + Dockerfile.sandbox.libs for the pandas/scipy/sklearn families; networkMode=VPC)
+# with the agent loop INSIDE each episode's session (dialling this box's adapter back SG->SG); the
+# session is stopped when the episode ends. The managed Code Interpreter (SANDBOX=agentcore) was removed
+# 2026-09-28: it has no route back to the adapter, so the loop would have had to run in the trainer.
 # ASYNC (decoupled) mode. This dir owns its data/ + ckpt/, but imports the SHARED agentcore_slime_demo
 # library from its own vendored copy in this dir (on PYTHONPATH). Runs INSIDE the persistent
 # container agentcore_p4 (slimerl/slime).
@@ -15,7 +21,7 @@
 # gets ONE fresh AgentCore session; mini_claude_episode.py writes the stdlib agent loop into it
 # (in_session_harness.py + session_runner.py), the loop calls the policy through this box's per-engine
 # AnthropicAdapter (tokens recorded here), and a hidden grader scores the workdir after it stops.
-# Only the adapter + token record stay in the trainer. HARNESS_WHERE=trainer runs the loop here instead.
+# Only the adapter + token record stay in the trainer; there is no in-trainer harness in any demo.
 #
 # Async/decoupled: agentic rollouts have long, variable latency (multi-turn code repair in a
 # sandbox). slime's async driver (train_async.py) runs trainer GPUs and SGLang inference GPUs on
@@ -35,11 +41,13 @@
 # GPU split (8xL40S): 4 train + 4 inference + 0 env. MBPP checker is plain Python/IO => CPU envs,
 # so all 8 GPUs serve the policy (train + infer).
 #
-# Sandbox backend (SANDBOX): agentcore-runtime (DEFAULT) -> our own AgentCore Runtime sandbox (needs
-# AGENTCORE_SANDBOX_RUNTIME_ARN(S) — steps 2-4 deploy it, VPC mode); agentcore -> the managed AWS Code
-# Interpreter microVM (opt-in, nothing to build or deploy); SANDBOX=local is DISABLED for CPU demos (remote-only; see the guard below). Tunables: MODE (A|B
+# Sandbox backend (SANDBOX): agentcore-runtime (the only one) -> our own AgentCore Runtime sandbox (needs
+# AGENTCORE_SANDBOX_RUNTIME_ARN(S) — steps 2-4 deploy it, VPC mode). SANDBOX=local and SANDBOX=agentcore
+# (Code Interpreter) are rejected (see the guard below). Tunables: MODE (A|B
 # async mode), RB (rollout-batch-size), NS (n-samples-per-prompt), NR (num-rollout), TEMP
-# (sampling temp), CONC (sglang-server-concurrency), EVAL_INTERVAL/EVAL_NS.
+# (sampling temp), CONC (sglang-server-concurrency), EVAL_INTERVAL/EVAL_NS, HARNESS_WORKERS (harness
+# tier, default RB x NS), SANDBOX_SESSIONS (opt-in pooled sessions per image, default 0 = fresh per
+# episode), SCALE=1 (the 4:256:256 harness-scaling preset below).
 #
 # CONCURRENCY KNOBS (decoupled, for the sandbox-concurrency ablation — see
 # docs/sandbox-concurrency-ablation.md):
@@ -49,36 +57,27 @@
 #                   S in-flight AND up to S completed groups queued ahead of the trainer (which
 #                   drains RB/step), so raising CONC raises staleness. One knob moves both, which is
 #                   exactly the trade-off the ablation measures.
-#   * INFER_CONC -> INFERENCE concurrency I. A process-global semaphore around ONLY the SGLang
-#                   decode POST, so at most I episodes decode at once no matter how large S is.
-#                   Default 0 = disabled (I follows S, the original coupled behavior). Set it to a
-#                   FIXED value (e.g. 8) to hold inference load constant while sweeping CONC, which
-#                   isolates the effect of sandbox count from inference load.
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
 # runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train + 1 eval (SMOKE; no more needed).
 # NOTE GRPO signal: group-relative advantage is 0 when every sample in a prompt's group gets the
 # same reward. Reward variance within groups (harder tasks / higher temp) yields nonzero gradient.
 set -euo pipefail
+# Knobs whose default depends on the dataset (Terminal-Bench rows, below): remember what the caller set.
+_USER_MODE="${MODE:-}"; _USER_CONC="${CONC:-}"
 
-SANDBOX="${SANDBOX:-agentcore-runtime}"   # agentcore-runtime -> our own VPC Runtime (DEFAULT);
-                                  # agentcore -> managed Code Interpreter (opt-in). CPU demo => REMOTE-ONLY (no local).
-# CPU demos run ONLY on remote managed serverless AgentCore sandbox sessions — never local. The local
-# (in-container LocalSandbox) path is rejected here so a CPU training run can never silently fall back
-# off the AgentCore substrate the demo is meant to exercise. (GPU demos keep a local fallback because
-# a remote g6 instance may be unavailable.)
-if [ "$SANDBOX" = "local" ]; then
-   echo "SANDBOX=local is not supported for CPU demos (remote-only) — use agentcore (default) or agentcore-runtime." >&2
-   exit 1
-fi
-case "$SANDBOX" in agentcore|aws|agentcore-runtime|runtime) ;;
-   *) echo "unknown SANDBOX=$SANDBOX (agentcore | agentcore-runtime)" >&2; exit 1 ;; esac
-# SANDBOX=agentcore (default): the managed Code Interpreter needs NO ARN — each episode starts its own
-# session (StartCodeInterpreterSession). Quotas (us-west-2 defaults): 1000 concurrent sessions, but only
-# 30 StartCodeInterpreterSession/s and 30 InvokeCodeInterpreter/s per account — every write_file/exec/
-# read_file is one invoke, so the default S = CONC*num_engines = 8 episodes (~6 ops each) stays far below.
-# The remote sandbox Runtime ARN (sandbox_server_agent.py). REQUIRED only for SANDBOX=agentcore-runtime
-# (our own Runtime: deploy/Dockerfile.sandbox.cpu, stdlib only — use it for the stdlib datasets).
+SANDBOX="${SANDBOX:-agentcore-runtime}"   # our own VPC Runtime(s) — the only backend.
+# CPU demos run ONLY on remote AgentCore sandbox sessions that can host the agent loop — never local
+# (in-container LocalSandbox), and no longer the managed Code Interpreter (SANDBOX=agentcore): it has no
+# route back to the adapter, so its agent loop would have had to run in the trainer. Rejected here so a
+# run can never silently move the loop or the sandbox off the substrate the demo exercises.
+case "$SANDBOX" in agentcore-runtime|runtime) ;;
+   local) echo "SANDBOX=local is not supported for CPU demos (remote-only) — use agentcore-runtime." >&2; exit 1 ;;
+   agentcore|aws) echo "SANDBOX=$SANDBOX (Code Interpreter) was removed: the agent loop runs in the sandbox session and" \
+                       "the Code Interpreter cannot reach the adapter. Use SANDBOX=agentcore-runtime (steps 2-4)." >&2; exit 1 ;;
+   *) echo "unknown SANDBOX=$SANDBOX (agentcore-runtime)" >&2; exit 1 ;; esac
+# The remote sandbox Runtime ARN (sandbox_server_agent.py; deploy/Dockerfile.sandbox.cpu, stdlib only).
+# The libs image's ARN comes in AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE (see IMAGE ROUTING below).
 # AGENTCORE_SANDBOX_RUNTIME_ARNS (plural, comma-separated) fans episodes out round-robin across
 # SEVERAL sandbox Runtimes — the runtime-count throughput ablation knob. Either the plural list OR
 # the single ARN satisfies the requirement below.
@@ -88,10 +87,18 @@ case "$SANDBOX" in agentcore|aws|agentcore-runtime|runtime) ;;
 # num_engines; it only spreads S=CONC*num_engines concurrent sessions across K endpoints. Override
 # by exporting AGENTCORE_SANDBOX_RUNTIME_ARNS (or ..._ARN) to sweep again.
 AGENTCORE_SANDBOX_RUNTIME_ARNS="${AGENTCORE_SANDBOX_RUNTIME_ARNS:-arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu-1gzBVp675S,arn:aws:bedrock-agentcore:us-west-2:<ACCOUNT_ID>:runtime/acs_sandbox_cpu_1-adRZyEHM6g}"
-if [ "$SANDBOX" != "agentcore-runtime" ] && [ "$SANDBOX" != "runtime" ]; then
-   AGENTCORE_SANDBOX_RUNTIME_ARNS=""; AGENTCORE_SANDBOX_RUNTIME_ARN=""   # Code Interpreter: no ARN
-elif [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
+if [ -z "$AGENTCORE_SANDBOX_RUNTIME_ARNS" ]; then
    AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?set AGENTCORE_SANDBOX_RUNTIME_ARN (or ..._ARNS for the multi-Runtime sweep) to the CPU sandbox Runtime ARN (sandbox_server_agent.py; e.g. acs_sandbox_cpu from deploy_two_runtime.py)}"
+fi
+# SCALE=1 — the HARNESS-SCALING preset (formerly demo_cpu_scale_lanes, the 4:256:256 run). The harness
+# tier (harness_pool.py) is the default in every demo; this preset only turns all three tiers up
+# together: E=4 SGLang engines (TP1, one L40S each), W=256 harness dispatch workers, S=256 episodes in
+# flight (= 256 sandbox sessions, each carrying its own mini_claude loop), RB*NS = 32*8 = 256 per step,
+# on DeepScaleR. Any knob below still overrides it. Watch qdepth / sandbox_wait_ms / engine_inflight
+# in the [demo] records to see which tier binds.
+if [ "${SCALE:-0}" = 1 ]; then
+   : "${DATASET:=deepscaler}" "${RB:=32}" "${GPUS_PER_ENGINE:=1}" "${HARNESS_WORKERS:=256}" "${MODE:=A}"
+   export DATASET HARNESS_WORKERS
 fi
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
@@ -144,9 +151,14 @@ HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a720891212
 # ---- Demo A config (baked in) --------------------------------------------------------------
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
 ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
+GPUS_PER_ENGINE="${GPUS_PER_ENGINE:-2}"   # TP per SGLang engine; num_engines = ROLLOUT_GPUS / GPUS_PER_ENGINE
+NENG=$(( ROLLOUT_GPUS / GPUS_PER_ENGINE ))
+# Episode admission S = CONC * NENG. Default 4 per engine; SCALE=1 admits one episode per harness worker.
+if [ "${SCALE:-0}" = 1 ]; then CONC="${CONC:-$(( (HARNESS_WORKERS + NENG - 1) / NENG ))}"; fi
+CONC="${CONC:-4}"
 
-# DATASET selector — ONE demo, many datasets, and any MIX of them. The in-process harness is
-# task-agnostic: the SAME run_episode loop trains every dataset below, differing only in the seed rows
+# DATASET selector — ONE demo, many datasets, and any MIX of them. The harness is
+# task-agnostic: the SAME mini_claude loop (in the sandbox session) trains every dataset below, differing only in the seed rows
 # + the hidden checker (see agentcore_slime_demo/task_families.py). Each row self-describes its task in
 # metadata.task, and generate._task_from_sample rebuilds the right task PER ROW — so a multi-family
 # batch is transparent to the harness. Each dataset has its own data/<name>_{train,eval}.jsonl (built by
@@ -155,8 +167,10 @@ ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"
 #                    hotpotqa xlam mcp
 #   synthetic zoo:   math swe tool_use sql ctf rag regex config data planning (build_family_datasets.py)
 #   mixed:           the prebuilt math+sql+ctf+datasci mix (build_mixed_datasets.py)
-#   libs:            datasci+scipy+sklearn (pandas / scipy / scikit-learn checkers; eval/libs). These
-#                    once needed one custom image each — the default Code Interpreter already has all three.
+#   libs:            datasci+scipy+sklearn (pandas / scipy / scikit-learn checkers; eval/libs). They run on
+#                    the "libs" Runtime (deploy/Dockerfile.sandbox.libs); mixed's datasci rows too.
+#   terminalbench:   Terminal-Bench (formerly demo_cpu_terminalbench): one image + Runtime PER TASK (~166
+#                    usable), graded by the task's hidden pytest oracle; see TERMINAL-BENCH ROWS below.
 # MIX: DATASET=a,b,c interleaves those datasets' train/eval files round-robin (balanced: each truncated
 # to the shortest) into ckpt/_mix/<a+b+c>_{train,eval}.jsonl, eval metric eval/mix. GRPO normalizes
 # advantage WITHIN a same-prompt group (one family); mixing is ACROSS groups, so the families' reward
@@ -201,8 +215,46 @@ fi
 DATA="${DATA:-$DEMO_DIR/data/${_DS}_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/${_DS}_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-$_EVAL_NAME}"
+# IMAGE ROUTING. Rows whose task.image is not "cpu" (datasci / scipy / sklearn) need the "libs" Runtime:
+# alias those tags to its ARN in AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE (4_deploy_runtime.sh writes
+# {"cpu":…,"libs":…}). An unmapped tag would silently round-robin onto the stdlib image and grade 0, so
+# a dataset that needs an image with no Runtime is an error here, before any GPU work.
+AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE="$(python3 "$DEMO_DIR/image_routing.py" "$DATA" "$EVAL_DATA")"
+export AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE
+# TERMINAL-BENCH ROWS (DATASET=terminalbench, or any mix with it). Each changes the whole OS, so it runs
+# in the isolated per-task pool (terminalbench_pool.py): strict routing to its task's Runtime (the pool
+# map terminalbench/tasks/arn_by_image.json, merged in by image_routing.py), a FRESH session per episode
+# opened ahead of time — the look-ahead data source (tb_lookahead_source.py) boots the next
+# TB_PREOPEN_BATCHES rollouts' sessions (2 = 2 x RB x NS = 64) — a SessionKeeper heartbeat across the
+# weight-sync stall, graded by the task's hidden pytest oracle. The other rows of a mixed batch take the
+# default harness tier. The look-ahead feeds the stock driver, so these runs are MODE=A.
+_FAMS="$(python3 "$DEMO_DIR/image_routing.py" --families "$DATA" "$EVAL_DATA")"
+TB_ROWS=0; case ",$_FAMS," in *,terminalbench,*) TB_ROWS=1 ;; esac
+TB_ARGS=()
+if [ "$TB_ROWS" = 1 ]; then
+  if [ "$_USER_MODE" = B ] || [ "$_USER_MODE" = b ]; then
+    echo "MODE=B (fully-async) is unsupported with Terminal-Bench rows: the look-ahead pre-open data source feeds the stock driver. Use MODE=A." >&2
+    exit 1
+  fi
+  MODE=A
+  HARNESS_WORKERS="${HARNESS_WORKERS:-$GBS}"
+  # Admit W running + W queued episodes per step (S = CONC x NENG) so a free worker never idles.
+  [ -z "$_USER_CONC" ] && CONC=$(( (2 * HARNESS_WORKERS + NENG - 1) / NENG ))
+  EPISODE_MAX_TURNS="${EPISODE_MAX_TURNS:-8}"     # agentic turns per Terminal-Bench episode
+  EPISODE_MAX_TOKENS="${EPISODE_MAX_TOKENS:-1024}"
+  MINI_AGENT_MAX_TOOL_CHARS="${MINI_AGENT_MAX_TOOL_CHARS:-2000}"  # clip each tool result (bounds the trajectory)
+  TB_EXEC_TIMEOUT="${TB_EXEC_TIMEOUT:-180}"       # per bash-tool command (apt/pip/builds are routine)
+  MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-16384}"  # >= one full trajectory: 8 x (1024 gen + ~600 tool) + prompt
+  WARM_IDLE_TIMEOUT="${WARM_IDLE_TIMEOUT:-900}"   # serverless microVM idle timeout (~15 min); heartbeat < this
+  WARM_PING_FRACTION="${WARM_PING_FRACTION:-0.5}"
+  TB_PREOPEN_BATCHES="${TB_PREOPEN_BATCHES:-2}"   # batches kept booted ahead (0 = off)
+  if [ "$TB_PREOPEN_BATCHES" != 0 ]; then
+    TB_ARGS=(--data-source-path agentcore_slime_demo.tb_lookahead_source.LookaheadDataSource)
+  fi
+fi
+MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-9216}"
 # HEARTBEAT (default ON for our own remote Runtimes, SANDBOX=agentcore-* with no local endpoint; off
-# for the Code Interpreter and the local farm, which has no idle timeout): a process-wide
+# for a local endpoint, which has no idle timeout): a process-wide
 # SessionKeeper heartbeats every open sandbox session that goes idle past
 # HEARTBEAT_PING_FRACTION*HEARTBEAT_IDLE, so a trainer stall can't idle-reclaim it — a reclaimed
 # session id silently comes back EMPTY (agentcore_slime_demo/session_keeper.py). HEARTBEAT=0 is the
@@ -216,17 +268,9 @@ fi
 # older ones were created with 600 s, new ones get RUNTIME_IDLE_TIMEOUT (3600 s, deploy/agentcore_deploy.py).
 HEARTBEAT_IDLE="${HEARTBEAT_IDLE:-600}"
 HEARTBEAT_PING_FRACTION="${HEARTBEAT_PING_FRACTION:-0.5}"
-# The managed Code Interpreter (SANDBOX=agentcore) ends a session at its session timeout whatever the
-# traffic — pings do not extend it — so HEARTBEAT is a no-op there; the lever is the timeout set at
-# session start, AGENTCORE_CI_SESSION_TIMEOUT (s; default 3600 per episode).
-AGENTCORE_CI_SESSION_TIMEOUT="${AGENTCORE_CI_SESSION_TIMEOUT:-3600}"
-if [ "$HEARTBEAT" = "1" ] && { [ "$SANDBOX" = agentcore ] || [ "$SANDBOX" = aws ]; }; then
-   echo "WARNING: HEARTBEAT=1 has no effect on the Code Interpreter (SANDBOX=$SANDBOX) — sessions expire at" \
-        "AGENTCORE_CI_SESSION_TIMEOUT=${AGENTCORE_CI_SESSION_TIMEOUT}s regardless of pings. Disabling; use SANDBOX=agentcore-runtime for heartbeats." >&2
-   HEARTBEAT=0
-fi
 _HB=""; [ "$HEARTBEAT" = "0" ] && [ -z "${AGENTCORE_LOCAL_ENDPOINT:-}" ] && case "$SANDBOX" in agentcore-*) _HB="_noheartbeat" ;; esac
-SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}${_HB}_async}"
+_SC=""; [ "${SCALE:-0}" = 1 ] && _SC="_scale"
+SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}${_HB}${_SC}_async}"
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -299,6 +343,8 @@ ROLLOUT_ARGS=(
    # dispatches to our --custom-generate-function-path, so our token-ids / logprobs / loss-mask /
    # reward Sample contract is preserved UNCHANGED (reward set on the Sample => no --custom-rm-path).
    --custom-generate-function-path agentcore_slime_demo.generate.generate
+   # Terminal-Bench rows only: peek the next TB_PREOPEN_BATCHES rollouts so their sessions boot early.
+   "${TB_ARGS[@]}"
 )
 
 # Async MODE driver flags (see the MODE note near the top). Mode B swaps in slime's fully-async
@@ -321,7 +367,7 @@ PERF_ARGS=(
    --recompute-method uniform
    --recompute-num-layers 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
+   --max-tokens-per-gpu "$MAX_TOKENS_PER_GPU"
 )
 
 GRPO_ARGS=(
@@ -345,7 +391,7 @@ OPTIMIZER_ARGS=(
 
 SGLANG_ARGS=(
    --rollout-num-gpus "$ROLLOUT_GPUS"
-   --rollout-num-gpus-per-engine 2
+   --rollout-num-gpus-per-engine "$GPUS_PER_ENGINE"
    --sglang-mem-fraction-static 0.7
    # SANDBOX/EPISODE concurrency S. slime gates custom-generate with
    # Semaphore(sglang_server_concurrency * num_engines), so with num_engines = ROLLOUT_GPUS /
@@ -354,15 +400,16 @@ SGLANG_ARGS=(
    # (docs/sandbox-concurrency-ablation.md). Each episode opens an HTTP session AND a remote
    # sandbox session, so raising it also raises client-side load (asyncio thread pool, boto3
    # clients) — see the ablation doc's "can the in-process harness handle large C" section.
-   --sglang-server-concurrency "${CONC:-4}"
+   --sglang-server-concurrency "$CONC"
 )
-# HARNESS=mini_claude (default): the tool-calling MiniClaudeHarness via slime's AnthropicAdapter
-# (mini_claude_episode.py, hidden grader) needs SGLang's qwen25 tool parser + qwen3 reasoning parser,
-# or every tool call is dead text (the A3/B3 zero-reward bug). HARNESS=direct = fenced-block loop.
+# HARNESS=mini_claude (the only harness; HARNESS=direct and HARNESS_WHERE=trainer were removed): the
+# tool-calling loop runs in the sandbox session and calls slime's AnthropicAdapter (mini_claude_episode.py,
+# hidden grader). It needs SGLang's qwen25 tool parser + qwen3 reasoning parser, or every tool call is
+# dead text (the A3/B3 zero-reward bug).
 export HARNESS="${HARNESS:-mini_claude}"
-if [[ "$HARNESS" == mini_claude ]]; then
-  SGLANG_ARGS+=(--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3)
-fi
+[ "$HARNESS" = mini_claude ] || { echo "HARNESS=$HARNESS is not supported (mini_claude only)" >&2; exit 1; }
+case "${HARNESS_WHERE:-session}" in session) ;; *) echo "HARNESS_WHERE=$HARNESS_WHERE is not supported: the agent loop always runs in the sandbox session" >&2; exit 1 ;; esac
+SGLANG_ARGS+=(--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3)
 
 MISC_ARGS=(
    --attention-dropout 0.0
@@ -386,12 +433,13 @@ RUNTIME_ENV_JSON="{
     \"SANDBOX\": \"${SANDBOX}\",
     \"HEARTBEAT\": \"${HEARTBEAT}\",
     \"HARNESS\": \"${HARNESS}\",
-    \"HARNESS_WHERE\": \"${HARNESS_WHERE:-}\",
     \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST:-}\",
     \"ADAPTER_PORT_BASE\": \"${ADAPTER_PORT_BASE:-18100}\",
     \"PREOPEN\": \"${PREOPEN:-0}\",
+    \"HARNESS_WORKERS\": \"${HARNESS_WORKERS:-}\",
+    \"SANDBOX_SESSIONS\": \"${SANDBOX_SESSIONS:-0}\",
+    \"SANDBOX_OPEN_RATE\": \"${SANDBOX_OPEN_RATE:-20}\",
     \"MINI_SESSION_POLL_SEC\": \"${MINI_SESSION_POLL_SEC:-25}\",
-    \"AGENTCORE_CI_SESSION_TIMEOUT\": \"${AGENTCORE_CI_SESSION_TIMEOUT}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE\": \"$(printf '%s' "${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}" | sed 's/\\/\\\\/g; s/\"/\\\"/g')\",
     \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",
     \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\",
@@ -399,7 +447,13 @@ RUNTIME_ENV_JSON="{
     \"AGENTCORE_SANDBOX_RUNTIME_ARNS\": \"${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
-    \"INFER_CONC\": \"${INFER_CONC:-0}\"
+    \"EPISODE_MAX_TURNS\": \"${EPISODE_MAX_TURNS:-4}\",
+    \"EPISODE_MAX_TOKENS\": \"${EPISODE_MAX_TOKENS:-1024}\",
+    \"MINI_AGENT_MAX_TOOL_CHARS\": \"${MINI_AGENT_MAX_TOOL_CHARS:-4000}\",
+    \"TB_EXEC_TIMEOUT\": \"${TB_EXEC_TIMEOUT:-180}\",
+    \"WARM_IDLE_TIMEOUT\": \"${WARM_IDLE_TIMEOUT:-900}\",
+    \"WARM_PING_FRACTION\": \"${WARM_PING_FRACTION:-0.5}\",
+    \"TB_PREOPEN_BATCHES\": \"${TB_PREOPEN_BATCHES:-2}\"
   }
 }"
 

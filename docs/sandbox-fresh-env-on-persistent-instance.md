@@ -22,13 +22,11 @@ microVM), which is cheaper, faster, and perfectly isolated for free. Reuse only 
 that applies to **both** Instance flavours:
 
 - the **GPU `g6`** (`demo_gpu_farm`, `FARM=fractional|whole` — merged 2026-09-26 from `demo_gpu_farm_fractional` + `demo_gpu_farm_whole`; the local form of the remote farm, one GPU instance serving many sessions, trusted-only), and
-- the **CPU `m5`** (`demo_cpu_instance_pool`, the big-image example this doc ships with — since 2026-09-26 a **side note**, not a main demo, because the pooling is our own code and a shared instance can't give full isolation; formerly
-  `demo_cpu_tasks` `VARIANT=bigimage`, and before that the separate `demo_cpu_bigimage`). It keeps a warm pool
-  of `SANDBOX_POOL` (default 2) shared sessions and runs each exec of a `sub_session` in its own Landlock jail
-  (own dir only, no TCP, no cross-episode signals, process/RAM caps, path-escape refusal, tree killed
-  when the exec ends; per-episode uids are impossible in AgentCore's capability-less container;
-  `isolation_probe.py --live` passes 22/22 on the m5). The episodes still share the kernel, network namespace and
-  CPU/RAM, so use a microVM per session when you need a hard boundary.
+- the **CPU `m5`** — historical: `demo_cpu_instance_pool` (removed 2026-09-28; code in git history) kept a
+  warm pool of `SANDBOX_POOL` (default 2) shared m5 sessions and ran each exec of a `sub_session` in its own
+  Landlock jail (per-episode uids are impossible in AgentCore's capability-less container; 22/22 isolation
+  checks passed live on the m5). The episodes still shared the kernel, network namespace and CPU/RAM, so
+  use a microVM (or an Instance) per session when you need a hard boundary.
 
 Both use the *same* shared-session + `sub_session` mechanism below; they differ only in what the
 `sub_session` multiplexes (a fractional-GPU actor vs. an isolated CPU env) and the cache policy.
@@ -109,8 +107,6 @@ per-episode freshness.
 
 ## Related
 
-- [`demo_cpu_instance_pool/README.md`](../code/demos/demo_cpu_instance_pool/README.md) — carries this farm
-  and its isolation guarantees (formerly `demo_cpu_tasks` `VARIANT=bigimage` / `demo_cpu_bigimage`).
 - [`sandbox-concurrency-ablation.md`](sandbox-concurrency-ablation.md) — the CONC sweep the shared
   instance makes cheap to run.
 - [`gpu-snapshot.md`](gpu-snapshot.md) — why we reuse a *live* warm instance rather than snapshot one.

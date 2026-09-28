@@ -1,0 +1,109 @@
+# Installs gVisor (runsc + containerd-shim-runsc-v1) on every acs/role=sandbox node, registers the
+# `runsc` runtime handler with containerd, restarts containerd, then labels the node acs/gvisor=ready.
+# A DaemonSet rather than node user data: AL2023's nodeadm owns /etc/containerd/config.toml at boot, and
+# this also covers nodes the group adds later. Idempotent (skips an installed node on restart).
+# Platform: gVisor's default `systrap` (no KVM), which works on ordinary (non-metal) EC2 instances.
+# GVISOR_RELEASE: "latest" or a dated release, e.g. 20260901 (pin it for reproducible runs).
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: acs-gvisor-installer, namespace: kube-system}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: acs-gvisor-installer}
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: acs-gvisor-installer}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: acs-gvisor-installer}
+subjects:
+  - {kind: ServiceAccount, name: acs-gvisor-installer, namespace: kube-system}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: acs-gvisor-installer, namespace: kube-system}
+data:
+  install-host.sh: |
+    # Runs chroot'ed into the node's root filesystem.
+    set -euo pipefail
+    MARK=/var/lib/acs-gvisor/installed
+    if [ -f "$MARK" ] && /usr/local/bin/runsc --version >/dev/null 2>&1 \
+       && containerd config dump 2>/dev/null | grep -q 'io.containerd.runsc.v1'; then
+      echo "gVisor already installed: $(cat "$MARK")"; exit 0
+    fi
+    URL="https://storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/x86_64"
+    tmp="$(mktemp -d)"; cd "$tmp"
+    for f in runsc containerd-shim-runsc-v1; do
+      curl -fsSLO "$URL/$f"; curl -fsSLO "$URL/$f.sha512"
+    done
+    sha512sum -c runsc.sha512 containerd-shim-runsc-v1.sha512
+    install -m 0755 runsc containerd-shim-runsc-v1 /usr/local/bin/
+    CFG=/etc/containerd/config.toml
+    if ! grep -q 'io.containerd.runsc.v1' "$CFG"; then
+      if grep -Eq '^version *= *3' "$CFG"; then
+        TBL='plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runsc'     # containerd 2.x
+      else
+        TBL='plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc'        # containerd 1.7
+      fi
+      printf '\n# added by acs-gvisor-installer (demo_cpu_swebench_eks)\n[%s]\n  runtime_type = "io.containerd.runsc.v1"\n' \
+        "$TBL" >> "$CFG"
+    fi
+    systemctl restart containerd
+    for _ in $(seq 60); do containerd config dump 2>/dev/null | grep -q 'io.containerd.runsc.v1' && break; sleep 1; done
+    mkdir -p "$(dirname "$MARK")"
+    /usr/local/bin/runsc --version | head -n 1 > "$MARK"
+    echo "gVisor installed: $(cat "$MARK")"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: acs-gvisor-installer, namespace: kube-system}
+spec:
+  selector:
+    matchLabels: {app: acs-gvisor-installer}
+  template:
+    metadata:
+      labels: {app: acs-gvisor-installer}
+    spec:
+      serviceAccountName: acs-gvisor-installer
+      nodeSelector: {acs/role: sandbox}
+      hostPID: true
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      tolerations: [{operator: Exists}]
+      containers:
+        - name: install
+          image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          securityContext: {privileged: true}
+          env:
+            - {name: GVISOR_RELEASE, value: "latest"}
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+          command: [/bin/bash, -c]
+          args:
+            - |
+              set -euo pipefail
+              chroot /host /bin/bash -s < /scripts/install-host.sh
+              SA=/var/run/secrets/kubernetes.io/serviceaccount
+              curl -fsS --cacert $SA/ca.crt -H "Authorization: Bearer $(cat $SA/token)" \
+                -H 'Content-Type: application/merge-patch+json' -X PATCH \
+                "https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/api/v1/nodes/${NODE_NAME}" \
+                -d '{"metadata":{"labels":{"acs/gvisor":"ready"}}}' >/dev/null
+              echo "labelled ${NODE_NAME} acs/gvisor=ready"
+              exec sleep infinity
+          readinessProbe:
+            exec: {command: [cat, /host/var/lib/acs-gvisor/installed]}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+          volumeMounts:
+            - {name: host, mountPath: /host}
+            - {name: scripts, mountPath: /scripts}
+      volumes:
+        - name: host
+          hostPath: {path: /}
+        - name: scripts
+          configMap: {name: acs-gvisor-installer}

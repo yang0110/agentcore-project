@@ -1,7 +1,7 @@
 # Smoke-test experiment plan — every demo: 10 train steps · 10 weight syncs · 1 eval · 1 checkpoint (at the end)
 
-**Goal.** Run every existing demo (the 7 main demos + experimental `demo_cpu_branching`, 22 runs in
-all) for the same short budget — **10 training steps, 10 weight syncs, exactly 1 held-out eval, and
+**Goal.** Run every existing demo (since 2026-09-28 the 3 main demos + the EKS twin `demo_cpu_swebench_eks` +
+experimental `demo_cpu_branching`; Terminal-Bench is now `demo_cpu_tasks:terminalbench`; the 22 table rows keep the numbering of the older 7-demo set) for the same short budget — **10 training steps, 10 weight syncs, exactly 1 held-out eval, and
 exactly 1 checkpoint, written at the end** — capturing a
 **detailed per-run log** (and parsed CSV/PNG) for each. This is a *smoke* (does it train end-to-end
 and produce sane curves?), not a convergence run (that's what `convergence/` is for).
@@ -22,8 +22,8 @@ one per-run recipe below; the only per-demo differences are captured as data in 
 **Net: the spec == each demo's defaults.** Verified 2026-09-25: the `run.sh` of all 8 demos defaults
 to `NR=11 EVAL_INTERVAL=10 EVAL_NS=2 SAVE_INTERVAL=1000000`. You do not need to pass anything except
 `NR=11` explicitly (for clarity) and whatever sandbox ARN(s) that demo requires (see the table). Do
-**not** raise `RB`/`NS` for a smoke except where the table says so (`demo_cpu_scale_lanes` needs
-`RB=32` to fill its 256 workers; that is its default).
+**not** raise `RB`/`NS` for a smoke except where the table says so (`demo_cpu_tasks SCALE=1`, formerly
+`demo_cpu_scale_lanes`, sets `RB=32` to fill its 256 workers; that is part of the preset).
 
 ## Common setup (once)
 
@@ -69,7 +69,7 @@ docker exec agentcore_p4 python3 /work/code/demos/$DEMO/metrics.py $LOG \
 ```
 
 `NR/EVAL_INTERVAL/EVAL_NS` are passed explicitly for auditability even though they equal defaults.
-`RB=4, NS=8, TEMP=1.0` defaults are fine for a smoke (scale_lanes: `RB=32`, 320 prompts ≤ its 400). Tiny
+`RB=4, NS=8, TEMP=1.0` defaults are fine for a smoke (`SCALE=1`: `RB=32`, 320 prompts ≤ deepscaler's 400). Tiny
 synthetic-zoo datasets (4–9 rows) wrap into more epochs; `--num-rollout` still keeps it to one save.
 
 **Shared box (GPUs 0/1 taken by other users).** Serialize runs with `flock /tmp/acs_gpu.lock` and pin
@@ -100,12 +100,12 @@ a suggested split for the shared 6-GPU box (only rows 15 and 22 have run with it
 | 11 | `demo_cpu_tasks:mixed` | Code Interpreter | — (math + sql + ctf + datasci) | 4 + 2 | own-Runtime run |
 | 12 | `demo_cpu_tasks:libs` | Code Interpreter (pandas/scipy/sklearn preinstalled) | — (scores 0 on the stdlib own-Runtime image) | 4 + 2 | **CI 1.0** (09-25) |
 | 13 | `demo_cpu_tasks:deepscaler+HEARTBEAT=1+SANDBOX=agentcore-runtime` | own CPU Runtime (baked K=2 ARNs) | — (heartbeat is a no-op on the CI) | 4 + 2 | pending |
-| 14 | `demo_cpu_terminalbench` | ~229 per-task images, fresh microVM per episode, pre-open + heartbeat | fetch → `2_build_image.sh` → `4_deploy_runtime.sh` → `validate_oracle.py` → rebuild dataset (see its README); `TB_PREOPEN_BATCHES` × RB × NS (64) sessions booted ahead | **all 8 free** (no pin yet) | passed 09-23: 4/382 solves, `open_wait_ms` p95 0 |
-| 15 | `demo_cpu_instance_pool` (side note) | warm pool of `SANDBOX_POOL=2` m5 Instances, ~4 GB image, per-episode slot uid | steps 2–4 (image → ECR → CPU capacity provider → Runtime); no baked default | 4 + 2 (as run) | **passed 09-25**: eval 0.7875, 2 cold boots, warm op p50 117 ms |
-| 16 | `demo_cpu_scale_lanes` | 4 engines : `HARNESS_WORKERS=256` : `SANDBOX_SESSIONS=256` pooled microVMs, decoupled | — (baked K=2 ARNs; `RB=32` default → 256 episodes/step) | 2 + 4 (`ACTOR_GPUS=2 ROLLOUT_GPUS=4`) | pool check 64 × 64 ok; RL smoke pending (old 4×4×4 lanes: 0.358) |
-| 17 | `demo_gpu_single` (remote g6) | ONE warm g6 Instance shared across episodes | steps 2–4 (Runtime on the g6 capacity provider) | 4 + 2 | trained; 09-25 remote smoke failed on `op=open` 500s |
-| 18 | `demo_gpu_single+LOCAL_GPU=1` | local whole-GPU farm on GPUs 6,7 (no g6) | `LOCAL_GPU=1 bash 4_deploy_runtime.sh`; `LOCAL_GPU=1 bash 6_cleanup.sh` after | slime on 2–5 (`ACTOR_GPUS=2 ROLLOUT_GPUS=2`) | 0.65 (custom-Runtime probe) |
-| 19 | `demo_gpu_single+SNAPSHOT_EVERY=1+LOCAL_GPU=1` | as 18, plus per-episode snapshot/resume | as 18 | as 18 | 0.625 (local farm) |
+| 14 | `demo_cpu_tasks:terminalbench` (was `demo_cpu_terminalbench`, merged 2026-09-28) | ~229 per-task images, fresh microVM per episode, pre-open + heartbeat | `VARIANT=terminalbench` `2_build_image.sh` → `4_deploy_runtime.sh` → `terminalbench/validate_oracle.py` → `DATASET=terminalbench bash 1_prepare_data.sh` (see `demo_cpu_tasks/README.md` §3); `TB_PREOPEN_BATCHES` × RB × NS (64) sessions booted ahead | **all 8 free** (no pin yet) | passed 09-23: 4/382 solves, `open_wait_ms` p95 0 |
+| 15 | ~~`demo_cpu_instance_pool`~~ (removed 2026-09-28) | — | — | — | passed 09-25 (eval 0.7875, 2 cold boots); demo and AWS resources removed |
+| 16 | `demo_cpu_tasks:deepscaler+SCALE=1` (was `demo_cpu_scale_lanes`, removed 2026-09-28) | E=4 TP1 engines : `HARNESS_WORKERS=256` : S=256 fresh sessions in flight (`SANDBOX_SESSIONS=M` opt-in pools them) | — (`demo_cpu_tasks` Runtimes; the preset sets `RB=32` → 256 episodes/step) | 2 + 4 (`ACTOR_GPUS=2 ROLLOUT_GPUS=4`) | 592-episode 256-worker smokes 09-26 / 09-28: eval 0.25 / 0.27 (logs `demo_cpu_tasks/logs/scale/`); pool check 64 × 64 ok; old 4×4×4 lanes 0.358 |
+| 17 | `demo_gpu_farm+LOCAL_GPU=0` (remote g6; was `demo_gpu_single`; driver `demo_gpu_farm:remote`) | ONE warm g6 Instance shared across episodes (`FARM=fractional`: L4 at 0.5 → 2 slots; `whole`: 1 slot) | steps 2–4 with `LOCAL_GPU=0` (Runtime on the g6 capacity provider; pass `LOCAL_GPU=0` on every step 2–6) | 4 + 2 | trained; 09-25 remote smoke failed on `op=open` 500s (logs `demo_gpu_farm/logs/remote/`) |
+| 18 | `demo_gpu_single+LOCAL_GPU=1` (historical; the folder is gone and this is now row 21, `demo_gpu_farm` `FARM=whole`) | local whole-GPU farm on GPUs 6,7 (no g6) | `LOCAL_GPU=1 bash 4_deploy_runtime.sh`; `LOCAL_GPU=1 bash 6_cleanup.sh` after | slime on 2–5 (`ACTOR_GPUS=2 ROLLOUT_GPUS=2`) | 0.65 (custom-Runtime probe) |
+| 19 | `demo_gpu_farm+SNAPSHOT_EVERY=1` (was `demo_gpu_single+SNAPSHOT_EVERY=1+LOCAL_GPU=1`) | the local farm, plus per-episode snapshot/resume (`SNAPSHOT_DIR=demo_gpu_farm/snapshots`) | as 18 | as 18 | 0.625 (local farm) |
 | 20 | `demo_gpu_farm` `FARM=fractional` | local fractional Ray farm, GPU 6, 0.5 + 0.5 | host `bash code/deploy/run_local_gpu_runtime.sh fractional`; `… stop` after | slime on 2–5 | 0.65 (09-25) |
 | 21 | `demo_gpu_farm` `FARM=whole` | local whole-GPU Ray farm, GPUs 6,7, one GPU per session | host `bash code/deploy/run_local_gpu_runtime.sh whole`; `… stop` after | slime on 2–5 | 0.65 / 0.70 (09-21); re-run since the split pending |
 | 22 | `demo_cpu_branching` (**experimental**) | real Claude Code CLI in a CPU Runtime (VPC, adapter dial-back `:18021`) | steps 2–4 (CLI image), `deploy/runtime.env` with the ARN + `ADAPTER_PUBLIC_HOST` | 4 + 2 | 3 blockers fixed 09-25; RL smoke running |
@@ -113,13 +113,14 @@ a suggested split for the shared 6-GPU box (only rows 15 and 22 have run with it
 Rows 1–13 are one folder (`demo_cpu_tasks`) with one run per dataset: set `DS=<dataset>` in the
 recipe, and add the `+KEY=VAL` knobs as `-e KEY=VAL`. The remaining synthetic-zoo datasets (`swe`
 `tool_use` `sql` `ctf` `rag` `regex` `config` `data` `planning`) are optional extra rows of the same
-shape. `run_smoke_plan.sh` drives rows 1–13 + 16 (`PHASE=1`) and 15 (`PHASE=2`);
+shape. `run_smoke_plan.sh` drives rows 1–13 + 16 (`PHASE=1`) (row 15's `PHASE=2` is gone with the demo);
 `run_gpu_smoke.sh` / `run_b_queue.sh` drive 17–21. Old logs from merged folders:
-`demo_cpu_tasks/logs/{heartbeat,customruntime,imagepool}/`, `demo_cpu_instance_pool/logs/bigimage/`,
-`demo_gpu_single/logs/snapshot/`.
+`demo_cpu_tasks/logs/{heartbeat,customruntime,imagepool}/`, 
+`demo_gpu_farm/logs/{remote,snapshot}/` (formerly `demo_gpu_single`), `demo_cpu_tasks/logs/scale/` (formerly
+`demo_cpu_scale_lanes`).
 
-Isolation reminder for the reviewer (what each row's sandbox guarantees): rows 1–12 and 14 get a fresh
-microVM per episode; 13 and 16 reuse a microVM **one episode at a time** with a fresh workdir; 15, 17–21
+Isolation reminder for the reviewer (what each row's sandbox guarantees): rows 1–12, 14 and 16 get a fresh
+microVM per episode (16 with `SANDBOX_SESSIONS=M` reuses one **one episode at a time** with a fresh workdir); 13 reuses a microVM **one episode at a time** with a fresh workdir; 15, 17–21
 share one Instance across concurrent episodes via per-episode `sub_session`s (slot uid + `0700` dir
 where the container has the capabilities; the AgentCore g6 container has none, so it falls back to one
 shared uid).
@@ -129,10 +130,8 @@ shared uid).
 These are part of the plan too, but they are not trainers (no steps / syncs / eval / checkpoint).
 A few demos ship offline probes worth running first — they import the harness/glue and verify a
 mechanism without AWS: property-demo animations (`demo_cpu_tasks`'s `heartbeat_demo.py` and `compare_backends.py --backends local`, `snapshot_demo.py`,
-`harness_scaling_demo.py`, `demo_gpu_single`'s `gpu_torch_smoke.py`), `demo_cpu_terminalbench`'s warm-start probe
-(`BACKENDS=local bash warmstart/run_warmstart.sh`), and `demo_cpu_instance_pool`'s `isolation_probe.py`
-(Landlock jail per exec, 22 checks; `--live` on the m5 after step 4), `demo_gpu_farm`'s `isolation_probe.py` (live on the local farm under the GPU lock), `probe_bigimage.py` (image-size vs the microVM cap + LocalSandbox contract
-parity) and `netcheck.py` (safe-networking checklist). These are **not** the trainers — the trainers all run via the recipe above.
+`harness_scaling_demo.py`, `demo_gpu_farm`'s `gpu_torch_smoke.py`), `demo_cpu_tasks`'s Terminal-Bench warm-start probe
+(`BACKENDS=local bash terminalbench/warmstart/run_warmstart.sh`), `demo_gpu_farm`'s `isolation_probe.py` (live on the local farm under the GPU lock), and `demo_cpu_tasks/netcheck.py` (safe-networking checklist). These are **not** the trainers — the trainers all run via the recipe above.
 
 ### Excluded
 - **`convergence/`** — not a runnable demo; it holds per-demo wrappers that run each `train.sh` **to
@@ -146,7 +145,7 @@ There is no tiering, but two ordering facts still hold:
 
 1. **One demo at a time** — each trainer takes all 8 local GPUs (or the 6 pinned ones on the shared
    box), so hold `flock /tmp/acs_gpu.lock` for every trainer and farm probe.
-2. **Prerequisites first** — a demo with a non-empty **Needs** cell (branching, `demo_cpu_instance_pool`, terminalbench,
+2. **Prerequisites first** — a demo with a non-empty **Needs** cell (branching, terminalbench,
    the g6 GPU demos, the gpu farm demos' host step) must have that deploy/ARN ready before its run. Demos with
    an empty **Needs** cell can run in any order with no extra setup.
 

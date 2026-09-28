@@ -1,53 +1,66 @@
 #!/bin/bash
-# demo_gpu_farm — KernelBench on a LOCAL Ray-farm GPU sandbox; FARM= picks how the farm splits GPUs.
+# demo_gpu_farm — KernelBench (real CUDA-kernel RL) on a Ray GPU-farm sandbox, LOCAL or on a remote g6.
 # Runner (this dir owns data/ + ckpt/; agentcore_slime_demo is the vendored local copy in this dir). Runs INSIDE the
 # persistent slime container (agentcore_p4), async/decoupled (train_async.py, NO --colocate).
 #
-# One folder for both farm splits (merged 2026-09-26 from demo_gpu_farm_fractional + demo_gpu_farm_whole,
-# which ran the same harness, trainer, image and farm and differed only in these knobs):
-#   * FARM=fractional (default): B4_FARM_GPUS=1, B4_GPU_FRACTION=0.5 -> floor(1/0.5)=2 FRACTIONAL Ray
-#                                actors packed onto ONE GPU (host GPU 6): two concurrent episodes share
-#                                one card, each checker capped to ~half the VRAM in software
-#                                (B4_PER_SANDBOX_MEM_FRACTION=0.5; L40S/L4 have no MIG).
-#   * FARM=whole               : B4_FARM_GPUS=2, B4_GPU_FRACTION=1.0 -> 2 actors, one WHOLE GPU each
-#                                (host GPUs 6,7). No GPU memory/fault sharing (sidesteps the non-MIG
-#                                nvcc wedge), but the host (RAM, CPU, kernel, driver) is still shared.
-# Related: demo_gpu_single (the remote g6 Runtime).
+# The task: the policy writes solution.py, a GPU checker (run_checks.py) compiles/runs it on CUDA and
+# compares against a torch reference, the agent reads the failure and fixes it. The mini_claude loop runs
+# INSIDE the episode's sandbox session (in_session_harness.py), next to that checker, and dials the
+# trainer's per-engine AnthropicAdapter back; the trainer keeps only the harness tier (harness_pool.py:
+# HARNESS_WORKERS dispatch workers, default RB x NS, least-loaded engine per episode).
 #
-# ISOLATION — neither mode is full isolation: all episodes share one kernel, network and host, and
+# ONE FOLDER, TWO KNOBS (merged 2026-09-26 from demo_gpu_farm_fractional + _whole, and 2026-09-28 with
+# demo_gpu_single, the remote g6 path; all ran the same harness, trainer, image and farm):
+#   LOCAL_GPU=1 (default)  the farm is a LOCAL runtime container on this host's reserved GPU(s), served
+#                          at http://127.0.0.1:8080; slime gets GPUs 0-5 (4 train + 2 infer).
+#   LOCAL_GPU=0            the farm runs inside ONE warm g6 capacity-provider Instance (your custom GPU
+#                          Runtime, AGENTCORE_SANDBOX_RUNTIME_ARN); slime gets all 8 GPUs (4 + 4).
+#                          The managed Code Interpreter is CPU-only (torch.cuda.is_available() is False),
+#                          which is why this needs your own Runtime; offline probe: gpu_torch_smoke.py.
+#   FARM=fractional (default)  0.5-GPU Ray actors, two episodes per card (host GPU 6, or the g6's L4),
+#                          each checker capped to ~half the VRAM in software (B4_PER_SANDBOX_MEM_FRACTION;
+#                          L40S/L4 have no MIG). 2 slots either site.
+#   FARM=whole             one WHOLE GPU per episode: host GPUs 6,7 (2 slots) or the g6's L4 (1 slot).
+#                          No GPU memory/fault sharing (sidesteps the non-MIG nvcc wedge); host still shared.
+#   SNAPSHOT_EVERY=1       + APPLICATION-LEVEL snapshot/resume: restore each task's workspace from a store
+#                          you own at episode ENTER, snapshot it at EXIT. AgentCore has no VM/GPU snapshot
+#                          (docs/gpu-snapshot.md); agentcore_slime_demo/app_snapshot.py, offline: snapshot_demo.py.
+#
+# ISOLATION — neither FARM mode is full isolation: all episodes share one kernel, network and host, and
 # (fractional) one physical GPU. Trusted checkers only; full isolation = one session per episode
 # (one g6 each). Details: README.md.
 #
 # AgentCore reality: 1 runtimeSessionId -> 1 instance. So this is ONE shared runtimeSessionId
-# (B4_SHARED_RUNTIME_SESSION) + a per-episode sub_session, and the Ray farm INSIDE that one local
-# runtime container leases one GPU actor (fractional or whole, per FARM) per sub_session.
+# (B4_SHARED_RUNTIME_SESSION) + a per-episode sub_session, and the Ray farm INSIDE that one runtime
+# leases one GPU actor (fractional or whole, per FARM) per sub_session. Remotely that keeps every
+# episode on the SAME warm g6, so its cold boot is paid once per run, not once per episode.
 #
-# PREREQ — start the LOCAL runtime container on the HOST first (NOT inside agentcore_p4), in the SAME
-# mode as FARM; it reserves the farm GPU(s) and serves the farm at http://127.0.0.1:8080:
-#     FARM=fractional bash 4_deploy_runtime.sh   # or: bash code/deploy/run_local_gpu_runtime.sh fractional
-#     FARM=whole      bash 4_deploy_runtime.sh   # or: bash code/deploy/run_local_gpu_runtime.sh whole
-# Then, inside agentcore_p4:
-#     FARM=fractional bash code/demos/demo_gpu_farm/run.sh   # (default)
-#     FARM=whole      bash code/demos/demo_gpu_farm/run.sh
-#
-# Same harness as demo_gpu_single: the run_episode loop (agentcore_slime_demo.harness) inside
-# generate.generate. slime gets GPUs 0-5 (4 train + 2 infer = 6); GPU 6 (fractional) or 6,7 (whole)
-# belong to the local farm container.
+# LOCAL (default) — start the local runtime container on the HOST first (NOT inside agentcore_p4), in the
+# SAME mode as FARM; it reserves the farm GPU(s):
+#     FARM=fractional bash 4_deploy_runtime.sh   # or: bash deploy/local_gpu_runtime.sh fractional
+#     FARM=whole      bash 4_deploy_runtime.sh   # or: bash deploy/local_gpu_runtime.sh whole
+# then, inside agentcore_p4:   FARM=fractional bash code/demos/demo_gpu_farm/run.sh
+# REMOTE — LOCAL_GPU=0 on every step (the FARM split is baked into the Runtime at deploy):
+#     LOCAL_GPU=0 FARM=fractional bash 4_deploy_runtime.sh && LOCAL_GPU=0 FARM=fractional bash 5_run.sh
 #
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
 # runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train (SMOKE; no more needed).
 set -euo pipefail
 
-# ---- FARM: how the local Ray farm partitions its GPUs (MUST match run_local_gpu_runtime.sh <mode>) --
+LOCAL_GPU="${LOCAL_GPU:-1}"
+# ---- FARM: how the Ray farm partitions its GPUs (MUST match the farm: local_gpu_runtime.sh <mode>,
+# or the B4_* env baked into the remote Runtime by 4_deploy_runtime.sh) ----------------------------
 FARM="${FARM:-fractional}"
-case "$FARM" in
-   fractional) _FARM_GPUS=1; _FRACTION=0.5 ;;   # GPU 6: floor(1/0.5)=2 slots, 0.5 + 0.5
-   whole)      _FARM_GPUS=2; _FRACTION=1.0 ;;   # GPUs 6,7: 2 slots, one whole GPU each
-   *) echo "FARM must be fractional or whole (got '$FARM')" >&2; exit 1 ;;
+case "$LOCAL_GPU:$FARM" in
+   1:fractional) _FARM_GPUS=1; _FRACTION=0.5 ;;   # host GPU 6: floor(1/0.5)=2 slots, 0.5 + 0.5
+   1:whole)      _FARM_GPUS=2; _FRACTION=1.0 ;;   # host GPUs 6,7: 2 slots, one whole GPU each
+   0:fractional) _FARM_GPUS=1; _FRACTION=0.5 ;;   # the g6's L4: 2 slots, 0.5 + 0.5
+   0:whole)      _FARM_GPUS=1; _FRACTION=1.0 ;;   # the g6's L4: 1 slot (raise B4_FARM_GPUS on a bigger g6)
+   *) echo "LOCAL_GPU must be 0 or 1 and FARM fractional or whole (got LOCAL_GPU='$LOCAL_GPU' FARM='$FARM')" >&2; exit 1 ;;
 esac
 
-SANDBOX="${SANDBOX:-agentcore-ray-farm}"  # the local Ray farm backend (RayFarmRuntimeSandbox): a
-                                          # per-episode sub_session slot on the ONE local runtime:
+SANDBOX="${SANDBOX:-agentcore-ray-farm}"  # the Ray-farm backend (RayFarmRuntimeSandbox): a per-episode
+                                          # sub_session slot on the ONE farm runtime (local or the g6):
                                           # a 0.5-GPU actor (fractional) or a whole GPU (whole).
 # ---- Task set: the REAL KernelBench (ScalingIntelligence/KernelBench) ----------------------------
 # Train = level_1 (100 single-op CUDA problems); held-out eval = 20 level_2 fusion problems (disjoint).
@@ -62,6 +75,15 @@ EVAL_INTERVAL="${EVAL_INTERVAL:-10}"   # run held-out eval every N training step
 EVAL_NS="${EVAL_NS:-2}"               # samples per eval prompt
 SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"  # save-only-at-end (final rollout force-saves anyway)
 
+# ---- Application-snapshot knobs (SNAPSHOT_EVERY=1 turns on the snapshot/resume angle) -----------
+# Every episode opens a fresh sandbox sub_session, so each episode boundary is effectively a recycle;
+# the store, not the session, is the durable source of truth. Off by default.
+SNAPSHOT_EVERY="${SNAPSHOT_EVERY:-0}"            # snapshot cadence in episodes (0 = off)
+SNAPSHOT_DIR="${SNAPSHOT_DIR:-/work/code/demos/demo_gpu_farm/snapshots}"   # LocalSnapshotStore root
+SNAPSHOT_PATHS="${SNAPSHOT_PATHS:-progress.json,work.log,solution.py}"     # workspace files to keep
+RECYCLE_AFTER="${RECYCLE_AFTER:-0}"              # >0 => log a simulated instance recycle after N episodes
+# SNAPSHOT_S3_BUCKET (optional): if set, use S3SnapshotStore (production; no mount, AZ-agnostic).
+
 SLIME=/root/slime
 DEMO_DIR=/work/code/demos/demo_gpu_farm
 CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"   # shared base ckpt (referenced, not copied)
@@ -70,27 +92,40 @@ HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a720891212
 DATA="${DATA:-$DEMO_DIR/data/kernelbench_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"
 EVAL_NAME="${EVAL_NAME:-kernelbench}"
-SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_farm_${FARM}_async}"
+_SITE=farm; [ "$LOCAL_GPU" = 1 ] || _SITE=remote
+_SNAP=""; [ "$SNAPSHOT_EVERY" != "0" ] && _SNAP=_snapshot
+SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_kernelbench_${_SITE}_${FARM}${_SNAP}_async}"
 
-# ---- GPU split: slime on 0-5, the local farm on GPU 6 (fractional) or 6,7 (whole) ----------------
-# Reserve the farm GPU(s) for the local Ray-farm sandbox runtime container (started on the HOST via
-# run_local_gpu_runtime.sh $FARM) and give slime GPUs 0-5 (4 train + 2 infer). GPU 7 is idle with
-# FARM=fractional. The client reaches the farm over http://127.0.0.1:8080; no remote ARN.
-ACTOR_GPUS="${ACTOR_GPUS:-4}"
-ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"                       # 4 train + 2 infer = 6; farm GPU(s) reserved
-SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-6}"
-SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-0,1,2,3,4,5}" # keep slime OFF the reserved farm GPU(s) (6 / 6,7)
-AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-http://127.0.0.1:8080}"
-AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:-}"   # local endpoint, no remote ARN
+# ---- GPU split + where the farm lives -------------------------------------------------------------
+if [ "$LOCAL_GPU" = 1 ]; then
+   # Reserve the farm GPU(s) for the local Ray-farm runtime container (started on the HOST by
+   # local_gpu_runtime.sh $FARM) and give slime GPUs 0-5 (4 train + 2 infer). GPU 7 is idle with
+   # FARM=fractional. The client reaches the farm over http://127.0.0.1:8080; no remote ARN (a
+   # leftover one from a LOCAL_GPU=0 deploy in deploy/runtime.env is ignored).
+   ACTOR_GPUS="${ACTOR_GPUS:-4}"
+   ROLLOUT_GPUS="${ROLLOUT_GPUS:-2}"                       # 4 train + 2 infer = 6; farm GPU(s) reserved
+   SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-6}"
+   SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-0,1,2,3,4,5}" # keep slime OFF the reserved farm GPU(s) (6 / 6,7)
+   AGENTCORE_LOCAL_ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-http://127.0.0.1:8080}"
+   AGENTCORE_SANDBOX_RUNTIME_ARN=""
+else
+   # ALL 8 GPUs to slime (4 train + 4 infer); the checker's GPU is the remote g6's, reached over
+   # invoke_agent_runtime.
+   ACTOR_GPUS="${ACTOR_GPUS:-4}"
+   ROLLOUT_GPUS="${ROLLOUT_GPUS:-4}"                       # 4 train + 4 infer = 8; checker GPU is remote
+   SLIME_NUM_GPUS="${SLIME_NUM_GPUS:-8}"
+   SLIME_CUDA_VISIBLE="${SLIME_CUDA_VISIBLE:-}"
+   AGENTCORE_LOCAL_ENDPOINT=""
+   AGENTCORE_SANDBOX_RUNTIME_ARN="${AGENTCORE_SANDBOX_RUNTIME_ARN:?LOCAL_GPU=0 needs your custom GPU sandbox Runtime ARN (a g6 Instance with CUDA — LOCAL_GPU=0 bash 4_deploy_runtime.sh). The managed Code Interpreter has no GPU; for an on-box run use LOCAL_GPU=1}"
+fi
 
-# Farm math: fractional = 1 GPU / 0.5 => 2 slots (0.5 + 0.5 on GPU 6); whole = 2 GPUs / 1.0 => 2
-# whole-GPU slots (6,7). These MUST match the farm knobs baked on the local runtime container by
-# run_local_gpu_runtime.sh $FARM. They are read here only to size the client OPEN gate below.
+# Farm math: slots = floor(B4_FARM_GPUS / B4_GPU_FRACTION) (table above). These MUST match the farm
+# (local_gpu_runtime.sh $FARM, or the Runtime's deploy-time env); here they only size the open gate.
 export B4_FARM_GPUS="${B4_FARM_GPUS:-$_FARM_GPUS}"
 export B4_GPU_FRACTION="${B4_GPU_FRACTION:-$_FRACTION}"
 
 # ONE shared runtimeSessionId for the WHOLE job: every episode (across every rollout worker) invokes
-# the local runtime under this id, so they all land on the SAME farm whose GPUs it splits. Minted
+# the farm runtime under this id, so they all land on the SAME farm whose GPUs it splits. Minted
 # once here if unset (AgentCore requires length in [33,128]: "b4farm-" + 32 hex = 39). Pin it to reuse
 # a warm instance across runs.
 B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-b4farm-$(python3 -c 'import secrets;print(secrets.token_hex(16))')}"
@@ -99,8 +134,9 @@ B4_SHARED_RUNTIME_SESSION="${B4_SHARED_RUNTIME_SESSION:-b4farm-$(python3 -c 'imp
 # each open their own sandbox, and neither --sglang-server-concurrency (gates GENERATION) nor NS caps
 # `op=open`; without this gate the overflow opens block on the SERVER farm gate until the invoke times
 # out (~min) and stall the step. Must EQUAL the server's B4_MAX_SANDBOXES = floor(B4_FARM_GPUS/
-# B4_GPU_FRACTION) (2 slots here).
+# B4_GPU_FRACTION).
 export B4_FARM_MAX_CONCURRENT="${B4_FARM_MAX_CONCURRENT:-$(python3 -c "import os,math;print(max(1,math.floor(float(os.environ['B4_FARM_GPUS'])/float(os.environ['B4_GPU_FRACTION']))))")}"
+CONC="${CONC:-$B4_FARM_MAX_CONCURRENT}"   # rollout concurrency <= farm slots; raise together with the farm
 # Runtime-invoke transient-retry budget (agentcore_runtime_sandbox._retry_invoke). We invoke the farm
 # once per tool op (open + writes + exec + close), so a transient 502/blip on ANY of them would kill
 # the whole job at the default 8 attempts (~150s). 20 attempts ≈ 10 min patience.
@@ -120,11 +156,22 @@ CKPT_ARGS=(
    --load "$CKPT"
    --save "$SAVE"
    --save-interval "$SAVE_INTERVAL"
-   # SYNC save (no --async-save): this local sandbox-runtime container's seccomp profile blocks
-   # pidfd_getfd, which slime's persistent async-ckpt child uses to grab the CUDA storage fds
-   # ("RuntimeError: pidfd_getfd: Operation not permitted") — the async save hangs the job even at
-   # PP=1. Same class of failure the PP=2 demos hit, so we take the same fix: save synchronously.
 )
+# ---- Checkpoint-save mode -----------------------------------------------------------------------
+# LOCAL: SYNC save (no --async-save). The local farm container's seccomp profile blocks pidfd_getfd,
+# which slime's persistent async-ckpt child uses to grab the CUDA storage fds ("RuntimeError:
+# pidfd_getfd: Operation not permitted"), so the async save hangs the job even at PP=1.
+# REMOTE: ASYNC persistent-ckpt save (two flags that MUST go together). Megatron's default writer forks
+# off the main training process while it holds CUDA/NCCL/inductor threads and can inherit a locked mutex
+# (the end-of-training save deadlocked AFTER the .distcp files were written). The safe SPAWN-based
+# PersistentAsyncCaller needs --async-save AND init_persistent_async_worker(), which slime never calls,
+# so agentcore_slime_demo/megatron_init.py does it via --custom-megatron-init-path.
+if [ "$LOCAL_GPU" != 1 ]; then
+   CKPT_ARGS+=(
+      --async-save
+      --custom-megatron-init-path agentcore_slime_demo.megatron_init.enable_persistent_async_ckpt
+   )
+fi
 
 EVAL_ARGS=()
 if [ "$EVAL_INTERVAL" != "0" ] && [ -f "$EVAL_DATA" ]; then
@@ -148,9 +195,9 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 1024
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
-   # SAME hook as demo_gpu_single — the in-process run_episode harness (SGLangPolicy direct).
+   # Harness tier + mini_claude in the sandbox session (+ the SNAPSHOT_EVERY restore/snapshot hooks).
    # The GPU packing is entirely in the sandbox backend (SANDBOX=agentcore-ray-farm ->
-   # RayFarmRuntimeSandbox), which make_sandbox() selects per episode, so no custom generate is needed.
+   # RayFarmRuntimeSandbox), which make_sandbox() selects per episode.
    --custom-generate-function-path agentcore_slime_demo.generate.generate
 )
 
@@ -189,20 +236,17 @@ SGLANG_ARGS=(
    --rollout-num-gpus "$ROLLOUT_GPUS"
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
-   # Keep rollout concurrency <= the local farm's slot count (B4_MAX_SANDBOXES = 2 here
-   # defaults) so episodes don't block on the farm's checkout gate. Raise together with the farm.
-   --sglang-server-concurrency "${CONC:-2}"
-   # NOTE: no tool-call/reasoning parser here (unlike the old MiniClaudeHarness path). run_episode
-   # extracts a ```python code block from the assistant text (task.extract_submission) and suppresses
-   # <think> via SGLangPolicy's enable_thinking=False — exactly like demo_gpu_single.
+   # CONC defaults to the farm's slot count (above) so episodes don't block on its checkout gate.
+   --sglang-server-concurrency "$CONC"
 )
-# HARNESS=mini_claude (default): the tool-calling MiniClaudeHarness via slime's AnthropicAdapter
-# (mini_claude_episode.py, hidden grader) needs SGLang's qwen25 tool parser + qwen3 reasoning parser,
-# or every tool call is dead text (the A3/B3 zero-reward bug). HARNESS=direct = fenced-block loop.
+# HARNESS=mini_claude (the only harness; HARNESS=direct and HARNESS_WHERE=trainer were removed): the
+# tool-calling loop runs in the sandbox session and calls slime's AnthropicAdapter (mini_claude_episode.py,
+# hidden grader). It needs SGLang's qwen25 tool parser + qwen3 reasoning parser, or every tool call is
+# dead text (the A3/B3 zero-reward bug).
 export HARNESS="${HARNESS:-mini_claude}"
-if [[ "$HARNESS" == mini_claude ]]; then
-  SGLANG_ARGS+=(--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3)
-fi
+[ "$HARNESS" = mini_claude ] || { echo "HARNESS=$HARNESS is not supported (mini_claude only)" >&2; exit 1; }
+case "${HARNESS_WHERE:-session}" in session) ;; *) echo "HARNESS_WHERE=$HARNESS_WHERE is not supported: the agent loop always runs in the sandbox session" >&2; exit 1 ;; esac
+SGLANG_ARGS+=(--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3)
 
 MISC_ARGS=(
    --attention-dropout 0.0
@@ -213,8 +257,8 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-# Ray gets SLIME_NUM_GPUS (6 here). We pin CUDA_VISIBLE_DEVICES to 0-5 BEFORE `ray start` so ray only
-# discovers/schedules those 6 — GPUs 6,7 stay free for the local Ray-farm sandbox runtime container.
+# Ray gets SLIME_NUM_GPUS (6 local, 8 remote). Locally we pin CUDA_VISIBLE_DEVICES to 0-5 BEFORE
+# `ray start` so ray only discovers/schedules those 6 — GPUs 6,7 stay free for the local farm container.
 # (Do NOT set CUDA_VISIBLE_DEVICES in the ray job runtime-env: ray assigns it per-actor.)
 [ -n "$SLIME_CUDA_VISIBLE" ] && export CUDA_VISIBLE_DEVICES="$SLIME_CUDA_VISIBLE"
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "$SLIME_NUM_GPUS" \
@@ -241,12 +285,12 @@ RUNTIME_ENV_JSON="{
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"PYTORCH_CUDA_ALLOC_CONF\": \"expandable_segments:True\",
     \"SANDBOX\": \"${SANDBOX}\",
-    \"HARNESS_WHERE\": \"${HARNESS_WHERE:-}\",
     \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST:-}\",
     \"ADAPTER_PORT_BASE\": \"${ADAPTER_PORT_BASE:-18100}\",
     \"MINI_SESSION_POLL_SEC\": \"${MINI_SESSION_POLL_SEC:-25}\",
     \"HARNESS\": \"${HARNESS}\",
     \"PREOPEN\": \"${PREOPEN:-0}\",
+    \"HARNESS_WORKERS\": \"${HARNESS_WORKERS:-}\",
     \"HEARTBEAT\": \"${HEARTBEAT}\",
     \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",
     \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\",
@@ -256,7 +300,12 @@ RUNTIME_ENV_JSON="{
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN}\",
     \"AGENTCORE_LOCAL_ENDPOINT\": \"${AGENTCORE_LOCAL_ENDPOINT}\",
     \"B4_SHARED_RUNTIME_SESSION\": \"${B4_SHARED_RUNTIME_SESSION}\",
-    \"INVOKE_MAX_RETRIES\": \"${INVOKE_MAX_RETRIES}\"
+    \"INVOKE_MAX_RETRIES\": \"${INVOKE_MAX_RETRIES}\",
+    \"SNAPSHOT_EVERY\": \"${SNAPSHOT_EVERY}\",
+    \"SNAPSHOT_DIR\": \"${SNAPSHOT_DIR}\",
+    \"SNAPSHOT_PATHS\": \"${SNAPSHOT_PATHS}\",
+    \"RECYCLE_AFTER\": \"${RECYCLE_AFTER}\",
+    \"SNAPSHOT_S3_BUCKET\": \"${SNAPSHOT_S3_BUCKET:-}\"
   }
 }"
 

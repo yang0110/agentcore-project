@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Provision the demo_cpu_swebench image pool: ONE AgentCore Runtime per SWE-bench instance, on m5 Instances.
 
-Same idea as demo_cpu_terminalbench's deploy_terminalbench.py (wrap each task image with a standalone Python + the stdlib
+Same idea as demo_cpu_tasks' terminalbench/deploy_terminalbench.py (wrap each task image with a standalone Python + the stdlib
 AgentCore HTTP server, one Runtime per image, strict {instance -> ARN} routing), different substrate:
 
   * Base images are SWE-bench's prebuilt `swebench/sweb.eval.x86_64.<id>` from Docker Hub (repo at

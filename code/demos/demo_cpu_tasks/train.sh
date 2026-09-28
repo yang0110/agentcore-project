@@ -10,8 +10,7 @@
 #   SANDBOX_CONC      concurrent episodes (pipeline width).      -> run.sh CONC ; S = CONC*num_engines
 #   SANDBOX_RUNTIMES  # DISTINCT sandbox Runtimes K to spread    -> truncates AGENTCORE_SANDBOX_RUNTIME_ARNS
 #                     episodes across (round-robin). unset=use      to its first K entries.
-#                     run.sh's baked default (K=2). Only for SANDBOX=agentcore-runtime — the default
-#                     SANDBOX=agentcore (managed Code Interpreter) has no ARNs to cap.
+#                     run.sh's baked default (K=2).
 #
 # The two sandbox knobs are deliberately SEPARATE (they scale different things):
 #   * SANDBOX_CONC = how many episodes run at once (throughput/staleness pipeline width);

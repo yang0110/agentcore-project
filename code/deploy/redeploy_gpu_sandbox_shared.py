@@ -9,7 +9,7 @@ capacity provider that `deploy_two_runtime.py all` already created (idempotent),
 mode=prepare (b4 installs torch at container startup, uses no volume for torch).
 
 Recreating under the same name mints a NEW ARN, printed at the end as the export for a remote-g6 Ray-farm run
-(demo_gpu_single, incl. its SNAPSHOT_EVERY=1 angle, with SANDBOX=agentcore-ray-farm; the former demo_gpu_shared):
+(demo_gpu_farm LOCAL_GPU=0, incl. its SNAPSHOT_EVERY=1 angle, with SANDBOX=agentcore-ray-farm; the former demo_gpu_single/demo_gpu_shared):
     export AGENTCORE_SANDBOX_RUNTIME_ARN=<printed arn>
 
 Farm tuning (injected as runtime env; retunable here without a rebuild). Defaults suit one g6.xlarge

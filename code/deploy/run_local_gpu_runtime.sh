@@ -22,7 +22,6 @@
 # Then, inside agentcore_p4, run the demo matching the mode started here:
 #   FARM=fractional bash code/demos/demo_gpu_farm/run.sh   # fractional mode
 #   FARM=whole      bash code/demos/demo_gpu_farm/run.sh   # whole mode
-#   LOCAL_GPU=1 bash code/demos/demo_gpu_single/run.sh     # whole mode
 
 set -euo pipefail
 

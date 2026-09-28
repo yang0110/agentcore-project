@@ -139,3 +139,9 @@ python train.py \
   harness; both paths have been removed in favor of the in-process mini harness — see
   `../docs/harness-sandbox-decoupling.md`.) This demo's `run_episode` is the offline-runnable,
   simplified stand-in for the agent loop.
+- **This library vs `code/demos/`:** the above describes this original, offline-runnable library.
+  The demos in `code/demos/` moved on (2026-09-28): every demo runs mini_claude **inside the episode's
+  sandbox session** (`in_session_harness.py`), dispatched by the decoupled harness tier
+  (`harness_pool.py`: `HARNESS_WORKERS` workers, least-loaded engine per episode); the in-trainer
+  `run_episode` / `SGLangPolicy` path is gone there. See `demos/README.md` and
+  `../docs/harness-scaling.md`.

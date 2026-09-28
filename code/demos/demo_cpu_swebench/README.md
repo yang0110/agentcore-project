@@ -5,16 +5,27 @@ instance pins its own repo commit + conda env, so every dataset row gets its own
 The images are too big for the microVM fleet, so the Runtimes sit on m5 Instances. See the tier table
 in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
 
-Split out of `demo_cpu_terminalbench` (where it was `BENCH=swebench`) on 2026-09-28. It reuses that
+Split out of `demo_cpu_terminalbench` (where it was `BENCH=swebench`) on 2026-09-28; that demo is now
+`demo_cpu_tasks DATASET=terminalbench`. It reuses that
 demo's image-pool machinery unchanged (vendored): `TerminalBenchPool` (fresh session per episode,
 pre-open, heartbeat, strict routing by `task.image` = instance id) and `terminalbench_pool_generate`.
 What is SWE-bench-specific: the substrate (m5 Instances), the per-instance images, and the hidden-test grader.
 
-The policy is Qwen3-4B trained by slime (async/decoupled GRPO). The agent is the tool-calling loop
-(`MiniClaudeHarness` → `AnthropicAdapter` → the policy under training; tools run in the sandbox), so it
-needs `--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3` (baked into `run.sh`). The
+The policy is Qwen3-4B trained by slime (async/decoupled GRPO). The agent is the mini_claude
+tool-calling loop, and it runs **inside the episode's session**: `InSessionHarness`
+(`in_session_harness.py`) writes `session_runner.py` into the session, and the loop dials the
+trainer's per-engine `AnthropicAdapter` back over the VPC (SG→SG rule on `ADAPTER_PORT_BASE`
+18100-18163). There is no in-trainer harness and no fallback: a session that can't host the loop
+(no `python3`, or the adapter unreachable) raises `HarnessPlacementError`. The loop needs
+`--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3` (baked into `run.sh`). The
 reward is the instance's own hidden FAIL_TO_PASS + PASS_TO_PASS tests (RLVR — no LLM judge).
 **REMOTE-ONLY** (`SANDBOX=local` is rejected).
+
+**Harness tier (the default in every demo).** The pool subclasses the shared `HarnessPool`
+(`harness_pool.py`): `HARNESS_WORKERS` = W dispatch workers (default RB×NS = 32) pull episodes off one
+queue, each episode takes its fresh m5 session first and then the least-loaded SGLang engine, sticky for
+all its turns. No worker owns an engine. The harness scales with the sandbox (one loop per session),
+not inside the trainer.
 
 ---
 
@@ -71,12 +82,13 @@ The current subset is 20 instances, one Runtime each (16 train + 4 eval).
 
 ```
 slime → terminalbench_pool_generate.generate → TerminalBenchPool.submit
-  worker pulls episode → route by task.image (= instance id) → that instance's Runtime ARN
+  harness worker pulls episode → route by task.image (= instance id) → that instance's Runtime ARN
   (at submit) open a BRAND-NEW session on that ARN while the episode waits   ← its own m5 instance
     SessionKeeper heartbeats it until it is stopped
-      MiniClaudeHarness loop in /testbed: LLM via adapter (policy under training), bash/write_file/read_file tools
+      InSessionHarness writes session_runner.py into the session and polls it
+        in-session loop in /testbed: LLM via the least-loaded engine's adapter (dial-back, policy under training), bash/write_file/read_file tools
     grade: swebench.grade_swebench (reset test files → apply hidden test_patch → test_cmd → parse F2P/P2P)
-  finish_session → loss-masked GRPO samples (list); adapter.drop_session; StopRuntimeSession
+  finish_session → ONE loss-masked Sample (the longest); adapter.drop_session; StopRuntimeSession
 ```
 
 ## Step by step (numbered scripts; run from this dir on the HOST — container steps `docker exec` themselves)
@@ -103,12 +115,13 @@ bash 6_cleanup.sh          # 6. delete every Runtime in swebench/arn_by_image.js
 | `SANDBOX` | `agentcore-runtime` | fresh AgentCore session per episode. **`local` is rejected.** |
 | `TB_PREOPEN_BATCHES` | `2` | upcoming batches kept booted ahead (`× RB × NS` = 64 m5 sessions). `0` = off |
 | `WARM_IDLE_TIMEOUT` / `WARM_PING_FRACTION` | `900` / `0.5` | heartbeat any session idle past `fraction × timeout` (always on) |
-| `HARNESS_WORKERS` | `4` | warm in-process harness workers |
+| `HARNESS_WORKERS` | `RB × NS` (32) | harness tier: dispatch workers that pull episodes, start and poll the in-session loop; each episode picks the least-loaded engine |
+| `CONC` | `⌈2W/E⌉` | episode-admission concurrency `S = CONC × num_engines` (W running + W queued) |
 | `EPISODE_MAX_TURNS` / `EPISODE_MAX_TOKENS` | `12` / `1024` | agentic turns / tokens per episode |
 | `TB_EXEC_TIMEOUT` | `180` | per bash-tool command timeout (s) |
 | `MAX_TOKENS_PER_GPU` | `24576` | ≥ one full 12-turn trajectory |
 | `RB` / `NS` / `NR` | 4 / 8 / 11 | GRPO prompts-per-step / group size / num-rollout (real steps `NR-1`) |
-| `MODE` | `A` | stock async only — the pool returns a fan-out list; `B` is rejected |
+| `MODE` | `A` | stock async only — the look-ahead pre-open data source feeds slime's stock driver; `B` is rejected |
 | `EVAL_INTERVAL` / `EVAL_NS` | 10 / 2 | held-out eval cadence / samples |
 
 - Deploy: `SWE_TASKS`, `SWE_LIMIT`, `SWE_BUILD_CONC`, `SWE_REBUILD`, `SWE_NO_REGISTER`,
@@ -120,14 +133,15 @@ bash 6_cleanup.sh          # 6. delete every Runtime in swebench/arn_by_image.js
 
 - `rollout/raw_reward` and `eval/swebench` — the learning signal / held-out solve rate.
 - `[demo] fresh_session=1 preopened=… open_wait_ms=… preopen_idle_ms=…` — one line per episode;
-  `open_wait_ms` near 0 means the m5 cold start was hidden by the pre-open.
+  `open_wait_ms` near 0 means the m5 cold start was hidden by the pre-open. The same line carries
+  `worker`, `qdepth` (> 0 = harness-bound), `engine` and `engine_inflight` (climbing = inference-bound).
 - `perf/sandbox_ms_*` vs `perf/sglang_gen_ms_*` — the sandbox-vs-decode latency split.
 
 ## Folder layout (self-contained)
 
-- `agentcore_slime_demo/` — vendored library (shared with `demo_cpu_terminalbench`). Key pieces:
+- `agentcore_slime_demo/` — vendored library (its pool is shared with `demo_cpu_tasks`' Terminal-Bench rows). Key pieces:
   `swebench.py` (task class + hidden grader), `terminalbench_pool.py` (fresh session per episode +
-  pre-open + strict routing), `terminalbench_pool_generate.py` (the slime hook), `tb_lookahead_source.py`
+  pre-open + strict routing, on top of `harness_pool.py`), `terminalbench_pool_generate.py` (the slime hook), `tb_lookahead_source.py`
   (look-ahead pre-open), `session_keeper.py` (heartbeat).
 - `fetch_swebench.py` — select the subset → `swebench/manifest.json` + `data/` (`--data-only` rebuilds data).
 - `deploy/deploy_swebench.py` — wrap + push one image per instance, capacity provider, one Runtime each.

@@ -37,8 +37,8 @@ triggered by an op you define, persisted where you own it (S3 / session storage)
   state (workspace files, partial results, seeds) to S3 / the session's persistent path; restore on
   the next invoke after a recycle. Cheap, robust, no exotic deps. This *is* the re-seed recovery
   model made explicit (`recovery.py`). **Built + demonstrated:**
-  [`code/demos/demo_gpu_single/`](../code/demos/demo_gpu_single/) with `SNAPSHOT_EVERY=1` (formerly the
-  separate `demo_gpu_snapshot`; reusable mechanism: `agentcore_slime_demo/snapshot_store.py` +
+  [`code/demos/demo_gpu_farm/`](../code/demos/demo_gpu_farm/) with `SNAPSHOT_EVERY=1` (formerly the
+  separate `demo_gpu_snapshot`, then `demo_gpu_single`; snapshots in `demo_gpu_farm/snapshots`; reusable mechanism: `agentcore_slime_demo/snapshot_store.py` +
   `app_snapshot.py`, offline animation `snapshot_demo.py`).
 - **(b) Full process+GPU checkpoint — possible, heavy, fragile.** Bake NVIDIA `cuda-checkpoint`
   (evicts the CUDA context to host memory) + `CRIU` (dumps the process tree) into the image; on

@@ -35,15 +35,19 @@ cluster. The *sandbox* only needs a GPU when the *task* does. Details + citation
 
 ## Which sandbox does a task need? Three tiers
 
-> The current demo set is the 7 standalone demos + 1 experimental in **`code/demos/`**. Start at
+> The current demo set is **3 main demos** (`demo_cpu_tasks` [+ `SCALE=1` harness-scaling preset, + Terminal-Bench as
+> `DATASET=terminalbench`, formerly `demo_cpu_terminalbench`], `demo_cpu_swebench` [+ its EKS twin `demo_cpu_swebench_eks`], `demo_gpu_farm` `FARM=fractional|whole`, local by default or
+> `LOCAL_GPU=0` on a remote g6) + 1 experimental
+> (`demo_cpu_branching`) in **`code/demos/`**. In every demo the mini_claude loop runs inside the
+> episode's sandbox session, dispatched by the decoupled harness tier (`harness_pool.py`). Start at
 > [`code/demos/README.md`](code/demos/README.md). The "Demo A / Demo B" sections below are the
 > original two-demo layout and are kept as history.
 
 | Tier | Sandbox | Use it when | Demos |
 |---|---|---|---|
-| **1 · Managed Code Interpreter** | `SANDBOX=agentcore`, no image, no Runtime | Python 3.12 + numpy/pandas/scipy/sklearn/torch-cpu, sqlite, gcc, node is enough; no git, internet or GPU. **Every literature task** (code, math, SQL, RAG, tool calls, data science) | `demo_cpu_tasks` |
-| **2 · Own Runtime, generic image** | `SANDBOX=agentcore-runtime` + stdlib image (microVM) | the task fits tier 1 but the run doesn't: > ~75 episodes in flight (Code Interpreter invokes are 30/s), heartbeat past idle, VPC | `demo_cpu_scale_lanes`, `demo_cpu_terminalbench/warmstart/`, `demo_cpu_tasks` opt-in |
-| **3 · Own Runtime, custom image** | task-specific image | the environment differs: own OS per task (Terminal-Bench), Claude Code CLI, a > 2 GB image (CPU Instance), CUDA (GPU Instance) | `demo_cpu_terminalbench`, `demo_cpu_branching`, `demo_cpu_instance_pool`, `demo_gpu_*` |
+| **1 · Managed Code Interpreter** | `SANDBOX=agentcore`, no image, no Runtime | **probes only** (since 2026-09-28): no route back to the adapter, so the in-session agent loop can't run there | `demo_cpu_tasks/compare_backends.py`, `demo_cpu_tasks/terminalbench/warmstart/` |
+| **2 · Own Runtime, generic image** | `SANDBOX=agentcore-runtime` + stdlib / `libs` image (microVM) | no task-specific environment: **every literature task** (code, math, SQL, RAG, tool calls, data science); VPC dial-back, heartbeat, > 30 invokes/s | `demo_cpu_tasks` (incl. `SCALE=1`, 256 sessions in flight), `demo_cpu_tasks/terminalbench/warmstart/` |
+| **3 · Own Runtime, custom image** | task-specific image | the environment differs: own OS per task (Terminal-Bench), own repo+env per SWE-bench instance (CPU Instance), Claude Code CLI, CUDA (GPU Instance) | `demo_cpu_tasks DATASET=terminalbench`, `demo_cpu_swebench`, `demo_cpu_branching`, `demo_gpu_farm` |
 
 Pick the lowest tier that works. A tier-1 task gives the same reward on tier 2 (`compare_backends.py`).
 
@@ -79,12 +83,14 @@ driver `train_async.py`**, which overlaps rollout *N+1* with training of *N*. As
    (`train_async.py` asserts `not args.colocate`).
 2. **Harness ⟂ sandbox (Agent Lightning disaggregation).** The **harness** (the agent loop) and
    the **sandbox** (where its tool actions execute) are separate components too. **AgentCore is
-   used as the sandbox**; the harness stays **in-process** (a warm agent loop next to the trainer).
-   This is deliberate: a sandbox wants to be ad-hoc and isolated per episode — AgentCore's
-   per-session microVM model exactly — whereas the harness wants to be long-standing and warm, and
-   episodes are independent, so it needs no per-episode isolation. AgentCore *can* host a harness
-   too, but for RL that is the wrong lifecycle (a cold session per episode); see
-   `docs/harness-sandbox-decoupling.md`.
+   used as the sandbox, and the harness now runs in it** (since 2026-09-28): the mini_claude loop
+   runs inside the episode's own sandbox session and dials the trainer's per-engine
+   `AnthropicAdapter` back, so it scales **with the sandbox, not as part of the trainer** (DSec's
+   "move the agent loop out of the trainer"). What stays in the trainer is a warm dispatch tier
+   (`harness_pool.py`: `HARNESS_WORKERS` workers, default RB×NS) and the adapters. The harness must
+   scale along with inference and the sandbox, or a few coroutines become the ceiling:
+   `throughput = min(inference, sandbox, harness)` (`docs/harness-scaling.md`). The earlier
+   in-process design and the removed two-Runtime variant are in `docs/harness-sandbox-decoupling.md`.
 
 **Why this matters: all five components scale independently.** Disaggregating both levels means
 the pipeline is five separately-scalable services — **trainer**, **inference engine**, **proxy**
@@ -96,7 +102,7 @@ lock-stepped to the others:
 | **Trainer** (Megatron) | more train GPUs / TP·DP | gradient compute |
 | **Inference** (SGLang) | more engines / GPUs | rollout token throughput |
 | **Proxy** (`AnthropicAdapter`) | more adapter replicas | request fan-in (CPU/IO) |
-| **Harness** (mini, in-process) | more rollout concurrency / warm workers | agent-loop latency |
+| **Harness** (mini_claude, in the sandbox session) | `HARNESS_WORKERS` dispatch workers + more sessions | agent-loop latency; trainer-side dispatch |
 | **Sandbox** (Code Interpreter / GPU Runtime) | more sessions / `GpuPool` gate | tool-exec (CPU or CUDA) |
 
 GPU split on this 8×L40S box (trainer + inference; sandbox is CPU for A, and for B a *local*

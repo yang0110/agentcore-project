@@ -19,7 +19,7 @@ policy under training and records each turn into a per-session `TrajectoryManage
 contains ZERO training code: it only has to (a) route every model call through the adapter and
 (b) tag the session so the adapter can key the trajectory. The session id travels in the
 `Authorization: Bearer <session_id>` header, which is where the adapter reads it
-(`sid_from_bearer`). The generate hook's `finish_session` (agentcore_runtime_generate) then drains
+(`sid_from_bearer`). The generate hook's `finish_session` (mini_claude_episode.py) then drains
 that trajectory into loss-masked training samples.
 
 Deliberately NOT here (that is the point — "simple"): no CLI, no Node, no MCP, no subagents, no
@@ -123,7 +123,7 @@ class MiniAgentResult:
     tool_calls: int = 0
     last_exit_code: int | None = None  # exit code of the last bash command, if any
     transcript: list[dict] = field(default_factory=list)  # the raw message list, for debugging
-    where: str = "trainer"           # where the loop ran: trainer | session | trainer_fallback
+    where: str = "session"           # where the loop ran: always the sandbox session (InSessionHarness)
 
 
 class MiniClaudeHarness:

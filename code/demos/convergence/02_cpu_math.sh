@@ -5,8 +5,8 @@
 # TASK / DATASET : Hendrycks MATH competition problems. The policy produces a
 #                  worked solution ending in a \boxed{} answer; the checker
 #                  extracts and normalizes it and compares to the gold answer.
-# SUBSTRATE      : the DEFAULT managed AgentCore Code Interpreter (SANDBOX=agentcore): one
-#                  microVM session per episode, no image / Runtime. Answer-match checker is trivial
+# SUBSTRATE      : our own VPC CPU sandbox Runtime (SANDBOX=agentcore-runtime, steps 2-4): one
+#                  fresh microVM session per episode, loop in the session. Answer-match checker is trivial
 #                  Python => CPU sandbox.
 # BOTTLENECK     : Inference + trainer bound (checker is near-instant). Longer
 #                  chains-of-thought here stress SGLang decode more than the sandbox.

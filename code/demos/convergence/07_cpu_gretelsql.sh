@@ -5,8 +5,8 @@
 # TASK / DATASET : Gretel synthetic text-to-SQL. Given a schema + NL question,
 #                  the policy writes a SQL query; the checker runs it and compares
 #                  the result set (execution-based, not string match).
-# SUBSTRATE      : the DEFAULT managed AgentCore Code Interpreter (SANDBOX=agentcore): one
-#                  microVM session per episode, no image / Runtime. SQL EXECUTION in the sandbox.
+# SUBSTRATE      : our own VPC CPU sandbox Runtime (SANDBOX=agentcore-runtime, steps 2-4): one
+#                  fresh microVM session per episode, loop in the session. SQL EXECUTION in the sandbox.
 # BOTTLENECK     : Sandbox executes SQL against a small in-memory DB — cheap;
 #                  inference + trainer dominate. Reward is denser than pure math
 #                  (partial-schema queries often run), so GRPO signal is healthy.
