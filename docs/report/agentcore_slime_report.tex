@@ -382,7 +382,7 @@ RL}. It is grounded in a working slime + AgentCore project and in the
   \textbf{How to run a real task on it} --- datasets, Dockerfiles,
   deploy commands, and the single slime hook that wires AgentCore in
   without a fork (§``Using AgentCore as the sandbox in an agentic RL
-  workflow''). The project ships \textbf{five main demos, one side note}
+  workflow''). The project ships \textbf{six main demos, one side note}
   (\texttt{demo\_cpu\_instance\_pool}) \textbf{and one experimental}
   (\texttt{demo\_cpu\_branching}). Each is a self-contained folder run
   through the same six numbered step scripts
@@ -403,7 +403,9 @@ RL}. It is grounded in a working slime + AgentCore project and in the
     --- in progress);
   \item
     custom images at scale, one per task
-    (\texttt{demo\_cpu\_terminalbench});
+    (\texttt{demo\_cpu\_terminalbench}), and one per dataset row on CPU
+    Instances when the images outgrow the microVM
+    (\texttt{demo\_cpu\_swebench}, SWE-bench Verified);
   \item
     hiding the container launch with \textbf{pre-open and heartbeat}
     (its \texttt{warmstart/} probe);
@@ -2274,11 +2276,13 @@ hybrid:
   back to the amd64 \textbf{Instances} substrate (workaround \#5).
 \end{itemize}
 
-\emph{Caveat:} this is a \textbf{design answer, not a measured one} ---
-SWE is the one family this project has \textbf{not} yet wired to a real
-dataset or run on hardware (the real-dataset work covers
-GSM8K/MATH-500/HumanEval; SWE-bench/SQL/RAG remain TODO), and, per
-above, SWE-bench's arm64 support is itself experimental.
+\emph{Status:} A--C above are a \textbf{design answer}. What this
+project actually built (\texttt{demo\_cpu\_swebench}, 2026-09-28) is a
+fourth, simpler route: keep SWE-bench's own \textbf{per-instance} amd64
+images and run one Runtime per instance on \textbf{m5 Instances}, which
+sidesteps both the arm64 problem and the 2 GB cap at the price of one
+image + Runtime per row and an m5 cold boot per episode. 20 instances
+are deployed; the oracle check and the RL smoke are still pending.
 
 \hypertarget{foundations-of-agentcore-runtime}{%
 \section{Foundations of AgentCore
@@ -3826,7 +3830,12 @@ sessions \\
 Distinct environments & 11K bases × 100K workspaces, composed at start &
 one image per Runtime; max \textbf{1,000} Runtimes per account \\
 Image delivery & on demand; start time barely depends on image size &
-full image per cold boot (≈ 15 s for 447 MB); 2 GB microVM cap \\
+full image per cold boot (≈ 0.8 s stdlib, ≈ 15 s at 447 MB, grows with
+size); 2 GB microVM cap. \textbf{Ours:} no image at all on Code
+Interpreter (pandas/scipy/sklearn/torch-cpu preinstalled); install heavy
+deps at boot to fit 2 GB; \textgreater{} 2 GB on a Runtime Instance
+(60--80 s m5, ≈ 207 s g6 cold boot, paid once through a warm-shared
+session) \\
 Hiding the cold boot & not needed: lazy loading keeps the pull time low;
 pre-warming rejected, since DSec's bottleneck is I/O volume, not latency
 & \textbf{pre-open (ours)}: while the current batch runs, the sandboxes
@@ -3839,8 +3848,10 @@ timeout by default; max lifetime 8 h on a microVM, 14 days on a Runtime
 Instance \\
 Survives a trainer stall & pause/resume, state kept & \textbf{no
 pause/resume, no state kept}; a heartbeat keeps the sandbox alive \\
-Agent loop & outside the GPU job & in the trainer process (this
-project) \\
+Agent loop & outside the GPU job & \textbf{outside the trainer too
+(ours)}: harness + tools in the same Runtime session, one loop per
+sandbox --- \texttt{demo\_cpu\_branching} today, the other demos being
+ported (their committed results still used the in-process loop) \\
 Reward-hack controls & AppArmor + network allowlists & microVM boundary;
 Landlock and no TCP on shared pools; VPC mode \\
 \end{longtable}
@@ -3901,7 +3912,9 @@ tells one story in seven chapters plus a side note:
   sandbox session is in progress.
 \item
   \textbf{Custom images at scale} --- one image and Runtime per task
-  (\texttt{demo\_cpu\_terminalbench}).
+  (\texttt{demo\_cpu\_terminalbench}), and one per dataset row on m5
+  Instances for images over the microVM cap
+  (\texttt{demo\_cpu\_swebench}).
 \item
   \textbf{Hiding the container launch} --- pre-open the next batches,
   and keep idle sessions alive with a heartbeat (the \texttt{warmstart/}
@@ -3961,8 +3974,8 @@ image & \texttt{demo\_cpu\_tasks} \\
 progress) \\
 \textbf{3 · Own Runtime, custom image} & task-specific image; microVM,
 CPU or GPU Instance & \texttt{demo\_cpu\_terminalbench},
-\texttt{demo\_cpu\_branching}, \texttt{demo\_gpu\_single},
-\texttt{demo\_gpu\_farm}; side note
+\texttt{demo\_cpu\_swebench}, \texttt{demo\_cpu\_branching},
+\texttt{demo\_gpu\_single}, \texttt{demo\_gpu\_farm}; side note
 \texttt{demo\_cpu\_instance\_pool} \\
 \end{longtable}
 
@@ -4009,6 +4022,10 @@ CPU or GPU Instance & \texttt{demo\_cpu\_terminalbench},
     Terminal-Bench pins its own OS image per task (218 Runtimes,
     microVM);
   \item
+    SWE-bench pins its own repo commit + conda env per instance, in
+    amd64 images of 1-2 GB compressed (20 Runtimes, \textbf{CPU
+    Instance}, m5);
+  \item
     the real Claude Code CLI needs node 22 and \texttt{claude} baked in
     (microVM);
   \item
@@ -4051,6 +4068,10 @@ dataset, or a mix & \textbf{passed} on the Code Interpreter
 3--4 & \texttt{demo\_cpu\_terminalbench} & microVM, one image + Runtime
 \textbf{per task} (218) & Terminal-Bench & \textbf{passed} (2026-09-23):
 boot hidden, 4/382 solved; \texttt{warmstart/} probe live \\
+3 & \texttt{demo\_cpu\_swebench} & \textbf{m5 Instance}, one image +
+Runtime \textbf{per dataset row} (20) & SWE-bench Verified & deployed
+20/20; oracle check 1/20 (usable); {[}PENDING: oracle check for the
+other 19 + RL smoke{]} \\
 5 & \texttt{demo\_cpu\_scale\_lanes} & 256 pooled microVM sessions &
 DeepScaleR (fixed) & pool check ok (64 × 64, 2026-09-25); {[}PENDING: 4
 : 256 : 256 RL smoke{]}; old 4 × 4 × 4 lanes passed 2026-09-23, eval
@@ -4162,6 +4183,11 @@ Terminal-Bench (Ch. 3) &
 (\textasciitilde229 single-container tasks) & 135 / 31 usable & a
 \textbf{pinned OS image per task} (packages, services, \texttt{/etc}) &
 \textbf{yes --- one image per task} \\
+SWE-bench Verified (Ch. 3) &
+\href{https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified}{princeton-nlp/SWE-bench\_Verified}
+(500; 20 selected) & 16 / 4 (oracle check pending) & a \textbf{pinned
+repo commit + conda env per instance}, amd64, 1-2 GB compressed &
+\textbf{yes --- one image per row, CPU Instance} \\
 DeepScaleR on a heavy stack (side note) & DeepScaleR (above) & 400 / 40
 & torch + scientific stack, \textbf{\textgreater{} 2 GB image} &
 \textbf{yes --- CPU Instance} \\
@@ -4176,10 +4202,10 @@ SWE bug-fix (Ch. 7) & synthetic SWE tasks & 64 / --- & node 22 + the
 The pattern: \textbf{every dataset from the RL-for-reasoning and
 tool-use literature needs nothing beyond Python and its scientific
 stack}, so it runs on the default sandbox. A custom image is needed only
-for four reasons: a pinned per-task OS (Terminal-Bench), an image larger
-than the 2 GB microVM cap, CUDA, or a toolchain the default lacks (the
-Code Interpreter has no git and no internet, so nothing can be
-\texttt{pip\ install}ed at run time).
+for four reasons: a pinned per-task OS or repo environment
+(Terminal-Bench, SWE-bench), an image larger than the 2 GB microVM cap,
+CUDA, or a toolchain the default lacks (the Code Interpreter has no git
+and no internet, so nothing can be \texttt{pip\ install}ed at run time).
 
 \hypertarget{chapter-2-most-tasks-train-on-the-default-runtime-demo_cpu_tasks}{%
 \subsection{\texorpdfstring{Chapter 2 --- most tasks train on the
@@ -4489,6 +4515,79 @@ images, a fresh microVM per episode, and a tool-calling loop.
 \item
   \textbf{The \texttt{warmstart/} probe} isolates the two cold-start
   mechanisms cheaply, without a trainer.
+\end{itemize}
+
+\hypertarget{demo_cpu_swebench-one-image-per-dataset-row-on-cpu-instances}{%
+\subsubsection{\texorpdfstring{\texttt{demo\_cpu\_swebench} --- one
+image per dataset row, on CPU
+Instances}{demo\_cpu\_swebench --- one image per dataset row, on CPU Instances}}\label{demo_cpu_swebench-one-image-per-dataset-row-on-cpu-instances}}
+
+SWE-bench is the extreme case of a per-row environment: every instance
+is a different repo, commit and dependency set, and SWE-bench ships one
+prebuilt image per instance
+(\texttt{swebench/sweb.eval.x86\_64.\textless{}id\textgreater{}}, repo
+at \texttt{/testbed}, conda env \texttt{testbed}). This demo (split out
+of \texttt{demo\_cpu\_terminalbench\ BENCH=swebench} on 2026-09-28)
+reuses Chapter 3's pool unchanged --- fresh session per episode,
+look-ahead pre-open, always-on heartbeat, strict routing by instance id
+--- and changes the substrate and the grader.
+
+\textbf{Use case covered.} RL on real GitHub issues: the agent edits a
+real repo (django, sympy, sphinx, pytest, astropy, requests, xarray,
+pylint, flask) and the reward is the instance's hidden FAIL\_TO\_PASS +
+PASS\_TO\_PASS tests. 20 SWE-bench Verified instances, one Runtime each
+(16 train / 4 eval).
+
+\textbf{Why this demo.} It is the standard agentic-coding benchmark, and
+it shows the image-pool pattern on images the microVM fleet
+\textbf{cannot run}: SWE-bench images are amd64-only and 1-2 GB
+compressed (3-6 GB on disk), against the microVM's arm64 / 2 GB cap.
+Each Runtime therefore sits on an \textbf{m5.xlarge capacity provider}
+(\texttt{acs\_swe\_cp}, 60 GiB root); one session is one whole instance,
+so isolation is still per machine. This is the ``fall back to amd64
+Instances'' route of §``Tasks frontier labs run in a sandbox'', taken
+per instance rather than per repo family.
+
+\textbf{Design considerations.}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{One Runtime per row.} \texttt{deploy/deploy\_swebench.py}
+  wraps each image with a standalone CPython + the AgentCore HTTP server
+  and registers one Runtime (\texttt{acs\_swe\_*}). The \texttt{testbed}
+  env is never touched, so grading sees exactly what SWE-bench
+  validated. Cost grows linearly with the dataset: full Verified would
+  be 500 images, ECR repos and Runtimes.
+\item
+  \textbf{Hidden tests.} The \texttt{test\_patch} lives only in the
+  trainer-side manifest. After the agent's turns the grader resets the
+  test files to \texttt{base\_commit}, applies the patch, runs the
+  official \texttt{test\_cmd} and parses the log with SWE-bench's own
+  parsers; solved iff every F2P and P2P test passes. Deviation: the
+  official reinstall step is skipped (editable installs, no guaranteed
+  PyPI egress); the oracle check catches any instance this breaks.
+\item
+  \textbf{Oracle check before training.} Gold patch must solve, empty
+  patch must not (\texttt{swebench\_oracle\_check.py}). So far 1 of 20
+  is checked (usable); step 4 runs it for all.
+\item
+  \textbf{Selection.} ``\textless15 min fix'' instances with 1-3 F2P,
+  ≤150 P2P, ≤2 test files and an image ≤3 GB; matplotlib, scikit-learn
+  and seaborn are excluded (4-8 GB images, minutes-long suites).
+\item
+  \textbf{Cold start.} An m5 boot + image pull is \textasciitilde100 s,
+  far slower than a microVM, so the pre-open matters more here, and
+  every pre-opened session is a whole m5 you pay for.
+\item
+  \textbf{Server shim.} The Instance data plane sends chunked
+  \texttt{/invocations} bodies, so the images run
+  \texttt{acs\_swe\_http\_server.py}, which accepts both chunked and
+  Content-Length bodies.
+\item
+  \textbf{Expected reward.} Sparse --- at least as sparse as
+  Terminal-Bench's 4/382 for a 4B policy; a curriculum or easier
+  instances may be needed for signal.
 \end{itemize}
 
 \hypertarget{chapter-4-hiding-the-container-launch-pre-open-and-heartbeat}{%

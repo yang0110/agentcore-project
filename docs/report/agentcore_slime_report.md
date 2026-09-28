@@ -16,10 +16,10 @@ This report is a **hands-on guide for AWS customers doing agentic RL**. It is gr
 - **What tasks to train, and how the reward works** — the verifiable task families frontier labs run in a sandbox, each scored by a programmatic **RLVR** checker, not an LLM judge (§"Tasks frontier labs run in a sandbox").
 - **What AgentCore can and cannot do** as an RL sandbox (and, optionally, harness), and **how to build and customize** your own Runtime — CPU (Code Interpreter) and GPU (Instances) (§"Foundations of AgentCore Runtime").
 - **What AgentCore *is*, precisely** — the three concepts you must not conflate (**Runtime**, **session**, **microVM**), their **1 : N : 1** cardinality, the two compute types (serverless CPU microVM vs GPU **Instances**), and how the **lifecycle** works — implicit launch on first invoke, the **~15-minute idle timer**, and implicit termination on idle / max-lifetime / failed health check (§"Foundations of AgentCore Runtime").
-- **How to run a real task on it** — datasets, Dockerfiles, deploy commands, and the single slime hook that wires AgentCore in without a fork (§"Using AgentCore as the sandbox in an agentic RL workflow"). The project ships **five main demos, one side note** (`demo_cpu_instance_pool`) **and one experimental** (`demo_cpu_branching`). Each is a self-contained folder run through the same six numbered step scripts (`1_prepare_data.sh` … `6_cleanup.sh`), and together they tell one storyline (§"Demos — the storyline at a glance"):
+- **How to run a real task on it** — datasets, Dockerfiles, deploy commands, and the single slime hook that wires AgentCore in without a fork (§"Using AgentCore as the sandbox in an agentic RL workflow"). The project ships **six main demos, one side note** (`demo_cpu_instance_pool`) **and one experimental** (`demo_cpu_branching`). Each is a self-contained folder run through the same six numbered step scripts (`1_prepare_data.sh` … `6_cleanup.sh`), and together they tell one storyline (§"Demos — the storyline at a glance"):
   1. the tasks the literature trains in a sandbox;
   2. most of them train on the **default** AgentCore runtime, today the managed Code Interpreter, with **no image** (`demo_cpu_tasks`; the default is switching to our own generic-image Runtime with the harness inside the sandbox session — in progress);
-  3. custom images at scale, one per task (`demo_cpu_terminalbench`);
+  3. custom images at scale, one per task (`demo_cpu_terminalbench`), and one per dataset row on CPU Instances when the images outgrow the microVM (`demo_cpu_swebench`, SWE-bench Verified);
   4. hiding the container launch with **pre-open and heartbeat** (its `warmstart/` probe);
   5. scaling the rollout on decoupled tiers (`demo_cpu_scale_lanes`);
   6. two GPU demos: one session per instance (`demo_gpu_single`), and one GPU instance serving many sessions (`demo_gpu_farm`, `FARM=fractional|whole`, trusted-only);
@@ -696,7 +696,7 @@ SWE-bench raises a sharper version of the same problem: **each task instance shi
 - **B — A *pool* of Runtimes, one image per ARN, routed by row.** Register **K Runtime ARNs, each with a different baked image**, and have the harness pick the ARN by the row's repo/family instead of round-robin (the *capability-routed* dispatch described in §"Demos"). But hundreds of per-instance images cannot each get a Runtime (operationally heavy, per-region limits), so group at **repo-family** granularity (one `django` image, one `sympy` image, …), **not** per-instance.
 - **C — The practical hybrid (family base image + per-row delta).** Bake the *expensive, shared* layer per repo-family ARN (interpreter version, system libs, repo at a common base) → B; install the *cheap per-commit delta* (that instance's pip deps) at seed → A. This keeps each image small — under the microVM's ~2 GB arm64 cap above — while one ARN still covers many instances. If images are simply too large or too x86-bound, fall back to the amd64 **Instances** substrate (workaround #5).
 
-*Caveat:* this is a **design answer, not a measured one** — SWE is the one family this project has **not** yet wired to a real dataset or run on hardware (the real-dataset work covers GSM8K/MATH-500/HumanEval; SWE-bench/SQL/RAG remain TODO), and, per above, SWE-bench's arm64 support is itself experimental.
+*Status:* A–C above are a **design answer**. What this project actually built (`demo_cpu_swebench`, 2026-09-28) is a fourth, simpler route: keep SWE-bench's own **per-instance** amd64 images and run one Runtime per instance on **m5 Instances**, which sidesteps both the arm64 problem and the 2 GB cap at the price of one image + Runtime per row and an m5 cold boot per episode. 20 instances are deployed; the oracle check and the RL smoke are still pending.
 
 
 ## Foundations of AgentCore Runtime
@@ -1179,7 +1179,7 @@ The demos live in `code/demos/`, all built to one design (`docs/demos-program.md
 
 1. **The tasks** — what the literature trains in a sandbox: dataset, URL, environment dependencies, and whether a custom image is needed.
 2. **Most tasks train on the default runtime** — today the managed Code Interpreter, no image (`demo_cpu_tasks`); switching the default to our own generic-image Runtime with the harness inside the sandbox session is in progress.
-3. **Custom images at scale** — one image and Runtime per task (`demo_cpu_terminalbench`).
+3. **Custom images at scale** — one image and Runtime per task (`demo_cpu_terminalbench`), and one per dataset row on m5 Instances for images over the microVM cap (`demo_cpu_swebench`).
 4. **Hiding the container launch** — pre-open the next batches, and keep idle sessions alive with a heartbeat (the `warmstart/` probe in `demo_cpu_terminalbench`).
 5. **Scaling the rollout on decoupled tiers** (`demo_cpu_scale_lanes`).
 6. **GPU sandboxes** — one session per GPU instance (`demo_gpu_single`), or ONE GPU instance serving MANY sessions (`demo_gpu_farm`, `FARM=fractional` 0.5 + 0.5 of one GPU or `FARM=whole` one whole GPU per episode; trusted-only: shared kernel + shared GPU).
@@ -1195,7 +1195,7 @@ Every demo sits in one of three sandbox tiers. Pick the **lowest tier that works
 |:---|:---|:---|
 | **1 · Managed Code Interpreter** | `SANDBOX=agentcore`, no image | `demo_cpu_tasks` |
 | **2 · Own Runtime, generic image** | `SANDBOX=agentcore-runtime`, stdlib image | `demo_cpu_scale_lanes`, `warmstart/`, `demo_cpu_tasks` opt-in (becoming its default — in progress) |
-| **3 · Own Runtime, custom image** | task-specific image; microVM, CPU or GPU Instance | `demo_cpu_terminalbench`, `demo_cpu_branching`, `demo_gpu_single`, `demo_gpu_farm`; side note `demo_cpu_instance_pool` |
+| **3 · Own Runtime, custom image** | task-specific image; microVM, CPU or GPU Instance | `demo_cpu_terminalbench`, `demo_cpu_swebench`, `demo_cpu_branching`, `demo_gpu_single`, `demo_gpu_farm`; side note `demo_cpu_instance_pool` |
 
 - **Tier 1: the managed Code Interpreter.** An AWS-managed microVM with no image, no Runtime and no IAM role. Use it when Python 3.12 with numpy, pandas, scipy, scikit-learn, torch (CPU), sqlite, gcc and node is enough, the task needs no git, internet or GPU, and a session fits the hard `sessionTimeoutSeconds` cap (≤ 8 h). **Every literature task in this project runs here**: `mbpp`, `humaneval`, `gsm8k`, `math500`, `deepscaler`, `gretelsql`, `hotpotqa`, `xlam`, `mcp`, `libs` (pandas / scipy / sklearn), the synthetic zoo (all 13 families pass) and mixes.
 - **Tier 2: our own Runtime with the generic stdlib image** (`Dockerfile.sandbox.cpu`, microVM). The **task** fits tier 1, but the **run** needs Runtime behaviour:
@@ -1206,6 +1206,7 @@ Every demo sits in one of three sandbox tiers. Pick the **lowest tier that works
   Here: DeepScaleR over 256 pooled sessions (`demo_cpu_scale_lanes`), and the heartbeat and pre-open probes.
 - **Tier 3: our own Runtime with a custom image.** The task's **environment** differs from tier 1:
   - Terminal-Bench pins its own OS image per task (218 Runtimes, microVM);
+  - SWE-bench pins its own repo commit + conda env per instance, in amd64 images of 1-2 GB compressed (20 Runtimes, **CPU Instance**, m5);
   - the real Claude Code CLI needs node 22 and `claude` baked in (microVM);
   - a torch + scientific stack of about 4 GB is over the 2 GB microVM cap (**CPU Instance**, m5);
   - KernelBench needs CUDA (**GPU Instance**, g6; `demo_gpu_farm` runs the same image on this box's GPU 6, or GPUs 6,7 with `FARM=whole`).
@@ -1214,6 +1215,7 @@ Every demo sits in one of three sandbox tiers. Pick the **lowest tier that works
 |:-|:-----------------------|:------------|:---------|:----------------|
 | 1–2 | `demo_cpu_tasks` | managed **Code Interpreter** (default today); own Runtime opt-in — default switching to own Runtime + harness in the sandbox session (in progress) | any literature RLVR dataset, or a mix | **passed** on the Code Interpreter (2026-09-25): gsm8k 0.90, libs 1.0 |
 | 3–4 | `demo_cpu_terminalbench` | microVM, one image + Runtime **per task** (218) | Terminal-Bench | **passed** (2026-09-23): boot hidden, 4/382 solved; `warmstart/` probe live |
+| 3 | `demo_cpu_swebench` | **m5 Instance**, one image + Runtime **per dataset row** (20) | SWE-bench Verified | deployed 20/20; oracle check 1/20 (usable); [PENDING: oracle check for the other 19 + RL smoke] |
 | 5 | `demo_cpu_scale_lanes` | 256 pooled microVM sessions | DeepScaleR (fixed) | pool check ok (64 × 64, 2026-09-25); [PENDING: 4 : 256 : 256 RL smoke]; old 4 × 4 × 4 lanes passed 2026-09-23, eval 0.358 |
 | 6 | `demo_gpu_single` | one `g6.xlarge` (L4) per session | KernelBench | **trained** 10 steps; remote smoke [PENDING: root cause of the op=open 500s] |
 | 6 | `demo_gpu_farm` · `FARM=fractional` | ONE GPU instance, many sessions: 0.5 + 0.5 of **one** GPU (trusted-only) | KernelBench | **passed** (2026-09-25): eval 0.65 |
@@ -1242,11 +1244,12 @@ Every task below is a real RLVR dataset from the literature (or a synthetic fami
 | `mixed` | synthetic mix: math + SQL + CTF + datasci | 174 / 9 | stdlib + pandas | no |
 | synthetic zoo (`math`, `swe`, `sql`, `ctf`, `rag`, …) | `build_family_datasets.py` | tiny | stdlib | no |
 | Terminal-Bench (Ch. 3) | [laude-institute/terminal-bench](https://github.com/laude-institute/terminal-bench) (~229 single-container tasks) | 135 / 31 usable | a **pinned OS image per task** (packages, services, `/etc`) | **yes — one image per task** |
+| SWE-bench Verified (Ch. 3) | [princeton-nlp/SWE-bench_Verified](https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified) (500; 20 selected) | 16 / 4 (oracle check pending) | a **pinned repo commit + conda env per instance**, amd64, 1-2 GB compressed | **yes — one image per row, CPU Instance** |
 | DeepScaleR on a heavy stack (side note) | DeepScaleR (above) | 400 / 40 | torch + scientific stack, **> 2 GB image** | **yes — CPU Instance** |
 | KernelBench (Ch. 6, GPU) | [ScalingIntelligence/KernelBench](https://github.com/ScalingIntelligence/KernelBench) | 100 level-1 / 20 level-2 | CUDA + `nvcc` + torch on a GPU | **yes — GPU Instance** |
 | SWE bug-fix (Ch. 7) | synthetic SWE tasks | 64 / — | node 22 + the `claude` CLI | yes |
 
-The pattern: **every dataset from the RL-for-reasoning and tool-use literature needs nothing beyond Python and its scientific stack**, so it runs on the default sandbox. A custom image is needed only for four reasons: a pinned per-task OS (Terminal-Bench), an image larger than the 2 GB microVM cap, CUDA, or a toolchain the default lacks (the Code Interpreter has no git and no internet, so nothing can be `pip install`ed at run time).
+The pattern: **every dataset from the RL-for-reasoning and tool-use literature needs nothing beyond Python and its scientific stack**, so it runs on the default sandbox. A custom image is needed only for four reasons: a pinned per-task OS or repo environment (Terminal-Bench, SWE-bench), an image larger than the 2 GB microVM cap, CUDA, or a toolchain the default lacks (the Code Interpreter has no git and no internet, so nothing can be `pip install`ed at run time).
 
 ### Chapter 2 — most tasks train on the default runtime (`demo_cpu_tasks`)
 
@@ -1325,6 +1328,24 @@ Terminal-Bench ships each task as its own container (a task `Dockerfile` plus a 
 - **Only single-container tasks** are poolable (one image ↔ one sandbox); multi-service tasks are skipped.
 - **Quota**: the pre-opened plus the running sessions count against Active Session Workloads (5000).
 - **The `warmstart/` probe** isolates the two cold-start mechanisms cheaply, without a trainer.
+
+#### `demo_cpu_swebench` — one image per dataset row, on CPU Instances
+
+SWE-bench is the extreme case of a per-row environment: every instance is a different repo, commit and dependency set, and SWE-bench ships one prebuilt image per instance (`swebench/sweb.eval.x86_64.<id>`, repo at `/testbed`, conda env `testbed`). This demo (split out of `demo_cpu_terminalbench BENCH=swebench` on 2026-09-28) reuses Chapter 3's pool unchanged — fresh session per episode, look-ahead pre-open, always-on heartbeat, strict routing by instance id — and changes the substrate and the grader.
+
+**Use case covered.** RL on real GitHub issues: the agent edits a real repo (django, sympy, sphinx, pytest, astropy, requests, xarray, pylint, flask) and the reward is the instance's hidden FAIL_TO_PASS + PASS_TO_PASS tests. 20 SWE-bench Verified instances, one Runtime each (16 train / 4 eval).
+
+**Why this demo.** It is the standard agentic-coding benchmark, and it shows the image-pool pattern on images the microVM fleet **cannot run**: SWE-bench images are amd64-only and 1-2 GB compressed (3-6 GB on disk), against the microVM's arm64 / 2 GB cap. Each Runtime therefore sits on an **m5.xlarge capacity provider** (`acs_swe_cp`, 60 GiB root); one session is one whole instance, so isolation is still per machine. This is the "fall back to amd64 Instances" route of §"Tasks frontier labs run in a sandbox", taken per instance rather than per repo family.
+
+**Design considerations.**
+
+- **One Runtime per row.** `deploy/deploy_swebench.py` wraps each image with a standalone CPython + the AgentCore HTTP server and registers one Runtime (`acs_swe_*`). The `testbed` env is never touched, so grading sees exactly what SWE-bench validated. Cost grows linearly with the dataset: full Verified would be 500 images, ECR repos and Runtimes.
+- **Hidden tests.** The `test_patch` lives only in the trainer-side manifest. After the agent's turns the grader resets the test files to `base_commit`, applies the patch, runs the official `test_cmd` and parses the log with SWE-bench's own parsers; solved iff every F2P and P2P test passes. Deviation: the official reinstall step is skipped (editable installs, no guaranteed PyPI egress); the oracle check catches any instance this breaks.
+- **Oracle check before training.** Gold patch must solve, empty patch must not (`swebench_oracle_check.py`). So far 1 of 20 is checked (usable); step 4 runs it for all.
+- **Selection.** "<15 min fix" instances with 1-3 F2P, ≤150 P2P, ≤2 test files and an image ≤3 GB; matplotlib, scikit-learn and seaborn are excluded (4-8 GB images, minutes-long suites).
+- **Cold start.** An m5 boot + image pull is ~100 s, far slower than a microVM, so the pre-open matters more here, and every pre-opened session is a whole m5 you pay for.
+- **Server shim.** The Instance data plane sends chunked `/invocations` bodies, so the images run `acs_swe_http_server.py`, which accepts both chunked and Content-Length bodies.
+- **Expected reward.** Sparse — at least as sparse as Terminal-Bench's 4/382 for a 4B policy; a curriculum or easier instances may be needed for signal.
 
 ### Chapter 4 — hiding the container launch: pre-open and heartbeat
 
