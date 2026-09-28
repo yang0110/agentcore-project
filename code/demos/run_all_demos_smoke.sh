@@ -20,11 +20,12 @@ PIN4="SLIME_CUDA_VISIBLE=2,3,4,5 SLIME_NUM_GPUS=4"      # GPUs 6,7 belong to the
 ENTRIES=(
   "demo_cpu_tasks|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2||"
   "demo_cpu_terminalbench|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2||"
+  "demo_cpu_swebench|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2||"
   "demo_cpu_instance_pool|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2||"
   "demo_cpu_scale_lanes|$PIN6 ACTOR_GPUS=2 ROLLOUT_GPUS=4||"
   "demo_gpu_single|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2|2_build_image.sh 3_push_ecr.sh 4_deploy_runtime.sh|6_cleanup.sh"
-  "demo_gpu_farm:fractional|$PIN4 ACTOR_GPUS=2 ROLLOUT_GPUS=2 FARM=fractional|4_deploy_runtime.sh|6_cleanup.sh"
-  "demo_gpu_farm:whole|$PIN4 ACTOR_GPUS=2 ROLLOUT_GPUS=2 FARM=whole|4_deploy_runtime.sh|6_cleanup.sh"
+  "demo_gpu_farm:fractional|$PIN4 ACTOR_GPUS=2 ROLLOUT_GPUS=2 FARM=fractional|2_build_image.sh 4_deploy_runtime.sh|6_cleanup.sh"
+  "demo_gpu_farm:whole|$PIN4 ACTOR_GPUS=2 ROLLOUT_GPUS=2 FARM=whole|2_build_image.sh 4_deploy_runtime.sh|6_cleanup.sh"
 )
 
 for e in "${ENTRIES[@]}"; do
