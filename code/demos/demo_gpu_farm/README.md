@@ -132,7 +132,7 @@ to `NR=STEPS+1`; keep `STEPS × RB ≤ 100`). Convergence wrappers: `../converge
 | `INVOKE_MAX_RETRIES` | 20 | ≈ 10 min patience on transient invoke errors (one invoke per tool op) — do not lower |
 | `B4_SHARED_RUNTIME_SESSION` | auto `b4farm-<32 hex>` | pin it to reuse a warm farm / g6 across runs |
 | `SNAPSHOT_EVERY` / `SNAPSHOT_DIR` / `SNAPSHOT_S3_BUCKET` / `SNAPSHOT_PATHS` / `RECYCLE_AFTER` | 0 / `snapshots/` / unset / `progress.json,work.log,solution.py` / 0 | the snapshot/resume angle (above) |
-| `HEARTBEAT` / `HEARTBEAT_IDLE` / `HEARTBEAT_PING_FRACTION` | auto / 600 / 0.5 | auto = **on for `LOCAL_GPU=0`** (a `SessionKeeper` pings the warm g6 session idle past `fraction × idle` s so it survives the weight-sync stall), **off locally** (the local farm has no idle timeout) |
+| `HEARTBEAT` / `HEARTBEAT_IDLE` / `HEARTBEAT_PING_FRACTION` | on / 600 / 0.5 | **on by default, both `LOCAL_GPU` modes**: a `SessionKeeper` pings any session idle past `fraction × idle` s so it survives the weight-sync stall (on the local farm, which has no idle timeout, the no-op beat is harmless). `HEARTBEAT=0` = the A/B baseline |
 
 Checkpoints go to `ckpt/Qwen3-4B_kernelbench_{farm|remote}_${FARM}[_snapshot]_async`.
 

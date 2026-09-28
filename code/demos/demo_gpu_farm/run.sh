@@ -264,17 +264,13 @@ export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "$SLIME_NUM_GPUS" \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
-# HEARTBEAT (default ON for our own remote Runtimes, SANDBOX=agentcore-* with no local endpoint; off
-# for the Code Interpreter and the local farm, which has no idle timeout): a process-wide
+# HEARTBEAT (default ON, every backend; HEARTBEAT=0 is the A/B baseline): a process-wide
 # SessionKeeper heartbeats every open sandbox session that goes idle past
-# HEARTBEAT_PING_FRACTION*HEARTBEAT_IDLE, so a trainer stall can't idle-reclaim it — a reclaimed
-# session id silently comes back EMPTY (agentcore_slime_demo/session_keeper.py). HEARTBEAT=0 is the
-# A/B baseline. Watch the [demo] heartbeat_session=… lines (0 with HEARTBEAT=0).
-HEARTBEAT="${HEARTBEAT:-${HEARTBEAT_KEEP_WARM:-auto}}"
-if [ "$HEARTBEAT" = auto ]; then
-  case "$SANDBOX" in agentcore-*) HEARTBEAT=1 ;; *) HEARTBEAT=0 ;; esac
-  if [ -n "${AGENTCORE_LOCAL_ENDPOINT:-}" ]; then HEARTBEAT=0; fi
-fi
+# HEARTBEAT_PING_FRACTION*HEARTBEAT_IDLE, so a trainer stall (weight sync, a long train step) can't
+# idle-reclaim it — a reclaimed session id silently comes back EMPTY
+# (agentcore_slime_demo/session_keeper.py). The beat is a no-op exec, so it is harmless where there is
+# no idle timeout (the local farm). Watch the [demo] heartbeat_session=… lines (0 with HEARTBEAT=0).
+HEARTBEAT="${HEARTBEAT:-${HEARTBEAT_KEEP_WARM:-1}}"
 # HEARTBEAT_IDLE must be <= the Runtime's idleRuntimeSessionTimeout. 600 s is safe for every Runtime:
 # older ones were created with 600 s, new ones get RUNTIME_IDLE_TIMEOUT (3600 s, deploy/agentcore_deploy.py).
 HEARTBEAT_IDLE="${HEARTBEAT_IDLE:-600}"

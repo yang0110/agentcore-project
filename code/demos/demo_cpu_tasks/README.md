@@ -253,7 +253,7 @@ WORKERS=1,2,4,8 EPISODES=24 CINF=4 CSBX=8 python3 harness_scaling_demo.py   # kn
 While slime syncs weights, generation stops and sandbox sessions sit idle. On our own Runtime an idle
 session is reclaimed after its idle timeout, and a reclaimed session id silently comes back empty.
 
-- **What it does.** `HEARTBEAT` (default **on** for remote Runtimes; `HEARTBEAT=0` is the A/B
+- **What it does.** `HEARTBEAT` (default **on**; `HEARTBEAT=0` is the A/B
   baseline) wraps every episode's sandbox in `KeptSandbox`. A process-wide `SessionKeeper`
   (`session_keeper.py`) then pings any session that has been idle for more than
   `HEARTBEAT_IDLE × HEARTBEAT_PING_FRACTION` s (600 × 0.5) with `exec("true")`. Each ping logs
