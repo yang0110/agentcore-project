@@ -21,6 +21,7 @@ import os
 from .harness import Trajectory, run_episode
 from .policy import SGLangPolicy
 from .sandbox import make_sandbox
+from . import preopen
 from .session_keeper import maybe_keep_warm
 from .task import CodingTask
 
@@ -144,13 +145,15 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     # `image=task.image` is the capability tag: a heterogeneous batch may hold a family whose
     # sandbox needs a different container image (the `datasci` family needs pandas). make_sandbox
     # routes each episode to the Runtime built from the matching image (round-robin fallback).
-    sandbox = make_sandbox(os.environ.get("SANDBOX", "agentcore"),
-                           region=os.environ.get("AGENTCORE_REGION"),
-                           image=getattr(task, "image", "cpu"))
+    kind, image = os.environ.get("SANDBOX", "agentcore"), getattr(task, "image", "cpu")
 
     # HEARTBEAT=1 (default on our own remote Runtimes, every demo): wrap the sandbox in a KeptSandbox so a process-wide
     # SessionKeeper heartbeats it if it goes idle across the weight-sync barrier. Off => unchanged.
-    sandbox = await maybe_keep_warm(sandbox)
+    # PREOPEN=N (opt-in): take an already-booted fresh session (still one episode, stopped at the end).
+    sandbox = await preopen.take(
+        (kind, image),
+        lambda: maybe_keep_warm(make_sandbox(kind, region=os.environ.get("AGENTCORE_REGION"), image=image)),
+        kind=kind)
     async with sandbox as sb:
         # ONE [router] record per episode: the join that ties this episode's sandbox session (also
         # stamped on every [sbx-op]) to the engine its turns were pinned to and the image/Runtime it
@@ -167,6 +170,11 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
             sandbox_image=getattr(task, "image", "cpu"),
             family=getattr(task, "family", "?"),
         )
+        # HARNESS=mini_claude (default): tool-calling agent via slime's AnthropicAdapter, hidden
+        # grader after the episode (mini_claude_episode.py). HARNESS=direct: the fenced-block loop below.
+        if os.environ.get("HARNESS", "mini_claude") == "mini_claude":
+            from . import mini_claude_episode
+            return await mini_claude_episode.run(args, sample, task, sampling_params, sb, engine)
         traj = await run_episode(policy, sb, task, sampling_params)
 
     tokens, response_length, loss_mask, rollout_log_probs = build_token_stream(

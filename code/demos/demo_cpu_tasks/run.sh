@@ -1,19 +1,21 @@
 #!/bin/bash
 # demo_cpu_tasks — ONE demo over many RLVR datasets AND their mixes (DATASET=mbpp|gsm8k|…, default
 # mbpp; DATASET=a,b,c or DATASET=mixed for a MIXED-task batch — see the DATASET selector below; a single
-# dataset is just the one-element mix). REMOTE-sandbox, OUR multi-turn run_episode harness. REAL slime training,
-# on the DEFAULT AgentCore sandbox (SANDBOX=agentcore = the managed Code Interpreter: no Docker image,
-# no ECR, no Runtime to deploy — it already ships python3.12 + numpy/pandas/scipy/sklearn/sympy/torch-cpu,
-# gcc and node, which covers every dataset here).
+# dataset is just the one-element mix). REMOTE-sandbox, MiniClaudeHarness (HARNESS=mini_claude). REAL slime
+# training, on OUR OWN AgentCore Runtime by default (SANDBOX=agentcore-runtime: deploy/Dockerfile.sandbox.cpu,
+# a stdlib microVM image, networkMode=VPC) with the agent loop INSIDE each episode's session
+# (HARNESS_WHERE=session, dialling this box's adapter back SG->SG); the session is stopped when the episode
+# ends. Zero-setup opt-in: SANDBOX=agentcore = the managed Code Interpreter (no image/ECR/Runtime; ships
+# pandas/scipy/sklearn/torch-cpu/gcc/node) — it has no route back to the adapter, so the loop runs here.
 # ASYNC (decoupled) mode. This dir owns its data/ + ckpt/, but imports the SHARED agentcore_slime_demo
 # library from its own vendored copy in this dir (on PYTHONPATH). Runs INSIDE the persistent
 # container agentcore_p4 (slimerl/slime).
 #
-# Harness/sandbox split (SAME decoupled shape as demo_gpu_single): the run_episode harness runs IN-PROCESS
-# on this box inside generate.generate, and the sandbox (write_file / exec / read_file) is ONE fresh
-# AgentCore session per episode — by default a managed Code Interpreter session (SANDBOX=agentcore),
-# opt-in our own Runtime built from deploy/Dockerfile.sandbox.cpu (SANDBOX=agentcore-runtime, reached
-# over invoke_agent_runtime). There is NO separate harness/adapter Runtime.
+# Harness/sandbox placement (DSec §6.2: one agent loop per sandbox, sharing its lifetime): each episode
+# gets ONE fresh AgentCore session; mini_claude_episode.py writes the stdlib agent loop into it
+# (in_session_harness.py + session_runner.py), the loop calls the policy through this box's per-engine
+# AnthropicAdapter (tokens recorded here), and a hidden grader scores the workdir after it stops.
+# Only the adapter + token record stay in the trainer. HARNESS_WHERE=trainer runs the loop here instead.
 #
 # Async/decoupled: agentic rollouts have long, variable latency (multi-turn code repair in a
 # sandbox). slime's async driver (train_async.py) runs trainer GPUs and SGLang inference GPUs on
@@ -33,9 +35,9 @@
 # GPU split (8xL40S): 4 train + 4 inference + 0 env. MBPP checker is plain Python/IO => CPU envs,
 # so all 8 GPUs serve the policy (train + infer).
 #
-# Sandbox backend (SANDBOX): agentcore (DEFAULT) -> the managed AWS Code Interpreter microVM (nothing
-# to build or deploy); agentcore-runtime -> our own AgentCore Runtime sandbox (opt-in; needs
-# AGENTCORE_SANDBOX_RUNTIME_ARN(S) — steps 2-4 with SANDBOX=agentcore-runtime); SANDBOX=local is DISABLED for CPU demos (remote-only; see the guard below). Tunables: MODE (A|B
+# Sandbox backend (SANDBOX): agentcore-runtime (DEFAULT) -> our own AgentCore Runtime sandbox (needs
+# AGENTCORE_SANDBOX_RUNTIME_ARN(S) — steps 2-4 deploy it, VPC mode); agentcore -> the managed AWS Code
+# Interpreter microVM (opt-in, nothing to build or deploy); SANDBOX=local is DISABLED for CPU demos (remote-only; see the guard below). Tunables: MODE (A|B
 # async mode), RB (rollout-batch-size), NS (n-samples-per-prompt), NR (num-rollout), TEMP
 # (sampling temp), CONC (sglang-server-concurrency), EVAL_INTERVAL/EVAL_NS.
 #
@@ -59,8 +61,8 @@
 # same reward. Reward variance within groups (harder tasks / higher temp) yields nonzero gradient.
 set -euo pipefail
 
-SANDBOX="${SANDBOX:-agentcore}"   # agentcore -> managed Code Interpreter (DEFAULT, no image);
-                                  # agentcore-runtime -> our own Runtime. CPU demo => REMOTE-ONLY (no local).
+SANDBOX="${SANDBOX:-agentcore-runtime}"   # agentcore-runtime -> our own VPC Runtime (DEFAULT);
+                                  # agentcore -> managed Code Interpreter (opt-in). CPU demo => REMOTE-ONLY (no local).
 # CPU demos run ONLY on remote managed serverless AgentCore sandbox sessions — never local. The local
 # (in-container LocalSandbox) path is rejected here so a CPU training run can never silently fall back
 # off the AgentCore substrate the demo is meant to exercise. (GPU demos keep a local fallback because
@@ -354,6 +356,13 @@ SGLANG_ARGS=(
    # clients) — see the ablation doc's "can the in-process harness handle large C" section.
    --sglang-server-concurrency "${CONC:-4}"
 )
+# HARNESS=mini_claude (default): the tool-calling MiniClaudeHarness via slime's AnthropicAdapter
+# (mini_claude_episode.py, hidden grader) needs SGLang's qwen25 tool parser + qwen3 reasoning parser,
+# or every tool call is dead text (the A3/B3 zero-reward bug). HARNESS=direct = fenced-block loop.
+export HARNESS="${HARNESS:-mini_claude}"
+if [[ "$HARNESS" == mini_claude ]]; then
+  SGLANG_ARGS+=(--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3)
+fi
 
 MISC_ARGS=(
    --attention-dropout 0.0
@@ -376,6 +385,12 @@ RUNTIME_ENV_JSON="{
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
     \"HEARTBEAT\": \"${HEARTBEAT}\",
+    \"HARNESS\": \"${HARNESS}\",
+    \"HARNESS_WHERE\": \"${HARNESS_WHERE:-}\",
+    \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST:-}\",
+    \"ADAPTER_PORT_BASE\": \"${ADAPTER_PORT_BASE:-18100}\",
+    \"PREOPEN\": \"${PREOPEN:-0}\",
+    \"MINI_SESSION_POLL_SEC\": \"${MINI_SESSION_POLL_SEC:-25}\",
     \"AGENTCORE_CI_SESSION_TIMEOUT\": \"${AGENTCORE_CI_SESSION_TIMEOUT}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE\": \"$(printf '%s' "${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE:-}" | sed 's/\\/\\\\/g; s/\"/\\\"/g')\",
     \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",

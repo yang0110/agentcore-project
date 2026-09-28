@@ -223,6 +223,13 @@ SGLANG_ARGS=(
    --sglang-mem-fraction-static 0.7
    --sglang-server-concurrency "${CONC:-4}"
 )
+# HARNESS=mini_claude (default): the tool-calling MiniClaudeHarness via slime's AnthropicAdapter
+# (mini_claude_episode.py, hidden grader) needs SGLang's qwen25 tool parser + qwen3 reasoning parser,
+# or every tool call is dead text (the A3/B3 zero-reward bug). HARNESS=direct = fenced-block loop.
+export HARNESS="${HARNESS:-mini_claude}"
+if [[ "$HARNESS" == mini_claude ]]; then
+  SGLANG_ARGS+=(--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3)
+fi
 
 MISC_ARGS=(
    --attention-dropout 0.0
@@ -260,6 +267,12 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"/root/Megatron-LM:${DEMO_DIR}:/root/slime\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
+    \"HARNESS_WHERE\": \"${HARNESS_WHERE:-}\",
+    \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST:-}\",
+    \"ADAPTER_PORT_BASE\": \"${ADAPTER_PORT_BASE:-18100}\",
+    \"MINI_SESSION_POLL_SEC\": \"${MINI_SESSION_POLL_SEC:-25}\",
+    \"HARNESS\": \"${HARNESS}\",
+    \"PREOPEN\": \"${PREOPEN:-0}\",
     \"HEARTBEAT\": \"${HEARTBEAT}\",
     \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",
     \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\",

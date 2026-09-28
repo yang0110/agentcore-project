@@ -9,9 +9,12 @@ Runtime built from ITS task's image — the exact same data-driven routing demo_
 for 3 images, here at ~229-image scale.
 
 Substrate choice (differs from imagepool on purpose):
-  * networkMode = PUBLIC (not VPC). Terminal-Bench's `run-tests.sh` installs uv + pytest from the
-    internet at grade time, so the sandbox needs egress. Reached only via the IAM control plane
-    (invoke_agent_runtime); it never dials back, so PUBLIC is safe and needs no SG rule.
+  * networkMode = VPC with NAT egress (TB_NETWORK=VPC, default). The mini_claude loop runs INSIDE
+    the task's session and dials the trainer's adapter back over the VPC (SG->SG rule on the adapter
+    port range, opened here), and Terminal-Bench's `run-tests.sh` installs uv + pytest from the
+    internet at grade time, so the session also needs egress: it lands in our private
+    `<prefix>-egress-<az>` subnets routed to the VPC's EXISTING NAT gateway (outbound only, no public
+    IP, no inbound). TB_NETWORK=PUBLIC = the old pull-only shape (harness then falls back to the trainer).
   * arm64, <= 2048 MB per image (the managed serverless fleet cap, AgentCore service quota). Task
     images that only exist for amd64, fail to build for arm64, or exceed the cap are reported in
     tasks/images.csv and SKIPPED — the pool is "every task that built + fits + registered".
@@ -257,8 +260,12 @@ def register_all(rows: list[dict], xrole: str) -> None:
         if not tok:
             break
     art = lambda uri: {"containerConfiguration": {"containerUri": uri}}  # noqa: E731
+    vpc = os.environ.get("TB_NETWORK", "VPC").upper() == "VPC"
+    network = d.vpc_network("nat") if vpc else {"networkMode": "PUBLIC"}
+    if vpc:
+        d.open_dialback(network["networkModeConfig"]["securityGroups"][0])
     common = dict(roleArn=xrole, protocolConfiguration={"serverProtocol": "HTTP"},
-                  networkConfiguration={"networkMode": "PUBLIC"},
+                  networkConfiguration=network,
                   lifecycleConfiguration=d.runtime_lifecycle(d.MICROVM_MAX_LIFETIME),  # RUNTIME_IDLE_TIMEOUT
                   environmentVariables={"AWS_REGION": REGION})
 
@@ -277,7 +284,10 @@ def register_all(rows: list[dict], xrole: str) -> None:
             else:
                 rid, arn = cur["agentRuntimeId"], cur["agentRuntimeArn"]
                 live = control.get_agent_runtime(agentRuntimeId=rid)
-                if live["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] != row["uri"]:
+                if (live["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] != row["uri"]
+                        or live.get("networkConfiguration", {}).get("networkMode") != network["networkMode"]
+                        or {k: v for k, v in (live.get("networkConfiguration", {}).get("networkModeConfig") or {}).items()
+                            if k in ("securityGroups", "subnets")} != (network.get("networkModeConfig") or {})):
                     control.update_agent_runtime(agentRuntimeId=rid, agentRuntimeArtifact=art(row["uri"]), **common)
             while True:
                 st = control.get_agent_runtime(agentRuntimeId=rid)

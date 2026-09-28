@@ -12,8 +12,8 @@ g6**, so the instance count does not scale with concurrency.
 > `demo_gpu_single` (the default path), `demo_gpu_snapshot` (now `SNAPSHOT_EVERY=1`) and
 > `demo_gpu_customruntime` (the "why a custom Runtime" angle plus `gpu_torch_smoke.py`). All three had
 > the same trainer, the same KernelBench data and the same g6 image. The on-box Ray-farm demos are
-> separate: `demo_gpu_farm_fractional` (two episodes share one local GPU) and `demo_gpu_farm_whole`
-> (one whole local GPU per episode) run the same image locally.
+> separate: `demo_gpu_farm` (`FARM=fractional`: two episodes share one local GPU; `FARM=whole`: one
+> whole local GPU per episode) runs the same image locally, as one instance serving many sessions.
 
 | Angle | How | What it shows |
 |---|---|---|
@@ -127,7 +127,7 @@ The default `SANDBOX=agentcore-ray-farm` puts every episode in ONE warm g6 (one 
 **What was verified.** On the g6 (2026-09-25, a plain exec on the deployed image): uid 0 with
 CapInh/CapPrm/CapEff/CapBnd/CapAmb all 0, NoNewPrivs=1, Seccomp=2, 4 vCPU, one L4. So on this demo's
 default path the farm runs in its shared-uid fallback. The per-slot-uid mode was probed live on the
-local farm (`demo_gpu_farm_fractional/logs/isolation_probe_20260925.log`), which is what
+local farm (`demo_gpu_farm/logs/isolation_probe_20260925.log`), which is what
 `LOCAL_GPU=1` gets. **g6 image rebuild: pending.** The hardened farm code has not been deployed to a
 g6; the next `2_build_image.sh` + `4_deploy_runtime.sh` picks it up. It was not rebuilt now because,
 given the measured capabilities, it could only show the fallback.

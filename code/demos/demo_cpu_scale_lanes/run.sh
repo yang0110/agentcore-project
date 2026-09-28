@@ -70,13 +70,18 @@ GBS=$(( RB * NS ))     # global batch = all samples, 1 optimizer step per rollou
 
 # ---- THE THREE TIERS (sized independently) -------------------------------------------------------
 # inference: E = ROLLOUT_GPUS / GPUS_PER_ENGINE SGLang engines (default 4 x TP1), least-loaded per episode.
-# harness:   HARNESS_WORKERS warm asyncio workers in the rollout process (default 256), pull-balanced.
-# sandbox:   SANDBOX_SESSIONS persistent AgentCore sessions = microVMs (default 256), any free one per
-#            episode, opened once at start at SANDBOX_OPEN_RATE/s (AgentCore allows 25 new sessions/s);
-#            0 => a fresh session per episode. Set HARNESS_WORKERS != SANDBOX_SESSIONS (or fewer rollout
-#            GPUs) to make one tier the ceiling of throughput = min(inference, sandbox, harness).
+# harness:   HARNESS_WORKERS asyncio dispatchers in the rollout process (default 256), pull-balanced.
+#            With HARNESS_WHERE=session (default) each episode's agent loop runs INSIDE its sandbox
+#            session and dials the engine's adapter back (ADAPTER_PORT_BASE+e); the dispatcher only
+#            starts it and polls, so the harness tier scales with the sandbox tier. HARNESS_WHERE=trainer
+#            = the old in-process warm workers.
+# sandbox:   SANDBOX_SESSIONS=0 (default) => a FRESH session per episode, stopped (StopRuntimeSession)
+#            when the episode ends. N>0 => N persistent sessions = microVMs, any free one per episode in
+#            a fresh workdir, opened once at start at SANDBOX_OPEN_RATE/s (AgentCore allows 25 new
+#            sessions/s). Set HARNESS_WORKERS below the sandbox capacity (or fewer rollout GPUs) to make
+#            one tier the ceiling of throughput = min(inference, sandbox, harness).
 HARNESS_WORKERS="${HARNESS_WORKERS:-256}"
-SANDBOX_SESSIONS="${SANDBOX_SESSIONS:-256}"
+SANDBOX_SESSIONS="${SANDBOX_SESSIONS:-0}"
 SANDBOX_OPEN_RATE="${SANDBOX_OPEN_RATE:-20}"
 EPISODE_MAX_TURNS="${EPISODE_MAX_TURNS:-4}"
 EPISODE_MAX_TOKENS="${EPISODE_MAX_TOKENS:-1024}"
@@ -258,6 +263,11 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"/root/Megatron-LM:${DEMO_DIR}:/root/slime\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
+    \"HARNESS_WHERE\": \"${HARNESS_WHERE:-}\",
+    \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST:-}\",
+    \"ADAPTER_PORT_BASE\": \"${ADAPTER_PORT_BASE:-18100}\",
+    \"MINI_SESSION_POLL_SEC\": \"${MINI_SESSION_POLL_SEC:-25}\",
+    \"PREOPEN\": \"${PREOPEN:-0}\",
     \"HEARTBEAT\": \"${HEARTBEAT}\",
     \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",
     \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\",

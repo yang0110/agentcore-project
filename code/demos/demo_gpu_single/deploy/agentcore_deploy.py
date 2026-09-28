@@ -16,7 +16,8 @@ CLI (idempotent; an existing Runtime / capacity provider of the same name is reu
     agentcore_deploy.py ecr-uri   --repo acs-tasks-cpu                  # create repo if needed, print URI
     agentcore_deploy.py runtime   --name acs_tasks_cpu --image URI [--env K=V ...]
                                   [--instance m5.2xlarge --cp acs_bigimage_cp [--root-gib 40] [--volume-gib 0]]
-                                  [--network VPC]                      # prints the Runtime ARN (last line)
+                                  [--network VPC|PUBLIC]               # prints the Runtime ARN (last line)
+    agentcore_deploy.py adapter-ingress                                # SG->SG dial-back rule(s) only
     agentcore_deploy.py delete-runtime --name acs_tasks_cpu
     agentcore_deploy.py delete-cp      --name acs_bigimage_cp
 
@@ -37,7 +38,14 @@ from botocore.exceptions import ClientError
 
 REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-west-2"
 PREFIX = os.environ.get("NAME_PREFIX", "acs")
-ADAPTER_PORT = int(os.environ.get("ADAPTER_PORT", "18021"))
+ADAPTER_PORT = int(os.environ.get("ADAPTER_PORT", "18021"))          # branching's pinned CLI adapter
+# The in-session mini_claude loop (HARNESS_WHERE=session) dials the trainer's per-engine adapters back
+# on ADAPTER_PORT_BASE .. +ADAPTER_PORT_SPAN-1 (in_session_harness.adapter_bind); opened SG->SG below.
+ADAPTER_PORT_BASE = int(os.environ.get("ADAPTER_PORT_BASE", "18100"))
+ADAPTER_PORT_SPAN = int(os.environ.get("ADAPTER_PORT_SPAN", "64"))
+# Every Runtime is created in networkMode=VPC by default (private endpoints, no public route), so the
+# session can dial the adapter back over the VPC. RUNTIME_NETWORK=PUBLIC keeps the old pull-only shape.
+RUNTIME_NETWORK = os.environ.get("RUNTIME_NETWORK", "VPC").upper()
 GPU_INSTANCE = os.environ.get("GPU_INSTANCE", "g6.xlarge")
 MODELS_GIB = int(os.environ.get("MODELS_GIB", "40"))
 # Session lifecycle of every Runtime created here. The idle timeout must outlast the worst trainer
@@ -182,22 +190,47 @@ def trainer_sgs(private_ip: str) -> list[str]:
     return [g["GroupId"] for g in enis[0]["Groups"]]
 
 
-def open_adapter_port(private_ip: str, runtime_sg: str) -> None:
-    """Allow the harness (in runtime_sg) inbound to the adapter port on the trainer box's SG.
+def open_adapter_port(private_ip: str, runtime_sg: str, from_port: int = ADAPTER_PORT,
+                      to_port: int | None = None) -> None:
+    """Allow the harness (in runtime_sg) inbound to the adapter port(s) on the trainer box's SG.
     NO public port: the source is the runtime security group, not a CIDR."""
     ec2 = boto3.client("ec2", region_name=REGION)
+    to_port = from_port if to_port is None else to_port
+    ports = f"{from_port}" if to_port == from_port else f"{from_port}-{to_port}"
     for sg in trainer_sgs(private_ip):
         try:
             ec2.authorize_security_group_ingress(GroupId=sg, IpPermissions=[{
-                "IpProtocol": "tcp", "FromPort": ADAPTER_PORT, "ToPort": ADAPTER_PORT,
+                "IpProtocol": "tcp", "FromPort": from_port, "ToPort": to_port,
                 "UserIdGroupPairs": [{"GroupId": runtime_sg,
-                                      "Description": "AgentCore harness Runtime to AnthropicAdapter proxy"}]}])
-            err(f"opened tcp/{ADAPTER_PORT} on {sg} from {runtime_sg}")
+                                      "Description": "AgentCore session harness to AnthropicAdapter"}]}])
+            err(f"opened tcp/{ports} on {sg} from {runtime_sg}")
         except ClientError as e:
             if "InvalidPermission.Duplicate" in str(e):
-                err(f"ingress tcp/{ADAPTER_PORT} on {sg} from {runtime_sg} already present")
+                err(f"ingress tcp/{ports} on {sg} from {runtime_sg} already present")
             else:
                 raise
+
+
+def trainer_private_ip() -> str:
+    """This box's private IP (the adapter host the sessions dial): ADAPTER_PUBLIC_HOST, else the
+    egress interface address (no packet is sent)."""
+    import socket
+    if os.environ.get("ADAPTER_PUBLIC_HOST"):
+        return os.environ["ADAPTER_PUBLIC_HOST"]
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+def open_dialback(runtime_sg: str) -> None:
+    """SG->SG ingress on the trainer box for every adapter a session may dial: the in-session
+    mini_claude range and branching's pinned CLI port. Idempotent."""
+    ip = trainer_private_ip()
+    open_adapter_port(ip, runtime_sg, ADAPTER_PORT_BASE, ADAPTER_PORT_BASE + ADAPTER_PORT_SPAN - 1)
+    open_adapter_port(ip, runtime_sg, ADAPTER_PORT)
 
 
 # The harness runs in networkMode=VPC, so its egress has NO internet route. To PULL its ECR image
@@ -282,6 +315,83 @@ def ensure_vpc_endpoints(vpc_id: str, subnets: list[str], sg: str) -> list[str]:
     harness_subnets = [sn for az, sn in one_per_az.items() if az in ok_azs]
     err(f"harness will use subnets in AZs {sorted(ok_azs)}: {harness_subnets}")
     return harness_subnets
+
+
+# RUNTIME_EGRESS=nat: a VPC Runtime whose tasks need the internet (Terminal-Bench / SWE-bench tests
+# pip/uv/apt at grade time) lands in OUR private subnets whose only default route is an EXISTING NAT
+# gateway: outbound-only, still no public IP and no inbound path. We never create a NAT gateway (it is
+# billed per hour); if the VPC has none, this stops with instructions. Default (none) = endpoints only.
+RUNTIME_EGRESS = os.environ.get("RUNTIME_EGRESS", "none").lower()
+EGRESS_TAG = f"{PREFIX}-egress"
+
+
+def ensure_egress_subnets(vpc_id: str, azs: list[str]) -> list[str]:
+    """One private `<prefix>-egress-<az>` subnet per AZ in ``azs``, all on one route table
+    (0.0.0.0/0 -> the VPC's NAT gateway, plus the S3 gateway endpoint). Idempotent."""
+    import ipaddress
+    ec2 = boto3.client("ec2", region_name=REGION)
+    nat = os.environ.get("AGENTCORE_NAT_GATEWAY") or next(
+        (n["NatGatewayId"] for n in ec2.describe_nat_gateways(Filters=[
+            {"Name": "vpc-id", "Values": [vpc_id]}, {"Name": "state", "Values": ["available"]}])["NatGateways"]),
+        None)
+    if not nat:
+        die(f"RUNTIME_EGRESS=nat but {vpc_id} has no available NAT gateway; create one (billed hourly) "
+            "and/or set AGENTCORE_NAT_GATEWAY, or deploy with RUNTIME_EGRESS=none")
+    all_subnets = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])["Subnets"]
+    mine = {sn["AvailabilityZone"]: sn["SubnetId"] for sn in all_subnets
+            if any(t["Key"] == "Name" and t["Value"].startswith(EGRESS_TAG) for t in sn.get("Tags", []))}
+    used = [ipaddress.ip_network(sn["CidrBlock"]) for sn in all_subnets]
+    vpc_net = ipaddress.ip_network(ec2.describe_vpcs(VpcIds=[vpc_id])["Vpcs"][0]["CidrBlock"])
+    free = (c for c in vpc_net.subnets(new_prefix=22) if not any(c.overlaps(u) for u in used))
+    for az in azs:
+        if az in mine:
+            continue
+        cidr = str(next(free))
+        sn = ec2.create_subnet(VpcId=vpc_id, AvailabilityZone=az, CidrBlock=cidr, TagSpecifications=[{
+            "ResourceType": "subnet", "Tags": [{"Key": "Name", "Value": f"{EGRESS_TAG}-{az}"}]}])["Subnet"]
+        mine[az] = sn["SubnetId"]
+        err(f"created private egress subnet {sn['SubnetId']} {cidr} in {az}")
+
+    rts = ec2.describe_route_tables(Filters=[{"Name": "vpc-id", "Values": [vpc_id]},
+                                             {"Name": "tag:Name", "Values": [EGRESS_TAG]}])["RouteTables"]
+    if rts:
+        rt = rts[0]["RouteTableId"]
+    else:
+        rt = ec2.create_route_table(VpcId=vpc_id, TagSpecifications=[{
+            "ResourceType": "route-table", "Tags": [{"Key": "Name", "Value": EGRESS_TAG}]}])["RouteTable"]["RouteTableId"]
+        ec2.create_route(RouteTableId=rt, DestinationCidrBlock="0.0.0.0/0", NatGatewayId=nat)
+        err(f"created route table {rt}: 0.0.0.0/0 -> {nat}")
+    assoc = {a.get("SubnetId") for r in ec2.describe_route_tables(RouteTableIds=[rt])["RouteTables"]
+             for a in r.get("Associations", [])}
+    for sn in mine.values():
+        if sn not in assoc:
+            ec2.associate_route_table(RouteTableId=rt, SubnetId=sn)
+    # ECR layers come from S3: keep that on the gateway endpoint rather than through the NAT.
+    for ep in ec2.describe_vpc_endpoints(Filters=[
+            {"Name": "vpc-id", "Values": [vpc_id]},
+            {"Name": "service-name", "Values": [f"com.amazonaws.{REGION}.s3"]}])["VpcEndpoints"]:
+        if rt not in ep.get("RouteTableIds", []):
+            ec2.modify_vpc_endpoint(VpcEndpointId=ep["VpcEndpointId"], AddRouteTableIds=[rt])
+    return [mine[az] for az in azs]
+
+
+def vpc_network(egress: str = RUNTIME_EGRESS) -> dict:
+    """networkConfiguration for a VPC-mode managed Runtime: private endpoints always; with
+    egress=nat, our NAT-routed private subnets in the same (endpoint-served) AZs."""
+    vpc_id, subnets, sg = default_vpc()
+    subnets = ensure_vpc_endpoints(vpc_id, subnets, sg)
+    ec2 = boto3.client("ec2", region_name=REGION)
+    azs = sorted({s["AvailabilityZone"] for s in ec2.describe_subnets(SubnetIds=subnets)["Subnets"]})
+    if egress == "nat":
+        subnets = ensure_egress_subnets(vpc_id, azs)
+    else:
+        # The AZ's DEFAULT subnet (no public IP is assigned to a Runtime ENI, so no internet), not
+        # whichever subnet the endpoint picked: another team's NAT-routed private subnet would give
+        # sessions in that one AZ egress the others lack.
+        dflt = {sn["AvailabilityZone"]: sn["SubnetId"] for sn in ec2.describe_subnets(Filters=[
+            {"Name": "vpc-id", "Values": [vpc_id]}, {"Name": "default-for-az", "Values": ["true"]}])["Subnets"]}
+        subnets = [dflt[az] for az in azs if az in dflt] or subnets
+    return {"networkMode": "VPC", "networkModeConfig": {"securityGroups": [sg], "subnets": subnets}}
 
 
 # ----------------------------------------------------------------------------- Runtimes
@@ -501,13 +611,17 @@ def main():
     p.add_argument("--name", required=True)
     p.add_argument("--image", required=True)
     p.add_argument("--env", action="append", default=[], metavar="K=V")
-    p.add_argument("--network", default="PUBLIC", choices=["PUBLIC", "VPC"])
+    p.add_argument("--network", default=RUNTIME_NETWORK, choices=["PUBLIC", "VPC"],
+                   help="managed microVM network mode (default RUNTIME_NETWORK=VPC); Instances take the CP's VPC")
+    p.add_argument("--egress", default=RUNTIME_EGRESS, choices=["none", "nat"],
+                   help="VPC microVM internet egress: none (endpoints only) | nat (existing NAT, outbound only)")
     p.add_argument("--instance", default="", help="capacity-provider instance type (m5.*, g6.*); empty = microVM")
     p.add_argument("--cp", default="", help="capacity provider name (default <PREFIX>_<instance family>_cp)")
     p.add_argument("--root-gib", type=int, default=30)
     p.add_argument("--volume-gib", type=int, default=0)
     p = sub.add_parser("delete-runtime"); p.add_argument("--name", required=True)
     p = sub.add_parser("delete-cp"); p.add_argument("--name", required=True)
+    sub.add_parser("adapter-ingress", help="open the SG->SG dial-back rule(s) on this box only")
     a = ap.parse_args()
 
     if a.cmd == "ecr-uri":
@@ -516,6 +630,8 @@ def main():
         delete_runtime(a.name)
     elif a.cmd == "delete-cp":
         delete_capacity_provider(a.name)
+    elif a.cmd == "adapter-ingress":
+        open_dialback(default_vpc()[2])
     elif a.cmd == "runtime":
         env = {"AWS_REGION": REGION, "SANDBOX_WORKDIR": "/workspace"}
         env.update(kv.split("=", 1) for kv in a.env)
@@ -529,13 +645,14 @@ def main():
             arn = runtime_on_cp(a.name, a.image, xrole, cp, env, volume=bool(a.volume_gib))
         else:
             if a.network == "VPC":
-                vpc_id, subnets, sg = default_vpc()
-                subnets = ensure_vpc_endpoints(vpc_id, subnets, sg)
-                network = {"networkMode": "VPC",
-                           "networkModeConfig": {"securityGroups": [sg], "subnets": subnets}}
+                network = vpc_network(a.egress)
             else:
                 network = {"networkMode": "PUBLIC"}
             arn = managed_runtime(a.name, a.image, xrole, env, network)
+        if a.instance or a.network == "VPC":
+            # Instances sit in the CP's default-VPC subnets + SG; VPC microVMs in the same SG. Either
+            # way the in-session harness dials this box back, so admit that SG (not a CIDR).
+            open_dialback(default_vpc()[2])
         print(arn)
 
 

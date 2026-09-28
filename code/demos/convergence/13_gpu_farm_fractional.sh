@@ -1,10 +1,10 @@
 #!/bin/bash
 # ============================================================================
-# CONVERGENCE RUN 13 — demo_gpu_farm_fractional  (KernelBench, LOCAL farm, ONE GPU 0.5+0.5)
+# CONVERGENCE RUN 13 — demo_gpu_farm FARM=fractional  (KernelBench, LOCAL farm, ONE GPU 0.5+0.5)
 # ============================================================================
 # TASK / DATASET : KernelBench (same as 12/14): write CUDA ModelNew, checker compiles +
 #                  runs on GPU + allclose. Train = level_1 (100); eval = level_2 (20).
-# SUBSTRATE      : the SAME Ray farm as 14 (demo_gpu_farm_whole), served
+# SUBSTRATE      : the SAME Ray farm as 14 (demo_gpu_farm FARM=whole), served
 #                  LOCALLY on THIS box's reserved GPU 6 (SANDBOX=agentcore-ray-farm,
 #                  endpoint http://127.0.0.1:8080), with B4_FARM_GPUS=1, B4_GPU_FRACTION=0.5
 #                  => 2 FRACTIONAL sub-session slots SHARING one GPU (0.5 + 0.5). slime
@@ -31,7 +31,8 @@
 set -euo pipefail
 
 CONV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_gpu_farm_fractional"
+DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_gpu_farm"
+export FARM=fractional
 
 ENDPOINT="${AGENTCORE_LOCAL_ENDPOINT:-http://127.0.0.1:8080}"
 if ! curl -fsS "${ENDPOINT}/ping" >/dev/null 2>&1; then
@@ -51,5 +52,5 @@ fi
 export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL CONC B4_FARM_GPUS B4_GPU_FRACTION
 
 LOG="$DEMO/train.convergence_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_gpu_farm_fractional (KernelBench, local fractional farm, GPU 6 0.5+0.5)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) CONC=$CONC  log=$LOG"
+echo ">>> converging demo_gpu_farm FARM=fractional (KernelBench, local fractional farm, GPU 6 0.5+0.5)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) CONC=$CONC  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

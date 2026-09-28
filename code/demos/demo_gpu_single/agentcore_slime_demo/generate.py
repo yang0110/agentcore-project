@@ -20,6 +20,7 @@ import os
 
 from .app_snapshot import maybe_restore, maybe_snapshot
 from .harness import Trajectory, run_episode
+from . import preopen
 from .policy import SGLangPolicy
 from .sandbox import make_sandbox
 from .session_keeper import maybe_keep_warm
@@ -142,8 +143,7 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
         # trainable span stays the actual solution, not a long reasoning trace.
         chat_template_kwargs={"enable_thinking": False},
     )
-    sandbox = make_sandbox(os.environ.get("SANDBOX", "agentcore"),
-                           region=os.environ.get("AGENTCORE_REGION"))
+    kind = os.environ.get("SANDBOX", "agentcore")
 
     # App-level snapshot/resume (demo_gpu_single SNAPSHOT_EVERY=1): every episode opens a FRESH sandbox session, so
     # each boundary is effectively a GPU-instance recycle. Restore this task's workspace from the
@@ -152,7 +152,9 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     snap_key = f"ep-{task.task_id}"
     # HEARTBEAT=1 (default on our own remote Runtimes, every demo): wrap the sandbox in a KeptSandbox so a process-wide
     # SessionKeeper heartbeats it if it goes idle across the weight-sync barrier. Off => unchanged.
-    sandbox = await maybe_keep_warm(sandbox)
+    # PREOPEN=N (opt-in) keeps N fresh sessions booted ahead; ignored on the warm-shared ray farm.
+    sandbox = await preopen.take(kind, lambda: maybe_keep_warm(
+        make_sandbox(kind, region=os.environ.get("AGENTCORE_REGION"))), kind=kind)
     async with sandbox as sb:
         # ONE [router] record per episode: the join that ties this episode's sandbox session (also
         # stamped on every [sbx-op]) to the engine its turns were pinned to and the Runtime it used.
@@ -170,6 +172,13 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
             family=getattr(task, "family", "?"),
         )
         await maybe_restore(sb, snap_key)
+        # HARNESS=mini_claude (default): tool-calling agent via slime's AnthropicAdapter, hidden
+        # grader after the episode (mini_claude_episode.py). HARNESS=direct: the fenced-block loop below.
+        if os.environ.get("HARNESS", "mini_claude") == "mini_claude":
+            from . import mini_claude_episode
+            out = await mini_claude_episode.run(args, sample, task, sampling_params, sb, engine)
+            await maybe_snapshot(sb, snap_key)
+            return out
         traj = await run_episode(policy, sb, task, sampling_params)
         await maybe_snapshot(sb, snap_key)
 

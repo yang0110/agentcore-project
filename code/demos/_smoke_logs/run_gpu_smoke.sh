@@ -36,8 +36,7 @@ farm(){ # $1 = mode; (re)start only if mode changed
 
 run(){ # $1=demo[:label]  $2=farm-mode  $3..=extra KEY=VAL env for the trainer
   # <demo>:<label> is just a log label (e.g. demo_gpu_single:snapshot), logged as <demo>-<label>.
-  # (The farm demos are two folders since 2026-09-25: demo_gpu_farm_fractional / demo_gpu_farm_whole;
-  #  the old demo_gpu_farm:<mode> entries set FARM=<mode>.)
+  # (The farm demo is ONE folder again since 2026-09-26: demo_gpu_farm:<mode> + FARM=<mode>.)
   local dir="${1%%:*}" d="${1/:/-}" mode="$2"; shift 2
   echo "[gpu] === $d (farm=$mode ${*:-}) $(date -u +%TZ) ==="
   farm "$mode" || { row "$d" FAIL 0 "farm mode=$mode did not come up"; return; }
@@ -70,12 +69,12 @@ run(){ # $1=demo[:label]  $2=farm-mode  $3..=extra KEY=VAL env for the trainer
 }
 
 echo "[gpu] start $(date -u +%FT%TZ) NR=$NR"
-# whole-GPU farm group (6,7): demo_gpu_farm_whole + demo_gpu_single's LOCAL_GPU=1 path, plain and
+# whole-GPU farm group (6,7): demo_gpu_farm FARM=whole + demo_gpu_single's LOCAL_GPU=1 path, plain and
 # with its snapshot angle (demo_gpu_snapshot / demo_gpu_customruntime were merged into demo_gpu_single 2026-09-25)
-run demo_gpu_farm_whole       whole
+run demo_gpu_farm:whole       whole  FARM=whole
 run demo_gpu_single           whole  LOCAL_GPU=1
 run demo_gpu_single:snapshot  whole  LOCAL_GPU=1 SNAPSHOT_EVERY=1
 # fractional single-GPU farm (GPU 6, 0.5 + 0.5)
-run demo_gpu_farm_fractional  fractional
+run demo_gpu_farm:fractional  fractional  FARM=fractional
 bash "$REPO/code/deploy/run_local_gpu_runtime.sh" stop >/dev/null 2>&1
 echo "[gpu] done $(date -u +%FT%TZ)"; cat "$RES"

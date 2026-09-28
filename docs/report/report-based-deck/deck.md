@@ -32,7 +32,7 @@ AgentCore Runtime as the execution sandbox for agentic RL, integrated with slime
 
 - **Problem.** Agentic RL runs **untrusted model output** in an isolated environment thousands of times per run and scores it with a **programmatic checker** — the *sandbox* layer, not the GPU, is often the bottleneck (Kimi K2 [5]: **>10,000 concurrent sandboxes**).
 - **Solution.** **AgentCore Runtime is that sandbox** — one isolated microVM session per episode, **in your own AWS account** (IAM/SigV4, VPC), bring-your-own container, CPU by default and **GPU on Instances** — wired into the **slime** trainer through **one hook**, harness in-process.
-- **Proven.** The full loop runs **end-to-end on real hardware** across **7 main demos + 1 experimental** (code, math, SQL, RAG, tool use, data science, terminal tasks, CUDA kernels), each smoke a standard **10-step run** with real rewards from an in-sandbox checker. **Most literature tasks need no image**: they train on the default Code Interpreter.
+- **Proven.** The full loop runs **end-to-end on real hardware** across **5 main demos + 1 side note + 1 experimental** (code, math, SQL, RAG, tool use, data science, terminal tasks, CUDA kernels), each smoke a standard **10-step run** with real rewards from an in-sandbox checker. **Most literature tasks need no image**: they train on the default Code Interpreter.
 - **How you adopt it.** Start on the **default Code Interpreter** (no image) → seed a task → train via one `generate` hook; build your own Runtime only when the task needs a custom image, a > 2 GB toolchain or a GPU.
 
 ## What tasks do frontier labs run in sandboxes
@@ -203,7 +203,7 @@ Running **untrusted, model-generated code** — isolation is the whole point: on
 | Filesystem | ephemeral | persistent EBS |
 | Agents / session | 1 | many |
 
-**One session = one whole instance** (session→instance is 1:1 — you get the *instance*, not a GPU). Two ids acquire two *separate* instances, so you can't split one multi-GPU box across sessions. To use every GPU of one instance: **one shared session + a self-managed in-instance Ray farm** (`demo_gpu_farm_fractional`, `demo_gpu_farm_whole`).
+**One session = one whole instance** (session→instance is 1:1 — you get the *instance*, not a GPU). Two ids acquire two *separate* instances, so you can't split one multi-GPU box across sessions. To use every GPU of one instance: **one shared session + a self-managed in-instance Ray farm** (`demo_gpu_farm`, `FARM=fractional|whole`; trusted-only).
 
 ## The microVM's resource envelope — three limits that bite
 
@@ -309,7 +309,7 @@ Every episode executes model-generated code you did not write. AgentCore makes t
 
 - **Billing model:** you pay for sandbox **vCPU-seconds + GB-hours** while a session is live [D13], plus **Instance** hours for GPU sandboxes — not a flat per-sandbox fee. Idle sessions are reclaimed (~15 min), so **warm-but-unused time is bounded**.
 - **CPU sandboxes are cheap; the bottleneck is elsewhere:** for cheap-checker families (math, code, SQL, tool-use) the measured sandbox op is **~0.1 s** (p50 123 ms / p95 900 ms) — generation dominates, so you scale inference, not sandboxes.
-- **GPU is where cost concentrates — and where packing pays:** KernelBench is sandbox-bound (`exec` p50 **8.5 s** ≫ generation 2.5 s). Isolated needs **N whole g6 at once**; the Ray farm (`demo_gpu_farm_fractional`) packs **N episodes onto one GPU** (`num_gpus=0.5` → 2×), so you provision **one** instance, not N.
+- **GPU is where cost concentrates — and where packing pays:** KernelBench is sandbox-bound (`exec` p50 **8.5 s** ≫ generation 2.5 s). Isolated needs **N whole g6 at once**; the Ray farm (`demo_gpu_farm`, `FARM=fractional`) packs **N episodes onto one GPU** (`num_gpus=0.5` → 2×), so you provision **one** instance, not N.
 - **Primary lever is capacity, not just cost:** on a capacity-starved GPU fleet you often *cannot* launch N instances at all — the farm makes the run *possible*, and cheaper.
 
 # 4. Integrating AgentCore into slime as the sandbox
@@ -480,21 +480,22 @@ Each demo stands in for a **real agent a client would train**. Find yours:
 
 - **Coding / math / SQL / RAG / tool use / data science** → `demo_cpu_tasks` (`DATASET=mbpp`, `humaneval`, `gsm8k`, `math500`, `deepscaler`, `gretelsql`, `hotpotqa`, `xlam`, `mcp`, `libs`, `mixed`) — on the **default Code Interpreter, no image**.
 - **Terminal / DevOps / SWE agents that act on the whole OS** → `demo_cpu_terminalbench` (one image per task).
-- **A checker with a > 2 GB toolchain** → `demo_cpu_instance_pool` (warm m5 Instances, isolated sessions).
 - **A high-throughput rollout fleet** → `demo_cpu_scale_lanes` (4 engines : 256 harness workers : 256 microVMs, decoupled).
-- **GPU kernels / systems** → `demo_gpu_single`, `demo_gpu_farm_fractional`, `demo_gpu_farm_whole`.
+- **GPU kernels / systems** → `demo_gpu_single` (one session per instance) or `demo_gpu_farm` (`FARM=fractional|whole`: one GPU instance, many sessions; trusted-only).
 - **A real coding-agent CLI as the harness** → `demo_cpu_branching` (experimental).
+- *Side note:* **a trusted checker with a > 2 GB toolchain** → `demo_cpu_instance_pool` (warm m5 pool, Landlock jail, not full isolation).
 
-## The storyline — 7 demos + 1 experimental, 8 chapters
+## The storyline — 5 demos + 1 side note + 1 experimental, 7 chapters
 
 1. **The tasks** — dataset, URL, env deps, image or not.
-2. **Most tasks train on the default Code Interpreter**, no image (`demo_cpu_tasks`).
+2. **Most tasks train on the default Code Interpreter**, no image (`demo_cpu_tasks`; *in progress:* default → own generic-image Runtime + harness in the sandbox session).
 3. **Custom images at scale** — one image + Runtime per task (`demo_cpu_terminalbench`).
 4. **Hiding the container launch** — pre-open + heartbeat (`warmstart/` probe).
-5. **A warm CPU Instance pool, shared with isolation** (`demo_cpu_instance_pool`).
-6. **Scaling the rollout on decoupled tiers** (`demo_cpu_scale_lanes`).
-7. **GPU sandboxes + GPU isolation** (`demo_gpu_single`, `demo_gpu_farm_fractional`, `demo_gpu_farm_whole`).
-8. **Experimental** — one episode, many samples, real Claude Code CLI (`demo_cpu_branching`).
+5. **Scaling the rollout on decoupled tiers** (`demo_cpu_scale_lanes`).
+6. **GPU sandboxes** — one session per instance (`demo_gpu_single`); ONE GPU instance serving MANY sessions (`demo_gpu_farm`, `FARM=fractional|whole`, trusted-only).
+7. **Experimental** — one episode, many samples, real Claude Code CLI (`demo_cpu_branching`).
+
+**Side note** — a warm m5 pool shared by `sub_session`s (`demo_cpu_instance_pool`): our pooling on AgentCore Instances, not full isolation.
 
 *Policy **Qwen3-4B**, trainer **slime**, harness **in-process**; the same six step scripts everywhere. Every run is a **smoke** (10 train steps · 1 eval) — not convergence.*
 
@@ -509,8 +510,8 @@ Each demo stands in for a **real agent a client would train**. Find yours:
 | Tier | Use it when | Here | Demos |
 |:----------|:-------------------|:-------------------|:-----------|
 | **1 · Code Interpreter** (`SANDBOX=agentcore`), no image | Python 3.12 + sci stack, sqlite, gcc, node is enough; no git / internet / GPU | **every literature task** (code, math, SQL, RAG, tool calls, pandas/scipy/sklearn, zoo, mixes) | `demo_cpu_tasks` |
-| **2 · own Runtime, generic image** (`SANDBOX=agentcore-runtime`) | task fits tier 1, the **run** doesn't: > ~75 episodes in flight (CI invokes 30/s), heartbeat past idle, VPC | DeepScaleR at 256 sessions; heartbeat | `…scale_lanes`, `warmstart/`, `demo_cpu_tasks` opt-in |
-| **3 · own Runtime, custom image** | the **environment** differs | own OS per task; node + CLI; 4 GB stack (m5 Instance); CUDA (g6 Instance) | `…terminalbench`, `…branching`, `…instance_pool`, `demo_gpu_*` |
+| **2 · own Runtime, generic image** (`SANDBOX=agentcore-runtime`) | task fits tier 1, the **run** doesn't: > ~75 episodes in flight (CI invokes 30/s), heartbeat past idle, VPC | DeepScaleR at 256 sessions; heartbeat | `…scale_lanes`, `warmstart/`, `demo_cpu_tasks` opt-in (its default soon, in progress) |
+| **3 · own Runtime, custom image** | the **environment** differs | own OS per task; node + CLI; 4 GB stack (m5 Instance); CUDA (g6 Instance) | `…terminalbench`, `…branching`, `demo_gpu_single`, `demo_gpu_farm`; side note `…instance_pool` |
 
 ## All demos at a glance (1/2) — CPU
 
@@ -523,10 +524,10 @@ Each demo stands in for a **real agent a client would train**. Find yours:
 
 | Ch. | Demo | Sandbox substrate | Task | Status |
 |:--|:------------|:----------|:--------|:------------|
-| 1–2 | `demo_cpu_tasks` | managed **Code Interpreter** (default) | any literature RLVR dataset, or a mix | **passed** on CI (2026-09-25): gsm8k 0.90, libs 1.0 |
+| 1–2 | `demo_cpu_tasks` | managed **Code Interpreter** (default today; own Runtime default in progress) | any literature RLVR dataset, or a mix | **passed** on CI (2026-09-25): gsm8k 0.90, libs 1.0 |
 | 3–4 | `demo_cpu_terminalbench` | µVM, one image + Runtime **per task** (218) | Terminal-Bench | **passed** (2026-09-23): boot hidden, 4/382 solved |
-| 5 | `demo_cpu_instance_pool` | warm **m5 Instance** pool, Landlock jail per episode | DeepScaleR, > 2 GB image | pool + isolation probes passed; RL smoke **passed** 2026-09-25, eval 0.7875, 2 cold boots |
-| 6 | `demo_cpu_scale_lanes` | 256 pooled µVM sessions | DeepScaleR (fixed) | pool check ok; [PENDING: RL smoke] (old 4×4×4 lanes: eval 0.358) |
+| 5 | `demo_cpu_scale_lanes` | 256 pooled µVM sessions | DeepScaleR (fixed) | pool check ok; [PENDING: RL smoke] (old 4×4×4 lanes: eval 0.358) |
+| side note | `demo_cpu_instance_pool` | warm **m5** pool, Landlock jail per exec | DeepScaleR, > 2 GB image | RL smoke **passed** 2026-09-25, eval 0.7875, 2 cold boots |
 
 ```{=latex}
 \normalsize
@@ -540,10 +541,10 @@ Each demo stands in for a **real agent a client would train**. Find yours:
 
 | Ch. | Demo | Sandbox substrate | Task | Status |
 |:--|:------------|:----------|:--------|:------------|
-| 7 | `demo_gpu_single` | one `g6.xlarge` (L4) per session | KernelBench | **trained**; [PENDING: root cause of the op=open 500s] |
-| 7 | `demo_gpu_farm_fractional` | shared GPU instance, 0.5 + 0.5 of **one** GPU | KernelBench | **passed** (2026-09-25): eval 0.65 |
-| 7 | `demo_gpu_farm_whole` | shared GPU instance, one **whole** GPU per episode | KernelBench | passed (2026-09-21): 0.65 / 0.70 |
-| 8 | `demo_cpu_branching` *(exp.)* | µVM with node + `claude` | SWE bug-fix, real Claude Code CLI | runs end to end: fan-out p50 4, eval 0.47; advantage bug fixed, [PENDING: branching re-run with the advantage fix] |
+| 6 | `demo_gpu_single` | one `g6.xlarge` (L4) per session | KernelBench | **trained**; [PENDING: root cause of the op=open 500s] |
+| 6 | `demo_gpu_farm` · `FARM=fractional` | ONE GPU instance, many sessions: 0.5 + 0.5 of **one** GPU (trusted-only) | KernelBench | **passed** (2026-09-25): eval 0.65 |
+| 6 | `demo_gpu_farm` · `FARM=whole` | ONE GPU instance, many sessions: one **whole** GPU each (trusted-only) | KernelBench | passed (2026-09-21): 0.65 / 0.70 |
+| 7 | `demo_cpu_branching` *(exp.)* | µVM with node + `claude` | SWE bug-fix, real Claude Code CLI | runs end to end: fan-out p50 4, eval 0.47; advantage bug fixed, [PENDING: branching re-run with the advantage fix] |
 
 ```{=latex}
 \normalsize
@@ -584,9 +585,9 @@ Each demo stands in for a **real agent a client would train**. Find yours:
 | Task (chapter) | Dataset (URL) | Train / eval | Env deps | Image? |
 |:---|:---------|---:|:---|:---|
 | Terminal-Bench (Ch. 3) | [laude-institute/terminal-bench](https://github.com/laude-institute/terminal-bench) | 135 / 31 usable | a **pinned OS per task** | **one per task** |
-| DeepScaleR, heavy stack (Ch. 5) | DeepScaleR (above) | 400 / 40 | torch + sci stack, **> 2 GB** | **CPU Instance** |
-| KernelBench (Ch. 7) | [ScalingIntelligence/KernelBench](https://github.com/ScalingIntelligence/KernelBench) | 100 L1 / 20 L2 | CUDA + `nvcc` + torch | **GPU Instance** |
-| SWE bug-fix (Ch. 8) | synthetic SWE tasks | 64 / — | node 22 + `claude` CLI | yes |
+| DeepScaleR, heavy stack (side note) | DeepScaleR (above) | 400 / 40 | torch + sci stack, **> 2 GB** | **CPU Instance** |
+| KernelBench (Ch. 6) | [ScalingIntelligence/KernelBench](https://github.com/ScalingIntelligence/KernelBench) | 100 L1 / 20 L2 | CUDA + `nvcc` + torch | **GPU Instance** |
+| SWE bug-fix (Ch. 7) | synthetic SWE tasks | 64 / — | node 22 + `claude` CLI | yes |
 
 ## Ch. 2 — `demo_cpu_tasks`: most tasks train on the default runtime
 
@@ -596,7 +597,8 @@ Each demo stands in for a **real agent a client would train**. Find yours:
 
 **Design considerations.**
 
-- **CI by default**, own Runtime opt-in; steps 2/3/4/6 are no-ops.
+- **CI by default** (today), own Runtime opt-in; steps 2/3/4/6 are no-ops.
+- **In progress (not done):** default → our own Runtime (generic stdlib image, VPC) with the harness **inside the sandbox session**; CI stays a zero-setup opt-in.
 - **One harness**: self-describing rows rebuild each task; mixes are GRPO-safe (per-group advantage).
 - **Heartbeat is a no-op on CI**; the lever is `AGENTCORE_CI_SESSION_TIMEOUT`.
 - **Rejected:** a per-library image pool — CI already has pandas / scipy / sklearn.
@@ -735,71 +737,7 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 | own Runtime | off | 0/3 | **silently reclaimed**: same id, fresh empty sandbox |
 | Code Interpreter | on or off | 0/3 | expires at its session timeout regardless |
 
-## Ch. 5 — `demo_cpu_instance_pool`: warm m5 pool
-
-**Use case covered.** Checkers needing a big image (> 2 GB, torch + sci stack here), which must run on a CPU **capacity-provider Instance** (`m5.xlarge`), not a microVM.
-
-**Why this demo.** A ~80 s cold boot is too costly per episode, so sessions share a few warm Instances — *so how is isolation kept?* Its own demo: substrate, sharing model and isolation story all differ from the microVM demos.
-
-**Design considerations.**
-
-- **`SANDBOX_POOL=N`** (default 2), least-loaded, one Runtime; idle Instances reclaimed at 600 s.
-- **Per-episode `sub_session` in its own Landlock jail** (AgentCore drops every capability, so no per-episode uid), kill-and-scrub.
-- **Honest limits:** one kernel, netns, CPU/RAM — hostile code needs a microVM.
-- **Rejected:** an Instance per episode (~32 boots/step); one warm Instance (no parallelism).
-
-## Ch. 5 — the warm pool, and what it measured
-
-- **How:** `SANDBOX=agentcore-ray-farm SANDBOX_POOL=N` mints N pool session ids per run (`cpupool-<run>-m00 …`). AgentCore pins each `runtimeSessionId` to its own Instance → **N warm m5s**, cold boot paid **N times per run**, not once per episode.
-- **Per episode:** assigned to the least-loaded pool member, runs as its own `sub_session`; closing it never closes the pool session.
-- **Why it matters:** the old per-episode-Instance run paid ~**32 cold boots per step** (375 total; `eval/deepscaler` 0.76); a single warm Instance cut 201 boots to 1.
-- **Measured:**
-  - offline: 9 episodes split 5 / 4 over two members, load back to 0;
-  - **live probe:** **2 distinct Instances**, **2 cold boots** (83.1 s, 83.6 s, in parallel), then warm opens **121–328 ms**, reward 1.0 × 6;
-  - isolation probe **22/22** offline, under `--cap-drop ALL`, and **live on the m5** (image `:landlock-20260925`);
-  - RL smoke: `smoke_pool2_20260925_113657`: 10 steps, job succeeded; 406 episodes on exactly 2 Instances (210 / 196), **2 cold boots** (only 4 episodes in step 1 waited, 63 s); warm op p50 117 ms / p95 261 ms; step time 38–219 s vs ~715–753 s before pooling; `raw_reward` 0.72–1.0; **`eval/deepscaler` 0.7875**.
-
-## Ch. 5 — m5 isolation (1/3): why Landlock, files, processes, RAM
-
-**A microVM gives one kernel per session. A shared m5 gives that up for warm reuse. The AgentCore container is uid 0 only in a user namespace with every capability dropped (`setuid`, `chown`, `unshare`, cgroups all `EPERM`), so per-episode uids are impossible: each exec runs in its own Landlock jail (ABI 7) instead.**
-
-```{=latex}
-\small
-```
-
-| Layer | microVM per session | shared m5 — **enforced** | shared m5 — **still shared** |
-|:----|:------|:------------|:-------|
-| Filesystem | own root fs | read+write only its own dir; system dirs read-only; sibling dirs, farm root, `/tmp`, `/dev/shm` denied; no `..` / absolute / symlink escapes via the server | read-only system files |
-| Process / user | own tree | signals, ptrace, `/proc/<pid>/environ` scoped to the episode's domain; nothing outlives its exec | one uid, one PID namespace (`ps`) |
-| RAM / CPU | own allocation | watchdog kills the tree over 256 procs or 4 GiB RSS; FSIZE 1 GiB, CORE 0; per-op timeout | no cgroup: CPU shared, a fast spike can OOM a neighbour |
-
-```{=latex}
-\normalsize
-```
-
-## Ch. 5 — m5 isolation (2/3): network, kernel
-
-- **Clean-up:** the whole tree (daemons too) dies when each exec ends; close deletes the dir. The `sub_session` id is kept off every command line.
-- **Where capabilities exist** (local docker) it also adds a uid per episode (`uid+landlock`).
-- **Costs:** +50 ms/exec; `multiprocessing` needs `SANDBOX_FARM_SHM=allow`.
-
-| Layer | microVM per session | shared m5 — **enforced** | shared m5 — **still shared** |
-|:----|:------|:------------|:-------|
-| Network | own interface | every TCP connect/bind denied (port 8080, IMDS, internet); `AWS_*` stripped | one netns; **UDP/DNS not covered** |
-| Kernel | own guest kernel | — | **one kernel**: an exploit or Landlock bypass breaks everything above |
-| Blast radius | one session | — | **one instance** |
-
-## Ch. 5 — m5 isolation (3/3): verified; when enough
-
-- **Verified — `isolation_probe.py`:** A plants a secret, tries `/tmp`, runs a setsid'd daemon in a long exec; B tries to reach all of it.
-  - **Before hardening:** B read A's file by path (`cat ../<A>/marker.txt`).
-  - **uid attempt (`:uidiso`):** every open failed live (`chown` `EPERM`, HTTP 500).
-  - **Landlock: 22/22** offline, under `--cap-drop ALL`, and **live on one warm m5** (same boot_id, both uid 0): no list/read/write of A's dir, no signal or `environ` of A's daemon, 1 GiB write cap, 400-proc fan-out killed, `curl` to 8080 / IMDS fail, A's daemon gone after its exec.
-  - 13 families concurrently on one m5 under the jail: all reward 1.0; warm exec p50 156 ms (117 ms before).
-- **When is it enough?** **Good enough for RLVR**, including reward hacks: reading a sibling's `solution.py`, killing a neighbour's checker, calling the server port, a daemon that tampers with the next episode.
-- **Not** a defence against a kernel exploit, and no guaranteed CPU/RAM or private network. For those — and for OS-mutating tasks (Terminal-Bench) — use a **microVM per session**.
-
-## Ch. 6 — `demo_cpu_scale_lanes`: decoupled rollout tiers
+## Ch. 5 — `demo_cpu_scale_lanes`: decoupled rollout tiers
 
 **Use case covered.** High-throughput rollout: a fleet that has scaled inference and the sandbox and now hits the forgotten third tier, the harness driver.
 
@@ -811,30 +749,30 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 - **Isolation:** one episode per session at a time; fresh `ep-<hex>` dir, `rm -rf` before reuse; `SANDBOX_SESSIONS=0` for OS-level tasks.
 - **256 opens** at 20/s (quota 25/s); client pools sized to 256; `RB × NS` = 256 episodes/step.
 
-## Ch. 6 — measured
+## Ch. 5 — measured
 
 - **Live pool check (2026-09-25, no trainer, W = M = 64, real Runtimes):** 1280 ops ok; engines **48 / 48 / 47 / 49**; a worker used up to 2 sessions and a session served up to 2 workers, so the tiers mix. [PENDING: 4 : 256 : 256 RL smoke]
 - **Old 4 × 4 × 4 lanes on AWS (2026-09-23):** 4 opens for 400 episodes; `raw_reward` 0.19–0.50, **`eval/deepscaler` 0.358**.
 - **Offline sweep (`harness_scaling_demo.py`) — the `min()` law:** throughput 5.3 / 10.5 / 20.9 / 29.6 / 36.5 ep/s at `W` = 1 / 2 / 4 / 6 / 8 while **harness-bound**, then a **plateau ~37 ep/s** once **inference-bound**. Unseeded sim — shape, not absolute rate.
 - **Verifiable in logs:** every `[demo]` line carries `worker=`, `engine=`, `sandbox_session=`; the binding tier shows as `qdepth` (harness) / `sandbox_wait_ms` (sandbox) / `engine_inflight` (inference).
 
-## Ch. 7 — GPU: how many episodes share a GPU?
+## Ch. 6 — GPU: how many episodes share a GPU?
 
 - **GPUs exist on AgentCore only on capacity-provider Instances, and one session = one whole Instance.** The managed Code Interpreter has no GPU (`cuda_available=False`; `True` on a custom `g6` Runtime).
-- **All three train KernelBench:** the policy writes a CUDA `ModelNew`; the checker asserts `allclose` vs the reference and reports a speedup. Farms serve from the box's own GPUs over the same `/invocations` contract.
+- **Both train KernelBench:** the policy writes a CUDA `ModelNew`; the checker asserts `allclose` vs the reference and reports a speedup. Farms serve from the box's own GPUs over the same `/invocations` contract.
 
 | Demo | Episodes per GPU | Boundary between episodes |
 |:---|:---|:---|
 | `demo_gpu_single` | one session = one `g6` | **hardware** (separate instance) |
-| `demo_gpu_farm_fractional` | two per GPU (0.5 + 0.5) | software, shared card |
-| `demo_gpu_farm_whole` | one whole GPU each, one shared instance | software, own card |
+| `demo_gpu_farm` · `FARM=fractional` | two per GPU (0.5 + 0.5), one instance | software, shared kernel + shared card (trusted-only) |
+| `demo_gpu_farm` · `FARM=whole` | one whole GPU each, one shared instance | software, shared kernel, own card (trusted-only) |
 
 
-## Ch. 7 — `demo_gpu_single`: one GPU per session
+## Ch. 6 — `demo_gpu_single`: one GPU per session
 
 **Use case covered.** GPU-in-the-loop verification: RL on CUDA kernels (KernelBench [7]), where the reward requires running untrusted code on a real GPU, isolated from the training state.
 
-**Why this demo.** A GPU exists only on Instances. This is the simplest GPU sandbox — one custom Runtime, one `g6.xlarge` (L4), nothing shared on the GPU — and the baseline the two farm demos pack against.
+**Why this demo.** A GPU exists only on Instances. This is the simplest GPU sandbox — one custom Runtime, one `g6.xlarge` (L4), nothing shared on the GPU — and the baseline `demo_gpu_farm` packs against.
 
 **Design considerations.**
 
@@ -843,7 +781,7 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 - **The trainer box keeps its GPUs for slime** (4 train + 4 inference); only the checker is remote.
 - **`SNAPSHOT_EVERY=1`**: application-level workspace snapshot to a store you own — no usable VM/EBS GPU snapshot.
 
-## Ch. 7 — `demo_gpu_single`: measured
+## Ch. 6 — `demo_gpu_single`: measured
 
 - **Committed 10-step run:** `raw_reward` ~0.28–0.94, **`eval/kernelbench` 0.65**; `exec` p50 8.5 s ≫ generation 2.5 s → **sandbox-bound**.
 - **Earlier smokes (knobs of this demo):** GPU-farm 0.525; `SNAPSHOT_EVERY=1` 0.625 (3 files saved and restored per episode); custom-Runtime angle 0.65.
@@ -852,42 +790,31 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
   - one 207 s cold boot, then warm opens 150–190 ms; sandbox op p50 148–177 ms.
 - It then **failed** (rc=1) on `InvokeAgentRuntime` 500s during `op=open` retries: [PENDING: root cause of the demo_gpu_single remote-smoke op=open 500s].
 
-## Ch. 7 — `demo_gpu_farm_fractional`: 2 per GPU
+## Ch. 6 — `demo_gpu_farm`: ONE GPU instance, MANY sessions
 
-**Use case covered.** Many light GPU episodes — small kernels that use a fraction of a card — packed onto one GPU.
+**Trusted-only: shared kernel + shared GPU** — no MIG on L4 / L40S, a cooperative memory-fraction cap, no Landlock port, one shared uid on AgentCore. *(Merged 2026-09-26 from `demo_gpu_farm_fractional` + `demo_gpu_farm_whole`.)*
 
-**Why this demo.** Utilization, cost, capacity: a `g6` per episode needs N instances at once (stalls on a starved fleet); this needs one GPU. Separate from `_whole`: opposite trade-offs (shared card and fault domain).
+| `FARM` | farm GPUs | slots | models |
+|:---|:---|:---|:---|
+| `fractional` (default) | GPU 6 | `fraction=0.5` ⇒ 2 actors on **one** card | a **single-GPU** instance (`g6.xlarge`) serving several sessions |
+| `whole` | GPUs 6, 7 | `fraction=1.0` ⇒ one whole GPU per actor | a **multi-GPU** instance (`g6.12xlarge`), one card per session |
 
-**Design considerations.**
+**Why this demo.** Utilization and capacity: a `g6` per episode needs N instances at once (stalls on a starved fleet), and a session is a whole instance, so two ids get two instances, not two GPUs. One shared `runtimeSessionId` + a per-episode `sub_session` fixes that.
 
-- **The farm:** one Runtime, one shared session id; Ray leases a 0.5-GPU actor per `sub_session`.
-- **Memory cap is cooperative** (`B4_PER_SANDBOX_MEM_FRACTION=0.5`).
-- **No MIG on L4 / L40S** → one shared fault domain; `nvcc` `flock` + `fraction=0.5` mitigate the compile wedge.
-- **Admission control:** a client-side gate caps opens at the farm's slot count.
+**Design:** Ray leases one warm-CUDA actor per `sub_session` · memory cap cooperative (`B4_PER_SANDBOX_MEM_FRACTION=0.5`) · `nvcc` `flock` + `fraction=0.5` mitigate the non-MIG compile wedge · client open gate = farm slot count (2).
 
-## Ch. 7 — `demo_gpu_farm_fractional`: measured
+## Ch. 6 — `demo_gpu_farm`: measured, both modes
 
-- **`Job succeeded`, `eval/kernelbench` 0.65** (0.775 on 2026-09-21); ~83 min, slime on GPUs 2–5.
-- `raw_reward` 0.72, 0.59, 0.22, 0.69, 0.72, 0.19, 0.72, 0.75, 0.63, 0.44.
-- **Packing works:** 359 episodes split **181 / 178** across the two actors on one GPU; lease wait always 0.
-- **Latency:** `exec` p50 9.0 s / p95 19.8 s; warm `open` 4.2 ms.
-- **Checker outcomes:** PASSED 325 (mean 0.64), IMPORT_ERROR 18, NO_OUTPUT 16.
+| Run | `eval/kernelbench` | Notes |
+|:---|:---|:---|
+| `FARM=fractional` 2026-09-25 | **0.65** | 359 episodes split **181 / 178** across two actors on one GPU, lease wait 0; `exec` p50 9.0 s / p95 19.8 s, warm `open` 4.2 ms; PASSED 325, IMPORT_ERROR 18, NO_OUTPUT 16 |
+| `FARM=fractional` 2026-09-21 | **0.775** | `Job succeeded`, ckpt iter 10 |
+| `FARM=whole` 2026-09-21 (×2) | **0.65** / **0.70** | `Job succeeded` each; logs in `demo_gpu_farm/logs/whole/` |
 
-## Ch. 7 — `demo_gpu_farm_whole`: a GPU per episode
+- `FARM=fractional` `raw_reward` 0.72, 0.59, 0.22, 0.69, 0.72, 0.19, 0.72, 0.75, 0.63, 0.44 (~83 min, slime on GPUs 2–5).
+- The spread is 20 problems × 2 samples — noise, not a mode difference. [PENDING: FARM=whole re-run in the merged folder].
 
-**Use case covered.** Episodes that need a full GPU each — heavier kernels, or checkers that must not contend for memory — on a multi-GPU instance.
-
-**Why this demo.** A session is a whole instance, so the native API cannot give one GPU of a multi-GPU box to each session: two ids get two instances, not two GPUs. The Ray farm fixes that — one shared session, one whole GPU per `sub_session`.
-
-**Design considerations.**
-
-- **Same farm as fractional**, `B4_FARM_GPUS=2`, `B4_GPU_FRACTION=1.0`.
-- **Capacity = the GPU count;** `CONC` gating queues overflow in-process.
-- **No memory contention, no co-tenant wedge**, at one GPU per concurrent episode.
-
-**Measured.** Two smokes (2026-09-21): `eval/kernelbench` **0.65** and **0.70**. [PENDING: demo_gpu_farm_whole re-run after the split].
-
-## Ch. 7 — GPU isolation on a shared instance
+## Ch. 6 — GPU isolation on a shared instance
 
 ```{=latex}
 \footnotesize
@@ -903,7 +830,7 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 \normalsize
 ```
 
-**Fractional** = software isolation on shared hardware; **whole** removes memory contention and the wedge; only **`demo_gpu_single`** is a hardware boundary. Live check (2026-09-25, local farm on GPU 6): slot A and slot B ran as separate uids 20000 / 20001; B was denied A's files, dirs and home; `../`, absolute and symlink escapes were refused; 4 separate CUDA contexts, the 0.5 memory cap held in both slots; closing A left no process and removed its dir. On the AgentCore g6 (no capabilities) the farm falls back to one shared uid.
+**`demo_gpu_farm` is trusted-only.** **`FARM=fractional`** = software isolation on shared hardware; **`FARM=whole`** removes memory contention and the wedge; only **`demo_gpu_single`** is a hardware boundary. Live check (2026-09-25, local farm on GPU 6): slot A and slot B ran as separate uids 20000 / 20001; B was denied A's files, dirs and home; `../`, absolute and symlink escapes were refused; 4 separate CUDA contexts, the 0.5 memory cap held in both slots; closing A left no process and removed its dir. On the AgentCore g6 (no capabilities) the farm falls back to one shared uid.
 
 
 | Layer | Enforced | Still shared |
@@ -914,7 +841,39 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 | Faults | `nvcc` `flock`, `fraction=0.5` | **no MIG**: a wedge hits every co-tenant |
 | Kernel / host | as the CPU pool | one kernel, one instance |
 
-## Ch. 8 — `demo_cpu_branching` (experimental)
+## Side note — `demo_cpu_instance_pool`: a warm m5 pool (not a main demo)
+
+**Demoted to a side note (2026-09-26).** The capacity-provider m5 Instances are AgentCore, but the **pooling** (many episodes sharing one warm Instance through `sub_session`s) is **our own code**, and a shared Instance **can't give full isolation** — every episode shares one kernel. Keep it for trusted / RLVR-style workloads where an ~83 s cold boot per episode is unaffordable; otherwise slim the > 2 GB image (or install deps at boot) so it fits a microVM.
+
+- **How:** `SANDBOX=agentcore-ray-farm SANDBOX_POOL=N` mints N pool session ids per run → **N warm m5s** (`m5.xlarge`, ~4 GB torch + sci image); cold boot paid **N times per run**, not once per episode; each episode is its own `sub_session` on the least-loaded member.
+- **Why pool:** an Instance per episode paid ~**32 cold boots per step** (375 total; `eval/deepscaler` 0.76).
+- **Measured:** live probe **2 Instances, 2 cold boots** (83 s, in parallel), warm opens **121–328 ms**; RL smoke `smoke_pool2_20260925_113657`: 10 steps, 406 episodes on 2 Instances, **2 cold boots**, warm op p50 117 ms, step 38–219 s (vs ~715–753 s), **`eval/deepscaler` 0.7875**.
+
+## Side note — instance pool: isolation at a glance
+
+```{=latex}
+\footnotesize
+```
+
+**Achieved** (a Landlock jail per exec, +50 ms; **22/22** probe checks live on m5; 13 families still reward 1.0): writes **only its own dir** (siblings, farm root, `/tmp`, `/dev/shm`, `/root` → `EACCES`; dir deleted on close) · **no TCP** `connect`/`bind` (port 8080, IMDS, internet), no `AWS_*` · signals / `ptrace` / `/proc/<pid>` blocked across domains · subreaper kills the tree at exec end · watchdog 256 procs / 4 GiB RSS, 1 GiB files.
+
+| Still shared | Consequence |
+|:---|:---|
+| **Kernel** | a kernel exploit or Landlock bypass defeats all of it — no VM boundary |
+| **uid / PID ns** | all uid 0 in one userns; `ps` shows neighbours' command lines |
+| **UDP / DNS** | not covered by Landlock |
+| **CPU / RAM** | no per-episode cgroup; the RAM watchdog only polls |
+| **netns / blast radius** | one network stack; a crash, OOM or full disk hits every episode |
+
+**Pitfalls:** per-episode uids fail on AgentCore (**all capabilities dropped** → `chown` `EPERM`; local docker hides it — test with `--cap-drop ALL`) · Landlock is kernel-ABI dependent (m5: ABI 7) · `SANDBOX_FARM_SHM=allow` / `NET=allow` / `LANDLOCK=0` weaken it silently · no process survives across execs; no OS-mutating tasks · `demo_gpu_farm` is weaker still (no Landlock, one uid, no MIG) · warm Instances bill while idle.
+
+**Bottom line:** Landlock-grade isolation on a shared kernel — enough against accidental or opportunistic reward hacking, **not** a boundary against hostile code. **Full isolation = one AgentCore session per episode.**
+
+```{=latex}
+\normalsize
+```
+
+## Ch. 7 — `demo_cpu_branching` (experimental)
 
 **Use case covered.** A real coding-agent CLI (Claude Code) as the harness; one episode fans out into sub-agents and compacted contexts.
 
@@ -927,7 +886,7 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 - **`MODE=A`, `dp_size=1`** (TP2 × PP2), sync checkpoint save.
 - **The CLI needs the tool parser** (`qwen25` / `qwen3`) and **a per-turn cap above Qwen3's `<think>`** (`MAX_RESPONSE_LEN` 2048).
 
-## Ch. 8 — `demo_cpu_branching`: runs end to end
+## Ch. 7 — `demo_cpu_branching`: runs end to end
 
 **Three blockers, all fixed:**
 
@@ -937,7 +896,7 @@ Re-running them on the Code Interpreter: [PENDING: CI smokes for the other DATAS
 
 **Verified without a trainer:** the session starts, `claude` 2.1.278 runs as root, the dial-back to `:18021` works, the parser extracts the tool call, and the checker scores 0 / 0 / 1.
 
-## Ch. 8 — `demo_cpu_branching`: RL smoke and a fourth bug
+## Ch. 7 — `demo_cpu_branching`: RL smoke and a fourth bug
 
 **RL smoke 2026-09-25** (NR=3: 2 train steps + 1 eval, job succeeded). `eval/swe` = **0.47**. Fan-out and reward work; **the gradient was zero**: `rollout_advantage.py` grouped by `sample.index`, which slime makes unique per rollout, so every group had one member. Fixed: group = `index // n_samples_per_prompt`, plus a regression test. Learning [PENDING: branching re-run with the advantage fix].
 
@@ -1126,7 +1085,7 @@ The reconciliation `cpu_branching` implements, and the reason a **real** agent n
 
 **Solution:** the CLI runs **inside a CLI-capable CPU Runtime** (image bakes node22 + `claude`); one episode returns a `list[Sample]`, all tagged with the shared `rollout_id ρ` and the episode's terminal reward $R$. **Advantage baseline + loss are normalized per rollout, not per sample** (token-mean loss), so an incidental fan-out can't reweight the update. `MODE=A`, `dp=1` (TP2×PP2), sync save.
 
-*`demo_cpu_branching` (§5, Ch. 8) implements this; its three blockers are fixed and verified without a trainer — RL smoke fans out (p50 4) and scores (eval 0.47); an all-zero-advantage bug is fixed, learning [PENDING: branching re-run with the advantage fix].*
+*`demo_cpu_branching` (§5, Ch. 7) implements this; its three blockers are fixed and verified without a trainer — RL smoke fans out (p50 4) and scores (eval 0.47); an all-zero-advantage bug is fixed, learning [PENDING: branching re-run with the advantage fix].*
 
 ## Mechanism spotlight — resilience: heartbeat & snapshot
 
@@ -1148,7 +1107,7 @@ Two levers a long RL run composes, demonstrated by `HEARTBEAT=1` and `gpu_single
 **Limits & quotas to plan around:**
 
 - **Session length:** 8 h on a CPU microVM, 14 d on a GPU Instance; **idle ~15 min → reclaimed** (use `HEARTBEAT=1` to survive the weight-sync pause).
-- **Image size:** ~2 GB arm64 cap — install heavy deps at `CMD`-time, or run it on a warm CPU Instance (`demo_cpu_instance_pool`).
+- **Image size:** ~2 GB arm64 cap — install heavy deps at `CMD`-time, or (trusted workloads only) run it on a warm CPU Instance pool (`demo_cpu_instance_pool`, side note).
 - **GPU sharing:** **no MIG** on L4 / L40S — cross-session GPU sharing is software-only (the Ray farm), not hardware-partitioned.
 - **Next step after training:** serve the resulting policy on Bedrock / SageMaker — the trained checkpoint is a standard model artifact.
 

@@ -27,11 +27,11 @@ bash code/demos/convergence/11_cpu_mixed.sh      # DATASET=mixed (math+sql+ctf+d
 AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/<g6> \
   bash code/demos/convergence/12_gpu_single.sh    # one dedicated g6 GPU per session
 
-# 13/14 are LOCAL (demo_gpu_farm_fractional / demo_gpu_farm_whole): start the farm on the HOST first, in the matching mode.
+# 13/14 are LOCAL (demo_gpu_farm FARM=fractional / FARM=whole): start the farm on the HOST first, in the matching mode.
 #   (host)      bash code/deploy/run_local_gpu_runtime.sh fractional
-bash code/demos/convergence/13_gpu_farm_fractional.sh   # demo_gpu_farm_fractional: GPU 6 shared 0.5+0.5
+bash code/demos/convergence/13_gpu_farm_fractional.sh   # demo_gpu_farm FARM=fractional: GPU 6 shared 0.5+0.5
 #   (host)      bash code/deploy/run_local_gpu_runtime.sh whole
-bash code/demos/convergence/14_gpu_farm_whole.sh        # demo_gpu_farm_whole: one GPU each on 6,7
+bash code/demos/convergence/14_gpu_farm_whole.sh        # demo_gpu_farm FARM=whole: one GPU each on 6,7
 #   (host)      bash code/deploy/run_local_gpu_runtime.sh stop   # teardown
 
 # ---- Property demos, now real trainers (headline knob default-ON) ----

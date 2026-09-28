@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 # Cap tool-result text fed back to the model so a chatty command can't blow up the context
 # (and the trajectory) unboundedly. Head+tail keep the useful ends of a long traceback.
-_MAX_TOOL_OUTPUT_CHARS = 4000
+_MAX_TOOL_OUTPUT_CHARS = int(os.environ.get("MINI_AGENT_MAX_TOOL_CHARS", "4000"))
 
 # The agent's persona + operating instructions. Kept short on purpose; this is the whole
 # "prompt engineering" of the mimic. It mirrors Claude Code's coding-agent framing (work in a
@@ -64,10 +64,11 @@ SYSTEM_PROMPT = (
 _NO_THINK_HINT = "\n\n/no_think"
 
 
-def _system_prompt() -> str:
+def _system_prompt(base: str | None = None) -> str:
+    base = base or SYSTEM_PROMPT
     if os.environ.get("MINI_AGENT_NO_THINK", "1").lower() not in ("0", "", "false", "no"):
-        return SYSTEM_PROMPT + _NO_THINK_HINT
-    return SYSTEM_PROMPT
+        return base + _NO_THINK_HINT
+    return base
 
 # Anthropic-style tool schemas advertised to the model each turn. The adapter converts these to
 # the tokenizer's chat-template tool schema, so tool-calling is driven by the served policy.
@@ -122,6 +123,7 @@ class MiniAgentResult:
     tool_calls: int = 0
     last_exit_code: int | None = None  # exit code of the last bash command, if any
     transcript: list[dict] = field(default_factory=list)  # the raw message list, for debugging
+    where: str = "trainer"           # where the loop ran: trainer | session | trainer_fallback
 
 
 class MiniClaudeHarness:
@@ -135,8 +137,11 @@ class MiniClaudeHarness:
     name = "mini_claude"
 
     def __init__(self, *, max_turns: int = 12, request_timeout_sec: int = 300,
-                 exec_timeout_sec: int = 120) -> None:
+                 exec_timeout_sec: int = 120, system_prompt: str | None = None) -> None:
         self.max_turns = max_turns
+        # A pool whose tasks are not solution.py-shaped (e.g. Terminal-Bench shell tasks) overrides
+        # the coding persona; None keeps SYSTEM_PROMPT.
+        self.system_prompt = system_prompt
         self.request_timeout_sec = request_timeout_sec
         self.exec_timeout_sec = exec_timeout_sec
 
@@ -177,6 +182,7 @@ class MiniClaudeHarness:
         max_tokens: int = 1024,
         model_label: str = "slime-actor",
         http=None,
+        local_adapter_url: str | None = None,
     ) -> MiniAgentResult:
         """Run the agent loop against ``sb``, routing every model call through the adapter.
 
@@ -187,6 +193,9 @@ class MiniClaudeHarness:
         ``http`` optionally injects a caller-owned aiohttp.ClientSession to REUSE across episodes
         (the harness-scaling pool passes each warm worker's session so it is not re-created per
         episode). If None, a fresh session is created and closed for this run (original behaviour).
+
+        ``local_adapter_url`` is accepted for parity with InSessionHarness.run and ignored: this
+        loop runs in the trainer, so ``adapter_url`` already is the local one.
         """
         import contextlib
 
@@ -200,7 +209,7 @@ class MiniClaudeHarness:
         messages: list[dict] = [{"role": "user", "content": prompt}]
         result = MiniAgentResult()
         timeout = aiohttp.ClientTimeout(total=self.request_timeout_sec)
-        system_prompt = _system_prompt()
+        system_prompt = _system_prompt(self.system_prompt)
 
         # Reuse the caller's warm session if injected (pool workers), else own one for this run.
         session_cm = contextlib.nullcontext(http) if http is not None else aiohttp.ClientSession(timeout=timeout)

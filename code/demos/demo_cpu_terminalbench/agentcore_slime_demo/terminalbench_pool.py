@@ -48,6 +48,7 @@ import threading
 import time
 
 from .harness_pool import HarnessPool
+from . import swebench as _swebench  # noqa: F401  BENCH=swebench hook: registers family "swebench"
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +307,12 @@ class TerminalBenchPool(HarnessPool):
         await sb.__aexit__(None, None, None)   # StopRuntimeSession: the microVM is torn down
 
     async def _grade(self, sb, task) -> dict:
+        # --- BENCH=swebench hook (swebench.py): hidden test_patch + FAIL_TO_PASS/PASS_TO_PASS ---
+        if getattr(task, "family", "") == "swebench":
+            from .swebench import grade_swebench, load_instance
+            return await grade_swebench(sb, load_instance(task.task_id),
+                                        float(task.spec.get("max_test_timeout_sec") or 600))
+        # --- end BENCH=swebench hook ---
         return await grade_episode(sb, task.task_id, self.tasks_dir,
                                    float(task.spec.get("max_test_timeout_sec") or 180))
 
@@ -368,13 +375,16 @@ class TerminalBenchPool(HarnessPool):
             res = await self._harness.run(
                 sb,
                 session_id=sid,
-                adapter_url=adapter_url,
+                adapter_url=(self._session_urls[wid] if getattr(self._harness, "in_session", False)
+                             else adapter_url),
+                local_adapter_url=adapter_url,
                 prompt=self._problem_text(task),
                 max_tokens=self.max_tokens,
                 http=http,
             )
             ep.update(agent_ms=round((time.perf_counter() - ta) * 1000.0, 1), turns=res.turns,
-                      tool_calls=res.tool_calls, stop=res.stop_reason)
+                      tool_calls=res.tool_calls, stop=res.stop_reason,
+                      harness_where=res.where)
 
             # RLVR reward: the task's OWN hidden pytest oracle, injected + run after the agent.
             tg = time.perf_counter()

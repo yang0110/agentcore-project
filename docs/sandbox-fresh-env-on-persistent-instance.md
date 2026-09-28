@@ -21,8 +21,8 @@ microVM), which is cheaper, faster, and perfectly isolated for free. Reuse only 
 **Instances** compute type — a capacity-provider EC2 box that takes **~60–80 s to cold-boot** — and
 that applies to **both** Instance flavours:
 
-- the **GPU `g6`** (`demo_gpu_farm_fractional` / `demo_gpu_farm_whole`, the local form of the remote farm), and
-- the **CPU `m5`** (`demo_cpu_instance_pool`, the big-image demo this doc ships with; formerly
+- the **GPU `g6`** (`demo_gpu_farm`, `FARM=fractional|whole` — merged 2026-09-26 from `demo_gpu_farm_fractional` + `demo_gpu_farm_whole`; the local form of the remote farm, one GPU instance serving many sessions, trusted-only), and
+- the **CPU `m5`** (`demo_cpu_instance_pool`, the big-image example this doc ships with — since 2026-09-26 a **side note**, not a main demo, because the pooling is our own code and a shared instance can't give full isolation; formerly
   `demo_cpu_tasks` `VARIANT=bigimage`, and before that the separate `demo_cpu_bigimage`). It keeps a warm pool
   of `SANDBOX_POOL` (default 2) shared sessions and runs each exec of a `sub_session` in its own Landlock jail
   (own dir only, no TCP, no cross-episode signals, process/RAM caps, path-escape refusal, tree killed

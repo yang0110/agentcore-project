@@ -9,3 +9,6 @@ __pycache__/
 # Deploy build context: fetched standalone CPython + a copy of the vendored server (deploy re-copies it).
 deploy/acs_ctx/py/
 deploy/acs_ctx/sandbox_server_agent.py
+# BENCH=swebench: fetched instances/manifest/pool map (fetch_swebench.py, deploy/deploy_swebench.py) + amd64 build context.
+swebench/
+deploy/acs_ctx_amd64/

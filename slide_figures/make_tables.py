@@ -70,7 +70,7 @@ render(
         ["1", "demo_cpu_tasks", "Literature RLVR tasks on the DEFAULT managed Code Interpreter — no image, no Runtime"],
         ["2", "demo_cpu_terminalbench", "Custom images at scale — one image + Runtime per task (~229), fresh microVM per episode"],
         ["", "  + warmstart/ probe", "Pre-open (boot next batch ahead) + heartbeat (survive weight-sync idle), cold vs warm"],
-        ["3", "demo_cpu_instance_pool", "> 2 GB image on warm m5 Instances (SANDBOX_POOL=N), per-episode isolated sub_session"],
+        ["note", "demo_cpu_instance_pool", "SIDE NOTE: > 2 GB image on a warm m5 pool, Landlock-jailed sub_sessions (shared kernel: not full isolation)"],
     ],
     [0.04, 0.24, 0.72],
 )
@@ -107,7 +107,7 @@ render(
     "Scaling the tiers together",
     ["#", "Demo", "Use case"],
     [
-        ["4", "demo_cpu_scale_lanes", "Scaling as 4 × 4 × 4 lanes — harness worker : SGLang engine : microVM, strictly 1:1:1"],
+        ["3", "demo_cpu_scale_lanes", "Scaling as 4 × 4 × 4 lanes — harness worker : SGLang engine : microVM, strictly 1:1:1"],
     ],
     [0.05, 0.26, 0.69],
 )
@@ -118,9 +118,8 @@ render(
     "GPU demos (+ experimental)",
     ["#", "Demo", "Use case"],
     [
-        ["5", "demo_gpu_single", "KernelBench CUDA on one warm g6; + SNAPSHOT_EVERY=1, LOCAL_GPU=1"],
-        ["6", "demo_gpu_farm_fractional", "Two episodes share ONE GPU — local Ray farm, 0.5 + 0.5 (GPU 6)"],
-        ["7", "demo_gpu_farm_whole", "One whole GPU per episode — local Ray farm, GPUs 6,7"],
+        ["4", "demo_gpu_single", "KernelBench CUDA on one warm g6; + SNAPSHOT_EVERY=1, LOCAL_GPU=1"],
+        ["5", "demo_gpu_farm", "ONE GPU instance, many sessions — FARM=fractional (0.5 + 0.5) | whole (1 GPU each); trusted-only"],
         ["exp", "demo_cpu_branching", "EXPERIMENTAL / blocked — real Claude Code CLI fan-out; CLI exits 1 before any model call"],
     ],
     [0.05, 0.25, 0.70],

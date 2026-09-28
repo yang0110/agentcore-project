@@ -101,13 +101,13 @@ a suggested split for the shared 6-GPU box (only rows 15 and 22 have run with it
 | 12 | `demo_cpu_tasks:libs` | Code Interpreter (pandas/scipy/sklearn preinstalled) | — (scores 0 on the stdlib own-Runtime image) | 4 + 2 | **CI 1.0** (09-25) |
 | 13 | `demo_cpu_tasks:deepscaler+HEARTBEAT=1+SANDBOX=agentcore-runtime` | own CPU Runtime (baked K=2 ARNs) | — (heartbeat is a no-op on the CI) | 4 + 2 | pending |
 | 14 | `demo_cpu_terminalbench` | ~229 per-task images, fresh microVM per episode, pre-open + heartbeat | fetch → `2_build_image.sh` → `4_deploy_runtime.sh` → `validate_oracle.py` → rebuild dataset (see its README); `TB_PREOPEN_BATCHES` × RB × NS (64) sessions booted ahead | **all 8 free** (no pin yet) | passed 09-23: 4/382 solves, `open_wait_ms` p95 0 |
-| 15 | `demo_cpu_instance_pool` | warm pool of `SANDBOX_POOL=2` m5 Instances, ~4 GB image, per-episode slot uid | steps 2–4 (image → ECR → CPU capacity provider → Runtime); no baked default | 4 + 2 (as run) | **passed 09-25**: eval 0.7875, 2 cold boots, warm op p50 117 ms |
+| 15 | `demo_cpu_instance_pool` (side note) | warm pool of `SANDBOX_POOL=2` m5 Instances, ~4 GB image, per-episode slot uid | steps 2–4 (image → ECR → CPU capacity provider → Runtime); no baked default | 4 + 2 (as run) | **passed 09-25**: eval 0.7875, 2 cold boots, warm op p50 117 ms |
 | 16 | `demo_cpu_scale_lanes` | 4 engines : `HARNESS_WORKERS=256` : `SANDBOX_SESSIONS=256` pooled microVMs, decoupled | — (baked K=2 ARNs; `RB=32` default → 256 episodes/step) | 2 + 4 (`ACTOR_GPUS=2 ROLLOUT_GPUS=4`) | pool check 64 × 64 ok; RL smoke pending (old 4×4×4 lanes: 0.358) |
 | 17 | `demo_gpu_single` (remote g6) | ONE warm g6 Instance shared across episodes | steps 2–4 (Runtime on the g6 capacity provider) | 4 + 2 | trained; 09-25 remote smoke failed on `op=open` 500s |
 | 18 | `demo_gpu_single+LOCAL_GPU=1` | local whole-GPU farm on GPUs 6,7 (no g6) | `LOCAL_GPU=1 bash 4_deploy_runtime.sh`; `LOCAL_GPU=1 bash 6_cleanup.sh` after | slime on 2–5 (`ACTOR_GPUS=2 ROLLOUT_GPUS=2`) | 0.65 (custom-Runtime probe) |
 | 19 | `demo_gpu_single+SNAPSHOT_EVERY=1+LOCAL_GPU=1` | as 18, plus per-episode snapshot/resume | as 18 | as 18 | 0.625 (local farm) |
-| 20 | `demo_gpu_farm_fractional` | local fractional Ray farm, GPU 6, 0.5 + 0.5 | host `bash code/deploy/run_local_gpu_runtime.sh fractional`; `… stop` after | slime on 2–5 | 0.65 (09-25) |
-| 21 | `demo_gpu_farm_whole` | local whole-GPU Ray farm, GPUs 6,7, one GPU per session | host `bash code/deploy/run_local_gpu_runtime.sh whole`; `… stop` after | slime on 2–5 | 0.65 / 0.70 (09-21); re-run since the split pending |
+| 20 | `demo_gpu_farm` `FARM=fractional` | local fractional Ray farm, GPU 6, 0.5 + 0.5 | host `bash code/deploy/run_local_gpu_runtime.sh fractional`; `… stop` after | slime on 2–5 | 0.65 (09-25) |
+| 21 | `demo_gpu_farm` `FARM=whole` | local whole-GPU Ray farm, GPUs 6,7, one GPU per session | host `bash code/deploy/run_local_gpu_runtime.sh whole`; `… stop` after | slime on 2–5 | 0.65 / 0.70 (09-21); re-run since the split pending |
 | 22 | `demo_cpu_branching` (**experimental**) | real Claude Code CLI in a CPU Runtime (VPC, adapter dial-back `:18021`) | steps 2–4 (CLI image), `deploy/runtime.env` with the ARN + `ADAPTER_PUBLIC_HOST` | 4 + 2 | 3 blockers fixed 09-25; RL smoke running |
 
 Rows 1–13 are one folder (`demo_cpu_tasks`) with one run per dataset: set `DS=<dataset>` in the
@@ -131,7 +131,7 @@ A few demos ship offline probes worth running first — they import the harness/
 mechanism without AWS: property-demo animations (`demo_cpu_tasks`'s `heartbeat_demo.py` and `compare_backends.py --backends local`, `snapshot_demo.py`,
 `harness_scaling_demo.py`, `demo_gpu_single`'s `gpu_torch_smoke.py`), `demo_cpu_terminalbench`'s warm-start probe
 (`BACKENDS=local bash warmstart/run_warmstart.sh`), and `demo_cpu_instance_pool`'s `isolation_probe.py`
-(per-slot-uid isolation, 16 checks; `--live` on the m5 after step 4), `demo_gpu_farm_fractional`'s `isolation_probe.py` (live on the local farm under the GPU lock), `probe_bigimage.py` (image-size vs the microVM cap + LocalSandbox contract
+(Landlock jail per exec, 22 checks; `--live` on the m5 after step 4), `demo_gpu_farm`'s `isolation_probe.py` (live on the local farm under the GPU lock), `probe_bigimage.py` (image-size vs the microVM cap + LocalSandbox contract
 parity) and `netcheck.py` (safe-networking checklist). These are **not** the trainers — the trainers all run via the recipe above.
 
 ### Excluded

@@ -32,6 +32,14 @@ if [ "$SANDBOX" = "local" ]; then
 fi
 
 DEMO_DIR=/work/code/demos/demo_cpu_terminalbench
+# --- BENCH=swebench hook: SWE-bench Verified subset (fetch_swebench.py + deploy/deploy_swebench.py) ---
+if [ "${BENCH:-terminalbench}" = "swebench" ]; then
+   POOL_MAP="${POOL_MAP:-$DEMO_DIR/swebench/arn_by_image.json}"
+   DATA="${DATA:-$DEMO_DIR/data/swebench_train.jsonl}"
+   EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/swebench_eval.jsonl}"
+   EVAL_NAME="${EVAL_NAME:-swebench}"
+fi
+# --- end BENCH=swebench hook ---
 POOL_MAP="${POOL_MAP:-$DEMO_DIR/tasks/arn_by_image.json}"   # {task -> Runtime ARN}, from deploy
 # The image pool map is REQUIRED: every episode routes to its task's Runtime through it.
 if [ ! -f "$POOL_MAP" ]; then
@@ -191,6 +199,10 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"/root/Megatron-LM:${DEMO_DIR}:/root/slime\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"SANDBOX\": \"${SANDBOX}\",
+    \"HARNESS_WHERE\": \"${HARNESS_WHERE:-}\",
+    \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST:-}\",
+    \"ADAPTER_PORT_BASE\": \"${ADAPTER_PORT_BASE:-18100}\",
+    \"MINI_SESSION_POLL_SEC\": \"${MINI_SESSION_POLL_SEC:-25}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE\": $(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' <<< "${AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE}"),
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",

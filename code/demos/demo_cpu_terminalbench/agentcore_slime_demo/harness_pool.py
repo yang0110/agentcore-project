@@ -91,6 +91,7 @@ class HarnessPool:
         # per episode (an episode is sticky to its worker => sticky to that worker's engine).
         self._adapters: list = []          # AnthropicAdapter per worker
         self._adapter_urls: list[str] = [] # its in-thread endpoint URL, per worker
+        self._session_urls: list[str] = [] # the same adapter as a sandbox session dials it back
         self._engine_urls: list[str] = []  # the SGLang engine each worker is pinned to, per worker
         self._harness = None
         self._started = False
@@ -111,7 +112,7 @@ class HarnessPool:
             from slime.utils.processing_utils import load_tokenizer
 
             from . import router_trace
-            from .mini_agent import MiniClaudeHarness
+            from .in_session_harness import adapter_bind, adapter_urls, make_harness
 
             router_url = f"http://{self.args.sglang_router_ip}:{self.args.sglang_router_port}"
             # Discover the E SGLang engines behind the router ONCE, then PIN worker w to engine
@@ -124,25 +125,31 @@ class HarnessPool:
             engines = router_trace.engine_urls(router_url)
             tokenizer = load_tokenizer(self.args.hf_checkpoint, trust_remote_code=True)
 
-            # PER-WORKER adapter, each on its own localhost thread/port. Workers dial 127.0.0.1, so
-            # no security group / public port is needed (unlike the harness-Runtime variant).
-            for wid in range(self.num_workers):
-                engine = engines[wid % len(engines)]
+            # ONE adapter per ENGINE, shared by the workers pinned to it (w -> w % E): its sglang_url
+            # is that single engine, so every turn of an episode hits one engine (sticky inference).
+            # With HARNESS_WHERE=session the agent loop runs INSIDE the task's sandbox session and
+            # dials the adapter back on 0.0.0.0:ADAPTER_PORT_BASE+e (host SG admits the runtime SG
+            # on that range, SG->SG); otherwise it binds loopback as before.
+            per_engine: list[tuple] = []
+            for e, engine in enumerate(engines):
                 adapter = AnthropicAdapter(
                     tokenizer=tokenizer,
                     sglang_url=engine,
                     tool_parser=getattr(self.args, "sglang_tool_call_parser", None) or None,
                     reasoning_parser=getattr(self.args, "sglang_reasoning_parser", None) or None,
                 )
-                handle = run_app_in_thread(
-                    adapter.app, host="127.0.0.1", port=0,
-                    thread_name=f"anthropic-adapter-w{wid}",
-                )
+                host, port = adapter_bind(e)
+                handle = run_app_in_thread(adapter.app, host=host, port=port,
+                                           thread_name=f"anthropic-adapter-e{e}")
+                per_engine.append((adapter, *adapter_urls(handle.port), engine))
+            for wid in range(self.num_workers):
+                adapter, local_url, session_url, engine = per_engine[wid % len(per_engine)]
                 self._adapters.append(adapter)
-                self._adapter_urls.append(f"http://127.0.0.1:{handle.port}")
+                self._adapter_urls.append(local_url)
+                self._session_urls.append(session_url)
                 self._engine_urls.append(engine)
 
-            self._harness = MiniClaudeHarness(max_turns=self.max_turns)
+            self._harness = make_harness(max_turns=self.max_turns)
             self._queue = asyncio.Queue()
             for wid in range(self.num_workers):
                 sess = aiohttp.ClientSession()   # created on THIS loop; reused across episodes (warm)

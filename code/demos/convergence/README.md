@@ -30,13 +30,13 @@ convergence/
   10_cpu_mcp.sh
   11_cpu_mixed.sh      <- demo_cpu_tasks DATASET=mixed (the multi-family batch)
   12_gpu_single.sh     <- GPU demos (KernelBench; CUDA sandbox; remote g6 or LOCAL_GPU=1)
-  13_gpu_farm_fractional.sh  <- demo_gpu_farm_fractional (local, GPU 6 shared 0.5+0.5)
-  14_gpu_farm_whole.sh       <- demo_gpu_farm_whole (local, GPUs 6,7, one GPU each)
+  13_gpu_farm_fractional.sh  <- demo_gpu_farm FARM=fractional (local, GPU 6 shared 0.5+0.5)
+  14_gpu_farm_whole.sh       <- demo_gpu_farm FARM=whole (local, GPUs 6,7, one GPU each)
   15_cpu_tasks_heartbeat.sh  <- property runs, real trainers (headline knob default-ON;
   16_cpu_scale_lanes.sh        set it OFF => byte-identical to the plain single-substrate trainer)
   17_cpu_tasks_libs.sh       <- demo_cpu_tasks DATASET=libs (pandas/scipy/sklearn on the Code Interpreter)
   18_gpu_single_snapshot.sh  <- demo_gpu_single SNAPSHOT_EVERY=1 (was demo_gpu_snapshot)
-  19_cpu_instance_pool.sh    <- demo_cpu_instance_pool (warm m5 pool, SANDBOX_POOL=2, isolated sub_sessions)
+  19_cpu_instance_pool.sh    <- demo_cpu_instance_pool [side note] (warm m5 pool, SANDBOX_POOL=2, isolated sub_sessions)
 ```
 
 ## Where you run these
@@ -69,7 +69,7 @@ steps 2–4 → `deploy/runtime.env`, which the wrapper sources).
 pointing at a live **g6** CUDA sandbox Runtime (one dedicated GPU per session). Without a
 real g6 ARN, use the local farm runs (13/14) instead.
 
-**GPU-farm (13, 14)** train `demo_gpu_farm_fractional` / `demo_gpu_farm_whole` against a Ray
+**GPU-farm (13, 14)** train `demo_gpu_farm` (`FARM=fractional` / `FARM=whole`) against a Ray
 farm on **this box's reserved GPUs**: 13 is GPU 6 split into two 0.5-GPU slots, 14 is GPUs 6,7,
 one GPU each. You must first start the local runtime container **on the HOST** (not
 inside `agentcore_p4`) in the matching mode:

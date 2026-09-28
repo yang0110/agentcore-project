@@ -1,11 +1,30 @@
 # Progress / Handoff — AgentCore + slime demos
 
-_Last updated: 2026-09-25. Branch: `master`._
+_Last updated: 2026-09-26. Branch: `master`._
 
 This file tracks the current work session so it can be picked up later. It has three
 sections: **Done**, **In progress**, **Next steps (to run)**.
 
-> **2026-09-25 — storyline restructure → 7 demos + 1 experimental.** In storyline order:
+> **2026-09-26 — GPU farm folders merged; instance pool demoted → 5 main demos + 1 side note + 1 experimental.**
+> - **Main demos (storyline order):** `demo_cpu_tasks`, `demo_cpu_terminalbench` (+ `warmstart/` probe),
+>   `demo_cpu_scale_lanes`, `demo_gpu_single` (KernelBench, one session per instance), `demo_gpu_farm`.
+> - **`demo_gpu_farm`** (merged from `demo_gpu_farm_fractional` + `demo_gpu_farm_whole`, identical code): ONE GPU
+>   instance serving MANY sessions, `FARM=fractional` (default; GPU 6, 0.5 + 0.5, like a single-GPU `g6.xlarge`) or
+>   `FARM=whole` (GPUs 6,7, one whole GPU per session, like a multi-GPU `g6.12xlarge`). Labelled **trusted-only:
+>   shared kernel + shared GPU** (no MIG on L4/L40S, cooperative memory-fraction cap, no Landlock port, one shared
+>   uid on AgentCore). Results kept as rows: `FARM=fractional` eval 0.65 (2026-09-25) / 0.775 (09-21);
+>   `FARM=whole` 0.65 / 0.70 (09-21), old logs now in `demo_gpu_farm/logs/whole/`.
+> - **Side note:** `demo_cpu_instance_pool` (warm m5 pool shared through per-episode sub_sessions). The Instances
+>   are AgentCore, but the pooling is our own code and a shared instance can't give full isolation (Landlock-grade,
+>   one kernel). Its "Isolation at a glance" summary is condensed into the report as a side-note subsection.
+> - **Experimental:** `demo_cpu_branching` (unchanged).
+> - **IN PROGRESS (not done):** `demo_cpu_tasks`' default is switching from the Code Interpreter to our own Runtime
+>   (generic stdlib image, VPC) with the harness running inside the sandbox session; the Code Interpreter stays as a
+>   zero-setup opt-in. Until that lands, the default and the measured results are the Code Interpreter path.
+> - Docs updated: report (.md/.tex/.pdf), report-based deck (.md/.tex/.pdf), `docs/demos-program.md`,
+>   `docs/harness-sandbox-decoupling.md`, `docs/sandbox-fresh-env-on-persistent-instance.md`.
+>
+> **2026-09-25 — storyline restructure → 7 demos + 1 experimental** (superseded 2026-09-26, above). In storyline order:
 > 1. `demo_cpu_tasks`: every literature task on the **DEFAULT managed Code Interpreter** (`SANDBOX=agentcore`,
 >    no image / Runtime; steps 2/3/4/6 are no-ops). The CI has pandas/scipy/sklearn/torch-cpu/gcc/node (no git,
 >    no internet); all 13 families pass on it, and `DATASET=gsm8k` scored eval 0.90 on it. `VARIANT=imagepool` →
@@ -32,16 +51,16 @@ sections: **Done**, **In progress**, **Next steps (to run)**.
 >    episodes/step. Live pool check (W=M=64, fake inference, real Runtimes): 1280 ops ok, engines 48/48/47/49, tiers
 >    mix. RL smoke pending (needs 8 GPUs, or pin + `ACTOR_GPUS=2`).
 > 5. `demo_gpu_single`.
-> 6. `demo_gpu_farm_fractional` (GPU 6, 0.5 + 0.5; smoke eval/kernelbench 0.65) and
+> 6. (history; merged back into `demo_gpu_farm` 2026-09-26) `demo_gpu_farm_fractional` (GPU 6, 0.5 + 0.5; smoke eval/kernelbench 0.65) and
 > 7. `demo_gpu_farm_whole` (GPUs 6,7, one GPU per session): `demo_gpu_farm FARM=…` split into two folders, each
 >    hard-setting its mode; launcher `code/deploy/run_local_gpu_runtime.sh fractional|whole|stop`.
 > - Experimental: `demo_cpu_branching`: the reward-0 cause was a missing `--sglang-tool-call-parser qwen25` (+ CLI `exit=1` on the 1024 per-turn cap); both fixed in `run.sh` 2026-09-25, RL re-run pending.
-> - Convergence: 01–11 now say Code Interpreter; 13/14 point at the farm folders (no `FARM`); 15 pins
+> - Convergence: 01–11 now say Code Interpreter; 13/14 point at the farm folders (no `FARM`; since 2026-09-26 back to `demo_gpu_farm FARM=…`); 15 pins
 >   `SANDBOX=agentcore-runtime`; `17_cpu_tasks_imagepool.sh` → **`17_cpu_tasks_libs.sh`**; new
 >   **`19_cpu_instance_pool.sh`** (`SANDBOX_POOL=2`, ARN from `deploy/runtime.env`).
 > - Smoke drivers: trainers `demo_cpu_tasks:libs`, `demo_cpu_tasks:deepscaler+HEARTBEAT=1+SANDBOX=agentcore-runtime`;
 >   `run_smoke_plan.sh` PHASE=2 = `demo_cpu_instance_pool` (was `demo_cpu_tasks+VARIANT=imagepool`);
->   `run_gpu_smoke.sh` / `run_b_queue.sh` use the two farm folders; offline probes `demo_cpu_terminalbench:warmstart`,
+>   `run_gpu_smoke.sh` / `run_b_queue.sh` use the two farm folders (since 2026-09-26 `demo_gpu_farm FARM=…`); offline probes `demo_cpu_terminalbench:warmstart`,
 >   `demo_cpu_instance_pool:isolation`.
 > - Decided (user, 2026-09-25: keep): the env-only `SLIME_CUDA_VISIBLE` / `SLIME_NUM_GPUS` pin runs the trainer on
 >   a GPU subset of the shared box; unset = the unchanged hardcoded 8-GPU placement. Read by the run.sh of

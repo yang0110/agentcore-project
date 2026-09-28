@@ -98,6 +98,58 @@ bash 6_cleanup.sh          # 6. delete every Runtime in tasks/arn_by_image.json
   `probe_coldstart.py` splits each cold open into pull+boot vs ready.
 - Train to convergence (inside the container): `train.sh` (`STEPS`, `EVAL_EVERY`, `SANDBOX_CONC`).
 
+## BENCH=swebench — a SWE-bench Verified subset on the same pool
+
+**Use case covered.** RL on real GitHub issues: the agent edits a real repo (django, sympy, sphinx,
+pytest, astropy, requests, xarray, pylint, flask) and the reward is the instance's hidden
+FAIL_TO_PASS + PASS_TO_PASS tests. 20 instances, one Runtime each, the same `TerminalBenchPool`
+(fresh session per episode, pre-open, heartbeat, strict routing by `task.image` = instance id).
+
+**Why this demo.** It is the standard agentic-coding benchmark. It also shows that the image-pool
+pattern works for images the microVM fleet cannot run: SWE-bench images are amd64-only and ~1-2 GB
+compressed (3-6 GB on disk), so each Runtime sits on an **m5.xlarge capacity provider**
+(`acs_swe_cp`, 60 GiB root). One session is one whole instance, so isolation is still per machine.
+
+**Design considerations.**
+- *Hidden tests.* The `test_patch` never enters the image or the dataset row; it lives only in
+  the trainer-side `swebench/manifest.json`. After the agent's turns, `swebench.grade_swebench`:
+  1. resets the files the patch touches to `base_commit`, discarding agent edits (added files are removed);
+  2. `git apply`s the patch;
+  3. runs the official per-repo/version `test_cmd` in conda env `testbed`;
+  4. parses the log with vendored SWE-bench parsers.
+- *Grading rule.* Solved iff every F2P and P2P test is PASSED/XFAIL, as in the official grader.
+- *Deviation: no reinstall.* The official `install` step is not re-run, because repos are editable
+  installs and the instance may lack PyPI egress. The oracle check catches any instance this breaks.
+- *Selection.* `fetch_swebench.py` picks "<15 min fix" instances with 1-3 F2P, 1-150 P2P, at most
+  2 test files and an image of at most 3 GB, from repos the vendored parsers support (quota: django 6,
+  sympy 4, sphinx 3, pytest 2, one each for the rest). matplotlib, sklearn and seaborn are excluded
+  (images of 4-8 GB, slow suites).
+- *Cold start.* Opening a session boots an m5 instance and pulls the image (~100 s measured). That
+  is much slower than a microVM, so keep `TB_PREOPEN_BATCHES` on. Idle instances are released
+  600 s after their last session.
+- *Server shim.* On Instances the data plane sends chunked `/invocations` bodies, which the shared
+  `acs_http_server.py` misreads as a ping. The images therefore run `deploy/acs_swe_http_server.py`,
+  which accepts both chunked and Content-Length bodies.
+
+```bash
+python3 fetch_swebench.py                   # swebench/manifest.json + data/swebench_{train,eval}.jsonl
+python3 deploy/deploy_swebench.py           # wrap + push + one Runtime per instance -> swebench/arn_by_image.json
+AGENTCORE_REGION=us-west-2 python3 swebench_oracle_check.py   # gold must solve, empty patch must not -> swebench/oracle.csv
+python3 fetch_swebench.py --data-only       # keep only usable instances
+BENCH=swebench bash run.sh                  # (container) same run, SWE data + pool map, eval/swebench
+```
+
+Knobs:
+- Deploy: `SWE_TASKS`, `SWE_LIMIT`, `SWE_BUILD_CONC`, `SWE_REBUILD`, `SWE_NO_REGISTER`,
+  `SWE_NO_PUSH` (local build; then `swebench_oracle_check.py --local`), `SWE_INSTANCE`, `SWE_ROOT_GIB`.
+- Data: `SWE_QUOTA`, `SWE_INSTANCES`, `SWE_MAX_TURNS` (12), `SWE_TEST_TIMEOUT` (600 s, which keeps
+  the grade exec under `INVOKE_READ_TIMEOUT` 900).
+- Episodes: consider raising `EPISODE_MAX_TURNS` / `TB_EXEC_TIMEOUT`, since SWE episodes are longer
+  than Terminal-Bench ones.
+
+Cleanup: delete the `acs_swe_*` Runtimes listed in `swebench/arn_by_image.json` and then the
+`acs_swe_cp` capacity provider. `6_cleanup.sh` covers only `tasks/`.
+
 ## Warm-start probe (`warmstart/`): why the pre-open works, and what heartbeat adds
 
 A small host-only probe (no GPU, no model, no trainer; about 7 min, a few cents) that isolates the two

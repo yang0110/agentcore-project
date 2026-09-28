@@ -1,5 +1,77 @@
 # demo_cpu_instance_pool: a large sandbox image on CPU Instances, run as a warm pool (`SANDBOX_POOL=N`) shared by per-episode isolated sub-sessions
 
+> **Side note, not a main demo (2026-09-26).** The capacity-provider m5 Instances are AgentCore, but
+> the *pooling* on top of them (many episodes sharing one warm Instance through `sub_session`) is our
+> own code. It **cannot give full isolation**: every episode on an Instance shares one kernel. Keep it
+> for trusted or RLVR-style workloads where the ~83 s cold boot per episode is unaffordable. For
+> anything that needs a real boundary, use one AgentCore session per episode. The usual fix for an
+> image over 2 GB is to slim it, or install the heavy deps at boot, so it fits a microVM.
+
+## Isolation at a glance: how far it goes, limits, pitfalls
+
+**What we achieve** (enforced per exec by `sandbox_farm_jail.py`; 22/22 isolation probe checks pass
+live on m5, and all 13 task families still reach reward 1.0; the jail adds about 50 ms per exec):
+
+- **Filesystem:** a Landlock domain can write only its own episode dir. Siblings, the farm root,
+  `/tmp`, `/var/tmp`, `/dev/shm`, `/root` and `/workspace` all return `EACCES`. The dir is fresh per
+  `sub_session` and deleted on close.
+- **Network (TCP):** every `connect` and `bind` is denied, so an episode can't reach the server's
+  port 8080, the instance metadata endpoint (IMDS) or the internet. The server's `AWS_*` env is not
+  inherited.
+- **Processes:** signals, `ptrace` and `/proc/<pid>/{environ,cwd,mem}` are blocked across domains.
+  The sub_session id is passed via env, never argv.
+- **Lifetime:** a subreaper kills the whole process tree when each exec ends, so nothing (setsid'd
+  daemons included) outlives its exec.
+- **Resources:** a watchdog kills a tree that goes over 256 processes or 4 GiB RSS. Files are capped
+  at 1 GiB (`FSIZE`), core dumps are off, and each op has a wall-clock timeout.
+
+That is enough to stop the reward hacks a policy can stumble into: reading a sibling's answer,
+killing a neighbour's checker, driving the server port, or leaving a daemon behind for the next episode.
+
+**Limitations (what is still shared):**
+
+| Shared | Consequence |
+|---|---|
+| **Kernel** | a kernel exploit or a Landlock bypass defeats everything above. There is no VM boundary |
+| **uid and PID namespace** | all episodes run as uid 0 in one userns, and `ps` shows other episodes' command lines |
+| **UDP / DNS** | Landlock has no rule for them, so UDP egress and DNS lookups are not blocked |
+| **CPU** | there is no per-episode cgroup, so one episode can saturate the m5's 4 vCPU and slow every neighbour's checker |
+| **RAM** | the watchdog only *polls* (every 5–100 ms). A fast allocation spike can OOM a neighbour or the server before it fires |
+| **Network namespace** | one network stack. A task that needs its own network or internet can't run here |
+| **Fault blast radius** | a server crash, OOM or full disk hits every episode on that Instance |
+
+**Pitfalls we hit, or that are easy to hit:**
+
+- **Per-episode uids don't work on AgentCore.** The container drops *all* capabilities (`CapEff` =
+  `CapBnd` = 0, `NoNewPrivs`, seccomp), so `setuid`, `chown`, `unshare` and cgroup writes all return
+  `EPERM`. Our first hardened image (`:uidiso`) failed every `open` with HTTP 500. `geteuid() == 0` is
+  misleading, because that "root" exists only inside a user namespace. Local docker keeps the
+  capabilities, so it hides this. Test with `--cap-drop ALL --security-opt no-new-privileges`.
+- **Landlock depends on the kernel.** Filesystem rules need ABI ≥ 1, the TCP rule ABI ≥ 4, and
+  signal/abstract-socket scoping ABI ≥ 6 (the m5 kernel 6.18 gives ABI 7). On an older kernel the
+  jail degrades feature by feature and still runs. Check `describe()["mode"]` and the
+  `SANDBOX_JAIL=landlock-abiN` value, and rerun `isolation_probe.py --live` after any image or
+  instance-family change.
+- **`SANDBOX_FARM_SHM=allow`** (needed by `multiprocessing`) shares `/dev/shm` across episodes.
+  `SANDBOX_FARM_NET=allow` drops the TCP rule. `SANDBOX_FARM_LANDLOCK=0` turns the jail off. All
+  three weaken isolation silently.
+- **No process survives across execs**, even within one episode. A task that starts a server in one
+  call and uses it in the next must do both in one exec.
+- **OS-mutating tasks** (Terminal-Bench style: apt, systemd, editing `/etc`) can't run in the jail at
+  all. They need a fresh session.
+- **The GPU farm is weaker still.** `demo_gpu_farm` has no Landlock port, so on AgentCore all its
+  episodes share one uid. There is no MIG on L4/L40S, and the GPU memory fraction cap is cooperative
+  (`torch.cuda.set_per_process_memory_fraction`). One wedged GPU, which we have seen on L4 under
+  sustained nvcc load, stalls every co-tenant.
+- **Idle cost.** Warm pool Instances bill while idle until the Runtime idle timeout reclaims them.
+
+**Bottom line:** this is Landlock-grade isolation on a shared kernel. It is good enough against an
+RL policy's accidental or opportunistic reward hacking. It is not a security boundary against
+deliberately hostile code. **Full isolation means one AgentCore session per episode.**
+
+The full per-dimension table and the probe details are in
+[Isolation guarantees](#isolation-guarantees-a-landlock-jail-per-episode-on-a-shared-kernel-not-a-vm-boundary) below.
+
 **Sandbox tier 3: own Runtime, custom image.** The ≈ 4 GB torch + scientific image is over the 2 GB microVM cap, so it runs on a CPU capacity-provider Instance (m5). See the tier table in [`../README.md`](../README.md#which-sandbox-does-a-task-need-three-tiers).
 
 **The point of this demo:** a sandbox image too big for a microVM runs on AgentCore **capacity-provider

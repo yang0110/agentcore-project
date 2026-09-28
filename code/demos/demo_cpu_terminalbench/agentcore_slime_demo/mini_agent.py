@@ -123,6 +123,7 @@ class MiniAgentResult:
     tool_calls: int = 0
     last_exit_code: int | None = None  # exit code of the last bash command, if any
     transcript: list[dict] = field(default_factory=list)  # the raw message list, for debugging
+    where: str = "trainer"           # where the loop ran: trainer | session | trainer_fallback
 
 
 class MiniClaudeHarness:
@@ -181,6 +182,7 @@ class MiniClaudeHarness:
         max_tokens: int = 1024,
         model_label: str = "slime-actor",
         http=None,
+        local_adapter_url: str | None = None,
     ) -> MiniAgentResult:
         """Run the agent loop against ``sb``, routing every model call through the adapter.
 
@@ -191,6 +193,9 @@ class MiniClaudeHarness:
         ``http`` optionally injects a caller-owned aiohttp.ClientSession to REUSE across episodes
         (the harness-scaling pool passes each warm worker's session so it is not re-created per
         episode). If None, a fresh session is created and closed for this run (original behaviour).
+
+        ``local_adapter_url`` is accepted for parity with InSessionHarness.run and ignored: this
+        loop runs in the trainer, so ``adapter_url`` already is the local one.
         """
         import contextlib
 

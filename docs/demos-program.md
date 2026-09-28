@@ -61,12 +61,20 @@ AgentCore **Code Interpreter** microVM (CPU); the harness is in-process.
 > heartbeat (formerly `demo_cpu_heartbeat`) is the `HEARTBEAT` knob (default on for remote own Runtimes; a no-op on the
 > Code Interpreter), and the custom-vs-managed Runtime check (formerly `demo_cpu_customruntime`) is
 > `demo_cpu_tasks/compare_backends.py`. The ~4 GB image on a CPU capacity-provider Instance (formerly
-> `demo_cpu_bigimage`, then `demo_cpu_tasks VARIANT=bigimage`) is its own demo, `demo_cpu_instance_pool`
-> (warm pool `SANDBOX_POOL=2`, a Landlock jail per episode). After the 2026-09-25 restructure the set is
-> 7 demos in storyline order: `demo_cpu_tasks`, `demo_cpu_terminalbench` (with its `warmstart/` probe),
-> `demo_cpu_instance_pool`, `demo_cpu_scale_lanes`, `demo_gpu_single`, `demo_gpu_farm_fractional`,
-> `demo_gpu_farm_whole`, plus the experimental, blocked `demo_cpu_branching`. Every demo runs
-> the same six step scripts (`1_prepare_data.sh` … `6_cleanup.sh`); see `code/demos/README.md`.
+> `demo_cpu_bigimage`, then `demo_cpu_tasks VARIANT=bigimage`) is `demo_cpu_instance_pool` (warm pool
+> `SANDBOX_POOL=2`, a Landlock jail per exec), since 2026-09-26 a **side note**, not a main demo: the Instances
+> are AgentCore, but the pooling is our own code and a shared instance can't give full isolation.
+>
+> **Current set (2026-09-26): 5 main demos + 1 side note + 1 experimental**, in storyline order:
+> `demo_cpu_tasks`, `demo_cpu_terminalbench` (with its `warmstart/` probe), `demo_cpu_scale_lanes`,
+> `demo_gpu_single` (KernelBench, one session per instance), `demo_gpu_farm` (ONE GPU instance serving MANY
+> sessions, `FARM=fractional|whole`, trusted-only; merged 2026-09-26 from `demo_gpu_farm_fractional` +
+> `demo_gpu_farm_whole`); side note `demo_cpu_instance_pool`; experimental `demo_cpu_branching`. Every demo
+> runs the same six step scripts (`1_prepare_data.sh` … `6_cleanup.sh`); see `code/demos/README.md`.
+>
+> **In progress (2026-09-26, not done):** `demo_cpu_tasks`' default is switching from the Code Interpreter to
+> our own Runtime (generic stdlib image, VPC) with the harness running *inside* the sandbox session; the Code
+> Interpreter stays as a zero-setup opt-in. Until then the default is still `SANDBOX=agentcore`.
 
 \* *Hypothesis only — Tier 3 replaces it with a measurement.* Note most cheap-checker CPU tasks are
 expected to be **generation-bound**; the clear **sandbox-bound** case is CUDA (Tier 2). That
@@ -80,8 +88,12 @@ instance** (a `g6`, x86_64/amd64); the trainer box keeps all its GPUs for policy
 | Demo folder | Task | Notes |
 |---|---|---|
 | `demo_gpu_kernelbench` → built as `demo_gpu_single` | KernelBench (level_1 CUDA) | checker = allclose vs torch ref, on `cuda`; one warm g6. Also carries the custom-Runtime angle (`gpu_torch_smoke.py`, `LOCAL_GPU=1`) and `SNAPSHOT_EVERY=1` (merged 2026-09-25 from `demo_gpu_customruntime` / `demo_gpu_snapshot`) |
-| `demo_gpu_farm_fractional` | KernelBench + Ray pack-many farm | many envs share one GPU (bursty, memory-bound): 0.5+0.5 on GPU 6 (formerly `demo_gpu_farm FARM=fractional`; before that `demo_gpu_shared_single`) |
-| `demo_gpu_farm_whole` | KernelBench + Ray farm | one whole GPU per session on GPUs 6,7 (formerly `demo_gpu_farm FARM=whole`; before that `demo_gpu_shared_multi` / `demo_gpu_local`) |
+| `demo_gpu_farm` `FARM=fractional` (default) | KernelBench + Ray pack-many farm | ONE GPU instance, MANY sessions: 0.5+0.5 on GPU 6, like a single-GPU `g6.xlarge` (before 2026-09-26 the folder `demo_gpu_farm_fractional`; originally `demo_gpu_shared_single`) |
+| `demo_gpu_farm` `FARM=whole` | KernelBench + Ray farm | ONE GPU instance, MANY sessions: one whole GPU per session on GPUs 6,7, like a multi-GPU `g6.12xlarge` (merged 2026-09-26 from `demo_gpu_farm_whole`; originally `demo_gpu_shared_multi` / `demo_gpu_local`) |
+
+`demo_gpu_farm` is **trusted-only: shared kernel + shared GPU** (no MIG on L4/L40S, a cooperative
+memory-fraction cap, no Landlock port, one shared uid on AgentCore). Full isolation on AgentCore is one
+session per episode, as in `demo_gpu_single`.
 
 ### Tier 3 — Advanced: scale the *measured* bottleneck
 

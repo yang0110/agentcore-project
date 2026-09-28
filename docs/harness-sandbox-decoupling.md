@@ -21,6 +21,13 @@ but for RL it is the wrong lifecycle, so we don't:
 So the topology is settled: **sandbox → AgentCore; harness → in-process.** §1 covers the in-process
 harness (the path), and §2 covers the GPU sandbox running as its own AgentCore Runtime.
 
+> **In progress (2026-09-26, not done).** `demo_cpu_tasks`' default is switching from the Code
+> Interpreter to our own Runtime (the generic stdlib image, VPC mode) with the harness running
+> **inside the sandbox session**: one agent loop per sandbox, harness and tools in the SAME AgentCore
+> Runtime session (the DSec pattern; today only `demo_cpu_branching` does this). The Code Interpreter
+> stays as a zero-setup opt-in. Until that lands and is measured, everything below describes the
+> current in-process path, which is still what every committed result used.
+
 > **Removed variants.** Two earlier variants are gone:
 > - **A2/B2** co-located the **real Claude Code CLI** *inside* the sandbox and redirected its tools
 >   over an MCP bridge. That real-CLI path — and its custom multi-user container / CLI-deploy
@@ -122,7 +129,7 @@ ad-hoc, isolated, per-session GPU environment. It does **not** contradict "harne
   sandbox only. This is the four-component architecture, cleanly.
 - **Sharing lives on the remote Runtime.** If many episodes must share one g6, that is a concern
   of the remote Runtime image (a Ray GPU-sharing farm runs *inside* the sandbox Runtime — the
-  remote form of the local farm in `demo_gpu_farm_fractional` / `demo_gpu_farm_whole`; formerly `demo_gpu_shared`), not of the trainer box.
+  remote form of the local farm in `demo_gpu_farm`, `FARM=fractional|whole` — merged 2026-09-26 from `demo_gpu_farm_fractional` + `demo_gpu_farm_whole`; formerly `demo_gpu_shared`), not of the trainer box. That farm is **trusted-only** (shared kernel + shared GPU: no MIG, a cooperative memory cap, one shared uid on AgentCore); full isolation is one session per episode, as in `demo_gpu_single`.
 - **Cost/lifecycle:** a GPU Runtime instance bills while up (~$0.80–1/hr + EBS on `g6.xlarge`) and
   must be torn down — see the 08/09 `OBSERVATIONS.md` and the
   capacity-provider/`securityGroups`/`LD_LIBRARY_PATH` gotchas found there. A rollout that

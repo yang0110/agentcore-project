@@ -6,7 +6,7 @@
 # Results: _smoke_logs/smoke_all_results.tsv (demo, status, secs, log).
 #
 #   bash run_all_demos_smoke.sh                       # all entries below
-#   ONLY="demo_gpu_farm_whole demo_cpu_tasks" bash run_all_demos_smoke.sh
+#   ONLY="demo_gpu_farm:whole demo_cpu_tasks" bash run_all_demos_smoke.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCK="${LOCK:-/tmp/acs_gpu.lock}"
@@ -16,31 +16,32 @@ mkdir -p "$OUT"; [ -f "$RES" ] || printf 'demo\tstatus\tsecs\tlog\n' > "$RES"
 
 PIN6="SLIME_CUDA_VISIBLE=2,3,4,5,6,7 SLIME_NUM_GPUS=6"
 PIN4="SLIME_CUDA_VISIBLE=2,3,4,5 SLIME_NUM_GPUS=4"      # GPUs 6,7 belong to the local farm
-# demo | extra env | deploy before (host) | cleanup after (host)
+# demo[:label] | extra env | deploy before (host) | cleanup after (host)   (label only names the log/row)
 ENTRIES=(
   "demo_cpu_tasks|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2||"
   "demo_cpu_terminalbench|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2||"
   "demo_cpu_instance_pool|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2||"
   "demo_cpu_scale_lanes|$PIN6 ACTOR_GPUS=2 ROLLOUT_GPUS=4||"
   "demo_gpu_single|$PIN6 ACTOR_GPUS=4 ROLLOUT_GPUS=2|2_build_image.sh 3_push_ecr.sh 4_deploy_runtime.sh|6_cleanup.sh"
-  "demo_gpu_farm_fractional|$PIN4 ACTOR_GPUS=2 ROLLOUT_GPUS=2|4_deploy_runtime.sh|6_cleanup.sh"
-  "demo_gpu_farm_whole|$PIN4 ACTOR_GPUS=2 ROLLOUT_GPUS=2|4_deploy_runtime.sh|6_cleanup.sh"
+  "demo_gpu_farm:fractional|$PIN4 ACTOR_GPUS=2 ROLLOUT_GPUS=2 FARM=fractional|4_deploy_runtime.sh|6_cleanup.sh"
+  "demo_gpu_farm:whole|$PIN4 ACTOR_GPUS=2 ROLLOUT_GPUS=2 FARM=whole|4_deploy_runtime.sh|6_cleanup.sh"
 )
 
 for e in "${ENTRIES[@]}"; do
   IFS='|' read -r d knobs pre post <<<"$e"
   [ -n "${ONLY:-}" ] && [[ " $ONLY " != *" $d "* ]] && continue
-  log="$OUT/smoke_all_$d.log"; t0=$SECONDS; st=PASS
+  dir="${d%%:*}"; name="${d/:/-}"
+  log="$OUT/smoke_all_$name.log"; t0=$SECONDS; st=PASS
   echo "[smoke-all] $d  $(date -u +%FT%TZ)  (waiting for $LOCK)"
   (
     flock 9
-    cd "$HERE/$d"
-    for s in $pre; do echo "[smoke-all] $d: $s"; bash "$s" || exit 10; done
+    cd "$HERE/$dir"
+    for s in $pre; do echo "[smoke-all] $d: $s"; env $knobs bash "$s" || exit 10; done
     env $knobs NR="$NR" EVAL_INTERVAL="$EVAL_INTERVAL" EVAL_NS="$EVAL_NS" \
-        SAVE="/work/code/demos/$d/ckpt/smoke_all" RUN_TAG=smoke_all bash 5_run.sh
+        SAVE="/work/code/demos/$dir/ckpt/smoke_all" RUN_TAG=smoke_all bash 5_run.sh
     rc=$?
-    for s in $post; do echo "[smoke-all] $d: $s"; bash "$s"; done
-    docker exec agentcore_p4 rm -rf "/work/code/demos/$d/ckpt/smoke_all"
+    for s in $post; do echo "[smoke-all] $d: $s"; env $knobs bash "$s"; done
+    docker exec agentcore_p4 rm -rf "/work/code/demos/$dir/ckpt/smoke_all"
     exit $rc
   ) 9>"$LOCK" > "$log" 2>&1
   rc=$?

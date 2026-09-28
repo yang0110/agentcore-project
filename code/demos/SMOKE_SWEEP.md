@@ -1,5 +1,9 @@
 # Smoke-sweep experiment plan — all 17 demos, end-to-end
 
+> **2026-09-26 (latest):** now **5 main demos + 1 side note + 1 experimental**. `demo_gpu_farm_fractional` +
+> `demo_gpu_farm_whole` are one `demo_gpu_farm` with `FARM=fractional|whole` (driver entries
+> `demo_gpu_farm:fractional` / `demo_gpu_farm:whole`), and `demo_cpu_instance_pool` is a side note (still smoked).
+
 > **2026-09-25 (restructure, latest):** the set is now **7 demos in storyline order + 1 experimental**:
 > `demo_cpu_tasks` (default managed Code Interpreter, `SANDBOX=agentcore`, no image) → `demo_cpu_terminalbench`
 > (+ the `warmstart/` probe) → `demo_cpu_instance_pool` (m5 Instance, `SANDBOX_POOL=2`, per-slot-uid isolation;

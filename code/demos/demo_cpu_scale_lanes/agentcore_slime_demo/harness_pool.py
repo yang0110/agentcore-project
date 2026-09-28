@@ -107,7 +107,7 @@ class HarnessPool:
         self.sandbox_kind = os.environ.get("SANDBOX", "agentcore-runtime")
         # The sandbox tier: M persistent sessions shared by all workers (only for the Runtime backend).
         self.num_sessions = (
-            int(os.environ.get("SANDBOX_SESSIONS", "256"))
+            int(os.environ.get("SANDBOX_SESSIONS", "0"))
             if self.sandbox_kind in ("agentcore-runtime", "runtime") else 0
         )
         self.open_rate = float(os.environ.get("SANDBOX_OPEN_RATE", "20"))
@@ -116,6 +116,7 @@ class HarnessPool:
         self._http = None                  # ONE warm aiohttp session shared by every worker
         self._adapters: list = []          # AnthropicAdapter per ENGINE
         self._adapter_urls: list[str] = [] # its in-thread endpoint URL, per engine
+        self._session_urls: list[str] = [] # the same adapter as the sandbox session dials it back
         self._engine_urls: list[str] = []  # engine base URL, per engine
         self._inflight: list[int] = []     # episodes currently on each engine
         self._free: asyncio.Queue | None = None     # free pooled sandbox sessions
@@ -143,7 +144,7 @@ class HarnessPool:
             from slime.utils.processing_utils import load_tokenizer
 
             from . import router_trace
-            from .mini_agent import MiniClaudeHarness
+            from .in_session_harness import adapter_bind, adapter_urls, make_harness
 
             # Every sandbox op is a blocking boto3 call run via asyncio.to_thread, i.e. on this loop's
             # default executor, which holds min(32, cpus+4) threads. With 256 episodes in flight that
@@ -168,11 +169,14 @@ class HarnessPool:
                     tool_parser=getattr(self.args, "sglang_tool_call_parser", None) or None,
                     reasoning_parser=getattr(self.args, "sglang_reasoning_parser", None) or None,
                 )
+                host, port = adapter_bind(i)   # 0.0.0.0:ADAPTER_PORT_BASE+i when the loop runs in the session
                 handle = run_app_in_thread(
-                    adapter.app, host="127.0.0.1", port=0, thread_name=f"anthropic-adapter-e{i}",
+                    adapter.app, host=host, port=port, thread_name=f"anthropic-adapter-e{i}",
                 )
                 self._adapters.append(adapter)
-                self._adapter_urls.append(f"http://127.0.0.1:{handle.port}")
+                local_url, session_url = adapter_urls(handle.port)
+                self._adapter_urls.append(local_url)
+                self._session_urls.append(session_url)
                 self._engine_urls.append(engine)
             self._inflight = [0] * len(engines)
 
@@ -181,7 +185,9 @@ class HarnessPool:
                 self._opener = asyncio.create_task(self._open_sessions())
                 atexit.register(self._close_sessions_sync)
 
-            self._harness = MiniClaudeHarness(max_turns=self.max_turns)
+            # HARNESS_WHERE=session (default on own Runtimes): the loop runs INSIDE the sandbox session
+            # and dials the engine's adapter back; the worker here only dispatches and polls.
+            self._harness = make_harness(max_turns=self.max_turns)
             self._queue = asyncio.Queue()
             # One warm, unlimited connector for all workers (the default caps at 100 connections).
             self._http = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0))
@@ -348,7 +354,9 @@ class HarnessPool:
             sandbox = self._checkout()
         else:
             from .session_keeper import maybe_keep_warm
-            sandbox = _NoWait(await maybe_keep_warm(make_sandbox(self.sandbox_kind, region=self.region)))
+            from . import preopen   # PREOPEN=N (opt-in): N fresh sessions booted ahead of demand
+            sandbox = _NoWait(await preopen.take(self.sandbox_kind, lambda: maybe_keep_warm(
+                make_sandbox(self.sandbox_kind, region=self.region)), kind=self.sandbox_kind))
         async with sandbox as (sb, wait_ms):
             with self._engine() as e:
                 adapter = self._adapters[e]
@@ -390,26 +398,30 @@ class HarnessPool:
                     await sb.write_file("PROBLEM.md", self._problem_text(task))
 
                     # The WARM harness drives the write->run->fix loop over the shared http session.
-                    await self._harness.run(
+                    res = await self._harness.run(
                         sb,
                         session_id=sid,
-                        adapter_url=adapter_url,
+                        adapter_url=(self._session_urls[e] if getattr(self._harness, "in_session", False)
+                                     else adapter_url),
+                        local_adapter_url=adapter_url,
                         prompt=self._AGENT_PROMPT,
                         max_tokens=self.max_tokens,
                         http=self._http,
                     )
 
-                    # Score with the SAME checker (RLVR — reward from verification, no LLM judge).
-                    exit_code, _out, _err = await sb.exec(
-                        getattr(task, "check_command", "python3 run_checks.py"), timeout=120,
-                    )
+                    # Score with a HIDDEN copy of the checker (RLVR — reward from verification, no LLM
+                    # judge): setup files re-seeded, checker under a random name, nonce'd PASSED line,
+                    # so rewriting the visible run_checks.py or sys.exit(0) in solution.py earns nothing.
+                    from .mini_claude_episode import _hidden_grade
+                    exit_code, _out = await _hidden_grade(sb, task)
                     reward = task.reward(int(exit_code))
 
                     # Drain the adapter-captured trajectory into loss-masked GRPO samples (a LIST).
                     return await adapter.finish_session(
                         sid, base_sample=base_sample, reward=float(reward),
                         extra_metadata={"task_id": task.task_id, "solved": reward == 1.0,
-                                        "harness_worker": wid, "engine": e, "sandbox_slot": slot},
+                                        "harness_worker": wid, "engine": e, "sandbox_slot": slot,
+                                        "harness_where": res.where},
                     )
                 finally:
                     await adapter.drop_session(sid, wait_timeout=30)

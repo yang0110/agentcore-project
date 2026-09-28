@@ -32,13 +32,13 @@
 \rowcolor{zebra}\lab{Running at once} & 380K & \adj{5,000} Runtime $\cdot$ \adj{1,000} Code Interpreter sessions\\
 \lab{Environments} & 11K bases $\times$ 100K workspaces, layered at start time & one image per Runtime; max \adj{1,000} Runtimes per account\\
 \sect{Images and start time}
-\lab{Image delivery} & lazy loading: only the 4--13\,\% of the image a sandbox touches is fetched & full image pulled per cold boot ($\approx$ 15 s for 447 MB); \gap{2 GB cap} on microVMs; larger images on a Runtime Instance\\
+\lab{Image delivery} & lazy loading: only the 4--13\,\% of the image a sandbox touches is fetched & \gap{full image pulled per cold boot}: $\approx$ 0.8 s stdlib, $\approx$ 15 s at 447 MB, grows with size; \gap{2 GB cap} on microVMs. \ours{Ours:} no image on Code Interpreter (pandas/scipy/sklearn/torch-cpu preinstalled); install heavy deps at boot to fit 2 GB; $>$ 2 GB on a Runtime Instance (60--80 s m5, $\approx$ 207 s g6 boot, paid once via warm-shared session)\\
 \rowcolor{zebra}\lab{Hiding the cold boot} & not needed: lazy loading keeps pull time low; pre-warming rejected (the bottleneck is I/O volume, not latency) & \ours{pre-open (ours)}: while the current batch runs, the next 1--2 batches' sandboxes are opened (image pulled, microVM booted); ready-wait p50 774 ms $\to$ \ours{5 ms}, makespan $-20$\,\%\\
 \sect{Lifecycle}
 \lab{Sandbox lifetime} & p50 15--17 min, p99 $>$ 3 h & \adj{15-min idle timeout} by default; max 8 h (microVM), 14 days (Runtime Instance)\\
 \rowcolor{zebra}\lab{Trainer stall} & pause/resume, state kept & \gap{no pause/resume, no state kept}; \ours{heartbeat (ours)} keeps the sandbox alive\\
 \sect{Architecture and safety}
-\lab{Agent loop} & outside the GPU training job & inside the trainer process (this project)\\
+\lab{Agent loop} & outside the GPU training job & \ours{outside the trainer too (ours)}: harness + tools in the same Runtime session, one loop per sandbox (branching today; other demos being ported)\\
 \rowcolor{zebra}\lab{Reward hacking} & AppArmor + per-task network allowlists & microVM boundary; Landlock jail and no TCP on shared pools; VPC mode for the network\\[2pt]
 \arrayrulecolor{awsink}\hline
 \multicolumn{3}{l}{\rule{0pt}{12pt}\footnotesize \adj{green} adjustable (quota or per-Runtime setting) \quad \ours{orange} our mitigation \quad \gap{red} AgentCore limit / missing}\\

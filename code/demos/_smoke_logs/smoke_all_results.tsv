@@ -1,1 +1,7 @@
 demo	status	secs	log
+demo_cpu_tasks	PASS	832	/home/ubuntu/workspace/agentcore-project/code/demos/_smoke_logs/smoke_all_demo_cpu_tasks.log
+demo_cpu_instance_pool	PASS	1045	/home/ubuntu/workspace/agentcore-project/code/demos/_smoke_logs/smoke_all_demo_cpu_instance_pool.log
+demo_cpu_scale_lanes	PASS	1232	/home/ubuntu/workspace/agentcore-project/code/demos/_smoke_logs/smoke_all_demo_cpu_scale_lanes.log
+demo_gpu_single	PASS	2704	/home/ubuntu/workspace/agentcore-project/code/demos/_smoke_logs/smoke_all_demo_gpu_single.log
+demo_gpu_farm:fractional	FAIL(deploy)	0	/home/ubuntu/workspace/agentcore-project/code/demos/_smoke_logs/smoke_all_demo_gpu_farm-fractional.log
+demo_gpu_farm:whole	FAIL(deploy)	0	/home/ubuntu/workspace/agentcore-project/code/demos/_smoke_logs/smoke_all_demo_gpu_farm-whole.log
