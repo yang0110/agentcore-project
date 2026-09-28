@@ -17,7 +17,6 @@ TEX="$BASE.tex"
 PDF="$BASE.pdf"
 
 TITLE="AgentCore as the Sandbox in Agentic RL"
-SUBTITLE="Agentic RL · AgentCore · Integrating AgentCore into slime · Demos"
 # ASCII author on purpose: avoids needing a CJK font just for the header line.
 AUTHOR="Kaige Yang --- Senior Applied Scientist, AWS"
 DATE="September 25, 2026"
@@ -25,11 +24,11 @@ DATE="September 25, 2026"
 TMP="$(mktemp _build_meta.XXXXXX.md)"
 trap 'rm -f "$TMP" '"$BASE"'.{aux,log,nav,out,snm,toc,vrb}' EXIT
 
-# 1. YAML metadata header + body from the first "## " slide onward
-#    (skips the manual title block at the top of the .md, which pandoc replaces).
+# 1. YAML metadata header + body after the title block
+#    (skips the manual title block before the first "---", which pandoc replaces).
 {
-  printf -- '---\ntitle: "%s"\nsubtitle: "%s"\nauthor: "%s"\ndate: "%s"\n---\n' "$TITLE" "$SUBTITLE" "$AUTHOR" "$DATE"
-  awk 'f{print} /^## /{if(!f){print; f=1}}' "$MD"
+  printf -- '---\ntitle: "%s"\nauthor: "%s"\ndate: "%s"\n---\n' "$TITLE" "$AUTHOR" "$DATE"
+  awk 'f{print} /^---$/{f=1}' "$MD"
 } > "$TMP"
 
 # 2. pandoc -> Beamer
