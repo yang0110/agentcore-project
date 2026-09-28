@@ -1,0 +1,394 @@
+\input{preamble}
+\usepackage{amssymb}
+\newcommand{\cc}[1]{\texttt{#1}}
+
+\title{Scaling the rollout on AgentCore: harness, inference and sandbox as decoupled tiers}
+\author{Kaige Yang}
+\institute{Senior Applied Scientist, AWS}
+\date{September 25, 2026}
+
+\begin{document}
+
+%====================================================================
+{\bgframe{art/bg_title.jpg}
+\begin{frame}[plain]
+\vspace*{6mm}
+\begin{minipage}{0.52\textwidth}\raggedright
+{\fontsize{22}{26}\selectfont\bfseries\color{white}Scaling the rollout on AgentCore\par}
+\vspace{4mm}
+{\raggedright\large\color{white}Harness, inference and sandbox as decoupled tiers\par}
+\vspace{10mm}
+{\small\color{white}\textbf{Kaige Yang}\\Senior Applied Scientist, AWS\par}
+\vspace{3mm}
+{\scriptsize\color{inkmuted}September 25, 2026\par}
+\end{minipage}
+\end{frame}}
+
+%====================================================================
+\begin{frame}
+\flabel{fr:agenda}
+\vspace*{2mm}
+\begin{columns}[c]
+\column{0.28\textwidth}
+{\fontsize{24}{28}\selectfont\bfseries\color{white}Agenda}
+\column{0.04\textwidth}
+\tikz\fill[awsmagenta] (0,0) rectangle (0.6pt,64mm);
+\column{0.64\textwidth}
+\agi{fr:loop}{01}{AgentCore, seen from agentic RL}{Runtime = environment, session = episode, microVM = isolation}
+\agi{fr:min}{02}{The challenge}{Throughput = min(inference, sandbox, harness)}
+\agi{fr:decoupled}{03}{The solution: decoupled tiers}{4 engines : 256 workers : 256 microVMs, joined per episode}
+\agi{fr:sweep}{04}{Results}{Offline sweep, live pool check, AWS lanes smoke}
+\agi{fr:next}{05}{Next}{A sandbox-heavy task for 256 microVMs}
+{\scriptsize\color{footc}Appendix (\hyperlink{fr:appx}{\textcolor{linkc}{from slide~\pageref*{fr:appx}}}): references.}
+\end{columns}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Scaling each tier independently cut sandbox opens 100$\times$ and p95 431 $\rightarrow$ 120 ms}
+\flabel{fr:summary}
+\tabcap{The deck in one table}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}p{0.14\textwidth}X@{}}
+\toprule
+\textbf{Goal} & Scale an agentic-RL rollout by scaling harness, inference and sandbox \hl{independently}\\
+\midrule
+\textbf{Challenge} & Throughput = \textbf{min(inference, sandbox, harness)}; by default the three tiers are balanced independently\\
+\midrule
+\textbf{Solution} & \textbf{Decoupled tiers:} 4 SGLang engines : 256 in-process harness workers : 256 persistent AgentCore microVMs, joined per episode\\
+\midrule
+\textbf{Result} & Pool verified live at 64 $\times$ 64 (1280 ops ok, engines 48/48/47/49, tiers mix freely). Earlier 4 $\times$ 4 $\times$ 4 lanes on AWS: \hl{4 opens instead of 400}, sandbox p95 \hl{431 $\rightarrow$ 120 ms}. [PENDING: 4 : 256 : 256 RL smoke]\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+{\scriptsize\color{inkmuted}Note (2026-09-28): this deck's demo is now \cc{demo\_cpu\_tasks SCALE=1}
+(\cc{SCALE=1 bash code/demos/demo\_cpu\_tasks/5\_run.sh}); the \cc{demo\_cpu\_scale\_lanes} folder was removed,
+and its decoupled harness tier is the default in every demo.\par}
+\vspace{2mm}
+\plainen{give each of the three parts of the rollout its own pool and size it separately; keeping sandboxes open instead of reopening them made the sandbox side much faster.}
+\src{\cc{\_smoke\_logs/lanes\_tb\_0923/} (AWS smoke, 2026-09-23); \cc{\_smoke\_logs/demo\_cpu\_harness\_scale.*} (live pool check, 2026-09-25).}
+\end{frame}
+
+%====================================================================
+\sect{1 $\cdot$ AgentCore, seen from agentic RL}
+
+\begin{frame}{AgentCore is the sandbox tier of the RL loop}
+\flabel{fr:loop}
+\figcap{Harness, inference and sandbox: three tiers, one loop}
+\centering
+\figcard[width=0.86\textwidth]{lanes_fig02_rl-loop.pdf}\par
+\vspace{3mm}
+\raggedright
+\begin{itemize}\small
+\item slime sees only \cc{generate()} $\rightarrow$ a scored trajectory; all three tiers plug in through its custom generate hook.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{The first invoke with a new session id boots the microVM; no ``create session'' call}
+\flabel{fr:concepts}
+\figcap{Three concepts: environment, episode, isolation. Runtime 1 : N sessions, session 1 : 1 microVM}
+\centering
+\figcard[width=0.9\textwidth]{lanes_fig03_concepts.pdf}\par
+\vspace{3mm}
+\raggedright
+\begin{itemize}\small
+\item No ``create session'' call: the \textbf{first invoke} with a new id boots the VM. \cc{StopRuntimeSession} ends it.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{A session can be fresh per episode, or kept and reused; a kept one must not idle 15 min}
+\flabel{fr:sessionuse}
+\figcap{Fresh per episode vs persistent (then per lane, now pooled)}
+\centering
+\figcard[width=0.74\textwidth]{lanes_fig04_session-use.pdf}\par
+\vspace{2mm}
+\raggedright
+\begin{itemize}\small\setlength{\itemsep}{1mm}
+\item \textbf{Fresh} for OS-level tasks (Terminal-Bench). \textbf{Persistent + fresh workdir, one episode at a time} for file-level tasks (this deck).
+\item A kept session must stay active: AgentCore reclaims it after \hl{15 min idle} [D3] (\sref{fr:refs}).
+\end{itemize}
+\src{[D3] AgentCore Runtime developer guide, ``How it works'' (checked 2026-09-25).}
+\end{frame}
+
+%====================================================================
+\sect{2 $\cdot$ The challenge}
+
+\begin{frame}{Throughput = min(inference, sandbox, harness): the harness is a hidden ceiling}
+\flabel{fr:min}
+\figcap{By default each tier balances on its own}
+\centering
+\figcard[width=0.8\textwidth]{lanes_fig08_balancers.pdf}\par
+\vspace{3mm}
+\raggedright
+\begin{itemize}\small
+\item \textbf{Harness} is a hidden ceiling: add engines and VMs and throughput still flat-lines.
+\end{itemize}
+\end{frame}
+
+%====================================================================
+\sect{3 $\cdot$ The solution: decoupled tiers}
+
+\begin{frame}{4 engines : 256 workers : 256 microVMs, joined per episode, nothing pinned}
+\flabel{fr:decoupled}
+\begin{columns}[T]
+\column{0.6\textwidth}
+\figcap{Each tier is its own pool; nothing is pinned}
+\figcard[width=0.95\linewidth]{lanes_fig12_decoupled.pdf}
+\column{0.37\textwidth}
+\vspace{8mm}
+\begin{itemize}\small\setlength{\itemsep}{2mm}
+\item Free worker $\rightarrow$ any free microVM (fresh \cc{ep-<hex>/}) $\rightarrow$ least-loaded engine.
+\item \cc{RB $\times$ NS} = \hl{256 episodes/step}.
+\end{itemize}
+\end{columns}
+\end{frame}
+
+\begin{frame}{Each tier has one knob, and the log names the tier that binds}
+\flabel{fr:knobs}
+\tabcap{One knob per tier; the log names the tier that binds}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}p{0.3\textwidth}p{0.14\textwidth}X@{}}
+\toprule
+\textbf{Knob} & \textbf{Tier} & \textbf{It binds when}\\
+\midrule
+\cc{HARNESS\_WORKERS} (256) & harness & \cc{qdepth} $>$ 0: episodes wait for a worker\\
+\cc{SANDBOX\_SESSIONS} (256) & sandbox & \cc{sandbox\_wait\_ms} $>$ 0: workers wait for a microVM\\
+\cc{ROLLOUT\_GPUS} (4) & inference & \cc{engine\_inflight} and \cc{sglang\_gen\_ms} climb\\
+\bottomrule
+\end{tabularx}
+\par\vspace{4mm}
+\begin{itemize}\small
+\item Harness and sandbox scale for \textbf{different reasons} (Python concurrency vs microVM quota and cost), so they are two numbers, not one.
+\end{itemize}
+\vspace{2mm}
+\plainen{if episodes queue, add workers; if workers queue, add microVMs; if generation slows, add GPUs.}
+\src{Knob defaults of the decoupled pool (\cc{harness\_pool.py}), as of 2026-09-25.}
+\end{frame}
+
+\begin{frame}{A reused microVM serves one episode at a time; safe for DeepScaleR, not OS-level tasks}
+\flabel{fr:isolation}
+\begin{itemize}\small\setlength{\itemsep}{3mm}
+\item One session serves \hl{one episode at a time}; a free-list hands it out, and it comes back only after \cc{rm -rf} of the episode's workdir.
+\item Different sessions are different microVMs (AgentCore's isolation boundary).
+\item Not reset between episodes of one session: \cc{/tmp}, packages, stray processes.
+\begin{itemize}
+\item Safe for DeepScaleR (writes only its workdir).
+\item OS-level tasks need \cc{SANDBOX\_SESSIONS=0} (a fresh session per episode).
+\end{itemize}
+\end{itemize}
+\vspace{4mm}
+\plainen{each episode gets a clean folder on a machine nobody else is using right now; anything outside that folder carries over, so tasks that change the OS get a fresh machine instead.}
+\end{frame}
+
+\begin{frame}{256 microVMs open in about 18 s, well inside the quotas, once the client is widened}
+\flabel{fr:opening}
+\begin{itemize}\small\setlength{\itemsep}{3mm}
+\item All sessions open once at start, paced at \hl{20/s} (quota 25 new/s [Q2]): ready in $\approx$ 13 s + one boot ($\approx$ 5 s).
+\item Data-plane invokes: $\approx$ 100/s at 256 episodes vs a 1000/s quota. Active sessions: 256 vs 5000.
+\item Client side: boto3 \cc{max\_pool\_connections} = 272 (default 10) and a 288-thread executor (default $\le$ 32), or the harness process becomes the ceiling.
+\end{itemize}
+\vspace{3mm}
+\tabcap{Load vs quota at 256 episodes}
+\footnotesize
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Limit} & \textbf{This demo} & \textbf{Quota / default}\\
+\midrule
+New sessions & 20/s & 25/s\\
+Data-plane invokes & $\approx$ 100/s & 1000/s\\
+Active sessions & 256 & 5000\\
+boto3 pool connections & 272 & 10\\
+Executor threads & 288 & $\le$ 32\\
+\bottomrule
+\end{tabular}
+\src{[Q2] \cc{aws service-quotas list-service-quotas --service-code bedrock-agentcore} (us-west-2, 2026-09-23); see \sref{fr:refs}.}
+\end{frame}
+
+\begin{frame}{Training hides behind the rollout, at the cost of one step off-policy}
+\flabel{fr:pipeline}
+\figcap{slime's async driver overlaps train N with rollout N+1}
+\centering
+\figcard[width=0.66\textwidth]{lanes_fig06_pipeline.pdf}\par
+\vspace{3mm}
+\raggedright
+\begin{itemize}\small
+\item Weight sync waits for the rollout to finish, so rollouts are \hl{one step off-policy}.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{DeepSeek DSec moved the agent loop out of the trainer to survive GPU preemption [31]}
+\flabel{fr:dsec}
+\begin{itemize}\footnotesize\setlength{\itemsep}{1.5mm}
+\item \textbf{Why:} DeepSeek's GPU jobs are routinely \textbf{preempted}. With the loop in the GPU pod, the loop died but the sandbox survived, so recovery \textbf{replayed a command log}.
+\item \textbf{Where:} from V4.1 on, the harness runs on DSec, \textbf{outside the GPU pool}: an agent sandbox (scaffold + tools) and a worker container (rollout state). A preempted trainer \textbf{reconnects}, with no replay.
+\end{itemize}
+\vspace{2mm}
+\tabcap{Agent-loop placement, DSec vs this demo}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}p{0.2\textwidth}XX@{}}
+\toprule
+ & \textbf{DSec (V4.1+)} & \textbf{This demo}\\
+\midrule
+Harness & agent sandbox, with its tools & \hl{slime's rollout process}\\
+Token record & worker container & slime's in-process adapter\\
+Trainer lost & reconnect, continue & abort in-flight: one batch\\
+Trainer stalls & pause/resume sandbox & \hl{heartbeat} keeps sessions\\
+\bottomrule
+\end{tabularx}
+\src{[31] DSec (DeepSeek Elastic Compute), arXiv 2609.22978, \S6.2--6.3; see \sref{fr:refs}.}
+\end{frame}
+
+\begin{frame}{Without preemption, moving the harness out of slime saves nothing, so it stays in-process}
+\flabel{fr:inprocess}
+\begin{itemize}\footnotesize\setlength{\itemsep}{1.2mm}
+\item \textbf{No preemption here:} the trainer has a dedicated 8$\times$L40S box. A stall is the real risk, and the heartbeat covers it. A crash costs one batch, not correctness.
+\item \textbf{Moving only the harness saves nothing:} the token record and the SGLang engines die with the slime job anyway. DSec's gain also needs an external record and a ``reconnect to episode X'' path \textbf{in slime}.
+\item \textbf{Harness in each microVM has costs:}
+\begin{itemize}
+\item the policy's commands would run next to its own transcript and reward, so it could tamper with them;
+\item every microVM needs a network path back to inference (VPC mode plus a security-group rule);
+\item it re-ties the harness tier to the sandbox tier, which is the coupling this demo removes.
+\end{itemize}
+\item \textbf{When to move it:} preemptible/Spot GPUs or multi-hour episodes. Then run the harness plus its token record as its own service, and have slime fetch episodes by ID.
+\end{itemize}
+\end{frame}
+
+%====================================================================
+\sect{4 $\cdot$ Results}
+
+\begin{frame}{Offline: harness alone plateaus; all three tiers together scale near-linearly}
+\flabel{fr:sweep}
+\figcap{Harness alone plateaus; all three tiers scale near-linearly}
+\centering
+\figcard[height=0.6\textheight]{lanes_fig07_sweep.pdf}\par
+\vspace{2mm}
+\raggedright
+{\small\hl{Takeaway}: the tiers must scale together.\par}
+\src{Offline sweep, \cc{harness\_scaling\_demo.py} (deck of 2026-09-25).}
+\end{frame}
+
+\begin{frame}{Live pool check: 1280 ops all ok, and the tiers mix freely}
+\flabel{fr:live}
+\tabcap{Live pool check, W = 64, M = 64, 192 episodes, fake inference, real Runtimes}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}p{0.55\textwidth}X@{}}
+\toprule
+\textbf{Metric} & \textbf{Value}\\
+\midrule
+Sandbox ops & \hl{1280}, all ok; 64 opens, 64 stops\\
+Episodes per engine & 48 / 48 / 47 / 49\\
+Sessions per worker (max) $\cdot$ engines per worker (p50) $\cdot$ workers per session (max) & 2 $\cdot$ 2 $\cdot$ 2\\
+\cc{open\_ms} p50 $\cdot$ \cc{sandbox\_wait\_ms} p50 / p95 & 5.45 s $\cdot$ 0 / 11.8 s (opening ramp only)\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+{\scriptsize\color{inkmuted}2026-09-25; no trainer. [PENDING: 4 : 256 : 256 RL smoke]\par}
+\vspace{3mm}
+\plainen{workers, sandboxes and engines were not stuck to each other: each worker used more than one sandbox and more than one engine, and load spread evenly across the four engines.}
+\src{\cc{\_smoke\_logs/demo\_cpu\_harness\_scale.*}, run of 2026-09-25.}
+\end{frame}
+
+\begin{frame}{Earlier on AWS: 4 $\times$ 4 $\times$ 4 lanes needed 4 session opens instead of 400}
+\flabel{fr:lanes}
+\tabcap{Smoke run, 2026-09-23, old pinned-lane topology: 4 $\times$ 4 $\times$ 4, 10 steps + eval, Qwen3-4B}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}p{0.4\textwidth}X@{}}
+\toprule
+\textbf{Metric} & \textbf{Value}\\
+\midrule
+Lanes 1 : 1 : 1 & $\checkmark$ all 400 episodes on their lane's engine \textbf{and} VM\\
+Episodes per lane & 103 / 101 / 99 / 97\\
+Session opens & \hl{4} for the whole run\\
+Warm sandbox op p50 / p95 & \hl{80 / 120 ms}\\
+Reward (train) / eval & 0.36 / \textbf{0.358}\\
+\bottomrule
+\end{tabularx}
+\par\vspace{4mm}
+\plainen{keeping four sandboxes open for the whole run replaced one sandbox start per episode.}
+\src{\cc{\_smoke\_logs/lanes\_tb\_0923/}, AWS smoke run of 2026-09-23.}
+\end{frame}
+
+\begin{frame}{The sandbox got faster, but the rollout didn't: $\approx$ 90\,\% of an episode is generation}
+\flabel{fr:beforeafter}
+\figcap{AWS smoke, same task and harness (engines differ: 2 $\times$ TP2 vs 4 $\times$ TP1)}
+\centering
+\figcard[height=0.5\textheight]{lanes_fig09_before-after.pdf}\par
+\vspace{2mm}
+\raggedright
+\begin{itemize}\small
+\item An episode takes $\approx$ 8 s; the sandbox part is $\approx$ \textbf{0.65 s}. \hl{$\approx$ 90\,\% is generation}: this task is inference-bound.
+\end{itemize}
+\src{\cc{\_smoke\_logs/lanes\_tb\_0923/}, AWS smoke of 2026-09-23.}
+\end{frame}
+
+%====================================================================
+\sect{5 $\cdot$ Next: a sandbox-heavy task for 256 microVMs}
+
+\begin{frame}{DeepCoder makes the sandbox do the work: suite p50 4.2 s, keep the $\ge$ 8 s tail}
+\flabel{fr:next}
+{\small The engines keep up only if \hl{$N \cdot G / T \le C$}: $N$ sandboxes, $G$ tokens per episode, $T$ episode time, $C \approx$ 10k tok/s (4 engines, to measure).\par}
+\vspace{2mm}
+\figcap{DeepCoder: every check runs the full hidden suite}
+\centering
+\figcard[width=0.92\textwidth]{lanes_fig10_task-time.pdf}\par
+\vspace{2mm}
+\raggedright
+\begin{itemize}\small
+\item \textbf{Probe} (1500 problems): 74\,\% pass with the gold solution; suite p50 \hl{4.2 s}, 101 tests. Keep the \textbf{$\ge$ 8 s} tail (13\,\%).
+\end{itemize}
+\src{DeepCoder probe over 1500 problems (\cc{build\_deepcoder.py}), as reported in the deck of 2026-09-25; $C$ is an estimate, still to measure.}
+\end{frame}
+
+\begin{frame}{Takeaways: decouple the tiers, then scale whichever one binds}
+\flabel{fr:takeaways}
+\vspace{4mm}
+\begin{itemize}\normalsize\setlength{\itemsep}{5mm}
+\item \textbf{AgentCore = the sandbox tier:} Runtime = environment, session = episode, microVM = isolation.
+\item \textbf{Decouple the tiers:} harness workers, microVMs and engines are three pools joined per episode; persistent microVMs gave \hl{100$\times$ fewer opens} and \hl{3.6$\times$ lower sandbox p95}.
+\item \textbf{Scale the bottleneck:} math is inference-bound; the 256-sandbox demo needs a sandbox-heavy task.
+\end{itemize}
+\src{\cc{\_smoke\_logs/lanes\_tb\_0923/} (2026-09-23): 4 vs 400 opens, p95 431 $\rightarrow$ 120 ms.}
+\end{frame}
+
+%====================================================================
+\appendix
+{\bgframe{art/bg_section.png}
+\begin{frame}[plain]
+\flabel{fr:appx}
+\vfill
+{\fontsize{26}{30}\selectfont\bfseries\color{white}Appendix\par}
+\vspace{3mm}
+{\small\color{white}References\par}
+\vfill
+\end{frame}}
+
+\sect{Appendix}
+\begin{frame}{Every number in this deck traces to a quota query, a doc, a paper, or a smoke log}
+\flabel{fr:refs}
+\tabcap{References}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}p{0.06\textwidth}Xp{0.3\textwidth}@{}}
+\toprule
+\textbf{Ref} & \textbf{Source} & \textbf{Supports}\\
+\midrule
+{[Q2]} & \cc{aws service-quotas list-service-quotas --service-code bedrock-agentcore} (us-west-2, 2026-09-23) & Active sessions 5000 $\cdot$ new sessions 25/s\\
+{[D3]} & \href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}{\textcolor{linkc}{\cc{docs.aws.amazon.com/bedrock-agentcore/latest/devguide/}}} \href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}{\textcolor{linkc}{\cc{runtime-how-it-works.html}}} & Session = dedicated microVM; 15-min idle, 8 h max\\
+{[31]} & DSec (DeepSeek Elastic Compute) \href{https://arxiv.org/abs/2609.22978}{\textcolor{linkc}{\cc{arxiv.org/abs/2609.22978}}}, \S6.2--6.3 & Agent loop outside the preemptible GPU pool; pause/resume\\
+Code & \cc{demo\_cpu\_scale\_lanes/}: \cc{harness\_pool.py}, \cc{harness\_scaling\_demo.py} & Decoupled pool, sweep\\
+Logs & \cc{\_smoke\_logs/lanes\_tb\_0923/}, \cc{\_smoke\_logs/demo\_cpu\_harness\_scale.*} & Measured numbers\\
+\bottomrule
+\end{tabularx}
+\par\vspace{3mm}
+{\scriptsize\color{inkmuted}The \cc{demo\_cpu\_scale\_lanes} folder was removed on 2026-09-28; the demo now runs as \cc{demo\_cpu\_tasks SCALE=1}.\par}
+\src{References table of \cc{scale\_lanes\_deck.md}, checked 2026-09-28.}
+\end{frame}
+
+%====================================================================
+{\bgframe{art/bg_close.png}
+\begin{frame}[plain]
+\vspace*{10mm}
+{\fontsize{28}{32}\selectfont\bfseries\color{white}Thank you\par}
+\vspace{4mm}
+{\small\color{white}Kaige Yang $\cdot$ Senior Applied Scientist, AWS\par}
+\end{frame}}
+
+\end{document}

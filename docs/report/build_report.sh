@@ -2,7 +2,7 @@
 # Build agentcore_slime_report.{tex,pdf} — the REPORT (not the slides).
 #
 # Source of truth: agentcore_slime_report.md (this dir). It was seeded from the
-# deck (../slides/agentcore_slime_deck.md) but is now EDITED INDEPENDENTLY so
+# deck (the since-removed ../slides/agentcore_slime_deck.md; now ../slides/aws/agentcore_slime.tex) but is now EDITED INDEPENDENTLY so
 # report refinements don't disturb the slides. Each "## " becomes a numbered
 # *section* of a flowing PDF report, via the Eisvogel pandoc template (article
 # class, TOC, shaded code boxes). The .tex is pandoc output — edit the .md.

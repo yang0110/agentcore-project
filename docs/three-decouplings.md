@@ -4,7 +4,7 @@ A one-page map of the architecture, to refer back to when reviewing the codebase
 *is* the Agent Lightning v1.0 design ("Towards Harnessed Agentic RL", arXiv 2608.17528): five
 components separated by **three decouplings**. Longer treatment in
 [harness-sandbox-decoupling.md](harness-sandbox-decoupling.md); the slide version is in
-`slides/agentcore_slime_deck.tex` ("The three decouplings", "Why decouple?", "Target topology").
+`slides/aws/agentcore_slime.tex` ("The three decouplings", "Why decouple?", "Target topology").
 
 ```
   ┌──────────────────────────┐

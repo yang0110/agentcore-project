@@ -1,6 +1,6 @@
-# Figures — agentcore_slime_deck
+# Figures — shared by the AWS-style decks in ../aws/
 
-34 figures/diagrams extracted from `../agentcore_slime_deck.pdf`, cropped to the
+34 figures/diagrams extracted from the (removed) pandoc agentcore_slime_deck.pdf, cropped to the
 diagram (or table) region and rendered at ~300 DPI PNG for pasting into other decks.
 
 | File | Fig | Slide | Description |

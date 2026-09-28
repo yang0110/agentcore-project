@@ -1,0 +1,415 @@
+\input{preamble}
+\newcommand{\yes}{\textcolor{awsteal}{\faCheck}}
+\newcommand{\no}{\textcolor{awsmagenta}{\faTimes}}
+\newcommand{\tb}[1]{\texttt{#1}}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\title{Terminal-Bench on AgentCore}
+\author{Kaige Yang}
+\institute{Senior Applied Scientist, AWS}
+\date{September 25, 2026}
+
+\begin{document}
+
+%====================================================================
+{\bgframe{art/bg_title.jpg}
+\begin{frame}[plain]
+\vspace*{6mm}
+\begin{minipage}{0.58\textwidth}
+{\fontsize{24}{28}\selectfont\bfseries\color{white}Terminal-Bench\\on AgentCore\par}
+\vspace{4mm}
+{\raggedright\large\color{white}One image, one Runtime, one microVM per episode\par}
+\vspace{12mm}
+{\small\color{white}\textbf{Kaige Yang}\\Senior Applied Scientist, AWS\par}
+\vspace{3mm}
+{\scriptsize\color{inkmuted}September 25, 2026}
+\end{minipage}
+\end{frame}}
+
+%====================================================================
+\begin{frame}
+\flabel{fr:agenda}
+\vspace*{2mm}
+\begin{columns}[c]
+\column{0.28\textwidth}
+{\fontsize{24}{28}\selectfont\bfseries\color{white}Agenda}
+\column{0.04\textwidth}
+\tikz\fill[awsmagenta] (0,0) rectangle (0.6pt,62mm);
+\column{0.64\textwidth}
+\agi{fr:summary}{00}{Overview}{The deck in one table; use case, isolation and design}
+\agi{fr:setup}{01}{Setup}{218 Runtimes, the dataset, how one episode runs}
+\agi{fr:boot}{02}{The challenge: cold start}{Why every episode pays a boot, and why slime can't hide it}
+\agi{fr:mech}{03}{The solution: look-ahead pre-open}{Four mechanisms, the step boundary, sizing the window}
+\agi{fr:learn}{04}{Results}{Smoke run, warm-start probe, takeaways and next steps}
+{\scriptsize\color{footc}Appendix (\hyperlink{fr:appx}{\textcolor{linkc}{from slide~\pageref*{fr:appx}}}): references.}
+\end{columns}
+\end{frame}
+
+%====================================================================
+\sect{Overview}
+
+\begin{frame}{Look-ahead pre-open hid every boot; idle cost and sparse reward remain}
+\flabel{fr:summary}
+\tabcap{The deck in one table}
+\small\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.17\textwidth}Y@{}}
+\toprule
+\textbf{Goal} & RL-train Qwen3-4B (slime GRPO) on Terminal-Bench, every episode in its own AgentCore microVM\\
+\textbf{Challenge} & Isolation needs a \textbf{fresh microVM per episode}, so every episode pays a \textbf{cold start}, in bursts, at every step\\
+\textbf{Solution} & \textbf{Look-ahead pre-open:} replay slime's data order and boot the next 2 batches' sessions (P = 64) before slime asks; heartbeat keeps them alive (\sref{fr:mech})\\
+\textbf{Result} & Smoke run on AWS: 382 episodes, \hl{0 infra errors}, \tb{open\_wait\_ms} \hl{p95 = 0} (no boot on the critical path). Cost: $\approx$\,95\,\% of microVM time idle; reward sparse (4 solves) (\sref{fr:cost})\\
+\textbf{Warm-start probe} & Pre-open cuts wait p50 774 $\rightarrow$ \hl{5 ms} (own Runtime) / 1715 $\rightarrow$ \hl{0 ms} (Code Interpreter), makespan $-20$\,\% / $-15$\,\%. Heartbeat keeps own-Runtime sessions past the idle timeout (3/3 vs 0/3) (\srefs{fr:preopen}{fr:hb})\\
+\bottomrule
+\end{tabularx}
+\src{\tb{code/demos/demo\_cpu\_terminalbench/} (smoke run 2026-09-23, warm-start probe 2026-09-25); checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Terminal-Bench is the case Code Interpreter can't cover: custom images at scale}
+\flabel{fr:usecase}
+\tabcap{What this demo covers}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.2\textwidth}Y@{}}
+\toprule
+\textbf{Use case covered} & Tasks that need \textbf{their own OS image} (packages, \tb{/etc}, services): hundreds of custom images, one per task, routed per episode\\
+\textbf{Why this demo} & The default Code Interpreter covers most literature tasks; this is the case it cannot: custom images \textbf{at scale}, where the cold start is paid per episode\\
+\textbf{Isolation} & One episode = one \textbf{brand-new session} = one dedicated microVM, stopped (VM terminated, memory sanitized) when the episode ends. Nothing leaks between episodes or GRPO siblings\\
+\textbf{Design considerations} & Strict image routing (unmapped task = error, no fallback) \textperiodcentered{} look-ahead pre-open hides the boot \textperiodcentered{} always-on heartbeat keeps pre-opened sessions past the 15-min idle timeout \textperiodcentered{} retry on a new id; infra failures never scored as wrong answers\\
+\bottomrule
+\end{tabularx}
+\par\vspace{3mm}
+\plainen{every episode gets a brand-new computer built from its task's image, and we boot those computers ahead of time so the trainer never waits.}
+\src{\tb{code/demos/demo\_cpu\_terminalbench/}; checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\sect{1 \textperiodcentered{} Setup}
+
+\begin{frame}{218 tasks, 218 images, 218 Runtimes; every episode gets a new microVM}
+\flabel{fr:setup}
+\figcap{image 1:1 Runtime 1:N session 1:1 microVM}
+\centering\figcard[height=0.43\textheight]{tb_fig01_cardinality.pdf}\par
+\vspace{1.5mm}
+\raggedright
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \textbf{Each Terminal-Bench task is its own environment} (OS, packages, a deliberately broken state), so each task gets its own arm64 image and its own AgentCore Runtime: \hl{218 Runtimes}, routed by task id.
+\item \textbf{Session = microVM, 1:1.} A new \tb{runtimeSessionId} boots a fresh Firecracker VM (2 vCPU, 8 GB) from the pristine image; \tb{StopRuntimeSession} terminates and sanitizes it.
+\item The image is untouched except for one wrapper layer: a standalone Python + a stdlib HTTP server (\tb{exec}, files, boot timestamps). Hidden tests are injected \textbf{after} the agent finishes.
+\end{itemize}
+\src{\tb{code/demos/demo\_cpu\_terminalbench/} deploy; session model per AgentCore docs [D3] (\sref{fr:refs}); checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{229 benchmark tasks shrink to 166 oracle-usable ones: 135 train, 31 held out}
+\flabel{fr:data}
+\tabcap{From benchmark to training set}
+\small\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.3\textwidth}r Y@{}}
+\toprule
+\textbf{Stage} & \textbf{Tasks} & \textbf{Dropped because}\\
+\midrule
+Terminal-Bench tasks & 229 & ---\\
+Deployable (arm64, $\le$ 2 GB image) & \hl{218} & 7 don't build for arm64 \textperiodcentered{} 4 exceed the fixed 2 GB image cap\\
+Oracle-usable & \hl{166} & 47 reference solution fails on this substrate \textperiodcentered{} 5 timed out \textperiodcentered{} 0 pass untouched\\
+Train / held-out eval & \hl{135 / 31} & 80/20, disjoint by task, stratified by difficulty\\
+\bottomrule
+\end{tabularx}
+\par\vspace{3mm}
+\begin{itemize}\footnotesize\setlength{\itemsep}{1mm}
+\item \textbf{Oracle check:} keep a task only if the reference solution passes \textbf{and} the untouched environment fails; otherwise its reward is structurally 0 or 1.
+\item Images: p50 128 MB, p90 492 MB, max 2 GB (48 GB total). The heavy tail (ML models, TeX, toolchains) is what makes boot time vary.
+\item \hl{Reward = 1 only if every hidden test passes.}
+\end{itemize}
+\src{\tb{code/demos/demo\_cpu\_terminalbench/} data preparation and oracle check; 2 GB image cap [Q1] (\sref{fr:refs}); checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{One training step boots 32 fresh microVMs, one per episode}
+\flabel{fr:episode}
+\figcap{route $\rightarrow$ fresh session $\rightarrow$ agent loop $\rightarrow$ grade $\rightarrow$ stop}
+\centering\figcard[height=0.44\textheight]{tb_fig03_episode-workflow.pdf}\par
+\vspace{2mm}
+\raggedright
+\begin{itemize}\footnotesize\setlength{\itemsep}{1mm}
+\item There is no ``create session'' call: the first invoke with a new \tb{runtimeSessionId} \textbf{is} the boot.
+\item One step = RB 4 prompts $\times$ NS 8 samples = \hl{32 episodes = 32 fresh microVMs}; 4 harness workers run them.
+\end{itemize}
+\src{\tb{code/demos/demo\_cpu\_terminalbench/} run config (RB = 4, NS = 8, W = 4); checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\sect{2 \textperiodcentered{} The challenge: cold start}
+
+\begin{frame}{On the critical path, fresh sessions would cost $\approx$\,8 min of serial boot per step}
+\flabel{fr:boot}
+\small\textbf{We can't reuse a warm VM.} Terminal-Bench tasks change the whole OS (apt, \tb{/etc}, services, \tb{/tmp}). Resetting a workdir would leak state into the next episode and corrupt the reward and the GRPO advantage. \hl{The session is the isolation boundary}, so each episode needs a new one.\par
+\vspace{3mm}
+\tabcap{Cold-start cost}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.45\textwidth}Y@{}}
+\toprule
+\textbf{Cost of a fresh session} & \textbf{Typical}\\
+\midrule
+Cold boot: allocate VM, pull image, start server & \textbf{$\approx$\,15 s} for a 447 MB image; grows with image size\\
+Warm hit: AgentCore already had a spare VM up & $\approx$\,0.5 s\\
+Per step, if on the critical path & 32 $\times$ 15 s $\approx$ \hl{8 min} of serial boot\\
+\bottomrule
+\end{tabularx}
+\par\vspace{3mm}
+\begin{itemize}\footnotesize\setlength{\itemsep}{1mm}
+\item \textbf{Bursty:} all 8 GRPO siblings of a task start at once, on the same Runtime.
+\item \textbf{Idle reclaim:} a session silent for $\approx$\,15 min is reclaimed, and the weight-sync pause can be that long [D3] (\sref{fr:refs}).
+\end{itemize}
+\src{\tb{code/demos/demo\_cpu\_terminalbench/} session-open timings; idle timeout per [Q1], [D3]; checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Only look-ahead pre-open hides the boot, keeps isolation and stays on-policy}
+\flabel{fr:options}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.5mm}
+\item \textbf{slime only reveals a few episodes at a time:} at most \tb{CONC $\times$ engines} = 8 \tb{generate()} calls in flight.
+\item \textbf{It draws step N+1 only after step N finishes}, so every step's first episodes would wait for a boot.
+\item \textbf{slime knows nothing about sandboxes.} Tasks, Runtimes and sessions all live in our \tb{TerminalBenchPool}, inside slime's rollout process.
+\end{itemize}
+\vspace{1.5mm}
+\tabcap{Options}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.34\textwidth}ccY@{}}
+\toprule
+\textbf{Option} & \textbf{Hides boot?} & \textbf{Keeps isolation?} & \textbf{Catch}\\
+\midrule
+Reuse one warm session per task + reset & \yes & \no & OS state leaks $\rightarrow$ \textbf{rejected}\\
+Standing warm pool per task & \yes & \yes & 218 tasks $\times$ NS idle VMs\\
+Open on pickup & \no & \yes & Boot on the critical path\\
+Fully-async rollout & \yes & \yes & Off-policy (stale weights); slime mode change\\
+\hl{Look-ahead pre-open (used)} & \yes & \yes & Guesses can be wrong; booted VMs idle\\
+\bottomrule
+\end{tabularx}
+\src{\tb{code/demos/demo\_cpu\_terminalbench/} rollout config (CONC, engines); checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\sect{3 \textperiodcentered{} The solution: look-ahead pre-open}
+
+\begin{frame}{Four mechanisms hide the boot with no slime change and at most 68 live microVMs}
+\flabel{fr:mech}
+\begin{enumerate}\scriptsize\setlength{\itemsep}{0.8mm}
+\item \textbf{Look-ahead data source.} \tb{tb\_lookahead\_source.py} (a \tb{-{}-data-source-path} plugin) replays slime's deterministic order (sequential offset, \tb{random.seed(seed + epoch)} shuffle) to list the \textbf{next 2 rollouts'} prompts, without moving slime's position. No slime change.
+\item \textbf{Bounded pre-open window.} The pool keeps a fresh session booted for each of the next \textbf{P} = \tb{TB\_PREOPEN\_BATCHES} $\times$ RB $\times$ NS = \hl{64} upcoming episodes, pooled per task. A worker claims any ready session for its task; the claim moves the window on by one. Wrong guesses are stopped at the next draw.
+\item \textbf{Heartbeat.} A \tb{SessionKeeper} pings every open session at half the 15-min idle timeout, so none is reclaimed during training or weight sync.
+\item \textbf{Retry on a new id.} A failed open retries on a \textbf{new} session (3$\times$); an infra failure is logged as \tb{infra\_error}, never scored as a wrong answer.
+\end{enumerate}
+\vspace{2mm}
+\colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\footnotesize Live microVMs $\le$ W + P = 4 + 64 = \hl{68}. The account quota is \textbf{5000} active sessions and 25 new/s [Q2] (\sref{fr:refs}); throttled opens back off and retry.}}
+\src{\tb{code/demos/demo\_cpu\_terminalbench/} (\tb{tb\_lookahead\_source.py}, \tb{TerminalBenchPool}); quotas [Q2] us-west-2, 2026-09-23; checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Across a step boundary no worker waits for a boot; the price is idle VMs}
+\flabel{fr:boundary}
+\tabcap{Look-ahead across a step boundary (W = 4, P = 64)}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.2\textwidth}Y P{0.17\textwidth}@{}}
+\toprule
+\textbf{Moment} & \textbf{What happens} & \textbf{Worker waits for a boot?}\\
+\midrule
+Step N$-$1 running & Its draw already announced steps N and N+1 $\rightarrow$ 64 sessions booting & ---\\
+Step N drawn & Window = steps N, N+1: already booted, nothing new to open & ---\\
+Each claim & Next episode of step N+2 starts booting & \hl{No}\\
+Step N training & 64 booted VMs idle through training; heartbeat keeps them & ---\\
+Step N+1 drawn & All its episodes already booted & \hl{No}\\
+\bottomrule
+\end{tabularx}
+\par\vspace{4mm}
+\begin{itemize}\footnotesize\setlength{\itemsep}{1.5mm}
+\item \textbf{Sessions per Runtime are never configured.} A task sampled in a step gets NS = 8 sessions; others get 0.
+\item \textbf{The price is idle time:} each VM is booted about P\,$\cdot$\,E\,/\,W seconds before it's needed (E = episode time).
+\end{itemize}
+\src{\tb{code/demos/demo\_cpu\_terminalbench/} pool design (W = 4, TB\_PREOPEN\_BATCHES = 2); checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{One batch of look-ahead already hides the boot; the run's two cost $\approx$\,6 min idle per VM}
+\flabel{fr:sizing}
+\small Boot is hidden when \hl{P\,$\cdot$\,E\,/\,W $\ge$ B} (B = boot time), and a window of at least one batch (P $\ge$ RB $\times$ NS) also covers each step's first episodes. Everything beyond that is paid idle time.\par
+\vspace{2mm}
+\tabcap{Choosing TB\_PREOPEN\_BATCHES}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.27\textwidth}r Y P{0.25\textwidth}@{}}
+\toprule
+\textbf{\tb{TB\_PREOPEN\_BATCHES}} & \textbf{P} & \textbf{Boot hidden?} & \textbf{Idle per VM $\approx$ P\,$\cdot$\,E\,/\,W}\\
+\midrule
+0 --- look-ahead off & $\approx$\,4 & Mid-step only; each step's first W wait & $\approx$\,20 s\\
+1 --- one batch ahead & 32 & Yes, including step starts & $\approx$\,3 min\\
+\hl{2 --- used in the smoke run} & \hl{64} & Yes, with a full batch of slack & $\approx$\,6 min (measured: 7.3 min p50)\\
+\bottomrule
+\end{tabularx}
+\par\vspace{3mm}
+\begin{itemize}\footnotesize\setlength{\itemsep}{1mm}
+\item E = 21 s (measured episode p50), W = 4.
+\item Tune from the \tb{[demo]} lines: \tb{open\_wait\_ms} $\gg$ 0 $\rightarrow$ raise it; \tb{preopen\_idle\_ms} $\gg$ boot time $\rightarrow$ lower it.
+\end{itemize}
+\src{Smoke run 2026-09-23 (E, measured idle), \tb{code/demos/demo\_cpu\_terminalbench/logs}; checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\sect{4 \textperiodcentered{} Results}
+
+\begin{frame}{The agent made partial progress (42\,\%) but solved only 4 of 382 episodes}
+\flabel{fr:learn}
+\tabcap{Learning (RB = 4, NS = 8, Qwen3-4B; smoke run, 10 steps + eval, 2026-09-23)}
+\small\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.32\textwidth}Y@{}}
+\toprule
+\textbf{Metric} & \textbf{Value}\\
+\midrule
+Train solve rate, steps 1--10 & 0 \textperiodcentered{} 0 \textperiodcentered{} 0.088 \textperiodcentered{} 0 \textperiodcentered{} 0 \textperiodcentered{} 0 \textperiodcentered{} 0 \textperiodcentered{} 0.026 \textperiodcentered{} 0 \textperiodcentered{} 0\\
+Full solves & \hl{4 / 382} episodes (\tb{acl-permissions-inheritance} $\times$3, \tb{git-leak-recovery})\\
+Held-out solve rate (31 tasks $\times$ 2) & 0.0\\
+Partial progress & \hl{42\,\%} of episodes pass $\ge$ 1 hidden test\\
+Agent behaviour & Median 6 turns, 5 bash calls; 45\,\% hit the 8-turn budget\\
+\bottomrule
+\end{tabularx}
+\par\vspace{4mm}
+\begin{itemize}\footnotesize
+\item \textbf{Sparse, not dead.} The tool loop works and the agent makes partial progress, but almost every GRPO group is all-0, so there is little gradient.
+\end{itemize}
+\src{Smoke run 2026-09-23, \tb{code/demos/demo\_cpu\_terminalbench/logs}; checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{The smoke run hid every boot and lost no episode, but $\approx$\,95\,\% of microVM time sat idle}
+\flabel{fr:cost}
+\tabcap{Sandbox and cost (W = 4, TB\_PREOPEN\_BATCHES = 2)}
+\small\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.36\textwidth}Y@{}}
+\toprule
+\textbf{Metric} & \textbf{Value}\\
+\midrule
+Episodes / infra errors & 382, each on its own fresh microVM / \hl{0} lost (job $\approx$\,70 min)\\
+Boot on the critical path (\tb{open\_wait\_ms}) & \hl{p50 0 \textperiodcentered{} p95 0}; max 4.9 s (first 4 episodes only)\\
+Session open (\tb{open\_ms}) & p50 0.66 s \textperiodcentered{} p95 2.5 s \textperiodcentered{} \textbf{100\,\% warm hits} \textperiodcentered{} 0 retries\\
+Episode time p50 / p90 & 21 s / 64 s (agent 9 s + grade 10 s)\\
+Pre-opened VM idle p50 / max & \textbf{7.3 min} / 16.5 min; heartbeat kept all alive\\
+microVM-seconds per train step & $\approx$\,13\,000 (32 $\times$ 411 s); \hl{$\approx$\,95\,\% idle}\\
+\bottomrule
+\end{tabularx}
+\par\vspace{3mm}
+\begin{itemize}\footnotesize
+\item \textbf{Every open was a warm hit.} AgentCore already had a spare VM up for each Runtime, so no $\approx$\,15 s cold boot occurred in this run. The per-image cold-start probe (\tb{probe\_coldstart.py}) is still to run.
+\end{itemize}
+\src{Smoke run 2026-09-23, \tb{code/demos/demo\_cpu\_terminalbench/logs}; checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Pre-open cut the median wait to $\le$\,5 ms and makespan by 15--20\,\%; only the first batch waits}
+\flabel{fr:preopen}
+\small Host-only, no GPU or trainer ($\approx$\,7 min, a few cents): the same 24 MockPolicy \tb{sql} episodes in batches of 6, \textbf{cold} (open at episode start) vs \textbf{preopen} (next batch booted while this one runs, the \tb{TB\_PREOPEN\_BATCHES} idea).\par
+\vspace{2mm}
+\tabcap{Pre-open vs cold open (all rewards 1.0)}
+\footnotesize\setlength{\tabcolsep}{5pt}
+\begin{tabularx}{\textwidth}{@{}Y l r r r r@{}}
+\toprule
+\textbf{Backend} & \textbf{Mode} & \textbf{Wait p50} & \textbf{Episodes that waited} & \textbf{Idle held} & \textbf{Makespan}\\
+\midrule
+Own Runtime & cold & 774 ms & 24 / 24 & 0 s & 31.9 s\\
+Own Runtime & preopen & \hl{5 ms} & 8 / 24 (first batch) & 75 s & 25.5 s (\hl{$-20$\,\%})\\
+\midrule
+Code Interpreter & cold & 1715 ms & 24 / 24 & 0 s & 28.7 s\\
+Code Interpreter & preopen & \hl{0 ms} & 6 / 24 (first batch) & 70 s & 24.3 s (\hl{$-15$\,\%})\\
+\bottomrule
+\end{tabularx}
+\par\vspace{3mm}
+\begin{itemize}\footnotesize
+\item \textbf{Only the first batch pays the boot.} The price is ``idle held'', the same trade-off \tb{preopen\_idle\_ms} shows at full scale (\sref{fr:cost}).
+\end{itemize}
+\src{Warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_terminalbench/warmstart/}; checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Heartbeat kept 3/3 own-Runtime sessions past the idle timeout; without it, 0/3 survived}
+\flabel{fr:hb}
+\small A Runtime session idle past \tb{idleRuntimeSessionTimeout} is reclaimed. In training that timeout is the \textbf{15-min default} (\tb{WARM\_IDLE\_TIMEOUT} = 900, pings at 450 s). The probe Runtime \tb{acs\_warmstart\_cpu} sets it to \textbf{60 s} only so the test fits in minutes; sessions then sit idle 150 s.\par
+\vspace{2mm}
+\tabcap{Heartbeat vs idle reclaim}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.18\textwidth}P{0.14\textwidth}P{0.2\textwidth}Y@{}}
+\toprule
+\textbf{Backend} & \textbf{Heartbeat} & \textbf{Sessions surviving the idle gap} & \textbf{Resume}\\
+\midrule
+Own Runtime & on (14 pings) & \hl{3 / 3} & 104 ms, files intact\\
+Own Runtime & off & 0 / 3 & \textbf{Silently reclaimed:} same session id, fresh empty sandbox\\
+Code Interpreter & on / off & 0 / 3 & Ends at its \tb{sessionTimeoutSeconds} regardless of pings\\
+\bottomrule
+\end{tabularx}
+\par\vspace{3mm}
+\begin{itemize}\footnotesize
+\item \textbf{Why the keeper is always on here:} a reclaimed session looks healthy but has lost its files. On the Code Interpreter the lever is a generous session timeout, not pings.
+\end{itemize}
+\src{Warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_terminalbench/warmstart/} (Runtime \tb{acs\_warmstart\_cpu}); checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Cold start is solved but over-provisioned; learning signal is now the bottleneck}
+\flabel{fr:next}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
+\item \textbf{Works end to end:} per-task Runtimes, one fresh microVM per episode, oracle-checked tasks, 0 infra failures.
+\item \textbf{Cold start is solved, but over-provisioned.} Look-ahead removed all boot wait (the warm-start probe confirms: only the first batch waits), but at P = 64 a VM idles $\approx$\,7 min for a 21 s episode. With warm hits at $\approx$\,0.7 s, \hl{\tb{TB\_PREOPEN\_BATCHES} = 1 (or 0)} should give the same wait at a fraction of the cost.
+\item \textbf{Learning signal is the bottleneck:} 4 solves in 382 episodes. Next: easy-first curriculum, more turns, or partial credit from \tb{tests\_passed}.
+\end{itemize}
+\vspace{1.5mm}
+\tabcap{Next steps}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.42\textwidth}Y@{}}
+\toprule
+\textbf{Next} & \textbf{Why}\\
+\midrule
+Re-run with \tb{TB\_PREOPEN\_BATCHES} = 1 and 0 & Measure the cost/wait trade-off\\
+\tb{probe\_coldstart.py} over all 218 Runtimes & Cold vs warm boot by image size (burst opens)\\
+Curriculum / partial-credit reward & Mixed GRPO groups $\rightarrow$ real gradient\\
+\bottomrule
+\end{tabularx}
+\src{Smoke run 2026-09-23 and warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_terminalbench/}; checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+\appendix
+{\bgframe{art/bg_section.png}
+\begin{frame}[plain]
+\flabel{fr:appx}
+\vfill
+{\fontsize{26}{30}\selectfont\bfseries\color{white}Appendix\par}
+\vspace{3mm}
+{\small\color{white}References\par}
+\vfill
+\end{frame}}
+
+%====================================================================
+\sect{Appendix}
+\begin{frame}{AgentCore quotas and docs back every limit used in this deck}
+\flabel{fr:refs}
+\tabcap{References}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.05\textwidth}P{0.52\textwidth}Y@{}}
+\toprule
+\textbf{Ref} & \textbf{Source} & \textbf{Supports}\\
+\midrule
+{[Q1]} & AgentCore quotas:\newline\href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html}{\textcolor{linkc}{\tb{docs.aws.amazon.com/bedrock-agentcore/latest/}}}\newline\href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html}{\textcolor{linkc}{\tb{devguide/bedrock-agentcore-limits.html}}} & 1000 Runtimes/account \textperiodcentered{} image $\le$ 2 GB \textperiodcentered{} 15-min request timeout \textperiodcentered{} 15-min idle timeout\\
+{[Q2]} & \tb{aws service-quotas list-service-quotas}\newline\tb{-{}-service-code bedrock-agentcore} (us-west-2, 2026-09-23) & Active Session Workloads = 5000 (L-3E5722B2) \textperiodcentered{} new sessions 25/s (L-8EE2AEA2) \textperiodcentered{} image 2048 MB (L-0A9E32B3)\\
+{[D3]} & \href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}{\textcolor{linkc}{\tb{docs.aws.amazon.com/bedrock-agentcore/latest/}}}\newline\href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}{\textcolor{linkc}{\tb{devguide/runtime-how-it-works.html}}} & Session = dedicated microVM; 15-min idle, 8 h max lifetime\\
+\bottomrule
+\end{tabularx}
+\src{AWS documentation and service-quotas CLI, us-west-2, 2026-09-23; checked 2026-09-25.}
+\end{frame}
+
+%====================================================================
+{\bgframe{art/bg_close.png}
+\begin{frame}[plain]
+\vspace*{10mm}
+{\fontsize{28}{32}\selectfont\bfseries\color{white}Thank you\par}
+\vspace{4mm}
+{\small\color{white}Kaige Yang $\cdot$ Senior Applied Scientist, AWS\par}
+\end{frame}}
+
+\end{document}

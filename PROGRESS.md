@@ -143,7 +143,7 @@ sections: **Done**, **In progress**, **Next steps (to run)**.
 > warm hit; BUT `preopen_idle_ms` p50 7.3 min vs episode p50 21 s → ~95 % of microVM-s idle.
 > Reward sparse: 4 solves/382 (train 0.088 / 0.026 on 2 steps, else 0), eval 0.0, 42 % pass ≥1 test.
 > Next: try `TB_PREOPEN_BATCHES`=1 (cost), easy-first curriculum / partial-credit reward for signal,
-> run `probe_coldstart.py`. Deck `docs/slides/terminalbench_deck.md` has the results.
+> run `probe_coldstart.py`. Deck `docs/slides/aws/terminalbench.tex` has the results.
 
 ---
 

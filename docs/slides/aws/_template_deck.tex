@@ -1,0 +1,162 @@
+\input{preamble}
+
+\title{Deck title}
+\author{Speaker Name}
+\institute{Job title, AWS}
+\date{Month Year}
+
+\begin{document}
+
+%====================================================================
+% Title: full-bleed background, text in the left 56%
+{\bgframe{art/bg_title.jpg}
+\begin{frame}[plain]
+\vspace*{6mm}
+\begin{minipage}{0.56\textwidth}
+{\fontsize{26}{30}\selectfont\bfseries\color{white}Deck title\\on two lines\par}
+\vspace{4mm}
+{\raggedright\large\color{white}One-line subtitle that says what the talk covers\par}
+\vspace{12mm}
+{\small\color{white}\textbf{Speaker Name}\\Job title, AWS\par}
+\vspace{3mm}
+{\scriptsize\color{inkmuted}Data as of Month Year}
+\end{minipage}
+\end{frame}}
+
+%====================================================================
+% Agenda: each item links to the first slide of its section
+\begin{frame}
+\flabel{fr:agenda}
+\vspace*{2mm}
+\begin{columns}[c]
+\column{0.28\textwidth}
+{\fontsize{24}{28}\selectfont\bfseries\color{white}Agenda}
+\column{0.04\textwidth}
+\tikz\fill[awsmagenta] (0,0) rectangle (0.6pt,58mm);
+\column{0.64\textwidth}
+\agi{fr:table}{01}{First section}{What the audience learns here}
+\agi{fr:chart}{02}{Second section}{What the audience learns here}
+\agi{fr:code}{03}{Third section}{What the audience learns here}
+{\scriptsize\color{footc}Appendix (\hyperlink{fr:appx}{\textcolor{linkc}{from slide~\pageref*{fr:appx}}}): evidence and detail.}
+\end{columns}
+\end{frame}
+
+%====================================================================
+\sect{First section}
+
+%====================================================================
+% Table left, bullets right, takeaway line, source footer
+\begin{frame}{Headline states the conclusion, not the topic}
+\flabel{fr:table}
+\begin{columns}[T]
+\column{0.50\textwidth}
+\tabcap{What the table shows}
+\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}l r r@{}}
+\toprule
+\textbf{Item} & \textbf{A} & \textcolor{inkmuted}{\textbf{B}}\\
+\midrule
+\grp{3}{Group one}\\
+Row one & 90.6 & \textcolor{inkmuted}{89.1}\\
+Row two & 97.7 & \textcolor{inkmuted}{99.4}\\
+\midrule
+\grp{3}{Group two}\\
+Row three & \hl{46} & \textcolor{inkmuted}{58}\\
+\bottomrule
+\end{tabular}
+\column{0.46\textwidth}
+\begin{itemize}\footnotesize\setlength{\itemsep}{1mm}
+\item \textbf{Point one:} short supporting sentence.
+\item \textbf{Point two:} links to detail (\sref{fr:appx}).
+\item \hl{Highlight} the one number that matters.
+\end{itemize}
+\plainen{one sentence a non-specialist can repeat.}
+\end{columns}
+\vspace{2mm}
+{\small\raggedright\hl{Takeaway}: one sentence the audience should remember.\par}
+\src{Where every number comes from, with the date checked.}
+\end{frame}
+
+%====================================================================
+\sect{Second section}
+
+%====================================================================
+% Horizontal bar chart with pgfplots
+\begin{frame}{Bar chart: sort bars, label values, one accent colour}
+\flabel{fr:chart}
+\figcap{What the chart shows}
+\centering
+\begin{tikzpicture}
+\begin{axis}[xbar,area legend,width=0.8\textwidth,height=4.6cm,bar width=7pt,
+  xmin=-80,xmax=14,symbolic y coords={Test C,Test B,Test A},ytick=data,
+  nodes near coords,nodes near coords style={font=\tiny,text=bodytext},
+  every node near coord/.append style={/pgf/number format/.cd,fixed,precision=1,showpos},
+  xlabel={\scriptsize Difference (\%)},tick label style={font=\scriptsize},
+  xmajorgrids,grid style={gridc}]
+\addplot[fill=awsblue,draw=none] coordinates {(-63.4,Test C) (-20.7,Test B) (1.7,Test A)};
+\end{axis}
+\end{tikzpicture}
+\src{Chart data source and date.}
+\end{frame}
+
+%====================================================================
+% Process flow with the box / arr tikz styles
+\begin{frame}{Next steps}
+\flabel{fr:flow}
+\vspace{8mm}
+\centering
+\begin{tikzpicture}[node distance=3mm]
+\node[box,minimum width=2.1cm,minimum height=1.05cm,font=\footnotesize] (a) {\textbf{1. Step}\\detail};
+\node[box,minimum width=2.1cm,minimum height=1.05cm,font=\footnotesize,right=of a] (b) {\textbf{2. Step}\\detail};
+\node[box,minimum width=2.1cm,minimum height=1.05cm,font=\footnotesize,right=of b,draw=awsmagenta] (c) {\textbf{3. Step}\\detail};
+\draw[arr] (a) -- (b); \draw[arr] (b) -- (c);
+\end{tikzpicture}
+\end{frame}
+
+%====================================================================
+\sect{Third section}
+
+%====================================================================
+% Code slide: needs [fragile]
+\begin{frame}[fragile]{Code: a runnable snippet the audience can copy}
+\flabel{fr:code}
+\begin{columns}[T]
+\column{0.48\textwidth}
+{\footnotesize\textbf{Python} \textcolor{inkmuted}{(context)}}
+\begin{lstlisting}[language=Python]
+import boto3
+client = boto3.client("bedrock-runtime")
+\end{lstlisting}
+\column{0.48\textwidth}
+{\footnotesize\textbf{Shell} \textcolor{inkmuted}{(context)}}
+\begin{lstlisting}[language=bash]
+# comment
+aws sts get-caller-identity
+\end{lstlisting}
+\end{columns}
+\src{Where the IDs and commands were verified, and when.}
+\end{frame}
+
+%====================================================================
+% Appendix divider; slides after \appendix are not counted in the main total
+\appendix
+{\bgframe{art/bg_section.png}
+\begin{frame}[plain]
+\flabel{fr:appx}
+\vfill
+{\fontsize{26}{30}\selectfont\bfseries\color{white}Appendix\par}
+\vspace{3mm}
+{\small\color{white}Topic one $\cdot$ topic two $\cdot$ references\par}
+\vfill
+\end{frame}}
+
+%====================================================================
+{\bgframe{art/bg_close.png}
+\begin{frame}[plain]
+\vspace*{10mm}
+{\fontsize{28}{32}\selectfont\bfseries\color{white}Thank you\par}
+\vspace{4mm}
+{\small\color{white}Speaker Name $\cdot$ Job title, AWS\par}
+\end{frame}}
+
+\end{document}
