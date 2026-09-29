@@ -3,12 +3,13 @@
 \newcommand{\no}{\textcolor{awsmagenta}{\faTimes}}
 \newcommand{\tb}[1]{\texttt{#1}}
 \newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand{\agic}[4]{\hyperlink{#1}{{\normalsize\bfseries\color{awsteal}#2}\quad{\normalsize\bfseries\color{white}#3}}\\[0.2mm]{\scriptsize\color{inkmuted}#4}\par\vspace{2.2mm}}
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 
 \title{Terminal-Bench on AgentCore}
 \author{Kaige Yang}
 \institute{Senior Applied Scientist, AWS}
-\date{September 25, 2026}
+\date{September 29, 2026}
 
 \begin{document}
 
@@ -19,158 +20,538 @@
 \begin{minipage}{0.58\textwidth}
 {\fontsize{24}{28}\selectfont\bfseries\color{white}Terminal-Bench\\on AgentCore\par}
 \vspace{4mm}
-{\raggedright\large\color{white}One image, one Runtime, one microVM per episode\par}
+{\raggedright\large\color{white}One task, one image, one Runtime; a fresh microVM per episode\par}
 \vspace{12mm}
 {\small\color{white}\textbf{Kaige Yang}\\Senior Applied Scientist, AWS\par}
 \vspace{3mm}
-{\scriptsize\color{inkmuted}September 25, 2026}
+{\scriptsize\color{inkmuted}September 29, 2026}
 \end{minipage}
 \end{frame}}
 
 %====================================================================
 \begin{frame}
 \flabel{fr:agenda}
-\vspace*{2mm}
+\vspace*{0mm}
 \begin{columns}[c]
 \column{0.28\textwidth}
 {\fontsize{24}{28}\selectfont\bfseries\color{white}Agenda}
 \column{0.04\textwidth}
-\tikz\fill[awsmagenta] (0,0) rectangle (0.6pt,62mm);
+\tikz\fill[awsmagenta] (0,0) rectangle (0.6pt,70mm);
 \column{0.64\textwidth}
-\agi{fr:summary}{00}{Overview}{The deck in one table; use case, isolation and design}
-\agi{fr:setup}{01}{Setup}{218 Runtimes, the dataset, how one episode runs}
-\agi{fr:boot}{02}{The challenge: cold start}{Why every episode pays a boot, and why slime can't hide it}
-\agi{fr:mech}{03}{The solution: look-ahead pre-open}{Four mechanisms, the step boundary, sizing the window}
-\agi{fr:learn}{04}{Results}{Smoke run, warm-start probe, takeaways and next steps}
-{\scriptsize\color{footc}Appendix (\hyperlink{fr:appx}{\textcolor{linkc}{from slide~\pageref*{fr:appx}}}): references.}
+\small
+\agic{fr:arch}{00}{Agentic RL on AgentCore}{Architecture, slime hooks, AgentCore concepts in RL terms}
+\agic{fr:anatomy}{01}{Task and dataset}{What a task is, 166 rows, 218 images, sizes, why one image per row}
+\agic{fr:howmany}{02}{Building the images}{How many, what we add, step by step}
+\agic{fr:runmodel}{03}{Running on AgentCore microVMs}{Session model, one episode, step by step}
+\agic{fr:cold}{04}{Cold start and pre-open}{Cold start per image, why and how we pre-open, with vs without}
+\agic{fr:hbwhy}{05}{Heartbeat}{Why sessions need it, how it works, what it saved}
+\agic{fr:smoke}{06}{Smoke run results}{Health, sandbox cost, learning signal, next steps}
+\agic{fr:swe}{07}{SWE-bench: the same analysis}{Rows, images, sizes, what runs on AgentCore and why}
 \end{columns}
 \end{frame}
 
 %====================================================================
 \sect{Overview}
 
-\begin{frame}{Look-ahead pre-open hid every boot; idle cost and sparse reward remain}
+\begin{frame}{One image per row works on AgentCore; pre-open and heartbeat hide its costs}
 \flabel{fr:summary}
 \tabcap{The deck in one table}
-\small\setlength{\tabcolsep}{4pt}
+\scriptsize\setlength{\tabcolsep}{4pt}
 \begin{tabularx}{\textwidth}{@{}P{0.17\textwidth}Y@{}}
 \toprule
 \textbf{Goal} & RL-train Qwen3-4B (slime GRPO) on Terminal-Bench, every episode in its own AgentCore microVM\\
-\textbf{Challenge} & Isolation needs a \textbf{fresh microVM per episode}, so every episode pays a \textbf{cold start}, in bursts, at every step\\
-\textbf{Solution} & \textbf{Look-ahead pre-open:} replay slime's data order and boot the next 2 batches' sessions (P = 64) before slime asks; heartbeat keeps them alive (\sref{fr:mech})\\
-\textbf{Result} & Smoke run on AWS: 382 episodes, \hl{0 infra errors}, \tb{open\_wait\_ms} \hl{p95 = 0} (no boot on the critical path). Cost: $\approx$\,95\,\% of microVM time idle; reward sparse (4 solves) (\sref{fr:cost})\\
-\textbf{Warm-start probe} & Pre-open cuts wait p50 774 $\rightarrow$ \hl{5 ms} (own Runtime) / 1715 $\rightarrow$ \hl{0 ms} (Code Interpreter), makespan $-20$\,\% / $-15$\,\%. Heartbeat keeps own-Runtime sessions past the idle timeout (3/3 vs 0/3) (\srefs{fr:preopen}{fr:hb})\\
+\textbf{Data} & 229 single-container tasks $\rightarrow$ \hl{218 images and Runtimes} $\rightarrow$ \hl{166 rows} (135 train, 31 eval), one row per task (\sref{fr:data})\\
+\textbf{Why one image per row} & Each task \textbf{is} a machine (base OS, packages, broken state); 48\,GB in total, p50 127\,MB, max 2.0\,GB (\srefs{fr:hist}{fr:why})\\
+\textbf{Build} & Task Dockerfile + one wrapper layer, arm64, $\le$ 2\,GB, one ECR repo + one Runtime each; 39.6\,h of builds, 16 in parallel (\sref{fr:howmany})\\
+\textbf{Challenge} & A fresh microVM per episode: only $\approx$\,1 warm VM per Runtime, so 7 of 8 GRPO siblings boot cold, \hl{6\,s p50 to 49\,s} for 1--2\,GB images (\sref{fr:cold})\\
+\textbf{Pre-open} & Boot the next 2 batches' sessions before slime asks: wait p50 774 $\rightarrow$ \hl{5\,ms}, smoke run \tb{open\_wait\_ms} \hl{p95 = 0} (\sref{fr:preres})\\
+\textbf{Heartbeat} & Pre-opened sessions idle up to 16.5\,min, past the 15-min reclaim: 17 of 382 would have been lost; with pings, \hl{0 lost} (\sref{fr:hbres})\\
+\textbf{Smoke run} & Runs end to end with 0 infra errors; learning not yet: 4 of 382 solved, reward too sparse for GRPO $\rightarrow$ partial credit next (\sref{fr:smoke})\\
+\textbf{SWE-bench} & Same pattern, 8$\times$ larger images: 420 of 500 Verified rows fit a microVM today, 27 never can (\sref{fr:swerun})\\
 \bottomrule
 \end{tabularx}
-\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} (smoke run 2026-09-23, warm-start probe 2026-09-25); checked 2026-09-25.}
+\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} (\tb{tasks/images.csv}, smoke run 2026-09-23, warm-start probe 2026-09-25); checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
-\begin{frame}{Terminal-Bench is the case Code Interpreter can't cover: custom images at scale}
+\begin{frame}{Terminal-Bench is the case a shared sandbox image can't cover}
 \flabel{fr:usecase}
 \tabcap{What this demo covers}
 \footnotesize\setlength{\tabcolsep}{4pt}
 \begin{tabularx}{\textwidth}{@{}P{0.2\textwidth}Y@{}}
 \toprule
 \textbf{Use case covered} & Tasks that need \textbf{their own OS image} (packages, \tb{/etc}, services): hundreds of custom images, one per task, routed per episode\\
-\textbf{Why this demo} & The default Code Interpreter covers most literature tasks; this is the case it cannot: custom images \textbf{at scale}, where the cold start is paid per episode\\
+\textbf{Why this demo} & Most literature RLVR tasks run in one generic image; this is the case they can't: custom images \textbf{at scale}, where a cold start is paid per episode\\
 \textbf{Isolation} & One episode = one \textbf{brand-new session} = one dedicated microVM, stopped (VM terminated, memory sanitized) when the episode ends. Nothing leaks between episodes or GRPO siblings\\
 \textbf{Design considerations} & Strict image routing (unmapped task = error, no fallback) \textperiodcentered{} look-ahead pre-open hides the boot \textperiodcentered{} always-on heartbeat keeps pre-opened sessions past the 15-min idle timeout \textperiodcentered{} retry on a new id; infra failures never scored as wrong answers\\
 \bottomrule
 \end{tabularx}
 \par\vspace{3mm}
-\plainen{every episode gets a brand-new computer built from its task's image, and we boot those computers ahead of time so the trainer never waits.}
-\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/}; checked 2026-09-25.}
+\plainen{every exercise comes with its own computer; each attempt gets a brand-new copy of it, booted before the trainer asks and kept awake until it's used.}
+\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/}; checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
-\sect{1 \textperiodcentered{} Setup}
+\sect{Agentic RL on AgentCore}
+
+\begin{frame}{The sandbox is the reward source; slime reaches AgentCore through two existing hooks}
+\flabel{fr:arch}
+\begin{columns}[T]
+\column{0.52\textwidth}
+\figcap{Agentic RL: trainer, inference, harness, sandbox}
+\centering\figcard[width=0.9\linewidth]{lanes_fig02_rl-loop.pdf}\par
+\vspace{1mm}\raggedright
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \textbf{Trainer} (slime: Megatron, GRPO) updates the policy; \textbf{inference} (SGLang) serves it.
+\item \textbf{Harness} runs the agent loop and records the exact token ids + logprobs, so training stays on-policy.
+\item \textbf{Sandbox} (AgentCore) runs the tool calls and the hidden tests: \hl{it produces the reward}.
+\end{itemize}
+\column{0.44\textwidth}
+\tabcap{How slime plugs in (no fork)}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.42\linewidth}Y@{}}
+\toprule
+\textbf{slime flag} & \textbf{Our code}\\
+\midrule
+\tb{-{}-custom-generate-}\newline\tb{function-path} & \tb{generate.generate}: one episode in a fresh session $\rightarrow$ one loss-masked Sample\\
+\tb{-{}-custom-rm-path} & reward = hidden tests' result from the sandbox\\
+\tb{-{}-data-source-}\newline\tb{path} & \tb{LookaheadDataSource}: tells the pool what comes next (\sref{fr:prehow})\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
+\item Every sandbox op is one \tb{InvokeAgentRuntime(ARN, session id)}; the agent loop runs \textbf{in} the session and dials the trainer's adapter back over the VPC.
+\item Rollout is \hl{fully async}: episodes keep running while slime trains and syncs weights.
+\end{itemize}
+\end{columns}
+\src{\tb{code/agentcore\_slime\_demo/generate.py}, \tb{harness\_pool.py}; \tb{demo\_cpu\_tasks/run.sh}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{AgentCore never sees prompts or rewards: an RL batch is just Runtimes and session ids}
+\flabel{fr:concepts}
+\tabcap{AgentCore concepts seen from agentic RL}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.17\textwidth}P{0.3\textwidth}P{0.2\textwidth}Y@{}}
+\toprule
+\textbf{AgentCore} & \textbf{What it is} & \textbf{RL meaning} & \textbf{Terminal-Bench, one step}\\
+\midrule
+\textbf{Image} & container in ECR, arm64, $\le$ 2\,GB & the environment & one per task, 218 built\\
+\textbf{Runtime} & one image behind one ARN, deployed once & a task's env, reusable & 4 tasks drawn $\rightarrow$ 4 Runtimes\\
+\textbf{Session} & one \tb{runtimeSessionId}; the first invoke boots it & one rollout (episode) & 4 $\times$ 8 = \hl{32 new sessions}\\
+\textbf{microVM} & Firecracker VM per session, 2 vCPU / 8\,GB & isolation of that rollout & 32 VMs, stopped at episode end\\
+GRPO group & 8 sessions on \textbf{one} Runtime & same start state, no sharing & 8 separate VMs per task\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\tabcap{Lifecycle facts that shape the RL design}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}P{0.3\textwidth}Y@{}}
+\toprule
+No ``create session'' call & a new id's first invoke is a \textbf{cold start} $\rightarrow$ pre-open (\sref{fr:cold})\\
+15-min idle reclaim, silent & a waiting session comes back empty $\rightarrow$ heartbeat (\sref{fr:hbwhy})\\
+5000 active sessions \textperiodcentered{} 25 new/s \textperiodcentered{} 1000 Runtimes & bounds rollouts in flight, burst rate and distinct images [Q1][Q2]\\
+\bottomrule
+\end{tabularx}
+\src{AgentCore docs [D3] and quotas [Q1][Q2] (\sref{fr:refs}); \tb{demo\_cpu\_tasks/run.sh} (RB = 4, NS = 8); checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\sect{1 \textperiodcentered{} Task and dataset}
+
+\begin{frame}{A Terminal-Bench task is a whole machine: instruction, Dockerfile, reference solution and hidden tests}
+\flabel{fr:anatomy}
+\begin{columns}[T]
+\column{0.55\textwidth}
+\tabcap{The files of one task (\tb{acl-permissions-inheritance})}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.33\linewidth}Y@{}}
+\toprule
+\textbf{File} & \textbf{Role}\\
+\midrule
+\tb{task.yaml} & Instruction (the prompt), difficulty, category, test timeout\\
+\tb{Dockerfile} & \hl{The environment}: base image, packages, users, files\\
+\tb{solution.sh} & Reference solution (the oracle), never shown to the agent\\
+\tb{tests/}, \tb{run-tests.sh} & Hidden pytest checks, injected only at grading\\
+\tb{docker-compose.yaml} & How Terminal-Bench runs the container\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\scriptsize\textbf{Example.} \emph{``Create \tb{/srv/shared} owned by group \tb{research}, setgid, mode 2770, with default ACLs so files made by \tb{alice} or \tb{bob} stay shared.''} The Dockerfile installs \tb{acl} and creates \tb{alice}, \tb{bob} and \tb{research}; the tests create files as each user and check access.
+\column{0.41\textwidth}
+\begin{itemize}\footnotesize\setlength{\itemsep}{1.5mm}
+\item \textbf{The agent works on the OS itself:} it installs packages, edits \tb{/etc}, starts services, builds code.
+\item \textbf{Reward = 1 only if every hidden test passes} (\tb{run-tests.sh} exit 0). No LLM judge.
+\item \textbf{The tests read machine state}, so the starting machine must be exactly the one the task author built.
+\end{itemize}
+\plainen{the task is not a question, it's a computer in a known state plus a list of checks.}
+\end{columns}
+\src{\href{https://github.com/laude-institute/terminal-bench}{\textcolor{linkc}{\tb{laude-institute/terminal-bench}}} (main), fetched to \tb{terminalbench/tasks/}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{241 benchmark tasks become 166 training rows, one row and one image per task}
+\flabel{fr:data}
+\begin{columns}[T]
+\column{0.56\textwidth}
+\figcap{From benchmark to dataset (tasks kept at each stage)}
+\begin{tikzpicture}
+\begin{axis}[width=\linewidth,height=4.1cm,xbar,bar width=9pt,xmin=0,xmax=420,ymin=0.4,ymax=5.6,clip=false,
+  ytick={1,...,5},yticklabels={Train rows,Oracle-usable,Built $\le$ 2\,GB,Single-container,Terminal-Bench},
+  yticklabel style={font=\tiny,text=bodytext},xtick=\empty,axis x line=none,axis y line*=left]
+\addplot[fill=awsblue,draw=none] coordinates {(135,1)(166,2)(218,3)(229,4)(241,5)};
+\node[font=\tiny,text=bodytext,anchor=west] at (axis cs:246,5) {\textbf{241}};
+\node[font=\tiny,text=bodytext,anchor=west] at (axis cs:234,4) {\textbf{229} \textcolor{inkmuted}{$-$12 multi-container}};
+\node[font=\tiny,text=bodytext,anchor=west] at (axis cs:223,3) {\textbf{218} \textcolor{inkmuted}{$-$7 fail on arm64, $-$4 over cap}};
+\node[font=\tiny,text=bodytext,anchor=west] at (axis cs:171,2) {\textbf{166} \textcolor{inkmuted}{$-$47 oracle fails, $-$5 errored}};
+\node[font=\tiny,text=bodytext,anchor=west] at (axis cs:140,1) {\textbf{135} \textcolor{inkmuted}{+ 31 eval rows, disjoint (80/20)}};
+\end{axis}
+\end{tikzpicture}
+\par\vspace{2mm}
+\tabcap{What the 229 tasks cover}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}lY@{}}
+\toprule
+Difficulty & easy 59 \textperiodcentered{} medium 113 \textperiodcentered{} hard 57\\
+Top categories & software-eng.\ 46 \textperiodcentered{} sysadmin 25 \textperiodcentered{} data science 19 \textperiodcentered{} sci.\ computing 18 \textperiodcentered{} security 18 \textperiodcentered{} debugging 17 \textperiodcentered{} +20 more\\
+\bottomrule
+\end{tabularx}
+\column{0.40\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1.2mm}
+\item \textbf{One row = one task.} Its \tb{metadata.task.image} is the task name, which the pool map turns into that task's Runtime ARN.
+\item \textbf{Oracle check}, per image on AgentCore: the reference solution must pass and the untouched machine must fail. Otherwise the reward is structurally 0 or 1.
+\item \textbf{Counts:} 166 rows $\rightarrow$ 166 images and Runtimes in use; each step draws RB = 4 rows $\times$ NS = 8 samples.
+\end{itemize}
+\end{columns}
+\src{\tb{terminalbench/tasks/manifest.json}, \tb{images.csv}, \tb{oracle.csv}; \tb{data/terminalbench\_\{train,eval\}.jsonl}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Half the images are under 127\,MB, but a heavy tail reaches the 2\,GB cap}
+\flabel{fr:hist}
+\figcap{Compressed image size of the 218 built Terminal-Bench images (100\,MB bins)}
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.94\textwidth,height=4.3cm,ybar,bar width=84,bar shift=0pt,xmin=0,xmax=2200,ymin=0,ymax=95,clip=false,
+  xtick={0,200,...,2200},xticklabel style={font=\tiny},yticklabel style={font=\tiny},
+  xlabel={\scriptsize compressed image size (MB)},ylabel={\scriptsize images},
+  ymajorgrids,grid style={gridc},axis x line*=bottom,axis y line*=left]
+\addplot[fill=awsblue,draw=none] coordinates {(50,84)(150,50)(250,32)(350,22)(450,13)(550,6)(650,2)(750,1)(850,1)(1050,1)(1150,3)(1550,2)(2050,1)};
+\draw[draw=awsteal,dashed,line width=1pt] (axis cs:127,0) -- (axis cs:127,92) node[right,font=\tiny,text=bodytext]{p50 127\,MB};
+\draw[draw=awsteal,dashed,line width=1pt] (axis cs:447,0) -- (axis cs:447,55) node[right,font=\tiny,text=bodytext]{p90 447\,MB};
+\draw[draw=awsmagenta,line width=1.2pt] (axis cs:2048,0) -- (axis cs:2048,80) node[left,font=\tiny,text=bodytext,align=right,pos=0.85]{2\,GB microVM cap\\4 more tasks at 6.5--6.7\,GB\\are over it: dropped};
+\node[font=\tiny,text=inkmuted,align=center,anchor=south] at (axis cs:1550,4) {QEMU disks\\1.5\,GB};
+\node[font=\tiny,text=inkmuted,align=center,anchor=south] at (axis cs:1150,5) {3 at 1.1--1.2\,GB};
+\node[font=\tiny,text=inkmuted,align=right,anchor=south east] at (axis cs:2000,3) {\tb{llm-spec-decoding}\\2.0\,GB};
+\end{axis}
+\end{tikzpicture}
+\par\vspace{1mm}
+\raggedright
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.5mm}
+\item \textbf{min 61\,MB \textperiodcentered{} p50 127\,MB \textperiodcentered{} p90 447\,MB \textperiodcentered{} max 2,003\,MB \textperiodcentered{} total \hl{48\,GB}.} 201 of 218 are under 500\,MB; 7 are over 1\,GB (ML models, QEMU disks, datasets).
+\item Image size sets the cold boot (\sref{fr:cold}); the 4 dropped \tb{mteb-*} / \tb{png-generation} images are 3$\times$ over the cap.
+\end{itemize}
+\src{\tb{terminalbench/tasks/images.csv} (\tb{size\_mb} = ECR compressed size incl.\ our 54\,MB wrapper, 218 registered); checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Each row needs its own image because the environment is part of the task}
+\flabel{fr:why}
+\begin{columns}[T]
+\column{0.52\textwidth}
+\tabcap{What the 226 task Dockerfiles do on top of their base}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}Yr@{}}
+\toprule
+\textbf{Dockerfile step} & \textbf{Tasks}\\
+\midrule
+Install packages (\tb{apt}, \tb{pip}, \tb{npm}, \dots) & 179\\
+Copy task files (source, data, broken configs) & 142\\
+Download at build time (\tb{git clone}, \tb{wget}, models) & 68\\
+Nothing beyond the base image & 14\\
+\bottomrule
+\end{tabularx}
+\par\vspace{0.5mm}{\tiny\color{inkmuted}8 distinct bases: \tb{t-bench/ubuntu-24-04} 104, \tb{t-bench/python-3-13} 92, \tb{python} 20, \dots\par}
+\par\vspace{1mm}
+\tabcap{Three examples}
+\tiny
+\begin{tabularx}{\linewidth}{@{}P{0.4\linewidth}Y@{}}
+\toprule
+\tb{broken-python} & Deletes \tb{pip}, \tb{setuptools}, \tb{wheel}: the broken state \textbf{is} the task\\
+\tb{3d-model-format-legacy} & cmake/clang toolchain + a 2007 win32 library to port\\
+\tb{llm-spec-decoding} & torch + two HF models baked in: 2.0\,GB\\
+\bottomrule
+\end{tabularx}
+\column{0.44\textwidth}
+\textbf{\footnotesize Why not one shared image?}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.4mm}
+\item \textbf{The states contradict:} one task needs \tb{pip} gone, another needs it; bases range from Ubuntu to Debian, Alpine and \tb{localstack}.
+\item \textbf{Size:} 48\,GB of environments vs a 2\,GB cap per image.
+\item \textbf{Reward validity:} tests check machine state, and the oracle check only holds for the exact image it ran on.
+\end{itemize}
+\textbf{\footnotesize Why not install at episode start?}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.4mm}
+\item Builds take minutes to hours (p50 6.8\,min) and hit the network; siblings could diverge.
+\end{itemize}
+{\scriptsize\color{inkmuted}Dedup: 15 base-only tasks share 4 images, so 218 images have 203 distinct digests.\par}
+\end{columns}
+\src{Task Dockerfiles in \tb{terminalbench/tasks/*/Dockerfile} (3 tasks build from \tb{client/}); image digests in \tb{images.csv}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\sect{2 \textperiodcentered{} Building the images}
+
+\begin{frame}{We build 229 images and ship 218: one ECR repo and one Runtime per task}
+\flabel{fr:howmany}
+\begin{columns}[T]
+\column{0.55\textwidth}
+\tabcap{Build outcome (arm64, 2026-09-23)}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.34\linewidth}r Y@{}}
+\toprule
+\textbf{Outcome} & \textbf{Tasks} & \textbf{Detail}\\
+\midrule
+Attempted & 229 & one per single-container task\\
+Built, pushed, registered & \hl{218} & 203 distinct digests, 48\,GB in ECR\\
+Build failed on arm64 & 7 & x86-only (asm, QEMU x86, amd64 base) 4 \textperiodcentered{} dead download / apt 3\\
+Over 2\,GB & 4 & \tb{mteb-*} $\times$3, \tb{png-generation}: 6.5--6.7\,GB\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\tabcap{Build time per image (193 timed builds)}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}lY@{}}
+\toprule
+p50 / p90 / max & 6.8\,min / 28\,min / 2.0\,h\\
+Total & \hl{39.6\,h} serial, 16 builds in parallel (\tb{TB\_BUILD\_CONC})\\
+\bottomrule
+\end{tabularx}
+\column{0.41\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1.2mm}
+\item \textbf{Names:} ECR \tb{acs-tb-<task>}, Runtime \tb{acs\_tb\_<task>}, map in \tb{tasks/arn\_by\_image.json}.
+\item \textbf{arm64 because microVMs are arm64-only}; this x86 host cross-builds under QEMU (buildx), which is why builds are slow.
+\item \textbf{218 Runtimes fit the quota} of 1000 per account.
+\item \textbf{Resumable:} an image already pushed with the same wrapper hash is skipped; an existing Runtime is reused.
+\end{itemize}
+\end{columns}
+\src{\tb{terminalbench/tasks/images.csv} (\tb{status}, \tb{build\_s}, \tb{digest}); \tb{deploy\_terminalbench.py}; Runtime quota [Q1] (\sref{fr:refs}); checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}[fragile]{We leave the task's environment untouched and append one 54\,MB server layer}
+\flabel{fr:wrap}
+\begin{columns}[T]
+\column{0.55\textwidth}
+{\footnotesize\textbf{\tb{Dockerfile.acs}} \textcolor{inkmuted}{(task Dockerfile + this, generated per task)}}
+\begin{lstlisting}[language=bash]
+# ... the task's own Dockerfile, unchanged ...
+FROM ghcr.io/laude-institute/t-bench/ubuntu-24-04:latest
+RUN apt-get update && apt-get install -y acl util-linux
+RUN groupadd -f research && useradd -m alice ...
+
+# ===== sandbox wrapper (appended by deploy_terminalbench.py)
+USER root
+COPY --from=acs py /opt/acs/py            # standalone Python
+COPY --from=acs acs_http_server.py sandbox_server_agent.py /opt/acs/
+RUN /opt/acs/py/bin/python3 -c "import http.server, tarfile, json"
+EXPOSE 8080
+ENTRYPOINT []
+CMD ["/opt/acs/py/bin/python3", "/opt/acs/acs_http_server.py"]
+\end{lstlisting}
+\column{0.41\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1.2mm}
+\item \textbf{Own Python, not the task's.} Task images range from Python 3.8 to no Python at all, and changing the task's Python would change what gets graded.
+\item \textbf{A stdlib HTTP server} on port 8080 speaks AgentCore's invoke protocol: \tb{exec}, file put/get, boot timestamps.
+\item \textbf{\tb{WORKDIR} kept} (\tb{/app}, \tb{/app/astropy}, \dots); the server reports it on the first ping.
+\item \textbf{No tests in the image.} \tb{tests/} and \tb{run-tests.sh} are injected from the trainer after the agent stops.
+\end{itemize}
+\end{columns}
+\src{\tb{terminalbench/deploy\_terminalbench.py}, \tb{terminalbench/acs\_ctx/}; \tb{tasks/acl-permissions-inheritance/Dockerfile.acs}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}[fragile]{Building the pool takes six commands; validate on two tasks first}
+\flabel{fr:buildsteps}
+\begin{columns}[T]
+\column{0.58\textwidth}
+{\footnotesize\textbf{From \tb{code/demos/demo\_cpu\_tasks/}, on the host}}
+\begin{lstlisting}[language=bash]
+# 0. once: arm64 emulation + a buildx builder (2_build_image.sh does it)
+docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+# 1. fetch the benchmark -> terminalbench/tasks/ + manifest.json
+python3 terminalbench/fetch_terminalbench.py
+
+# 2. dry run on 2 tasks (real AWS $): build + push + register
+VARIANT=terminalbench TB_LIMIT=2 bash 2_build_image.sh
+VARIANT=terminalbench TB_LIMIT=2 bash 4_deploy_runtime.sh
+
+# 3. every task: build + push to ECR acs-tb-<task> (16 parallel)
+VARIANT=terminalbench bash 2_build_image.sh
+VARIANT=terminalbench bash 3_push_ecr.sh     # prints images.csv
+
+# 4. one Runtime per image -> tasks/arn_by_image.json
+VARIANT=terminalbench bash 4_deploy_runtime.sh
+\end{lstlisting}
+\column{0.38\textwidth}
+\begin{enumerate}\scriptsize\setlength{\itemsep}{1.2mm}
+\item[0.] Needed only on an x86 host.
+\item[1.] Clones the repo, keeps the 229 single-container tasks.
+\item[2.] Catches wrapper and IAM problems in minutes, not hours.
+\item[3.] Writes \tb{status} / \tb{size\_mb} / \tb{build\_s} per task to \tb{images.csv}; over-cap and failed builds are skipped, not fatal.
+\item[4.] VPC Runtimes with NAT egress (the tests install \tb{uv} and pytest at grade time) and the SG$\rightarrow$SG rule to the adapter ports.
+\end{enumerate}
+\vspace{1mm}
+{\scriptsize Knobs: \tb{TB\_TASKS=a,b}, \tb{TB\_BUILD\_CONC}, \tb{TB\_REBUILD=1}, \tb{SKIP\_BUILD=1}, \tb{CONTINUE\_ON\_ERROR=1}.\par}
+\end{columns}
+\src{\tb{demo\_cpu\_tasks/README.md} section 3, \tb{deploy/demo.env} (\tb{VARIANT=terminalbench}); checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\sect{3 \textperiodcentered{} Running on AgentCore microVMs}
 
 \begin{frame}{218 tasks, 218 images, 218 Runtimes; every episode gets a new microVM}
-\flabel{fr:setup}
+\flabel{fr:runmodel}
 \figcap{image 1:1 Runtime 1:N session 1:1 microVM}
 \centering\figcard[height=0.43\textheight]{tb_fig01_cardinality.pdf}\par
 \vspace{1.5mm}
 \raggedright
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
-\item \textbf{Each Terminal-Bench task is its own environment} (OS, packages, a deliberately broken state), so each task gets its own arm64 image and its own AgentCore Runtime: \hl{218 Runtimes}, routed by task id.
-\item \textbf{Session = microVM, 1:1.} A new \tb{runtimeSessionId} boots a fresh Firecracker VM (2 vCPU, 8 GB) from the pristine image; \tb{StopRuntimeSession} terminates and sanitizes it.
-\item The image is untouched except for one wrapper layer: a standalone Python + a stdlib HTTP server (\tb{exec}, files, boot timestamps). Hidden tests are injected \textbf{after} the agent finishes.
+\item \textbf{Runtime = one image.} Routing is strict: \tb{task.image} $\rightarrow$ \tb{arn\_by\_image.json}; an unmapped task stops the run before any GPU work.
+\item \textbf{Session = microVM, 1:1.} A new \tb{runtimeSessionId} boots a fresh Firecracker VM (2 vCPU, 8\,GB) from the pristine image; \tb{StopRuntimeSession} terminates and sanitizes it.
+\item \textbf{Sessions per Runtime are never configured.} A task drawn in a step gets NS = 8 sessions; the others get 0.
 \end{itemize}
-\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} deploy; session model per AgentCore docs [D3] (\sref{fr:refs}); checked 2026-09-25.}
+\src{\tb{demo\_cpu\_tasks/image\_routing.py}, \tb{terminalbench\_pool.py}; session model per AgentCore docs [D3] (\sref{fr:refs}); checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
-\begin{frame}{229 benchmark tasks shrink to 166 oracle-usable ones: 135 train, 31 held out}
-\flabel{fr:data}
-\tabcap{From benchmark to training set}
-\small\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}P{0.3\textwidth}r Y@{}}
-\toprule
-\textbf{Stage} & \textbf{Tasks} & \textbf{Dropped because}\\
-\midrule
-Terminal-Bench tasks & 229 & ---\\
-Deployable (arm64, $\le$ 2 GB image) & \hl{218} & 7 don't build for arm64 \textperiodcentered{} 4 exceed the fixed 2 GB image cap\\
-Oracle-usable & \hl{166} & 47 reference solution fails on this substrate \textperiodcentered{} 5 timed out \textperiodcentered{} 0 pass untouched\\
-Train / held-out eval & \hl{135 / 31} & 80/20, disjoint by task, stratified by difficulty\\
-\bottomrule
-\end{tabularx}
-\par\vspace{3mm}
-\begin{itemize}\footnotesize\setlength{\itemsep}{1mm}
-\item \textbf{Oracle check:} keep a task only if the reference solution passes \textbf{and} the untouched environment fails; otherwise its reward is structurally 0 or 1.
-\item Images: p50 128 MB, p90 492 MB, max 2 GB (48 GB total). The heavy tail (ML models, TeX, toolchains) is what makes boot time vary.
-\item \hl{Reward = 1 only if every hidden test passes.}
-\end{itemize}
-\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} data preparation and oracle check; 2 GB image cap [Q1] (\sref{fr:refs}); checked 2026-09-25.}
-\end{frame}
-
-%====================================================================
-\begin{frame}{One training step boots 32 fresh microVMs, one per episode}
+\begin{frame}{One episode: route, fresh session, agent loop in the microVM, grade, stop}
 \flabel{fr:episode}
 \figcap{route $\rightarrow$ fresh session $\rightarrow$ agent loop $\rightarrow$ grade $\rightarrow$ stop}
-\centering\figcard[height=0.44\textheight]{tb_fig03_episode-workflow.pdf}\par
-\vspace{2mm}
+\centering\figcard[height=0.40\textheight]{tb_fig03_episode-workflow.pdf}\par
+\vspace{1.5mm}
 \raggedright
-\begin{itemize}\footnotesize\setlength{\itemsep}{1mm}
-\item There is no ``create session'' call: the first invoke with a new \tb{runtimeSessionId} \textbf{is} the boot.
-\item One step = RB 4 prompts $\times$ NS 8 samples = \hl{32 episodes = 32 fresh microVMs}; 4 harness workers run them.
-\end{itemize}
-\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} run config (RB = 4, NS = 8, W = 4); checked 2026-09-25.}
+\begin{enumerate}\scriptsize\setlength{\itemsep}{0.4mm}
+\item \textbf{Open:} take a pre-opened session for the task, or open one. There is no ``create'' call: the first invoke with a new id \textbf{is} the boot.
+\item \textbf{Agent loop in the session:} \tb{PROBLEM.md} goes into the task's workdir; the mini\_claude loop runs \textbf{inside} the microVM and calls the policy through the trainer's adapter (VPC dial-back), up to 8 turns.
+\item \textbf{Grade:} inject \tb{tests/}, run \tb{run-tests.sh}; reward 1 iff every test passes. Then \tb{StopRuntimeSession}.
+\end{enumerate}
+\src{\tb{agentcore\_slime\_demo/terminalbench\_pool.py} (\tb{\_run\_episode}, \tb{grade\_episode}); checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
-\sect{2 \textperiodcentered{} The challenge: cold start}
+\begin{frame}[fragile]{Once the pool is deployed, a run is oracle check, data, train, clean up}
+\flabel{fr:runsteps}
+\begin{columns}[T]
+\column{0.57\textwidth}
+{\footnotesize\textbf{From \tb{code/demos/demo\_cpu\_tasks/}, on the host}}
+\begin{lstlisting}[language=bash]
+# 5. oracle check on AgentCore -> tasks/oracle.csv
+docker exec -e AGENTCORE_REGION=us-west-2 agentcore_p4 python3 \
+  /work/code/demos/demo_cpu_tasks/terminalbench/validate_oracle.py
 
-\begin{frame}{On the critical path, fresh sessions would cost $\approx$\,8 min of serial boot per step}
-\flabel{fr:boot}
-\small\textbf{We can't reuse a warm VM.} Terminal-Bench tasks change the whole OS (apt, \tb{/etc}, services, \tb{/tmp}). Resetting a workdir would leak state into the next episode and corrupt the reward and the GRPO advantage. \hl{The session is the isolation boundary}, so each episode needs a new one.\par
-\vspace{3mm}
-\tabcap{Cold-start cost}
-\footnotesize\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}P{0.45\textwidth}Y@{}}
+# 6. rows for the usable tasks only -> data/terminalbench_*.jsonl
+DATASET=terminalbench bash 1_prepare_data.sh
+
+# 7. train: 10 steps + 1 eval (slime inside agentcore_p4)
+DATASET=terminalbench bash 5_run.sh
+#    -> logs/<tag>.{log,csv,eval.csv,png}
+
+# 8. tear down: delete all 218 Runtimes (ECR images kept)
+VARIANT=terminalbench bash 6_cleanup.sh
+\end{lstlisting}
+\column{0.39\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1.2mm}
+\item \textbf{Prereqs:} the \tb{agentcore\_p4} container, AWS creds for us-west-2, the Qwen3-4B checkpoint, 8 GPUs (4 train + 4 inference).
+\item \textbf{Step 5} runs the untouched machine and the reference solution on fresh sessions: keep a task only if null fails and oracle passes.
+\item \textbf{Step 7} reads the pool map itself; \tb{run.sh} switches on the Terminal-Bench settings (next slide).
+\item \textbf{Watch} the \tb{[demo]} lines: \tb{open\_wait\_ms}, \tb{preopen\_idle\_ms}, \tb{heartbeat\_session}, \tb{solved}, \tb{infra\_error}.
+\end{itemize}
+\end{columns}
+\src{\tb{demo\_cpu\_tasks/README.md} section 3; \tb{5\_run.sh}, \tb{run.sh}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{The run settings size turns, tokens and the pre-open window for whole-OS tasks}
+\flabel{fr:knobs}
+\tabcap{Settings \tb{run.sh} applies to Terminal-Bench rows (each can be overridden)}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.3\textwidth}P{0.12\textwidth}Y@{}}
 \toprule
-\textbf{Cost of a fresh session} & \textbf{Typical}\\
+\textbf{Knob} & \textbf{Value} & \textbf{Why}\\
 \midrule
-Cold boot: allocate VM, pull image, start server & \textbf{$\approx$\,15 s} for a 447 MB image; grows with image size\\
-Warm hit: AgentCore already had a spare VM up & $\approx$\,0.5 s\\
-Per step, if on the critical path & 32 $\times$ 15 s $\approx$ \hl{8 min} of serial boot\\
+\tb{RB} $\times$ \tb{NS} & 4 $\times$ 8 & 32 episodes = 32 fresh microVMs per step\\
+\tb{HARNESS\_WORKERS} & RB $\times$ NS & one worker per episode in flight\\
+\tb{EPISODE\_MAX\_TURNS} / \tb{\_TOKENS} & 8 / 1024 & bounded agent loop per episode\\
+\tb{TB\_EXEC\_TIMEOUT} & 180\,s & per bash command (builds, installs)\\
+\tb{MAX\_TOKENS\_PER\_GPU} & 16384 & one full trajectory fits a micro-batch\\
+\tb{TB\_PREOPEN\_BATCHES} & 2 & upcoming batches booted ahead (\sref{fr:prehow})\\
+\tb{WARM\_IDLE\_TIMEOUT} / \tb{WARM\_PING\_FRACTION} & 900 / 0.5 & heartbeat pings at 450\,s idle (\sref{fr:hbhow})\\
 \bottomrule
 \end{tabularx}
 \par\vspace{3mm}
 \begin{itemize}\footnotesize\setlength{\itemsep}{1mm}
-\item \textbf{Bursty:} all 8 GRPO siblings of a task start at once, on the same Runtime.
-\item \textbf{Idle reclaim:} a session silent for $\approx$\,15 min is reclaimed, and the weight-sync pause can be that long [D3] (\sref{fr:refs}).
+\item \textbf{Fully-async rollout} (slime's only driver here): groups are drawn one at a time and the look-ahead window slides with each draw.
 \end{itemize}
-\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} session-open timings; idle timeout per [Q1], [D3]; checked 2026-09-25.}
+\src{\tb{demo\_cpu\_tasks/run.sh}, README ``Knobs''; checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
-\begin{frame}{Only look-ahead pre-open hides the boot, keeps isolation and stays on-policy}
-\flabel{fr:options}
+\sect{4 \textperiodcentered{} Cold start and pre-open}
+
+\begin{frame}{The first session on a Runtime is warm; its GRPO siblings pay a cold boot of 6--49\,s}
+\flabel{fr:cold}
+\begin{columns}[T]
+\column{0.54\textwidth}
+\figcap{Open time vs image size (4 sessions at once per Runtime)}
+\begin{tikzpicture}
+\begin{axis}[width=\linewidth,height=5.0cm,xmin=0,xmax=2100,ymin=0,ymax=52,
+  xtick={0,500,1000,1500,2000},ytick={0,10,20,30,40,50},xticklabel style={font=\tiny},yticklabel style={font=\tiny},
+  xlabel={\scriptsize compressed image size (MB)},ylabel={\scriptsize session open (s)},
+  ymajorgrids,grid style={gridc},axis x line*=bottom,axis y line*=left,
+  legend style={font=\tiny,draw=none,fill=none,text=bodytext,at={(0.02,0.98)},anchor=north west}]
+\addplot[only marks,mark=*,mark size=1.2pt,color=awsblue,mark options={solid,fill=awsblue,draw=awsblue}] coordinates {(447,16.2)(447,16.3)(447,16.2)(61,6.1)(61,4.2)(61,4.2)(121,6.2)(121,6.2)(121,6.3)(226,8.3)(226,8.2)(226,8.3)(629,14.3)(629,14.3)(629,14.3)(61,4.2)(61,4.3)(61,4.3)(74,4.2)(74,4.3)(74,4.2)(344,12.7)(344,12.8)(344,12.8)(62,4.8)(62,4.8)(62,4.9)(76,7.1)(76,7.1)(76,5.5)(74,9.6)(74,7.6)(74,8.1)(271,13.7)(271,13.7)(271,14.2)(410,24.5)(410,20.2)(410,16.4)(108,10.2)(108,10.4)(108,8.7)(74,5.8)(74,5.8)(74,5.8)(310,9.7)(310,10.1)(310,10.6)(1513,46.4)(1513,45.8)(1513,47.5)(530,20.7)(530,20.5)(530,20.8)(81,4.8)(81,5.1)(81,5.9)(191,8.3)(191,6.8)(191,7.0)(154,7.5)(154,7.6)(154,7.6)(1514,49.2)(1514,49.2)(1514,47.1)(235,8.6)(235,8.6)(235,8.6)(74,4.8)(74,4.9)(74,5.0)(346,12.1)(346,12.7)(346,12.6)(79,4.7)(79,7.0)(79,4.8)(250,8.3)(250,8.4)(250,8.5)(189,6.6)(189,6.7)(189,6.7)(92,6.5)(92,6.4)(92,6.5)(250,9.1)(250,9.3)(250,11.7)(61,3.4)(61,5.5)(61,3.6)(184,5.8)(184,5.9)(184,6.2)(61,4.7)(61,6.9)(61,6.9)(61,5.4)(61,5.4)(61,5.4)(102,5.6)(102,5.6)(102,4.0)(67,4.1)(67,4.1)(67,4.3)(99,6.5)(99,6.5)(99,4.6)(193,8.1)(193,8.2)(193,6.1)(86,5.6)(86,5.7)(86,5.7)(373,9.6)(373,9.6)(373,9.6)(509,17.8)(509,19.8)(509,15.8)(102,6.0)(102,6.1)(102,6.2)(102,6.5)(102,6.7)(102,4.7)(77,4.5)(77,4.6)(77,4.6)(216,7.9)(216,7.7)(216,8.2)(197,6.4)(197,8.4)(197,8.4)(61,4.4)(61,6.5)(61,4.7)(61,6.2)(61,4.2)(61,4.5)(74,4.2)(74,6.2)(74,4.4)(88,6.3)(88,6.2)(88,6.3)(61,5.5)(61,5.5)(61,5.7)(315,9.5)(315,11.9)(315,10.1)(173,5.6)(173,5.6)(173,5.8)(61,3.5)(61,3.6)(61,3.6)(406,11.9)(406,12.1)(406,12.1)(81,4.1)(81,4.4)(128,6.3)(128,6.5)(204,8.6)(204,8.9)(783,13.9)(783,14.0)(181,5.9)(181,6.1)(61,4.6)(61,4.6)(76,4.7)(76,4.7)(141,5.9)(141,5.8)(141,5.9)(177,6.2)(177,6.3)(177,6.6)(75,6.6)(75,6.7)(75,5.0)(74,3.8)(74,3.8)(74,3.9)(126,6.1)(126,6.2)(126,6.2)(250,9.9)(250,10.6)(250,10.8)(89,6.9)(89,7.0)(89,7.2)(74,3.9)(74,3.9)(74,3.9)(99,6.0)(99,5.9)(99,3.9)(74,5.6)(74,5.6)(74,3.6)(141,5.6)(141,5.7)(141,5.7)(111,6.2)(111,6.7)(111,6.7)(111,7.4)(111,7.4)(111,7.6)(104,7.3)(104,7.3)(104,7.3)(61,5.3)(61,5.3)(61,5.3)(348,12.3)(348,12.2)(348,12.2)(328,11.5)(328,11.7)(328,11.8)(355,9.6)(355,9.8)(355,9.7)(359,14.1)(359,12.3)(359,12.3)(568,16.7)(568,18.7)(568,16.7)(1116,21.8)(1116,20.0)(1116,21.9)(85,6.4)(85,6.3)(85,6.3)(76,6.7)(76,4.7)(76,4.9)(74,6.6)(74,4.5)(74,6.6)(102,8.0)(102,8.5)(102,8.7)(108,8.7)(108,8.7)(108,8.7)(213,8.5)(213,9.0)(213,8.9)(74,4.4)(74,4.4)(74,4.6)(2003,42.2)(2003,40.3)(2003,42.3)(61,5.8)(61,5.9)(61,5.9)(62,3.6)(62,3.8)(62,3.7)(74,6.2)(74,6.2)(74,6.4)(61,4.2)(61,4.3)(61,4.3)(188,8.1)(188,8.1)(188,8.1)(208,8.7)(208,8.7)(208,8.8)(492,17.4)(492,17.5)(492,17.5)(216,7.8)(216,6.0)(216,5.9)(249,7.8)(249,7.7)(249,9.8)(88,7.0)(88,7.0)(88,6.9)(517,15.9)(517,15.9)(517,16.0)(272,10.0)(272,10.0)(272,12.2)(348,14.6)(348,12.5)(348,10.6)(302,10.0)(302,10.1)(302,10.1)(231,8.1)(231,8.4)(231,8.4)(74,3.7)(74,5.8)(74,3.8)(457,14.1)(457,14.1)(457,12.7)(95,6.0)(95,6.0)(95,6.0)(105,6.5)(105,6.6)(105,7.1)(61,6.2)(61,6.4)(61,6.5)(406,16.5)(406,16.5)(406,16.4)(111,5.9)(111,5.7)(111,5.8)(79,6.0)(79,6.0)(79,4.0)(102,6.5)(102,6.5)(102,6.5)(172,8.7)(172,8.6)(172,8.5)(61,4.0)(61,3.9)(61,3.9)(61,3.5)(61,3.6)(61,3.9)(213,8.5)(213,8.9)(213,9.3)(94,7.8)(94,8.3)(94,8.3)(216,10.8)(216,10.8)(216,10.8)(105,9.0)(105,9.0)(105,9.1)(828,33.8)(828,27.8)(828,27.8)(209,7.7)(209,7.6)(209,8.4)(212,8.9)(212,9.0)(212,9.2)(289,13.0)(289,13.0)(289,13.1)(340,13.6)(340,13.7)(340,13.7)(1195,18.0)(1195,18.4)(1195,18.5)(126,5.9)(126,6.0)(126,6.4)(99,6.4)(99,6.7)(99,6.9)(74,4.7)(74,4.8)(74,5.1)(421,17.9)(421,18.3)(421,18.3)(512,18.1)(512,18.5)(512,16.6)(201,9.7)(114,6.0)(114,6.2)(114,6.2)(147,6.2)(147,6.3)(147,6.2)(74,3.7)(74,5.7)(74,3.8)(61,3.8)(61,4.0)(61,3.9)(84,6.1)(84,4.5)(84,4.8)(61,6.2)(61,6.2)(61,8.4)(1098,36.8)(1098,32.8)(68,7.2)(68,9.2)(68,7.3)(74,6.0)(74,4.0)(74,6.0)(402,11.6)(402,15.6)(402,12.1)(74,5.6)(74,5.8)(238,7.9)(238,7.9)(74,3.7)(74,3.5)(118,6.0)(118,6.1)(74,6.4)(74,4.3)(314,11.8)(314,11.9)(61,6.4)(61,4.6)(61,4.6)(61,3.7)(61,3.6)(61,3.6)(128,5.5)(128,5.5)(128,5.7)(126,6.0)(126,6.2)(126,6.6)(61,7.0)(61,5.1)(61,5.3)(73,4.9)(73,4.9)(73,5.0)(268,12.1)(268,12.1)(268,12.3)(494,16.2)(494,16.2)(494,16.3)(340,7.7)(340,7.8)(340,7.9)(466,7.7)(466,7.8)(466,7.8)(124,5.8)(124,5.7)(124,7.8)(61,3.5)(61,3.5)(61,3.5)(61,3.4)(61,3.5)(61,3.8)(238,7.9)(238,8.5)(238,9.5)(512,14.2)(512,12.6)(512,14.8)(111,5.8)(111,5.7)(111,5.7)(172,6.2)(172,6.5)(172,8.7)(250,10.3)(250,8.5)(250,8.8)(299,9.4)(299,9.5)(299,9.6)(87,5.8)(87,5.9)(87,5.9)(446,16.1)(446,14.1)(446,16.1)(152,6.1)(152,6.1)(152,6.3)(99,6.5)(99,6.6)(99,6.6)(306,12.2)(306,12.2)(306,12.2)(310,9.9)(310,7.9)(310,10.1)};
+\addplot[only marks,mark=*,mark size=1.2pt,color=awsteal,mark options={solid,fill=awsteal,draw=awsteal}] coordinates {(447,1.6)(63,1.3)(63,1.4)(63,1.3)(63,1.4)(61,1.3)(121,1.4)(226,1.7)(629,1.6)(61,1.4)(74,1.6)(344,2.1)(62,2.2)(76,2.2)(74,2.7)(74,4.9)(74,4.8)(74,4.9)(74,5.0)(271,4.9)(410,5.9)(108,5.4)(74,0.9)(310,0.9)(1513,1.5)(530,1.4)(81,1.8)(191,1.7)(154,2.3)(1514,2.6)(235,2.2)(74,2.0)(346,1.6)(79,1.8)(250,1.5)(189,2.3)(92,1.9)(250,2.3)(166,1.4)(166,1.5)(166,1.4)(166,1.9)(61,0.6)(184,0.8)(61,1.4)(61,2.3)(208,1.6)(208,1.6)(208,1.6)(208,1.6)(102,0.8)(67,1.3)(99,1.7)(74,2.2)(74,2.4)(74,2.3)(74,2.2)(61,1.8)(61,1.9)(61,1.7)(61,1.7)(193,1.3)(86,1.1)(373,0.9)(509,1.0)(102,1.1)(102,1.5)(1194,3.0)(1194,3.2)(1194,5.2)(1194,3.8)(202,2.8)(202,3.0)(202,2.9)(202,3.5)(77,1.7)(216,1.4)(197,2.0)(61,1.8)(61,1.3)(74,1.3)(88,1.4)(364,2.2)(364,2.6)(364,2.2)(364,2.5)(61,2.7)(315,3.4)(74,3.4)(74,3.5)(74,3.8)(74,3.8)(173,0.9)(61,0.8)(406,1.0)(81,1.2)(81,1.3)(128,1.6)(128,1.6)(204,1.8)(204,2.0)(184,2.5)(184,2.2)(184,2.7)(184,2.8)(783,1.3)(783,2.0)(181,1.5)(181,1.2)(61,1.5)(61,1.6)(76,1.9)(76,2.0)(141,1.3)(352,0.8)(352,1.9)(352,1.1)(352,2.1)(177,1.3)(75,1.7)(74,1.0)(126,1.3)(250,1.1)(89,2.3)(248,2.4)(248,2.5)(248,2.7)(248,2.6)(620,2.6)(620,2.7)(620,2.7)(620,2.9)(74,1.2)(99,1.1)(74,1.0)(141,0.8)(111,1.4)(412,1.9)(412,2.0)(412,3.1)(412,2.4)(111,3.0)(104,2.4)(61,2.4)(118,1.3)(118,1.3)(118,1.3)(118,1.3)(348,1.5)(328,1.0)(355,1.2)(359,1.4)(568,2.7)(1116,1.2)(74,1.0)(74,1.2)(74,1.2)(74,1.4)(85,1.9)(74,1.3)(74,1.6)(74,1.6)(74,2.0)(76,1.9)(74,1.7)(102,2.7)(108,3.9)(213,1.7)(74,1.5)(2003,2.6)(61,2.9)(62,0.8)(108,1.1)(108,1.0)(108,1.2)(108,1.3)(74,1.3)(61,1.6)(188,1.2)(208,1.8)(492,2.7)(216,1.5)(249,0.9)(61,1.2)(61,1.5)(61,1.6)(61,1.7)(88,2.3)(517,1.8)(272,2.6)(108,1.7)(108,1.8)(108,1.8)(108,2.1)(153,2.1)(153,2.2)(153,2.3)(153,2.7)(348,1.8)(302,1.3)(231,1.3)(74,1.0)(457,1.4)(90,3.2)(90,3.7)(90,3.9)(90,4.2)(95,1.3)(105,1.2)(61,3.2)(406,4.0)(76,1.1)(76,1.1)(76,1.1)(76,1.6)(111,0.9)(79,1.2)(160,1.3)(160,1.5)(160,1.6)(160,1.7)(102,1.6)(172,1.7)(61,1.2)(61,0.7)(213,1.9)(94,3.0)(438,3.8)(438,3.8)(438,4.2)(438,3.9)(216,3.8)(105,4.0)(828,1.2)(209,1.0)(212,2.5)(177,3.0)(177,3.6)(177,3.7)(177,4.3)(289,4.3)(340,5.5)(209,1.1)(209,1.1)(209,1.8)(209,0.9)(1195,2.1)(298,1.1)(298,1.1)(298,1.3)(298,1.6)(126,1.0)(99,1.6)(74,1.8)(421,3.0)(512,3.2)(201,1.2)(201,0.9)(201,0.9)(114,1.0)(74,1.7)(74,1.7)(74,1.8)(74,1.7)(332,2.3)(332,2.1)(332,2.2)(332,2.2)(147,1.3)(74,1.5)(74,1.3)(74,1.4)(74,1.7)(331,1.1)(331,0.9)(331,2.2)(331,1.2)(74,0.8)(61,1.0)(84,1.6)(61,3.4)(1098,4.2)(1098,4.2)(68,3.9)(74,1.1)(402,1.3)(227,1.9)(227,1.6)(227,2.0)(227,1.8)(226,2.2)(226,2.5)(226,2.5)(226,2.9)(74,2.9)(74,2.7)(238,1.6)(238,1.1)(74,0.7)(74,0.8)(118,0.8)(118,1.0)(74,1.5)(74,1.4)(314,2.0)(314,1.4)(88,1.1)(88,1.3)(88,1.4)(88,1.1)(61,1.7)(61,0.8)(128,0.9)(126,1.3)(61,2.0)(73,2.0)(268,2.2)(494,1.6)(340,1.4)(345,0.9)(345,0.9)(345,1.0)(345,1.2)(132,1.6)(132,1.9)(132,1.8)(132,1.6)(466,1.0)(124,1.0)(61,0.7)(61,0.5)(238,1.1)(512,3.4)(111,0.8)(172,1.1)(108,0.8)(108,1.2)(108,1.0)(108,1.1)(250,1.5)(308,2.7)(308,2.4)(308,2.2)(308,2.4)(299,2.3)(87,1.0)(87,0.8)(87,0.7)(87,0.7)(87,0.8)(446,1.3)(152,1.2)(99,1.6)(63,2.3)(63,3.1)(63,3.4)(63,3.7)(306,3.8)(310,1.2)};
+\addplot[draw=inkmuted,dashed,line width=0.8pt,domain=0:2050,samples=2] {3.77+0.02286*x};
+\legend{cold boot (509),warm microVM (359),fit: 3.8\,s + 23\,s/GB}
+\end{axis}
+\end{tikzpicture}
+\column{0.42\textwidth}
+\tabcap{Cold-start probe, all 218 Runtimes (2026-09-29)}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}Y r r@{}}
+\toprule
+\textbf{Sessions} & \textbf{Warm} & \textbf{Open p50 / max}\\
+\midrule
+1st per Runtime & 217 / 217 & 0.6 / 3.3\,s\\
+4 at once per Runtime & 359 / 868 & 4.7 / 49\,s\\
+\midrule
+\grp{3}{Cold opens by image size}\\
+0--250\,MB & n = 359 & 6.1 / 11\,s\\
+250--500\,MB & 107 & 12.1 / 25\,s\\
+500--1000\,MB & 26 & 16.7 / 34\,s\\
+1--2\,GB & 17 & \hl{40.3 / 49\,s}\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1.5mm}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \textbf{About one warm microVM per Runtime:} 160 of 217 served exactly 1 of the 4.
+\item \textbf{Cold = image pull + boot} (5.7 of 6.7\,s p50), so it grows with size.
+\item \tb{cron-broken-network} never booted (it breaks networking); the oracle check already drops it.
+\end{itemize}
+\end{columns}
+\src{\tb{terminalbench/probe\_coldstart.py} $\rightarrow$ \tb{tasks/coldstart.csv} (1,085 of 1,090 sessions ok; conc 16), us-west-2, 2026-09-29; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{A fresh VM per episode puts a cold boot on the critical path of 7 in 8 episodes}
+\flabel{fr:whypre}
+\small\textbf{We can't reuse a warm VM.} Terminal-Bench tasks change the whole OS (apt, \tb{/etc}, services, \tb{/tmp}). Resetting a workdir would leak state into the next episode and corrupt the reward and the GRPO advantage. \hl{The session is the isolation boundary}, so each episode needs a new one, and a new one can be cold.\par
+\vspace{2mm}
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.5mm}
-\item \textbf{slime only reveals a few episodes at a time:} at most \tb{CONC $\times$ engines} = 8 \tb{generate()} calls in flight.
-\item \textbf{It draws step N+1 only after step N finishes}, so every step's first episodes would wait for a boot.
-\item \textbf{slime knows nothing about sandboxes.} Tasks, Runtimes and sessions all live in our \tb{TerminalBenchPool}, inside slime's rollout process.
+\item \textbf{Bursty:} all 8 GRPO siblings of a task start at once on the same Runtime; about 1 finds a warm VM, \hl{7 boot cold} (\sref{fr:cold}).
+\item \textbf{Costly:} a cold open adds 6.7\,s p50 to a 21\,s median episode (+32\,\%) and up to 49\,s for 1--2\,GB images.
+\item \textbf{slime reveals little:} it only knows the episodes it has drawn; the sandbox pool can't see what comes next.
 \end{itemize}
 \vspace{1.5mm}
 \tabcap{Options}
@@ -180,197 +561,492 @@ Per step, if on the critical path & 32 $\times$ 15 s $\approx$ \hl{8 min} of ser
 \textbf{Option} & \textbf{Hides boot?} & \textbf{Keeps isolation?} & \textbf{Catch}\\
 \midrule
 Reuse one warm session per task + reset & \yes & \no & OS state leaks $\rightarrow$ \textbf{rejected}\\
-Standing warm pool per task & \yes & \yes & 218 tasks $\times$ NS idle VMs\\
+Standing warm pool per task & \yes & \yes & 166 tasks $\times$ NS idle VMs\\
 Open on pickup & \no & \yes & Boot on the critical path\\
-Fully-async rollout & \yes & \yes & Off-policy (stale weights); slime mode change\\
 \hl{Look-ahead pre-open (used)} & \yes & \yes & Guesses can be wrong; booted VMs idle\\
 \bottomrule
 \end{tabularx}
-\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} rollout config (CONC, engines); checked 2026-09-25.}
+\src{\tb{demo\_cpu\_tasks/terminalbench/} rollout design; checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
-\sect{3 \textperiodcentered{} The solution: look-ahead pre-open}
-
-\begin{frame}{Four mechanisms hide the boot with no slime change and at most 68 live microVMs}
-\flabel{fr:mech}
-\begin{enumerate}\scriptsize\setlength{\itemsep}{0.8mm}
-\item \textbf{Look-ahead data source.} \tb{tb\_lookahead\_source.py} (a \tb{-{}-data-source-path} plugin) replays slime's deterministic order (sequential offset, \tb{random.seed(seed + epoch)} shuffle) to list the \textbf{next 2 rollouts'} prompts, without moving slime's position. No slime change.
-\item \textbf{Bounded pre-open window.} The pool keeps a fresh session booted for each of the next \textbf{P} = \tb{TB\_PREOPEN\_BATCHES} $\times$ RB $\times$ NS = \hl{64} upcoming episodes, pooled per task. A worker claims any ready session for its task; the claim moves the window on by one. Wrong guesses are stopped at the next draw.
-\item \textbf{Heartbeat.} A \tb{SessionKeeper} pings every open session at half the 15-min idle timeout, so none is reclaimed during training or weight sync.
-\item \textbf{Retry on a new id.} A failed open retries on a \textbf{new} session (3$\times$); an infra failure is logged as \tb{infra\_error}, never scored as a wrong answer.
+\begin{frame}[fragile]{Pre-open replays slime's data order and boots the next 64 episodes' sessions}
+\flabel{fr:prehow}
+\begin{columns}[T]
+\column{0.53\textwidth}
+{\footnotesize\textbf{\tb{tb\_lookahead\_source.py}} \textcolor{inkmuted}{(a \tb{-{}-data-source-path} plugin)}}
+\begin{lstlisting}[language=Python]
+def get_samples(self, n):
+    groups = super().get_samples(n)          # slime's own draw
+    rb, ns = args.rollout_batch_size, args.n_samples_per_prompt
+    future = self._peek(TB_PREOPEN_BATCHES * rb)   # no state moved
+    drawn    = [arn_for(g[0])] * ns  for g in groups
+    upcoming = [arn_for(s)]    * ns  for s in future
+    pool.reserve(drawn, upcoming)            # boot ahead
+    return groups
+\end{lstlisting}
+{\footnotesize\textbf{\tb{TerminalBenchPool}} \textcolor{inkmuted}{(simplified)}}
+\begin{lstlisting}[language=Python]
+def _refill(self):              # on every draw and claim
+    need = Counter((demand + future)[:P])    # P = 64
+    for arn in need:            # open or stop per task
+        while len(ready[arn]) < need[arn]:
+            ready[arn].append(open_session(arn))
+def _claim(self, arn):          # a worker starts an episode
+    s = ready[arn].popleft(); self._refill(); return s
+\end{lstlisting}
+\column{0.43\textwidth}
+\begin{enumerate}\scriptsize\setlength{\itemsep}{1mm}
+\item \textbf{Look ahead without a slime change.} \tb{\_peek} replays slime's deterministic order (offset + \tb{random.seed(seed + epoch)} shuffle) to list the next 2 batches.
+\item \textbf{Bounded window.} Keep a fresh session booted for each of the next \textbf{P} = \tb{TB\_PREOPEN\_BATCHES} $\times$ RB $\times$ NS = \hl{64} episodes, pooled per task. Wrong guesses are stopped at the next draw.
+\item \textbf{Claim moves the window.} Each claimed session starts booting one more.
+\item \textbf{Retry on a new id} (3$\times$); infra failures are logged as \tb{infra\_error}, never scored.
 \end{enumerate}
-\vspace{2mm}
-\colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\footnotesize Live microVMs $\le$ W + P = 4 + 64 = \hl{68}. The account quota is \textbf{5000} active sessions and 25 new/s [Q2] (\sref{fr:refs}); throttled opens back off and retry.}}
-\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} (\tb{tb\_lookahead\_source.py}, \tb{TerminalBenchPool}); quotas [Q2] us-west-2, 2026-09-23; checked 2026-09-25.}
+\vspace{1mm}
+\colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\scriptsize Live microVMs $\le$ W + P = 32 + 64. Quota: \textbf{5000} active sessions, 25 new/s [Q2] (\sref{fr:refs}).}}
+\end{columns}
+\src{\tb{agentcore\_slime\_demo/tb\_lookahead\_source.py}, \tb{terminalbench\_pool.py} (\tb{reserve}, \tb{\_refill}, \tb{\_claim}); checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
-\begin{frame}{Across a step boundary no worker waits for a boot; the price is idle VMs}
-\flabel{fr:boundary}
-\tabcap{Look-ahead across a step boundary (W = 4, P = 64)}
-\footnotesize\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}P{0.2\textwidth}Y P{0.17\textwidth}@{}}
-\toprule
-\textbf{Moment} & \textbf{What happens} & \textbf{Worker waits for a boot?}\\
-\midrule
-Step N$-$1 running & Its draw already announced steps N and N+1 $\rightarrow$ 64 sessions booting & ---\\
-Step N drawn & Window = steps N, N+1: already booted, nothing new to open & ---\\
-Each claim & Next episode of step N+2 starts booting & \hl{No}\\
-Step N training & 64 booted VMs idle through training; heartbeat keeps them & ---\\
-Step N+1 drawn & All its episodes already booted & \hl{No}\\
-\bottomrule
-\end{tabularx}
-\par\vspace{4mm}
-\begin{itemize}\footnotesize\setlength{\itemsep}{1.5mm}
-\item \textbf{Sessions per Runtime are never configured.} A task sampled in a step gets NS = 8 sessions; others get 0.
-\item \textbf{The price is idle time:} each VM is booted about P\,$\cdot$\,E\,/\,W seconds before it's needed (E = episode time).
-\end{itemize}
-\src{\tb{code/demos/demo\_cpu\_tasks/terminalbench/} pool design (W = 4, TB\_PREOPEN\_BATCHES = 2); checked 2026-09-25.}
-\end{frame}
-
-%====================================================================
-\begin{frame}{One batch of look-ahead already hides the boot; the run's two cost $\approx$\,6 min idle per VM}
+\begin{frame}{One batch of look-ahead is enough; each extra batch is paid as idle microVM time}
 \flabel{fr:sizing}
-\small Boot is hidden when \hl{P\,$\cdot$\,E\,/\,W $\ge$ B} (B = boot time), and a window of at least one batch (P $\ge$ RB $\times$ NS) also covers each step's first episodes. Everything beyond that is paid idle time.\par
+\small Boot is hidden when \hl{P\,$\cdot$\,E\,/\,W $\ge$ B} (B = boot time, E = episode time, W = workers), and a window of at least one batch (P $\ge$ RB $\times$ NS) also covers each step's first episodes.\par
 \vspace{2mm}
-\tabcap{Choosing TB\_PREOPEN\_BATCHES}
+\tabcap{Choosing \tb{TB\_PREOPEN\_BATCHES}}
 \footnotesize\setlength{\tabcolsep}{4pt}
 \begin{tabularx}{\textwidth}{@{}P{0.27\textwidth}r Y P{0.25\textwidth}@{}}
 \toprule
-\textbf{\tb{TB\_PREOPEN\_BATCHES}} & \textbf{P} & \textbf{Boot hidden?} & \textbf{Idle per VM $\approx$ P\,$\cdot$\,E\,/\,W}\\
+\textbf{\tb{TB\_PREOPEN\_BATCHES}} & \textbf{P} & \textbf{Boot hidden?} & \textbf{Idle per pre-opened VM}\\
 \midrule
-0 --- look-ahead off & $\approx$\,4 & Mid-step only; each step's first W wait & $\approx$\,20 s\\
-1 --- one batch ahead & 32 & Yes, including step starts & $\approx$\,3 min\\
-\hl{2 --- used in the smoke run} & \hl{64} & Yes, with a full batch of slack & $\approx$\,6 min (measured: 7.3 min p50)\\
+0 --- look-ahead off & 0 & No: every open is on the critical path & 0\\
+1 --- one batch ahead & 32 & Yes, including step starts & about one step\\
+\hl{2 --- used in the smoke run} & \hl{64} & Yes, with a full batch of slack & measured 7.3\,min p50, 16.5\,min max\\
 \bottomrule
 \end{tabularx}
 \par\vspace{3mm}
 \begin{itemize}\footnotesize\setlength{\itemsep}{1mm}
-\item E = 21 s (measured episode p50), W = 4.
 \item Tune from the \tb{[demo]} lines: \tb{open\_wait\_ms} $\gg$ 0 $\rightarrow$ raise it; \tb{preopen\_idle\_ms} $\gg$ boot time $\rightarrow$ lower it.
+\item The idle time is also why the heartbeat is needed (\sref{fr:hbwhy}).
 \end{itemize}
-\src{Smoke run 2026-09-23 (E, measured idle), \tb{code/demos/\_smoke\_logs/lanes\_tb\_0923}; checked 2026-09-25.}
+\src{Smoke run 2026-09-23, \tb{code/demos/\_smoke\_logs/lanes\_tb\_0923/terminalbench.demo.csv}; checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
-\sect{4 \textperiodcentered{} Results}
-
-\begin{frame}{The agent made partial progress (42\,\%) but solved only 4 of 382 episodes}
-\flabel{fr:learn}
-\tabcap{Learning (RB = 4, NS = 8, Qwen3-4B; smoke run, 10 steps + eval, 2026-09-23)}
-\small\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}P{0.32\textwidth}Y@{}}
-\toprule
-\textbf{Metric} & \textbf{Value}\\
-\midrule
-Train solve rate, steps 1--10 & 0 \textperiodcentered{} 0 \textperiodcentered{} 0.088 \textperiodcentered{} 0 \textperiodcentered{} 0 \textperiodcentered{} 0 \textperiodcentered{} 0 \textperiodcentered{} 0.026 \textperiodcentered{} 0 \textperiodcentered{} 0\\
-Full solves & \hl{4 / 382} episodes (\tb{acl-permissions-inheritance} $\times$3, \tb{git-leak-recovery})\\
-Held-out solve rate (31 tasks $\times$ 2) & 0.0\\
-Partial progress & \hl{42\,\%} of episodes pass $\ge$ 1 hidden test\\
-Agent behaviour & Median 6 turns, 5 bash calls; 45\,\% hit the 8-turn budget\\
-\bottomrule
-\end{tabularx}
-\par\vspace{4mm}
-\begin{itemize}\footnotesize
-\item \textbf{Sparse, not dead.} The tool loop works and the agent makes partial progress, but almost every GRPO group is all-0, so there is little gradient.
-\end{itemize}
-\src{Smoke run 2026-09-23, \tb{code/demos/\_smoke\_logs/lanes\_tb\_0923}; checked 2026-09-25.}
-\end{frame}
-
-%====================================================================
-\begin{frame}{The smoke run hid every boot and lost no episode, but $\approx$\,95\,\% of microVM time sat idle}
-\flabel{fr:cost}
-\tabcap{Sandbox and cost (W = 4, TB\_PREOPEN\_BATCHES = 2)}
-\small\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}P{0.36\textwidth}Y@{}}
-\toprule
-\textbf{Metric} & \textbf{Value}\\
-\midrule
-Episodes / infra errors & 382, each on its own fresh microVM / \hl{0} lost (job $\approx$\,70 min)\\
-Boot on the critical path (\tb{open\_wait\_ms}) & \hl{p50 0 \textperiodcentered{} p95 0}; max 4.9 s (first 4 episodes only)\\
-Session open (\tb{open\_ms}) & p50 0.66 s \textperiodcentered{} p95 2.5 s \textperiodcentered{} \textbf{100\,\% warm hits} \textperiodcentered{} 0 retries\\
-Episode time p50 / p90 & 21 s / 64 s (agent 9 s + grade 10 s)\\
-Pre-opened VM idle p50 / max & \textbf{7.3 min} / 16.5 min; heartbeat kept all alive\\
-microVM-seconds per train step & $\approx$\,13\,000 (32 $\times$ 411 s); \hl{$\approx$\,95\,\% idle}\\
-\bottomrule
-\end{tabularx}
-\par\vspace{3mm}
-\begin{itemize}\footnotesize
-\item \textbf{Every open was a warm hit.} AgentCore already had a spare VM up for each Runtime, so no $\approx$\,15 s cold boot occurred in this run. The per-image cold-start probe (\tb{probe\_coldstart.py}) is still to run.
-\end{itemize}
-\src{Smoke run 2026-09-23, \tb{code/demos/\_smoke\_logs/lanes\_tb\_0923}; checked 2026-09-25.}
-\end{frame}
-
-%====================================================================
-\begin{frame}{Pre-open cut the median wait to $\le$\,5 ms and makespan by 15--20\,\%; only the first batch waits}
-\flabel{fr:preopen}
-\small Host-only, no GPU or trainer ($\approx$\,7 min, a few cents): the same 24 MockPolicy \tb{sql} episodes in batches of 6, \textbf{cold} (open at episode start) vs \textbf{preopen} (next batch booted while this one runs, the \tb{TB\_PREOPEN\_BATCHES} idea).\par
-\vspace{2mm}
-\tabcap{Pre-open vs cold open (all rewards 1.0)}
+\begin{frame}{With pre-open no episode waited for a boot; without it every episode did}
+\flabel{fr:preres}
+\tabcap{Warm-start probe: the same 24 episodes, batches of 6, cold vs pre-open (all rewards 1.0)}
 \footnotesize\setlength{\tabcolsep}{5pt}
 \begin{tabularx}{\textwidth}{@{}Y l r r r r@{}}
 \toprule
 \textbf{Backend} & \textbf{Mode} & \textbf{Wait p50} & \textbf{Episodes that waited} & \textbf{Idle held} & \textbf{Makespan}\\
 \midrule
-Own Runtime & cold & 774 ms & 24 / 24 & 0 s & 31.9 s\\
-Own Runtime & preopen & \hl{5 ms} & 8 / 24 (first batch) & 75 s & 25.5 s (\hl{$-20$\,\%})\\
+Own Runtime & without & 774 ms & 24 / 24 & 0 s & 31.9 s\\
+Own Runtime & \hl{with} & \hl{5 ms} & 8 / 24 (first batch) & 75 s & 25.5 s (\hl{$-20$\,\%})\\
 \midrule
-Code Interpreter & cold & 1715 ms & 24 / 24 & 0 s & 28.7 s\\
-Code Interpreter & preopen & \hl{0 ms} & 6 / 24 (first batch) & 70 s & 24.3 s (\hl{$-15$\,\%})\\
+Code Interpreter & without & 1715 ms & 24 / 24 & 0 s & 28.7 s\\
+Code Interpreter & \hl{with} & \hl{0 ms} & 6 / 24 (first batch) & 70 s & 24.3 s (\hl{$-15$\,\%})\\
 \bottomrule
 \end{tabularx}
-\par\vspace{3mm}
-\begin{itemize}\footnotesize
-\item \textbf{Only the first batch pays the boot.} The price is ``idle held'', the same trade-off \tb{preopen\_idle\_ms} shows at full scale (\sref{fr:cost}).
-\end{itemize}
-\src{Warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_tasks/terminalbench/warmstart/}; checked 2026-09-25.}
+\par\vspace{2mm}
+\tabcap{Full training smoke run with pre-open (382 episodes, P = 64)}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}P{0.4\textwidth}Y@{}}
+\toprule
+Boot on the critical path (\tb{open\_wait\_ms}) & \hl{p50 0 \textperiodcentered{} p95 0}; max 4.9\,s (the first 4 episodes only)\\
+Session open (\tb{open\_ms}) & p50 0.66\,s \textperiodcentered{} p95 2.5\,s, 382 / 382 pre-opened \textperiodcentered{} 0 retries \textperiodcentered{} 0 infra errors\\
+Price: pre-opened VM idle & p50 \textbf{7.3\,min}, max 16.5\,min, for a 21\,s median episode\\
+\bottomrule
+\end{tabularx}
+\src{Warm-start probe 2026-09-25 (\tb{terminalbench/warmstart/}, host-only, MockPolicy); smoke run 2026-09-23 (\tb{\_smoke\_logs/lanes\_tb\_0923}); checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
-\begin{frame}{Heartbeat kept 3/3 own-Runtime sessions past the idle timeout; without it, 0/3 survived}
-\flabel{fr:hb}
-\small A Runtime session idle past \tb{idleRuntimeSessionTimeout} is reclaimed. In training that timeout is the \textbf{15-min default} (\tb{WARM\_IDLE\_TIMEOUT} = 900, pings at 450 s). The probe Runtime \tb{acs\_warmstart\_cpu} sets it to \textbf{60 s} only so the test fits in minutes; sessions then sit idle 150 s.\par
+\sect{5 \textperiodcentered{} Heartbeat}
+
+\begin{frame}{An idle session is silently reclaimed after 15 min, and pre-opened sessions idle that long}
+\flabel{fr:hbwhy}
+\begin{columns}[T]
+\column{0.52\textwidth}
+\textbf{\footnotesize What AgentCore does}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1mm}
+\item A Runtime session with no invoke for \tb{idleRuntimeSessionTimeout} (default \textbf{15 min}) is reclaimed [D3] (\sref{fr:refs}).
+\item \textbf{Silently:} the next invoke on the same session id succeeds, on a \hl{fresh, empty sandbox}. Files, installed packages and the agent's work are gone, and nothing errors.
+\end{itemize}
+\textbf{\footnotesize Why our sessions go idle}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1mm}
+\item \textbf{Pre-open:} a session is booted ahead and waits for its episode.
+\item \textbf{Weight sync:} while slime pushes new weights, generation stops and every open session waits.
+\end{itemize}
+\column{0.44\textwidth}
+\tabcap{Pre-open idle in the smoke run (382 sessions)}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}Yr@{}}
+\toprule
+Idle p50 / p90 / max & 7.3 / 9.5 / 16.5\,min\\
+Idle past 450\,s (ping point) & 172\\
+Idle past \textbf{900\,s} (reclaim) & \hl{17 (4.5\,\%)}\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\plainen{without a keep-alive, 1 in 22 pre-opened machines would be wiped before its episode, and the episode would score 0 on an empty machine without anyone noticing.}
+\end{columns}
+\src{AgentCore docs [D3]; smoke run 2026-09-23, \tb{terminalbench.demo.csv} (\tb{preopen\_idle\_ms}); checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}[fragile]{One process-wide keeper pings any session idle past half the timeout}
+\flabel{fr:hbhow}
+\begin{columns}[T]
+\column{0.53\textwidth}
+{\footnotesize\textbf{\tb{session\_keeper.py}} \textcolor{inkmuted}{(simplified)}}
+\begin{lstlisting}[language=Python]
+class SessionKeeper:                 # one per rollout process
+    def register(self, sid, pinger, idle_timeout): ...
+    def touch(self, sid):            # every real invoke
+        self._sessions[sid].last = now()
+    async def _run(self):            # background loop
+        while True:
+            for s in self._sessions.values():
+                if now() - s.last >= s.idle_timeout * 0.5:
+                    try:
+                        await s.pinger()   # exec("true")
+                        s.last = now()
+                    except Exception:  # retry next tick,
+                        s.ping_failures += 1   # clock NOT reset
+            await asyncio.sleep(tick)
+\end{lstlisting}
+{\footnotesize\textbf{\tb{TerminalBenchPool.\_open\_session}}}
+\begin{lstlisting}[language=Python]
+async def _ping(s=sb): await s.exec("true", timeout=30)
+keeper.register(sb.session_id, _ping, WARM_IDLE_TIMEOUT)
+\end{lstlisting}
+\column{0.43\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1.2mm}
+\item \textbf{Outside the harness.} No agent loop grows its own keep-alive; every session is registered when it opens and unregistered when it stops.
+\item \textbf{Cheap ping:} \tb{exec "true"}, one invoke that resets AgentCore's idle clock.
+\item \textbf{Zero pings while busy:} real episode traffic refreshes the same clock, so only idle sessions are pinged.
+\item \textbf{A failed ping doesn't reset the clock}, so it retries at the next tick instead of a full interval later.
+\item \textbf{Always on} for Terminal-Bench rows; \tb{HEARTBEAT=1} (default) for the rest. New Runtimes also get \tb{RUNTIME\_IDLE\_TIMEOUT=3600} as a backstop.
+\end{itemize}
+\end{columns}
+\src{\tb{agentcore\_slime\_demo/session\_keeper.py} (\tb{SessionKeeper.\_run}), \tb{terminalbench\_pool.py} (\tb{\_open\_session}); checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{With the heartbeat, sessions survived the idle gap and 0 of 382 were lost}
+\flabel{fr:hbres}
+\small Probe: Runtime \tb{acs\_warmstart\_cpu} with a \textbf{60\,s} idle timeout (so the test fits in minutes); sessions then sit idle 150\,s.\par
 \vspace{2mm}
-\tabcap{Heartbeat vs idle reclaim}
+\tabcap{Warm-start probe: heartbeat vs idle reclaim}
 \footnotesize\setlength{\tabcolsep}{4pt}
 \begin{tabularx}{\textwidth}{@{}P{0.18\textwidth}P{0.14\textwidth}P{0.2\textwidth}Y@{}}
 \toprule
-\textbf{Backend} & \textbf{Heartbeat} & \textbf{Sessions surviving the idle gap} & \textbf{Resume}\\
+\textbf{Backend} & \textbf{Heartbeat} & \textbf{Sessions surviving} & \textbf{Resume}\\
 \midrule
 Own Runtime & on (14 pings) & \hl{3 / 3} & 104 ms, files intact\\
-Own Runtime & off & 0 / 3 & \textbf{Silently reclaimed:} same session id, fresh empty sandbox\\
+Own Runtime & off & 0 / 3 & \textbf{Silently reclaimed:} same id, fresh empty sandbox\\
 Code Interpreter & on / off & 0 / 3 & Ends at its \tb{sessionTimeoutSeconds} regardless of pings\\
 \bottomrule
 \end{tabularx}
-\par\vspace{3mm}
-\begin{itemize}\footnotesize
-\item \textbf{Why the keeper is always on here:} a reclaimed session looks healthy but has lost its files. On the Code Interpreter the lever is a generous session timeout, not pings.
-\end{itemize}
-\src{Warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_tasks/terminalbench/warmstart/} (Runtime \tb{acs\_warmstart\_cpu}); checked 2026-09-25.}
+\par\vspace{2mm}
+\tabcap{Full training smoke run (idle timeout 900\,s, pings at 450\,s)}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}P{0.4\textwidth}Y@{}}
+\toprule
+Heartbeat pings & \hl{348}, on 214 sessions \textperiodcentered{} 0 failed\\
+Sessions idle past the 900\,s timeout & 17, all \hl{alive} at claim \textperiodcentered{} 0 lost episodes, 0 infra errors\\
+\bottomrule
+\end{tabularx}
+\src{Warm-start probe 2026-09-25 (\tb{terminalbench/warmstart/}); smoke run 2026-09-23 (\tb{terminalbench.demo.csv}: \tb{heartbeat\_session}, \tb{total\_pings}); checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
-\begin{frame}{Cold start is solved but over-provisioned; learning signal is now the bottleneck}
-\flabel{fr:next}
-\begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
-\item \textbf{Works end to end:} per-task Runtimes, one fresh microVM per episode, oracle-checked tasks, 0 infra failures.
-\item \textbf{Cold start is solved, but over-provisioned.} Look-ahead removed all boot wait (the warm-start probe confirms: only the first batch waits), but at P = 64 a VM idles $\approx$\,7 min for a 21 s episode. With warm hits at $\approx$\,0.7 s, \hl{\tb{TB\_PREOPEN\_BATCHES} = 1 (or 0)} should give the same wait at a fraction of the cost.
-\item \textbf{Learning signal is the bottleneck:} 4 solves in 382 episodes. Next: easy-first curriculum, more turns, or partial credit from \tb{tests\_passed}.
-\end{itemize}
-\vspace{1.5mm}
-\tabcap{Next steps}
-\scriptsize\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}P{0.42\textwidth}Y@{}}
+\sect{6 \textperiodcentered{} Smoke run results}
+
+\begin{frame}{The smoke run answers three questions: yes, yes, and not yet}
+\flabel{fr:smoke}
+\tabcap{Smoke run 2026-09-23: Qwen3-4B, RB = 4 $\times$ NS = 8, 10 steps + 1 eval on 31 held-out tasks, $\approx$\,70 min}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.3\textwidth}P{0.1\textwidth}Y P{0.1\textwidth}@{}}
 \toprule
-\textbf{Next} & \textbf{Why}\\
+\textbf{Question} & \textbf{Answer} & \textbf{Evidence} & \textbf{Slide}\\
 \midrule
-Re-run with \tb{TB\_PREOPEN\_BATCHES} = 1 and 0 & Measure the cost/wait trade-off\\
-\tb{probe\_coldstart.py} over all 218 Runtimes & Cold vs warm boot by image size (burst opens)\\
-Curriculum / partial-credit reward & Mixed GRPO groups $\rightarrow$ real gradient\\
+1. Does one-image-per-task RL run end to end on AgentCore? & \hl{Yes} & 382 episodes (train + eval) on 382 fresh microVMs, 71 tasks; \textbf{0} infra errors, \textbf{0} retries, \textbf{0} grading timeouts & \sref{fr:health}\\
+2. Is the sandbox off the critical path? & \hl{Yes} & boot wait p95 \textbf{0\,ms} (pre-open); \textbf{0} of 17 over-idle sessions lost (heartbeat) & \srefs{fr:preres}{fr:hbres}\\
+3. Does the policy learn? & \textbf{Not yet} & 4 / 382 solved; 8 of 10 steps had a zero gradient; reward too sparse for GRPO & \srefs{fr:learncurve}{fr:signal}\\
 \bottomrule
 \end{tabularx}
-\src{Smoke run 2026-09-23 and warm-start probe 2026-09-25, \tb{code/demos/demo\_cpu\_tasks/terminalbench/}; checked 2026-09-25.}
+\par\vspace{3mm}
+\plainen{the plumbing works and costs no waiting time; the task set is too hard for a 4B model with all-or-nothing reward, so the next run is about the reward, not the sandbox.}
+\src{\tb{code/demos/\_smoke\_logs/lanes\_tb\_0923/terminalbench.\{csv,demo.csv,eval.csv\}}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Every one of 382 episodes ran and was graded; the trainer waited on rollout}
+\flabel{fr:health}
+\begin{columns}[T]
+\column{0.5\textwidth}
+\tabcap{System health (all episodes)}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}Yr@{}}
+\toprule
+Episodes / distinct tasks & 382 / 71\\
+Fresh session per episode & 382 / 382\\
+Open attempts $>$ 1 \textperiodcentered{} infra errors & 0 \textperiodcentered{} \hl{0}\\
+Grading timeouts & 0\\
+Heartbeat pings / failed & 348 / 0\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\tabcap{Where an episode's time goes (p50)}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}Yr@{}}
+\toprule
+Wait for a session (boot) & 0\,s\\
+Agent loop in the microVM & 9.0\,s\\
+Grading (inject tests, pytest) & 9.7\,s\\
+Whole episode (p90) & 20.9\,s (63.7\,s)\\
+\bottomrule
+\end{tabularx}
+\column{0.46\textwidth}
+\tabcap{Step time}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}Yr@{}}
+\toprule
+Steps 1--8 p50 & 203\,s\\
+Steps 9--10 (with the eval pass) & 640 / 1,229\,s\\
+Share of step time the trainer waits & 77--97\,\%\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1mm}
+\item \textbf{Rollout-bound, as expected:} a step waits for the slowest of its 32 episodes (p95 122\,s, max 8.3\,min), not for boots.
+\item \textbf{Grading is half the episode:} every grade installs \tb{uv} + pytest from the internet (NAT egress); baking them into the image would cut it.
+\end{itemize}
+\end{columns}
+\src{\tb{terminalbench.demo.csv} (\tb{open\_wait\_ms}, \tb{agent\_ms}, \tb{grade\_ms}, \tb{episode\_ms}, \tb{infra\_error}), \tb{terminalbench.csv} (\tb{perf/step\_time}, \tb{perf/wait\_time\_ratio}); checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Partial progress is common (42\,\% pass a test) but full solves are rare (4 of 382)}
+\flabel{fr:learncurve}
+\figcap{Per training step: share of episodes that pass every hidden test vs at least one}
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.9\textwidth,height=4.6cm,ybar,bar width=7pt,xmin=0.4,xmax=10.6,ymin=0,ymax=0.7,
+  xtick={1,...,10},ytick={0,0.2,0.4,0.6},xticklabel style={font=\tiny},yticklabel style={font=\tiny},
+  xlabel={\scriptsize training step},ylabel={\scriptsize share of episodes},
+  ymajorgrids,grid style={gridc},axis x line*=bottom,axis y line*=left,
+  legend style={font=\tiny,draw=none,fill=none,text=bodytext,at={(0.99,0.99)},anchor=north east,legend columns=2},area legend]
+\addplot[fill=awsblue,draw=bgdark,line width=1pt] coordinates {(1,0.211)(2,0.615)(3,0.571)(4,0.471)(5,0.258)(6,0.303)(7,0.438)(8,0.562)(9,0.429)(10,0.407)};
+\addplot[fill=awsteal,draw=bgdark,line width=1pt] coordinates {(1,0)(2,0)(3,0.086)(4,0)(5,0)(6,0)(7,0)(8,0.031)(9,0)(10,0)};
+\legend{passes $\ge$ 1 test,passes all (reward 1)}
+\end{axis}
+\end{tikzpicture}
+\par\vspace{1mm}\raggedright
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.5mm}
+\item \textbf{Solves:} \tb{acl-permissions-inheritance} 3 of 8 at step 3, \tb{git-leak-recovery} 1 of 8 at step 8. Held-out eval (31 tasks): \textbf{0} solved.
+\item \textbf{No trend over 10 steps}, in either measure. Partial progress is flat across difficulty (easy 41\,\%, medium 42\,\%, hard 43\,\%).
+\end{itemize}
+\src{\tb{terminalbench.demo.csv} (\tb{solved}, \tb{tests\_passed}, per step; step 10 includes the rows drawn alongside eval), \tb{terminalbench.eval.csv}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{All-or-nothing reward left 76 of 78 GRPO groups with no gradient; test-level credit would give 28}
+\flabel{fr:signal}
+\begin{columns}[T]
+\column{0.5\textwidth}
+\figcap{Fraction of hidden tests passed, 382 episodes}
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=\linewidth,height=4.3cm,ybar,bar width=12pt,ymin=0,ymax=240,
+  symbolic x coords={0,{0--25},{25--50},{50--75},{75--99},100},xtick=data,
+  xticklabel style={font=\tiny},yticklabel style={font=\tiny},ytick={0,100,200},
+  xlabel={\scriptsize \% of tests passed},ylabel={\scriptsize episodes},
+  ymajorgrids,grid style={gridc},axis x line*=bottom,axis y line*=left,
+  nodes near coords,nodes near coords style={font=\tiny,text=bodytext}]
+\addplot[fill=awsblue,draw=bgdark,line width=1pt] coordinates {(0,215)({0--25},39)({25--50},56)({50--75},49)({75--99},12)(100,4)};
+\end{axis}
+\end{tikzpicture}
+\par\vspace{1mm}\raggedright
+\tabcap{Why episodes stopped}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}Yr@{}}
+\toprule
+Hit the 8-turn budget & 170 (45\,\%)\\
+Hit the 1024-token turn limit & 112 (29\,\%)\\
+Agent said it was done & 100 (26\,\%)\\
+\bottomrule
+\end{tabularx}
+\column{0.46\textwidth}
+\tabcap{GRPO groups (one task $\times$ 8 samples in a step)}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}Yr@{}}
+\toprule
+Groups & 78\\
+Mixed under binary reward (some 1, some 0) & \hl{2}\\
+Mixed under test-fraction reward & \hl{28}\\
+Steps with non-zero grad norm & 2 of 10\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1mm}
+\item \textbf{GRPO learns only from mixed groups:} an all-0 group has zero advantage, so 8 of 10 steps updated nothing.
+\item \textbf{The budget binds:} 74\,\% of episodes ran out of turns or tokens before finishing.
+\item \textbf{Fix the signal first:} partial credit from \tb{tests\_passed} would turn 2 useful groups into 28.
+\end{itemize}
+\end{columns}
+\src{\tb{terminalbench.demo.csv} (\tb{tests\_passed}/\tb{tests\_total}, \tb{stop}, grouped by step and task), \tb{terminalbench.csv} (\tb{train/grad\_norm}); checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Next: fix the reward and the budget, then halve the idle cost}
+\flabel{fr:next}
+\tabcap{Next steps, in order}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.04\textwidth}P{0.38\textwidth}Y@{}}
+\toprule
+& \textbf{Change} & \textbf{Why (evidence)}\\
+\midrule
+1 & Partial credit from \tb{tests\_passed} / \tb{tests\_total} & 2 $\rightarrow$ 28 of 78 groups with a gradient (\sref{fr:signal})\\
+2 & Larger turn and token budget (e.g.\ 16 turns, 2048 tokens) & 74\,\% of episodes stopped on a budget\\
+3 & Easy-first curriculum over the 166 tasks & 4B model solves 1\,\%; start where it sometimes succeeds\\
+4 & \tb{TB\_PREOPEN\_BATCHES} = 1 & microVMs idle $\approx$\,95\,\% of their life; one batch still hides the boot (\sref{fr:sizing})\\
+5 & Bake \tb{uv} + pytest into each image & grading is 9.7\,s of a 20.9\,s episode, mostly the install\\
+\bottomrule
+\end{tabularx}
+\par\vspace{3mm}
+{\scriptsize\color{inkmuted}The next deploy rebuilds every image once ($\approx$\,1\,h), because the server layer changed in the merge into \tb{demo\_cpu\_tasks}.\par}
+\src{Smoke run 2026-09-23, \tb{code/demos/\_smoke\_logs/lanes\_tb\_0923}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\sect{7 \textperiodcentered{} SWE-bench: the same analysis}
+
+\begin{frame}{A SWE-bench row is a repo at one commit with its environment; Verified has 500 rows}
+\flabel{fr:swe}
+\begin{columns}[T]
+\column{0.55\textwidth}
+\tabcap{The task}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.26\linewidth}Y@{}}
+\toprule
+\textbf{Input} & A real GitHub issue + the repo checked out at \tb{base\_commit}, dependencies installed in conda env \tb{testbed}\\
+\textbf{Agent's job} & Explore, edit, run code: multi-turn \tb{bash} / \tb{read\_file} / \tb{write\_file}\\
+\textbf{Reward} & Hidden \tb{test\_patch} applied after the agent stops; solved iff every FAIL\_TO\_PASS and PASS\_TO\_PASS test passes\\
+\textbf{Image} & One prebuilt image per row, \tb{swebench/sweb.eval.x86\_64.<id>}\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\tabcap{Dataset size}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}lY@{}}
+\toprule
+Verified (used) & \hl{500} rows, 12 Python repos (django 231, sympy 75, \dots)\\
+Full test / SWE-Gym / SWE-smith & 2,294 / 2,438 / 59,136 rows\\
+Our demo today & 20 rows (16 train, 4 eval)\\
+\bottomrule
+\end{tabularx}
+\column{0.41\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1.2mm}
+\item \textbf{Same pattern as Terminal-Bench:} one row = one task + one image = one Runtime; fresh session per episode.
+\item \textbf{Different shape:} the environment is a Python repo + conda env, not a whole custom OS, and the images are about 8$\times$ larger.
+\item \textbf{Tests run inside the row's env}, so a row's image must be the one SWE-bench validated.
+\end{itemize}
+\end{columns}
+\src{\tb{princeton-nlp/SWE-bench\_Verified}, \tb{SWE-Gym/SWE-Gym}, \tb{SWE-bench/SWE-smith} (Hugging Face); \tb{demo\_cpu\_swebench/data/}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{500 rows need 500 distinct images, which collapse to 80 environments}
+\flabel{fr:sweimg}
+\tabcap{Rows, images and environments}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.28\textwidth}rr Y@{}}
+\toprule
+& \textbf{Terminal-Bench} & \textbf{SWE-bench Verified} & \textbf{Note}\\
+\midrule
+Rows & 229 & \hl{500} & one per task / instance\\
+Images (one per row) & 229 & \hl{500} & official, one per instance id\\
+Distinct images & 203 of 218 built & \hl{500} & every SWE-bench image bakes its own commit\\
+Distinct environments & --- & \hl{80} & (repo, version) pairs; django alone is 9\\
+Size p50 / max (compressed) & 127\,MB / 2.0\,GB & 1.08\,GB / 2.95\,GB & SWE-bench: official amd64\\
+Total size & 48\,GB & 619\,GB & $\approx$\,3$\times$ that on disk\\
+\bottomrule
+\end{tabularx}
+\par\vspace{3mm}
+\begin{itemize}\footnotesize\setlength{\itemsep}{1mm}
+\item \textbf{Why one image per row:} each row pins a different commit, and the dependency set changes with the repo version; the tests are only valid in that environment.
+\item \textbf{80 environments} make one image per environment possible (checkout the commit at episode start): 500 $\rightarrow$ 80 Runtimes, the way to scale to SWE-Gym under the 1000-Runtime quota.
+\end{itemize}
+\src{\tb{demo\_cpu\_swebench/swebench/verified\_image\_sizes.csv} (\tb{survey\_image\_sizes.py}, Docker Hub + GHCR); Terminal-Bench \tb{images.csv}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Every prebuilt arm64 image fits the 2\,GB cap; only matplotlib's amd64 images are over it}
+\flabel{fr:swehist}
+\figcap{Compressed image size per Verified row (100\,MB bins): arm64 top, amd64 bottom}
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=top,width=0.94\textwidth,height=2.95cm,ybar,bar width=84,bar shift=0pt,xmin=600,xmax=3100,ymin=0,ymax=240,clip=false,
+  xtick={600,800,...,3000},yticklabel style={font=\tiny},ytick={0,100,200},ymajorgrids,grid style={gridc},axis x line*=bottom,axis y line*=left,xticklabels={},ylabel={\scriptsize arm64 rows}]
+\addplot[fill=awsblue,draw=none] coordinates {(650,28)(750,52)(850,97)(950,229)(1050,7)(1450,1)(1650,1)(1750,5)};
+\draw[draw=awsmagenta,line width=1.2pt] (axis cs:2048,0) -- (axis cs:2048,240) node[right,font=\tiny,text=bodytext,pos=0.9]{2\,GB cap};
+\node[font=\tiny,text=bodytext,anchor=west] at (axis cs:2250,150) {p50 0.92\,GB \textperiodcentered{} max 1.77\,GB \textperiodcentered{} \textbf{all 420 fit}};
+\end{axis}
+\begin{axis}[at={(top.south west)},anchor=north west,yshift=-3mm,width=0.94\textwidth,height=2.95cm,ybar,bar width=84,bar shift=0pt,xmin=600,xmax=3100,ymin=0,ymax=240,clip=false,
+  xtick={600,800,...,3000},yticklabel style={font=\tiny},ytick={0,100,200},ymajorgrids,grid style={gridc},axis x line*=bottom,axis y line*=left,xticklabel style={font=\tiny},
+  xlabel={\scriptsize compressed image size (MB)},ylabel={\scriptsize amd64 rows}]
+\addplot[fill=cat1,draw=none] coordinates {(950,28)(1050,194)(1150,188)(1250,2)(1450,25)(1650,1)(1750,6)(1850,10)(1950,14)(2150,5)(2950,17)(3050,10)};
+\draw[draw=awsmagenta,line width=1.2pt] (axis cs:2048,0) -- (axis cs:2048,240);
+\node[font=\tiny,text=bodytext,anchor=west] at (axis cs:2250,150) {p50 1.08\,GB \textperiodcentered{} max 2.95\,GB};
+\node[font=\tiny,text=bodytext,anchor=south] at (axis cs:2950,30) {32 over the cap, all matplotlib};
+\end{axis}
+\end{tikzpicture}
+\par\vspace{1mm}
+\raggedright
+{\scriptsize arm64 is the architecture that matters for microVMs; amd64 is what the m5 Instance lane runs and an upper bound for arm64 rebuilds. arm64 is about 0.83$\times$ amd64 at the median.\par}
+\src{\tb{demo\_cpu\_swebench/swebench/verified\_image\_sizes.csv}: Docker Hub \tb{swebench/sweb.eval.\{arm64,x86\_64\}.*}, GHCR \tb{epoch-research/swe-bench.eval.arm64.*}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{420 of 500 rows can run on AgentCore microVMs today; 27 never can}
+\flabel{fr:swerun}
+\begin{columns}[T]
+\column{0.55\textwidth}
+\tabcap{Where each Verified row can run}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.34\linewidth}r Y@{}}
+\toprule
+\textbf{Status} & \textbf{Rows} & \textbf{Why}\\
+\midrule
+\yes{} microVM now & \hl{420} & prebuilt arm64 image exists, $\le$ 1.77\,GB + 54\,MB wrapper\\
+\textcolor{inkmuted}{\faWrench}{} microVM after rebuild & 53 & no arm64 image; amd64 $\le$ 2\,GB, so an arm64 build likely fits\\
+\no{} not on a microVM & \hl{27} & no arm64 image and amd64 $>$ 2\,GB (matplotlib 3.4--3.7)\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\tabcap{The 80 rows without arm64, by repo}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}Y@{}}
+\toprule
+matplotlib 27 \textperiodcentered{} scikit-learn 25 \textperiodcentered{} xarray 22 \textperiodcentered{} astropy 4 \textperiodcentered{} django 2\\
+\bottomrule
+\end{tabularx}
+\column{0.41\textwidth}
+\textbf{\footnotesize The limits that decide it}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1mm}
+\item \textbf{arm64 only} on microVMs [D1].
+\item \textbf{2048\,MiB compressed image cap}, not adjustable; probed on AWS: 2,042\,MiB passes, 2,062\,MiB is rejected at \tb{CreateAgentRuntime}.
+\item \textbf{1000 Runtimes per account:} fine for 500 rows, not for SWE-Gym's 2,438 $\rightarrow$ one image per environment.
+\end{itemize}
+\textbf{\footnotesize The 27 still run on AgentCore}
+\begin{itemize}\scriptsize\setlength{\itemsep}{1mm}
+\item On an \textbf{m5 capacity-provider Instance}: amd64, no size cap, but one whole instance per session and a $\approx$\,90\,s boot.
+\end{itemize}
+\end{columns}
+\src{\tb{verified\_image\_sizes.csv}; cap probe \tb{probe\_image\_cap.py} (\tb{swebench/capprobe*.csv}, 2026-09-28); quotas [Q1][Q2] (\sref{fr:refs}); \tb{demo\_cpu\_swebench/README.md}; checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
@@ -397,10 +1073,11 @@ Curriculum / partial-credit reward & Mixed GRPO groups $\rightarrow$ real gradie
 \midrule
 {[Q1]} & AgentCore quotas:\newline\href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html}{\textcolor{linkc}{\tb{docs.aws.amazon.com/bedrock-agentcore/latest/}}}\newline\href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html}{\textcolor{linkc}{\tb{devguide/bedrock-agentcore-limits.html}}} & 1000 Runtimes/account \textperiodcentered{} image $\le$ 2 GB \textperiodcentered{} 15-min request timeout \textperiodcentered{} 15-min idle timeout\\
 {[Q2]} & \tb{aws service-quotas list-service-quotas}\newline\tb{-{}-service-code bedrock-agentcore} (us-west-2, 2026-09-23) & Active Session Workloads = 5000 (L-3E5722B2) \textperiodcentered{} new sessions 25/s (L-8EE2AEA2) \textperiodcentered{} image 2048 MB (L-0A9E32B3)\\
+{[D1]} & AgentCore Runtime developer guide & microVMs are arm64 only\\
 {[D3]} & \href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}{\textcolor{linkc}{\tb{docs.aws.amazon.com/bedrock-agentcore/latest/}}}\newline\href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}{\textcolor{linkc}{\tb{devguide/runtime-how-it-works.html}}} & Session = dedicated microVM; 15-min idle, 8 h max lifetime\\
 \bottomrule
 \end{tabularx}
-\src{AWS documentation and service-quotas CLI, us-west-2, 2026-09-23; checked 2026-09-25.}
+\src{AWS documentation and service-quotas CLI, us-west-2, 2026-09-23; checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
