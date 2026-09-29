@@ -143,6 +143,8 @@ class TerminalBenchPool(HarnessPool):
         self.open_attempts = int(os.environ.get("TB_OPEN_ATTEMPTS", "3"))
         # Serverless microVM idle timeout is ~15 min; heartbeat at half that with margin.
         self.idle_timeout = float(os.environ.get("WARM_IDLE_TIMEOUT", "900"))
+        # HEARTBEAT (default 1; 0 = the A/B baseline): register every open session with the keeper.
+        self.heartbeat = os.environ.get("HEARTBEAT", "1") != "0"
         # The ONE pre-open knob: how many upcoming batches to keep booted. The session cap follows
         # from slime's own batch shape, so the two can never disagree. 0 = no look-ahead (each episode
         # still starts booting at submit, bounded by the admission gate).
@@ -156,7 +158,7 @@ class TerminalBenchPool(HarnessPool):
         self._keeper = None
         # Upcoming episodes, in the order they will run, as their task's Runtime ARN:
         #   _demand — drawn by slime (or submitted without a look-ahead reservation), not yet claimed;
-        #   _future — predicted by the look-ahead data source for the next rollouts (replaced per draw).
+        #   _future — predicted by the look-ahead data source for the next prompts (replaced per draw).
         self._demand: list[str] = []
         self._future: list[str] = []
         # ARN -> unclaimed sessions opened (or opening) on that task's Runtime, oldest first. Any of
@@ -237,11 +239,12 @@ class TerminalBenchPool(HarnessPool):
         if not self.workdir and boot.get("workdir"):
             sb._workdir = boot["workdir"]           # the task's own WORKDIR (/app, /app/astropy, ...)
 
-        async def _ping(s=sb) -> None:
-            # A raw no-op invoke on the session resets AgentCore's idle clock.
-            await s.exec("true", timeout=30)
+        if self.heartbeat:
+            async def _ping(s=sb) -> None:
+                # A raw no-op invoke on the session resets AgentCore's idle clock.
+                await s.exec("true", timeout=30)
 
-        self._keeper.register(sb._session_id, _ping, self.idle_timeout)
+            self._keeper.register(sb._session_id, _ping, self.idle_timeout)
         return sb
 
     @staticmethod
@@ -269,10 +272,10 @@ class TerminalBenchPool(HarnessPool):
         """Called by the look-ahead data source on every draw (sync, from slime's rollout loop).
 
         `drawn` = the episodes slime just drew (they will be submitted now); `upcoming` = the episodes
-        of the next rollouts, predicted. One draw per rollout, so this REPLACES the window: anything
-        left from the previous draw is stale (that rollout is over) and its sessions get trimmed.
+        after them, predicted. The fully-async driver draws one group at a time, so `drawn` is APPENDED
+        (earlier draws may still be waiting for a worker) and `upcoming` REPLACES the sliding window.
         """
-        self._demand = list(drawn)
+        self._demand.extend(drawn)
         self._future = list(upcoming)
         try:
             asyncio.get_running_loop().create_task(self._start_and_refill())

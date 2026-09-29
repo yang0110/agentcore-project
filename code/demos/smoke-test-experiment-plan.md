@@ -15,7 +15,7 @@ one per-run recipe below; the only per-demo differences are captured as data in 
 | Spec | Knob | Value | Why |
 |---|---|---|---|
 | **10 train steps** | `NR` (`--num-rollout`) | **`NR=11`** | slime runs `range(1,NR)` = `NR−1` real steps (fresh torch_dist ckpt is iter 0). `NR=11` ⇒ 10 steps. **Already the default.** |
-| **10 weight syncs** | *(none)* | automatic | Under the async/decoupled driver (`train_async.py`, no `--colocate`) weights sync to SGLang **once per train step** ⇒ 10 syncs for 10 steps, in both `MODE=A` (stock 1-step-async) and `MODE=B` (fully-async). No user-facing var. |
+| **10 weight syncs** | *(none)* | automatic | Under the async/decoupled driver (`train_async.py`, no `--colocate`) weights sync to SGLang **once per train step** ⇒ 10 syncs for 10 steps under the fully-async driver. No user-facing var. |
 | **1 eval (near end)** | `EVAL_INTERVAL` / `EVAL_NS` | **`10` / `2`** | With `NR=11`, eval fires once at step 10. **Already the default.** `EVAL_INTERVAL=0` disables. |
 | **1 checkpoint, at the end** | `SAVE_INTERVAL`, `SAVE` | **`1000000`**, `$DEMO_DIR/ckpt/...` | Huge interval disables periodic save; explicit `--num-rollout` disables the epoch-boundary save; only slime's forced final-rollout checkpoint is written (≈ 56 GB for Qwen3-4B; delete it after checking). **Already the default.** |
 

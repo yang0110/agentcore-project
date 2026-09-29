@@ -2,7 +2,7 @@
 """Oracle check for demo_cpu_swebench: every deployed instance must be learnable ON THIS SUBSTRATE.
 
 For each instance in swebench/arn_by_image.json, two fresh AgentCore sessions on its own Runtime
-(m5 capacity-provider Instance), graded by the exact grader the training pool uses
+(one managed arm64 microVM each), graded by the exact grader the training pool uses
 (agentcore_slime_demo.swebench.grade_swebench):
 
   * gold — `git apply` the reference fix in /testbed, then grade  -> must be solved (reward reachable)
@@ -92,15 +92,15 @@ async def check(task: str, arn: str | None, sem: asyncio.Semaphore, run_mode=Non
 def _local_check(task: str) -> dict:
     """One instance against `docker run` of its locally built wrapper image: a NEW container per mode
     (gold / null), mirroring one-session-per-episode isolation on AgentCore."""
-    image, port = f"acs-swe-local:{task.lower()}", 18480
+    image, port = f"acs-swe-arm64-local:{task.lower()}", 18480
     name = f"acs-swe-oracle-{os.getpid()}"
 
     async def run_mode(inst: dict, gold: bool) -> dict:
         subprocess.run(["docker", "run", "-d", "--rm", "--name", name, "--cap-drop=ALL", "-p", f"{port}:8080",
-                        image], check=True, stdout=subprocess.DEVNULL)
+                        "--platform", "linux/arm64", image], check=True, stdout=subprocess.DEVNULL)
         try:
             os.environ["AGENTCORE_LOCAL_ENDPOINT"] = f"http://127.0.0.1:{port}"
-            for _ in range(60):
+            for _ in range(180):                      # qemu start is slow
                 if subprocess.run(["curl", "-sf", f"http://127.0.0.1:{port}/ping"],
                                   capture_output=True).returncode == 0:
                     break

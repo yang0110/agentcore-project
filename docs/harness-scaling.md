@@ -62,10 +62,9 @@ No worker owns an engine or a session. Each episode is joined from three pools w
   balances by **availability**: a worker stuck on a slow episode simply doesn't pull more, while push
   or hash would keep piling onto it.
 
-The pool returns **one bare Sample** per episode (the longest of `finish_session`'s list), so slime's
-stock (`MODE=A`) and fully-async (`MODE=B`) drivers both work; `demo_cpu_tasks` keeps `MODE=B` as its
-default. Terminal-Bench / SWE-bench still reject `MODE=B`, because their look-ahead pre-open data source
-feeds the stock driver.
+The pool returns **one bare Sample** per episode (the longest of `finish_session`'s list), the shape
+slime's fully-async driver needs. That driver is the only one (the `MODE` knob is gone); Terminal-Bench /
+SWE-bench's look-ahead pre-open data source slides with its per-group draws.
 
 ### Admission vs. drive
 
@@ -94,7 +93,7 @@ SCALE=1 bash code/demos/demo_cpu_tasks/5_run.sh
 ```
 
 turns all three tiers up together: `DATASET=deepscaler RB=32` (× NS=8 = 256 episodes per step),
-`GPUS_PER_ENGINE=1` (E=4 TP1 engines on the 4 rollout GPUs), `HARNESS_WORKERS=256`, `MODE=A`, and
+`GPUS_PER_ENGINE=1` (E=4 TP1 engines on the 4 rollout GPUs), `HARNESS_WORKERS=256`, and
 `CONC = ceil(256/E) = 64` → S = 256 episodes in flight, i.e. 256 sandbox sessions, each carrying its own
 mini_claude loop. The ckpt gets the `_scale` suffix and the log tag `-scale`; any knob still overrides
 the preset (e.g. `SANDBOX_SESSIONS=64` to run on 64 pooled sessions).

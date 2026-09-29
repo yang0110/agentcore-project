@@ -2,7 +2,25 @@
 
 _Last updated: 2026-09-28. Branch: `master`._
 
-> **2026-09-28 (newest) — `demo_cpu_terminalbench` merged into `demo_cpu_tasks` as `DATASET=terminalbench`.** One
+> **2026-09-28 (newest) — `demo_cpu_tasks` defaults to a MIXED-task batch that includes Terminal-Bench.**
+> Default `DATASET=mbpp,humaneval,gsm8k,math500,deepscaler,gretelsql,hotpotqa,xlam,mcp,terminalbench` (every literature dataset: real HF RLVR sets + Terminal-Bench; synthetic zoo and SWE-bench excluded). `mix_data.py` balances the strata
+> (dataset × family, 135 each, capped by TB) and deals them round-robin; `run.sh` drops `--rollout-shuffle` and
+> raises an unset RB to K (default RB=10, GBS=80), so every step has one prompt per task (dry-run verified).
+> `batch_mix_log.py` (custom rollout/eval log hooks) logs the batch actually trained on: `[batch]` line,
+> `mix/n_tasks|episodes_<f>|reward_<f>`, `eval/mix_<f>`; `metrics.py` summarizes/plots it. The default now
+> needs the per-task TB Runtimes (`VARIANT=terminalbench` steps 2/4) and applies the TB run settings to the
+> whole batch. Not yet run on AWS.
+>
+> **2026-09-28 — fully-async is the only rollout driver; `MODE` removed.** `demo_cpu_tasks`,
+> `demo_cpu_swebench`, `demo_cpu_swebench_eks` and `demo_gpu_farm` always pass
+> `--rollout-function-path slime.rollout.fully_async_rollout.generate_rollout_fully_async` + eval through
+> `agentcore_slime_demo.mode_b_eval`; setting `MODE` is an error. The Terminal-Bench/SWE-bench look-ahead
+> (`tb_lookahead_source.py`) now slides per group: drawn groups are APPENDED to the pool's `_demand`
+> (`TerminalBenchPool.reserve`), the next `TB_PREOPEN_BATCHES×RB` prompts replace `_future`, the budget is
+> `num_rollout×RB − sample_group_index`, requeued (aborted) groups are un-reserved. Exception:
+> `demo_cpu_branching` keeps the stock driver (nested fan-out). Notes below that mention `MODE=A/B` are history.
+
+> **2026-09-28 — `demo_cpu_terminalbench` merged into `demo_cpu_tasks` as `DATASET=terminalbench`.** One
 > row = one task + one image (`metadata.task.image` on every row, all `data/*.jsonl` backfilled), one image = one
 > Runtime, `RB × NS` = sessions per step. Terminal-Bench rows go to `terminalbench_pool.py` (fresh session,
 > look-ahead pre-open, always-on keeper), the other rows to the default harness tier, so they mix in one batch

@@ -56,11 +56,12 @@ AgentCore **Code Interpreter** microVM (CPU); the harness was in-process. *(Hist
 | `demo_cpu_data`    | data transforms | `data` | generation |
 
 > **As built (2026-09-25):** the per-task folders above are NOT separate demos. They are all ONE
-> demo, `code/demos/demo_cpu_tasks`, selected with `DATASET=<name>` (real HF `mbpp` (default) `gsm8k`
+> demo, `code/demos/demo_cpu_tasks`, selected with `DATASET=<name>` (real HF `mbpp` `gsm8k`
 > `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, plus the synthetic `math`
 > `swe` `tool_use` `sql` `ctf` `rag` `regex` `planning` `config` `data`). It replaced the ten
 > per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`, …) that differed only in data. Mixed-task
-> batches are the same demo: `DATASET=a,b,c` (interleaved) or `DATASET=mixed` (math+sql+ctf+datasci,
+> batches are the same demo and, since 2026-09-28, its DEFAULT (`mbpp,humaneval,gsm8k,math500,deepscaler,gretelsql,hotpotqa,xlam,mcp,terminalbench`: every literature dataset, SWE-bench excluded,
+> one prompt per task per step): `DATASET=a,b,c` (task-interleaved) or `DATASET=mixed` (math+sql+ctf+datasci,
 > formerly `demo_cpu_mixtask`). All of them run on the DEFAULT managed Code Interpreter
 > (`SANDBOX=agentcore`): no image, no Runtime. The pandas/scipy/sklearn tasks (formerly `demo_cpu_imagepool`,
 > 3 custom images) are `DATASET=libs` there, since the Code Interpreter already has those libraries. The

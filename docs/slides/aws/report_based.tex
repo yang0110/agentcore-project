@@ -223,7 +223,7 @@ Kimi K2 [5] & simulator + real exec sandboxes & agentic tool use, code, SWE & te
 \item \textbf{Sync mode} alternates train / rollout --- each side's GPUs idle while the other runs.
 \item \textbf{Async driver} (\cc{train\_async.py}) overlaps them: Megatron trains batch \emph{k} while the rollout side already generates batch \emph{k+1}.
 \item \textbf{Fully-async rollout} (\cc{fully\_async\_rollout}) keeps a \emph{fixed pool of in-flight episodes across rollout boundaries}, so a step never waits on the slowest trajectory --- the \textbf{long-tail} problem of agentic RL.
-\item \textbf{Why it matters here:} AgentCore sandboxes have \textbf{variable, sometimes long} per-episode latency; async rollout keeps the trainer fed while they run --- at the cost of \textbf{staleness} (rollouts generated on an older policy version). This project runs the fully-async path (\hl{\cc{MODE=B}}).
+\item \textbf{Why it matters here:} AgentCore sandboxes have \textbf{variable, sometimes long} per-episode latency; async rollout keeps the trainer fed while they run --- at the cost of \textbf{staleness} (rollouts generated on an older policy version). This project runs the fully-async path (\hl{the only rollout driver}).
 \end{itemize}
 \end{columns}
 \end{frame}
@@ -801,7 +801,7 @@ SWE bug-fix (Ch.\ 7) & synthetic SWE tasks & 64 / --- & node 22 + \cc{claude} CL
 \begin{itemize}\scriptsize\setlength{\itemsep}{1mm}
 \item \textbf{Own generic-image Runtime} (VPC) by default, the harness \textbf{inside the sandbox session}; the Code Interpreter was dropped (it can't dial the adapter back).
 \item \textbf{Harness tier} (every demo): \cc{HARNESS\_WORKERS} (default RB $\times$ NS), fresh session per episode, least-loaded engine; \cc{SANDBOX\_SESSIONS=M} (opt-in) pools M sessions per image with a fresh workdir.
-\item \textbf{One harness}: self-describing rows rebuild each task; mixes are GRPO-safe (per-group advantage).
+\item \textbf{Mixed batch by default}: every literature dataset (\cc{mbpp,humaneval,gsm8k,math500,deepscaler,gretelsql,hotpotqa,xlam,mcp,terminalbench}; SWE-bench excluded), balanced round-robin, no shuffle, \hl{one prompt per task per step} (RB = 10); \cc{[batch]} / \cc{mix/*} log the batch actually trained on. Self-describing rows rebuild each task; GRPO-safe (per-group advantage).
 \item \textbf{Heartbeat on by default} (own Runtime), idle timeout 3600 s.
 \item \textbf{Rejected:} a per-library image pool --- one image with pandas / scipy / sklearn covers them.
 \end{itemize}
@@ -1031,7 +1031,7 @@ Code Interpreter & on or off & 0/3 & expires at its session timeout regardless\\
 \begin{columns}[T]
 \column{0.47\textwidth}
 {\footnotesize\textbf{\color{awsteal}Use case covered.}\par}
-{\scriptsize High-throughput rollout: a fleet that has scaled inference and the sandbox and must not hit the forgotten third tier, the harness. The decoupled harness tier (\cc{harness\_pool.py}) is the \textbf{default in every demo}; \cc{SCALE=1 bash 5\_run.sh} in \cc{demo\_cpu\_tasks} runs it at \hl{4 engines : 256 harness workers : 256 microVMs} (DeepScaleR, RB 32 $\times$ NS 8, TP1, \cc{MODE=A}, CONC 64).\par}
+{\scriptsize High-throughput rollout: a fleet that has scaled inference and the sandbox and must not hit the forgotten third tier, the harness. The decoupled harness tier (\cc{harness\_pool.py}) is the \textbf{default in every demo}; \cc{SCALE=1 bash 5\_run.sh} in \cc{demo\_cpu\_tasks} runs it at \hl{4 engines : 256 harness workers : 256 microVMs} (DeepScaleR, RB 32 $\times$ NS 8, TP1, CONC 64).\par}
 \vspace{2mm}
 {\footnotesize\textbf{\color{awsteal}Why this demo.}\par}
 {\scriptsize (1) The harness must scale \textbf{along with} SGLang and the sandbox, or a few coroutines silently become the ceiling: \hl{\cc{throughput = min(inference, sandbox, harness)}}. (2) It should scale \textbf{with the sandbox, not as part of the trainer} --- as in DeepSeek DSec, the loop runs in the episode's session. A preset, not a folder: same task and image, only the tier sizes change (\cc{demo\_cpu\_scale\_lanes} was retired into this preset, 2026-09-28).\par}
@@ -1294,7 +1294,7 @@ Kernel / host & as the CPU pool & one kernel, one instance\\
 \begin{itemize}\scriptsize\setlength{\itemsep}{1.6mm}
 \item \textbf{Rollout-level GRPO:} advantage and token-mean loss per episode.
 \item \textbf{CLI next to slime; only its tools in the sandbox} (node 22 + \cc{claude}).
-\item \textbf{\cc{MODE=A}, \cc{dp\_size=1}} (TP2 $\times$ PP2), sync checkpoint save.
+\item \textbf{Stock 1-step-async driver} (fan-out = nested Samples), \textbf{\cc{dp\_size=1}} (TP2 $\times$ PP2), sync checkpoint save.
 \item \textbf{The CLI needs the tool parser} (\cc{qwen25} / \cc{qwen3}) and \textbf{a per-turn cap above Qwen3's \cc{<think>}} (\cc{MAX\_RESPONSE\_LEN} 2048).
 \end{itemize}
 \end{columns}
@@ -1522,7 +1522,7 @@ multi-turn, big observations & SWE, RAG, web & context growth & both + warm sess
 \item The CLI runs \textbf{inside a CLI-capable CPU Runtime} (image bakes node22 + \cc{claude}).
 \item One episode returns a \cc{list[Sample]}, all tagged with the shared \cc{rollout\_id} $\rho$ and the episode's terminal reward $R$.
 \item \hl{Advantage baseline + loss are normalized per rollout, not per sample} (token-mean loss), so an incidental fan-out can't reweight the update.
-\item \cc{MODE=A}, \cc{dp=1} (TP2$\times$PP2), sync save.
+\item Stock driver (not fully-async), \cc{dp=1} (TP2$\times$PP2), sync save.
 \end{itemize}
 \vspace{4mm}
 \plainen{\cc{demo\_cpu\_branching} (\S5, Ch.\ 7, \sref{fr:branchsmoke}) implements this; its three blockers are fixed and verified without a trainer --- RL smoke fans out (p50 4) and scores (eval 0.47); an all-zero-advantage bug is fixed, learning \pend{branching re-run with the advantage fix}.}

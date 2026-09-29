@@ -5,8 +5,9 @@
 # Each episode routes to ITS instance's OWN Runtime (one image / one ARN per SWE-bench instance; the pool
 # map is AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE, written by deploy/deploy_swebench.py to
 # swebench/arn_by_image.json — an unmapped instance is an error, never routed elsewhere). The images are
-# amd64-only and 1-2 GB compressed (3-6 GB on disk), over the microVM fleet's arm64 / 2 GB cap, so every
-# Runtime sits on a capacity provider of m5 Instances: one session = one whole m5, still machine-isolated.
+# Epoch AI's arm64 rebuilds of the SWE-bench images (0.7-1 GB compressed for the default subset), under the
+# managed microVM fleet's arm64 / 2 GB cap, so every Runtime is a plain microVM Runtime: one session = one
+# fresh microVM.
 # The episode runs the MiniClaudeHarness agentic loop in /testbed (LLM via the adapter under training,
 # tools in the sandbox), then swebench.grade_swebench writes the HIDDEN test_patch in, runs the repo's
 # official test command and scores FAIL_TO_PASS + PASS_TO_PASS with SWE-bench's own log parsers — the
@@ -14,14 +15,15 @@
 # agentcore_slime_demo copy. Runs INSIDE the persistent container agentcore_p4 (slimerl/slime).
 #
 # WHY A FRESH SESSION PER EPISODE: the agent edits the repo and may pip-install into the testbed env;
-# grading must see exactly the environment SWE-bench validated, so no session is ever reused. The m5
-# cold start this costs is hidden by opening each episode's session at submit time and, via the
+# grading must see exactly the environment SWE-bench validated, so no session is ever reused. The microVM
+# cold start this costs (~25-30 s for a ~1-2 GB image, probe_image_cap.py) is hidden by opening each episode's session at submit time and, via the
 # look-ahead data source, for the NEXT TB_PREOPEN_BATCHES rollouts before slime draws them. A
 # SessionKeeper heartbeat keeps open sessions alive across the weight-sync stall.
 #
-# STOCK (Mode A) DRIVER ONLY. terminalbench_pool_generate.generate (the shared image-pool hook, vendored
-# from the former demo_cpu_terminalbench) returns one Sample per episode (the harness pool), but the look-ahead
-# pre-open data source feeds the stock driver, so MODE=A only.
+# FULLY-ASYNC DRIVER (slime's generate_rollout_fully_async, the only one): terminalbench_pool_generate.generate
+# (the shared image-pool hook, vendored from the former demo_cpu_terminalbench) returns one bare Sample per
+# episode, and the look-ahead data source slides with the driver's per-group draws. Eval goes through
+# agentcore_slime_demo.mode_b_eval (the fully-async worker owns slime's GenerateState loop).
 #
 # ADAPTER TOOL PARSER (the A3/B3 dead-reward fix): SGLANG_ARGS bakes in --sglang-tool-call-parser
 # qwen25 --sglang-reasoning-parser qwen3. Without them the tool loop is dead and reward is structurally 0.
@@ -58,12 +60,13 @@ TB_EXEC_TIMEOUT="${TB_EXEC_TIMEOUT:-180}"     # per bash-tool command timeout (t
 MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-24576}"  # >= one full trajectory: 12 x (1024 gen + ~600 tool) + prompt
 WARM_IDLE_TIMEOUT="${WARM_IDLE_TIMEOUT:-900}" # session idle timeout the heartbeat stays under
 WARM_PING_FRACTION="${WARM_PING_FRACTION:-0.5}"
-TB_PREOPEN_BATCHES="${TB_PREOPEN_BATCHES:-2}"   # THE pre-open knob: batches kept booted ahead (x RB x NS = 64 m5 sessions; 0 = off)
+HEARTBEAT="${HEARTBEAT:-1}"   # keeper pings every open session idle past WARM_PING_FRACTION x WARM_IDLE_TIMEOUT (0 = off, A/B)
+TB_PREOPEN_BATCHES="${TB_PREOPEN_BATCHES:-2}"   # THE pre-open knob: batches kept booted ahead (x RB x NS = 64 microVM sessions; 0 = off)
 
-MODE="${MODE:-A}"
-case "$MODE" in A|a) MODE=A;;
-   B|b) echo "MODE=B (fully-async) unsupported here: the look-ahead pre-open data source feeds the stock driver. Use MODE=A." >&2; exit 1;;
-   *) echo "MODE must be A (got '$MODE')" >&2; exit 1;; esac
+if [ -n "${MODE:-}" ]; then
+  echo "MODE is gone: the fully-async driver is the only rollout driver. Unset MODE." >&2
+  exit 1
+fi
 
 EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
 EVAL_NS="${EVAL_NS:-2}"
@@ -109,7 +112,7 @@ if [ "$EVAL_INTERVAL" != "0" ] && [ -f "$EVAL_DATA" ]; then
       --eval-prompt-data "$EVAL_NAME" "$EVAL_DATA"
       --n-samples-per-eval-prompt "$EVAL_NS"
       --eval-temperature "$TEMP"
-      --eval-function-path slime.rollout.sglang_rollout.generate_rollout
+      --eval-function-path agentcore_slime_demo.mode_b_eval.generate_rollout
    )
 fi
 
@@ -125,13 +128,13 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 1024
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
+   # THE DRIVER: a background worker keeps CONC x engines groups in flight across step boundaries.
+   --rollout-function-path slime.rollout.fully_async_rollout.generate_rollout_fully_async
    # THE POOL HOOK: routes each episode to its instance's Runtime on its own fresh, pre-opened session.
    --custom-generate-function-path agentcore_slime_demo.terminalbench_pool_generate.generate
-   # THE LOOK-AHEAD: peeks the next TB_PREOPEN_BATCHES rollouts' prompts so their sessions boot early.
+   # THE LOOK-AHEAD: peeks the next TB_PREOPEN_BATCHES x RB prompts so their sessions boot early.
    --data-source-path agentcore_slime_demo.tb_lookahead_source.LookaheadDataSource
 )
-
-MODE_ARGS=()
 
 PERF_ARGS=(
    --tensor-model-parallel-size 2
@@ -205,6 +208,7 @@ RUNTIME_ENV_JSON="{
     \"EPISODE_MAX_TOKENS\": \"${EPISODE_MAX_TOKENS}\",
     \"WARM_IDLE_TIMEOUT\": \"${WARM_IDLE_TIMEOUT}\",
     \"WARM_PING_FRACTION\": \"${WARM_PING_FRACTION}\",
+    \"HEARTBEAT\": \"${HEARTBEAT}\",
     \"TB_PREOPEN_BATCHES\": \"${TB_PREOPEN_BATCHES}\",
     \"MINI_AGENT_MAX_TOOL_CHARS\": \"${MINI_AGENT_MAX_TOOL_CHARS}\",
     \"TB_EXEC_TIMEOUT\": \"${TB_EXEC_TIMEOUT}\"
@@ -221,7 +225,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    "${CKPT_ARGS[@]}" \
    "${EVAL_ARGS[@]}" \
    "${ROLLOUT_ARGS[@]}" \
-   "${MODE_ARGS[@]}" \
    "${OPTIMIZER_ARGS[@]}" \
    "${GRPO_ARGS[@]}" \
    "${PERF_ARGS[@]}" \

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch a small SWE-bench Verified subset for demo_cpu_swebench_eks (same subset as demo_cpu_swebench).
+"""Fetch a small SWE-bench Verified subset for demo_cpu_swebench_eks (same rows as demo_cpu_swebench + demo_cpu_swebench_ecs).
 
 Pulls princeton-nlp/SWE-bench_Verified (HF `datasets`, fallback: the parquet via huggingface_hub),
 picks ~20 instances biased to FAST, SMALL test suites across DIVERSE repos, resolves each instance's
@@ -14,6 +14,9 @@ MAP_REPO_VERSION_TO_SPECS_PY, pip-downloaded at fetch time — never re-typed he
     data/swebench_eval.jsonl        (disjoint instances, every 5th)
 
 Selection (all knobs env):
+  * DEFAULT (no SWE_QUOTA / SWE_INSTANCES): the 20 instances pinned in DEFAULT_INSTANCES — exactly the
+    arm64 AgentCore demo's subset, so the three substrates train and evaluate on identical rows. The
+    quota rules below only apply when SWE_QUOTA is set (or SWE_INSTANCES names the rows directly);
   * repo in the grader's supported set (agentcore_slime_demo/swebench.PARSER_BY_REPO) with a per-repo
     quota (SWE_QUOTA, default django:6,sympy:4,sphinx-doc:3,pytest-dev:2 and 1 each for astropy,
     requests, xarray, pylint, flask = 20) — matplotlib / scikit-learn / seaborn are excluded (4-8 GB
@@ -57,6 +60,28 @@ from agentcore_slime_demo.swebench import PARSER_BY_REPO, SWEBenchTask  # noqa: 
 DATASET = "princeton-nlp/SWE-bench_Verified"
 SWEBENCH_PKG = os.environ.get("SWE_SPECS_PKG", "swebench==3.0.17")   # last release with the py spec table
 NON_TEST_EXTS = [".json", ".png", "csv", ".txt", ".md", ".jpg", ".jpeg", ".pkl", ".yml", ".yaml", ".toml"]
+DEFAULT_INSTANCES = (  # demo_cpu_swebench's arm64 default subset (its fetch_swebench.py selection)
+    "astropy__astropy-14309",
+    "django__django-11066",
+    "django__django-11119",
+    "django__django-11239",
+    "django__django-14376",
+    "django__django-15127",
+    "django__django-15851",
+    "django__django-15863",
+    "pallets__flask-5014",
+    "psf__requests-1142",
+    "pylint-dev__pylint-6903",
+    "pytest-dev__pytest-10081",
+    "pytest-dev__pytest-5809",
+    "sphinx-doc__sphinx-7889",
+    "sphinx-doc__sphinx-8721",
+    "sphinx-doc__sphinx-9320",
+    "sympy__sympy-12481",
+    "sympy__sympy-14711",
+    "sympy__sympy-16766",
+    "sympy__sympy-20916",
+)
 DEFAULT_QUOTA = ("django/django:6,sympy/sympy:4,sphinx-doc/sphinx:3,pytest-dev/pytest:2,"
                  "astropy/astropy:1,psf/requests:1,pydata/xarray:1,pylint-dev/pylint:1,pallets/flask:1")
 
@@ -122,6 +147,8 @@ def select(rows: list[dict], specs: dict) -> list[dict]:
     min_p2p = int(os.environ.get("SWE_MIN_P2P", "1"))   # >=1 regression test, so "still passes" is checked
     max_mb = float(os.environ.get("SWE_MAX_IMAGE_MB", "3000"))
     only = {t for t in os.environ.get("SWE_INSTANCES", "").split(",") if t}
+    if not only and "SWE_QUOTA" not in os.environ:
+        only = set(DEFAULT_INSTANCES)                  # identical rows to the AgentCore + twin demos
     cands: dict[str, list[dict]] = {}
     for r in rows:
         f2p, p2p = json.loads(r["FAIL_TO_PASS"]), json.loads(r["PASS_TO_PASS"])

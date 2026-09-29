@@ -92,7 +92,6 @@ Both preflight the local `/ping` and refuse to start if the farm is down.
 | `EVAL_INTERVAL` | 10 | **20** | held-out eval every 20 steps; large enough that Mode-B re-warm cost is amortized |
 | `EVAL_NS` | 2 | **4** | more eval samples ⇒ lower-variance solve-rate estimate |
 | `SAVE_INTERVAL` | 1e6 (end only) | **100** | keep periodic checkpoints so you can resume / pick the best — **see disk caveat** |
-| `MODE` | B | **B** (CPU only) | fully-async deep buffer. GPU demos are stock 1-step-async (no MODE knob) |
 | `CONC` | 4 (2 for local) | demo default | sandbox/episode concurrency; GPU-local pinned to the farm's whole-GPU slot count (2) |
 
 Every value is overridable, e.g. `NR=401 RB=16 bash 03_cpu_gsm8k.sh`.

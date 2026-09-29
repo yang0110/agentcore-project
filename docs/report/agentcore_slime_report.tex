@@ -3237,8 +3237,8 @@ tokens, 0 on prompt/observation/tool tokens}, and the adapter's
 per-session record (\texttt{finish\_session}) reuses the
 \textbf{recorded \texttt{token\_ids} per turn} --- no re-tokenization,
 the TITO property of §``Token-in-token-out''. The pool returns a
-\emph{bare} \texttt{Sample} (not a list): slime's fully-async path
-chokes on nested sample lists, so \texttt{MODE=B} keeps working.
+\emph{bare} \texttt{Sample} (not a list): slime's fully-async path (the
+only rollout driver) chokes on nested sample lists.
 
 \textbf{2. The sandbox client (one op = one invoke).} Each
 \texttt{write\_file} / \texttt{exec} / \texttt{read\_file} becomes a
@@ -4302,12 +4302,18 @@ fresh session of our own generic Runtime
 \texttt{cpu} image, plus one \texttt{libs} image for
 pandas/scipy/sklearn, both VPC mode, built and deployed once by steps
 2--4 and reused by every dataset. The agent loop runs inside that
-session, driven by the harness tier (§``Scaling the loop'').
-\texttt{DATASET=\textless{}name\textgreater{}} picks any row of the
-Chapter 1 table, \texttt{DATASET=a,b,c} interleaves several into one
-stream (\texttt{eval/mix}), \texttt{DATASET=mixed} / \texttt{libs} are
-prebuilt mixes, and \texttt{SCALE=1} is the harness-scaling preset
-(Chapter 5).
+session, driven by the harness tier (§``Scaling the loop''). \textbf{The
+default is a mixed-task batch},
+every literature dataset (the real HF RLVR sets plus Terminal-Bench; the
+synthetic zoo and SWE-bench are left out),
+\texttt{mbpp,humaneval,gsm8k,math500,deepscaler,gretelsql,hotpotqa,xlam,mcp,terminalbench}:
+every step holds one prompt of each of the 10 datasets.
+\texttt{DATASET=\textless{}name\textgreater{}} picks any single row of
+the Chapter 1 table, \texttt{DATASET=a,b,c} makes any task-interleaved
+mix (\texttt{eval/mix} +
+\texttt{eval/mix\_\textless{}family\textgreater{}}),
+\texttt{DATASET=mixed} / \texttt{libs} are prebuilt mixes, and
+\texttt{SCALE=1} is the harness-scaling preset (Chapter 5).
 
 \textbf{Switched 2026-09-28: the Code Interpreter is no longer a
 backend.} The default used to be the managed \textbf{AgentCore Code
@@ -4503,8 +4509,8 @@ harness, sandbox and trainer and differs only in its data.
   \texttt{RB\ ×\ NS}), the least-loaded engine per episode, a fresh
   session per episode (opt-in \texttt{SANDBOX\_SESSIONS=M} pools M
   sessions per image instead; \texttt{SANDBOX\_OPEN\_RATE} paces their
-  opens). One bare \texttt{Sample} per episode, so \texttt{MODE=B}
-  fully-async still works. \texttt{GPUS\_PER\_ENGINE} (default 2) sets
+  opens). One bare \texttt{Sample} per episode, the shape the
+  fully-async driver needs. \texttt{GPUS\_PER\_ENGINE} (default 2) sets
   the TP per engine, and \texttt{SCALE=1} is the 4 : 256 : 256 preset
   (Chapter 5).
 \item
@@ -4513,9 +4519,10 @@ harness, sandbox and trainer and differs only in its data.
   \texttt{task.image} routing picks a Runtime only when a task needs
   one.
 \item
-  \textbf{Mixes are safe for GRPO}: \texttt{DATASET=a,b,c} interleaves
-  datasets, and the advantage is normalized within a group of repeats of
-  one prompt, so the families' reward scales never mix.
+  \textbf{Mixes are safe for GRPO}: \texttt{DATASET=a,b,c} (the default
+  mix included) interleaves datasets, and the advantage is normalized
+  within a group of repeats of one prompt, so the families' reward
+  scales never mix.
 \item
   \textbf{Heartbeat on by default} (own remote Runtime); on the Code
   Interpreter it was a no-op, and the session-timeout setting
@@ -4585,8 +4592,8 @@ Runtime per task} and gives every episode a \textbf{brand-new session
   least-loaded engine per episode, replacing the earlier 4 workers each
   pinned to one engine. \texttt{CONC} defaults to
   \texttt{(2W\ +\ E\ −\ 1)/E}, so W running + W queued episodes are
-  admitted. \texttt{MODE=B} is rejected, because the look-ahead pre-open
-  data source feeds slime's stock driver.
+  admitted. The look-ahead pre-open data source slides with the
+  fully-async driver's per-group draws.
 \item
   \textbf{Quota.} Active Session Workloads 5000 (L-3E5722B2), far above
   the 64 pre-opened sessions plus the running ones.
@@ -4918,20 +4925,19 @@ owns an engine or a session:
 
 The sandbox is taken before the engine, so an episode waiting for a
 session is not engine load. Each episode returns one bare
-\texttt{Sample}, so \texttt{demo\_cpu\_tasks} keeps \texttt{MODE=B}
-fully-async. Each episode's \texttt{{[}demo{]}} record names the tier
-that binds: \texttt{qdepth} \textgreater{} 0 (harness),
-\texttt{sandbox\_wait\_ms} \textgreater{} 0 (sandbox), climbing
-\texttt{engine\_inflight} (inference); it also carries \texttt{worker}
-and \texttt{engine}, plus \texttt{sandbox\_slot} /
-\texttt{session\_episode} when pooled.
+\texttt{Sample}, the shape the fully-async driver needs. Each episode's
+\texttt{{[}demo{]}} record names the tier that binds: \texttt{qdepth}
+\textgreater{} 0 (harness), \texttt{sandbox\_wait\_ms} \textgreater{} 0
+(sandbox), climbing \texttt{engine\_inflight} (inference); it also
+carries \texttt{worker} and \texttt{engine}, plus \texttt{sandbox\_slot}
+/ \texttt{session\_episode} when pooled.
 
 \textbf{The harness-scaling run:
 \texttt{SCALE=1\ bash\ code/demos/demo\_cpu\_tasks/5\_run.sh}.} The
 preset turns all three tiers up together: \texttt{DATASET=deepscaler},
 \texttt{RB=32} (× \texttt{NS=8} = 256 episodes per step),
 \texttt{GPUS\_PER\_ENGINE=1} (E = 4 engines, TP1),
-\texttt{HARNESS\_WORKERS=256}, \texttt{MODE=A}, and
+\texttt{HARNESS\_WORKERS=256}, and
 \texttt{CONC\ =\ ceil(256\ /\ E)\ =\ 64}, so S = 256 episodes are in
 flight, each in its own sandbox session carrying its own loop. The
 checkpoint suffix is \texttt{\_scale} and the log tag \texttt{-scale};
@@ -5407,8 +5413,9 @@ spawning more leaves).
   (\texttt{claude\_code\_generate.py}) instead of the harness tier,
   because one episode fans out into a list of samples.
 \item
-  \textbf{\texttt{MODE=A}, \texttt{dp\_size=1}} (TP=2 × PP=2), with a
-  synchronous checkpoint save.
+  \textbf{Stock 1-step-async driver (the one demo not on fully-async:
+  its fan-out returns nested Samples), \texttt{dp\_size=1}} (TP=2 ×
+  PP=2), with a synchronous checkpoint save.
 \item
   \textbf{The CLI needs the tool parser and a per-turn cap above Qwen3's
   \texttt{\textless{}think\textgreater{}}}: \texttt{run.sh} passes
@@ -5599,8 +5606,8 @@ router}; \texttt{ROLLOUT\_GPUS=4} \\
 \textbf{Harness} & the mini\_claude loop inside the sandbox session;
 dispatch tier + adapters in the trainer & \texttt{HARNESS\_WORKERS} =
 \texttt{RB\ ×\ NS} dispatch workers; least-loaded engine per episode;
-fully-async \texttt{MODE=B} (deep buffer, \texttt{demo\_cpu\_tasks});
-\texttt{CONC=4} rollout concurrency; \texttt{EPISODE\_MAX\_TURNS=3} \\
+fully-async driver (deep buffer); \texttt{CONC=4} rollout concurrency;
+\texttt{EPISODE\_MAX\_TURNS=3} \\
 \textbf{Sandbox} & \textbf{the only variable} --- remote AgentCore & CPU
 microVM (arm64) or GPU \texttt{g6} instance (amd64); one
 \texttt{runtimeSessionId} per episode; the \texttt{SANDBOX} env var
@@ -6002,16 +6009,17 @@ generation dominates, adding SGLang replicas. Concretely:
 same 23--78 s/step envelope as \texttt{DATASET=mbpp}. Running these
 eight to convergence is \texttt{demo\_cpu\_tasks}' open work item.
 
-\hypertarget{demo_cpu_tasks-in-depth-datasetmbpp-mbpp-the-default}{%
+\hypertarget{demo_cpu_tasks-in-depth-datasetmbpp-mbpp}{%
 \subsection{\texorpdfstring{\texttt{demo\_cpu\_tasks} in depth ---
-\texttt{DATASET=mbpp} (MBPP, the
-default)}{demo\_cpu\_tasks in depth --- DATASET=mbpp (MBPP, the default)}}\label{demo_cpu_tasks-in-depth-datasetmbpp-mbpp-the-default}}
+\texttt{DATASET=mbpp}
+(MBPP)}{demo\_cpu\_tasks in depth --- DATASET=mbpp (MBPP)}}\label{demo_cpu_tasks-in-depth-datasetmbpp-mbpp}}
 
 \begin{itemize}
 \tightlist
 \item
-  \textbf{Task / harness:} \texttt{DATASET=mbpp} (the default) --- MBPP
-  multi-turn Python repair; the committed run used the in-trainer
+  \textbf{Task / harness:} \texttt{DATASET=mbpp} (the default before
+  2026-09-28; today the default is the 10-dataset mix) --- MBPP multi-turn
+  Python repair; the committed run used the in-trainer
   \texttt{run\_episode} loop (before 2026-09-28); today the mini\_claude
   loop runs inside the sandbox session.
 \item
@@ -6815,7 +6823,10 @@ Same demo and skeleton as the single-dataset runs (harness tier, CPU
 microVM sandbox, slime), but a mix differs in a dimension none of the
 others touch: the \textbf{data composition}. Instead of pinning one
 family per run, \texttt{DATASET=a,b,c} interleaves those datasets' files
-round-robin, and the prebuilt \texttt{DATASET=mixed}
+round-robin (and since 2026-09-28 this is the \textbf{default}:
+\texttt{mbpp,humaneval,gsm8k,math500,deepscaler,gretelsql,hotpotqa,xlam,mcp,terminalbench}, so
+Terminal-Bench's whole-OS tasks share each batch with the nine microVM
+datasets), and the prebuilt \texttt{DATASET=mixed}
 (\texttt{build\_mixed\_datasets.py}) is a single
 \texttt{mixed\_train.jsonl} / \texttt{mixed\_eval.jsonl} that
 \textbf{interleaves math + SQL + CTF + datasci} --- so every GRPO
@@ -6849,6 +6860,23 @@ generalist policy is actually trained in.
   builder offers a balanced round-robin interleave or a proportional
   shuffle, and replicates the pool so one epoch spans the run (keeping
   save-only-at-end intact).
+\item
+  \textbf{How the per-step mix is guaranteed (2026-09-28).}
+  \texttt{mix\_data.py} balances the task strata (source dataset ×
+  family) to the smallest one (135 rows each for the default, capped by
+  Terminal-Bench) and deals them round-robin; \texttt{run.sh} then drops
+  \texttt{-\/-rollout-shuffle} and, if \texttt{RB} is unset and smaller
+  than the task count K, raises it to K (default RB=10, 80 episodes per
+  step), so every RB consecutive prompts hold one of each task. Under
+  the fully-async driver the trained batch is the first RB groups to
+  \emph{finish}, so a slow Terminal-Bench group can land a step late;
+  \texttt{batch\_mix\_log.py} (slime's custom rollout/eval log hooks)
+  therefore records the batch actually trained on (a
+  \texttt{{[}batch{]}\ n\_tasks=5\ …} line, \texttt{mix/n\_tasks},
+  \texttt{mix/episodes\_\textless{}family\textgreater{}},
+  \texttt{mix/reward\_\textless{}family\textgreater{}}) plus the
+  per-family \texttt{eval/mix\_\textless{}family\textgreater{}} split,
+  which is the per-family breakdown the smoke below lacked.
 \item
   \textbf{Run status --- honest.} The mixed dataset is now
   \textbf{built} (the builder produced a 174-row
@@ -6917,10 +6945,10 @@ transfer} (Moonshot's checkpoint-engine updates all of Kimi-K2's
 (veRL / HybridFlow {[}19{]}); and \emph{decoupled, ``one-step-off''
 async RL with a bounded staleness} and a staleness-aware objective
 (AReaL, up to \textasciitilde2.77× {[}18{]}; Asynchronous RLHF
-{[}21{]}). \emph{This project uses slime's fully-async rollout
-(\texttt{MODE=B}), so staleness is the accepted cost --- and it is
-exactly the signal that is instrumented-yet-unrecorded here (§``The
-shared skeleton'').}
+{[}21{]}). \emph{This project uses slime's fully-async rollout in every
+main demo, so staleness is the accepted cost --- and it is exactly the
+signal that is instrumented-yet-unrecorded here (§``The shared
+skeleton'').}
 
 \textbf{Goodput vs MFU, and placement.} An iteration interleaves a
 bandwidth-bound, long-tailed generation phase with a compute-bound

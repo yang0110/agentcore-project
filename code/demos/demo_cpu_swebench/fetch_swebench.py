@@ -15,13 +15,15 @@ MAP_REPO_VERSION_TO_SPECS_PY, pip-downloaded at fetch time — never re-typed he
 
 Selection (all knobs env):
   * repo in the grader's supported set (agentcore_slime_demo/swebench.PARSER_BY_REPO) with a per-repo
-    quota (SWE_QUOTA, default django:6,sympy:4,sphinx-doc:3,pytest-dev:2 and 1 each for astropy,
-    requests, xarray, pylint, flask = 20) — matplotlib / scikit-learn / seaborn are excluded (4-8 GB
-    images, minutes-long suites);
+    quota (SWE_QUOTA, default django:7,sympy:4,sphinx-doc:3,pytest-dev:2 and 1 each for astropy,
+    requests, pylint, flask = 20) — matplotlib / scikit-learn / seaborn are excluded (big images,
+    minutes-long suites), and xarray has no arm64 image at all;
   * difficulty "<15 min fix", <= SWE_MAX_F2P (3) FAIL_TO_PASS, SWE_MIN_P2P..SWE_MAX_P2P (1..150) PASS_TO_PASS,
     <= 2 test files touched; within a repo the smallest suites (F2P+P2P) win;
-  * the prebuilt Docker Hub image `swebench/sweb.eval.x86_64.<id with __ -> _1776_>` must exist with a
-    compressed size <= SWE_MAX_IMAGE_MB (3000) — checked via the Docker Hub tags API.
+  * Epoch AI's prebuilt arm64 image `ghcr.io/epoch-research/swe-bench.eval.arm64.<id>` must exist, be
+    arm64 (read from its config, not trusted from the name) and be <= SWE_MAX_IMAGE_MB (1900) compressed,
+    which leaves room for the ~60 MB wrapper layer under the 2048 MB microVM cap — checked via the GHCR
+    registry API. 420 of the 500 Verified rows have one (survey_image_sizes.py).
 
 The data files only list instances present in swebench/arn_by_image.json (once deployed) and, if
 swebench/oracle.csv exists, only those whose gold patch solved and whose empty patch did not
@@ -30,7 +32,7 @@ swebench/oracle.csv exists, only those whose gold patch solved and whose empty p
     python3 fetch_swebench.py              # fetch + select + manifest + data
     python3 fetch_swebench.py --data-only  # rebuild data/ from the existing manifest (+ pool/oracle filters)
 
-No AWS, no Docker. Network: huggingface.co, pypi.org, hub.docker.com.
+No AWS, no Docker. Network: huggingface.co, pypi.org, ghcr.io.
 """
 from __future__ import annotations
 
@@ -56,8 +58,12 @@ from agentcore_slime_demo.swebench import PARSER_BY_REPO, SWEBenchTask  # noqa: 
 DATASET = "princeton-nlp/SWE-bench_Verified"
 SWEBENCH_PKG = os.environ.get("SWE_SPECS_PKG", "swebench==3.0.17")   # last release with the py spec table
 NON_TEST_EXTS = [".json", ".png", "csv", ".txt", ".md", ".jpg", ".jpeg", ".pkl", ".yml", ".yaml", ".toml"]
-DEFAULT_QUOTA = ("django/django:6,sympy/sympy:4,sphinx-doc/sphinx:3,pytest-dev/pytest:2,"
-                 "astropy/astropy:1,psf/requests:1,pydata/xarray:1,pylint-dev/pylint:1,pallets/flask:1")
+DEFAULT_QUOTA = ("django/django:7,sympy/sympy:4,sphinx-doc/sphinx:3,pytest-dev/pytest:2,"
+                 "astropy/astropy:1,psf/requests:1,pylint-dev/pylint:1,pallets/flask:1")
+GHCR_REPO = "epoch-research/swe-bench.eval.arm64.{id}"
+MANIFEST_ACCEPT = ", ".join([
+    "application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"])
 
 
 def load_rows() -> list[dict]:
@@ -100,26 +106,35 @@ def test_directives(repo: str, test_patch: str) -> list[str]:
 
 
 def docker_image(instance_id: str) -> str:
-    return f"swebench/sweb.eval.x86_64.{instance_id.replace('__', '_1776_')}:latest"
+    return f"ghcr.io/{GHCR_REPO.format(id=instance_id)}:latest"
 
 
-def hub_size_mb(image: str) -> float | None:
-    repo, tag = image.split(":")
-    url = f"https://hub.docker.com/v2/repositories/{repo}/tags/{tag}"
+def ghcr_size_mb(instance_id: str) -> float | None:
+    """Compressed size (sum of layer sizes) of the arm64 image, or None if missing / not arm64."""
+    repo = GHCR_REPO.format(id=instance_id)
+    get = lambda url, accept: json.load(urllib.request.urlopen(urllib.request.Request(  # noqa: E731
+        url, headers={"Authorization": f"Bearer {tok}", "Accept": accept}), timeout=30))
     try:
-        with urllib.request.urlopen(url, timeout=30) as r:
-            d = json.load(r)
+        tok = json.load(urllib.request.urlopen(f"https://ghcr.io/token?scope=repository:{repo}:pull",
+                                               timeout=30))["token"]
+        mf = get(f"https://ghcr.io/v2/{repo}/manifests/latest", MANIFEST_ACCEPT)
+        if "manifests" in mf:                          # an index: take its arm64 entry
+            arm = [m for m in mf["manifests"] if (m.get("platform") or {}).get("architecture") == "arm64"]
+            if not arm:
+                return None
+            mf = get(f"https://ghcr.io/v2/{repo}/manifests/{arm[0]['digest']}", MANIFEST_ACCEPT)
+        if get(f"https://ghcr.io/v2/{repo}/blobs/{mf['config']['digest']}", "*/*").get("architecture") != "arm64":
+            return None
     except Exception:  # noqa: BLE001 — missing image / API hiccup: not selectable
         return None
-    sizes = [i.get("size", 0) for i in d.get("images", []) if i.get("architecture") == "amd64"]
-    return round((sizes[0] if sizes else d.get("full_size", 0)) / 2**20, 1)
+    return round(sum(layer["size"] for layer in mf["layers"]) / 2**20, 1)
 
 
 def select(rows: list[dict], specs: dict) -> list[dict]:
     quota = dict((k, int(v)) for k, v in (p.rsplit(":", 1) for p in os.environ.get("SWE_QUOTA", DEFAULT_QUOTA).split(",")))
     max_f2p, max_p2p = int(os.environ.get("SWE_MAX_F2P", "3")), int(os.environ.get("SWE_MAX_P2P", "150"))
     min_p2p = int(os.environ.get("SWE_MIN_P2P", "1"))   # >=1 regression test, so "still passes" is checked
-    max_mb = float(os.environ.get("SWE_MAX_IMAGE_MB", "3000"))
+    max_mb = float(os.environ.get("SWE_MAX_IMAGE_MB", "1900"))
     only = {t for t in os.environ.get("SWE_INSTANCES", "").split(",") if t}
     cands: dict[str, list[dict]] = {}
     for r in rows:
@@ -142,7 +157,7 @@ def select(rows: list[dict], specs: dict) -> list[dict]:
             if n <= 0:
                 break
             img = docker_image(c["instance_id"])
-            mb = hub_size_mb(img)
+            mb = ghcr_size_mb(c["instance_id"])
             if mb is None or mb > max_mb:
                 print(f"  skip {c['instance_id']}: image {img} size={mb} MB", file=sys.stderr)
                 continue

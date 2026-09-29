@@ -1,10 +1,11 @@
 """SWE-bench Verified on the Terminal-Bench image pool (demo_cpu_swebench): task class + hidden grader.
 
-Each SWE-bench instance ships a prebuilt x86_64 image (`swebench/sweb.eval.x86_64.<id>`, repo checked
-out at `base_commit` in /testbed, conda env `testbed`). deploy/deploy_swebench.py wraps each one with
-the same stdlib AgentCore HTTP server the Terminal-Bench images get and registers ONE Runtime per
-instance on an m5 capacity provider (these images are 1-3 GB compressed and amd64-only, so they cannot
-run on the arm64 <=2 GB microVM fleet). TerminalBenchPool routes, opens a fresh session per episode
+Each SWE-bench instance ships a prebuilt image (repo checked out at `base_commit` in /testbed, conda
+env `testbed`): Epoch AI's arm64 rebuild `ghcr.io/epoch-research/swe-bench.eval.arm64.<id>` on the
+AgentCore microVM demo, the official x86_64 `swebench/sweb.eval.x86_64.<id>` on the EKS / ECS twins.
+deploy/deploy_swebench.py wraps each one with the same stdlib AgentCore HTTP server the Terminal-Bench
+images get and gives each instance its own sandbox target (on AgentCore, ONE microVM Runtime per
+instance, image <= the 2 GB cap). TerminalBenchPool routes, opens a fresh session per episode
 and grades exactly as for Terminal-Bench; only `_grade` dispatches here for a SWEBenchTask.
 
 Grading = the official SWE-bench recipe (swebench 3.0.x `make_eval_script_list_py` +
@@ -17,7 +18,7 @@ Grading = the official SWE-bench recipe (swebench 3.0.x `make_eval_script_list_p
      the log or FAILED/ERROR is a failure; SKIPPED counts neither way, like the official grader).
 Deviation from the official script (on purpose): the repo `install` step is NOT re-run. Every
 supported repo except requests is installed editable (`pip install -e .`) so source edits are live;
-re-running pip would need PyPI egress the capacity-provider instance may not have. requests (a
+re-running pip would need PyPI egress the sandbox may not have. requests (a
 non-editable install) still works because pytest puts /testbed first on sys.path for its root-level
 test_requests.py; swebench_oracle_check.py verifies gold->solved per instance, so any instance this
 shortcut breaks is caught and dropped.

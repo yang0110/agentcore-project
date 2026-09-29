@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Push the demo_cpu_swebench_eks image pool: ONE wrapped SWE-bench image per instance, in ECR, no Runtimes.
 
-The images are EXACTLY the AgentCore demo's (demo_cpu_swebench/deploy/deploy_swebench.py): the stock
-`swebench/sweb.eval.x86_64.<id>` (repo at /testbed, conda env `testbed`) + a standalone CPython 3.12 at
-/opt/acs/py + the stdlib HTTP server (acs_swe_http_server.py -> sandbox_server_agent.handle on :8080),
-same ECR repo names (${NAME_PREFIX}-swe-<id>) and same recipe tag. So an image the AgentCore demo already
-pushed is reused as-is, and both demos grade against byte-identical environments. The difference is
-only what consumes them: here each episode's pod (EksPodSandbox) pulls the image onto an EKS node
-(cached there for later pods), instead of an AgentCore Runtime per image.
+The images: the stock amd64 `swebench/sweb.eval.x86_64.<id>` (repo at /testbed, conda env `testbed`) + a
+standalone CPython 3.12 at /opt/acs/py + the stdlib HTTP server (acs_swe_http_server.py ->
+sandbox_server_agent.handle on :8080), ECR repos ${NAME_PREFIX}-swe-<id>, one recipe tag. demo_cpu_swebench_ecs
+runs the SAME script and shares these repos, so an image pushed by either twin is reused as-is and both
+grade against byte-identical environments. (The AgentCore demo, demo_cpu_swebench, now uses Epoch AI's
+arm64 rebuilds on microVMs — same testbed layout, separate `-arm64-` repos.) What consumes them here:
+each episode's pod (EksPodSandbox) pulls the image onto an EKS node (cached there for later pods).
 
     python3 fetch_swebench.py                     # first: swebench/manifest.json
     python3 deploy/deploy_swebench.py             # build + push -> swebench/image_by_task.json + images.csv

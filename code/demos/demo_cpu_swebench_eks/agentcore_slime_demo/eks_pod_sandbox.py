@@ -10,7 +10,7 @@ demo pushes (same ECR repos, same recipe tag). Only the session lifecycle and th
                                                   shared m5 node; several pods per node
     InvokeAgentRuntime (AWS data plane)           HTTP straight to the pod IP (VPC CNI: pods get VPC IPs)
     StopRuntimeSession                            DELETE pod (grace 0)
-    idle reclaim ~15 min -> heartbeat needed      no idle reclaim; activeDeadlineSeconds caps a leaked pod
+    idle reclaim ~15 min -> heartbeat needed      no idle reclaim (heartbeat = liveness ping); activeDeadlineSeconds caps a leak
 
 Isolation: gVisor intercepts every syscall in its own user-space kernel (runsc), so the agent's code
 never talks to the node kernel directly; one pod per episode, never reused, so no state leaks between
@@ -18,6 +18,11 @@ episodes. It is weaker than AgentCore's one-machine-per-session (pods share a no
 bandwidth and disk) and stronger than plain runc containers. Network: the `acs-swe` namespace's
 NetworkPolicy (deploy/eks/sandbox-namespace.yaml) lets a pod receive :8080 from the trainer and dial
 back only the trainer's adapter ports — the "egress none" of the AgentCore demo.
+
+Hardening on top: the container keeps root (SWE-bench's /testbed and conda env are root-owned) but
+drops ALL capabilities, cannot gain privileges (no setuid escalation) and runs the RuntimeDefault
+seccomp profile (enforced on the runc A/B; gVisor filters syscalls itself). Each pod gets a random
+ACS_SANDBOX_TOKEN and the server rejects any /invocations without it, so reaching :8080 is not enough.
 
 Open = create pod -> scheduled -> image pulled (cached per node after the first pull) -> runsc starts
 the container -> readiness probe on /ping -> our first ping. `open_sent_epoch` is taken BEFORE the
@@ -50,7 +55,11 @@ class PodOpenError(RuntimeError):
     pass
 
 
-def pod_manifest(name: str, image: str, session_id: str) -> dict:
+SECURITY_CONTEXT = {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]},
+                    "seccompProfile": {"type": "RuntimeDefault"}}
+
+
+def pod_manifest(name: str, image: str, session_id: str, token: str) -> dict:
     env = os.environ.get
     runtime_class = env("EKS_RUNTIME_CLASS", "gvisor")
     spec = {
@@ -64,6 +73,8 @@ def pod_manifest(name: str, image: str, session_id: str) -> dict:
             "image": image,                        # ECR URI pinned by digest
             "imagePullPolicy": "IfNotPresent",
             "ports": [{"containerPort": 8080}],
+            "env": [{"name": "ACS_SANDBOX_TOKEN", "value": token}],   # server pops it at start
+            "securityContext": SECURITY_CONTEXT,
             "readinessProbe": {"httpGet": {"path": "/ping", "port": 8080},
                                "periodSeconds": 1, "failureThreshold": 600},
             "resources": {
@@ -94,6 +105,7 @@ class EksPodSandbox(AgentCoreRuntimeSandbox):
         self._url: str | None = None
         self._created = False
         self.open_phases: dict = {}
+        self._token = secrets.token_hex(32)
 
     def _path(self, name: str = "") -> str:
         return f"/api/v1/namespaces/{self.namespace}/pods" + (f"/{name}" if name else "")
@@ -136,7 +148,7 @@ class EksPodSandbox(AgentCoreRuntimeSandbox):
         api = get_api()
         self.open_sent_epoch = time.time()
         await asyncio.to_thread(api.request, "POST", self._path(),
-                                pod_manifest(self.pod, self.image, self._session_id))
+                                pod_manifest(self.pod, self.image, self._session_id, self._token))
         self._created = True
         self.open_phases = await asyncio.to_thread(self._wait_ready_sync)
         self._url = f"http://{self.open_phases['pod_ip']}:8080"
@@ -164,6 +176,7 @@ class EksPodSandbox(AgentCoreRuntimeSandbox):
         if not self._url:
             raise RuntimeError(f"pod {self.pod} is not open")
         return _timed_invoke(
-            lambda: _http_invoke_sync(self._url, self._session_id, payload, self._read_timeout),
+            lambda: _http_invoke_sync(self._url, self._session_id, payload, self._read_timeout,
+                                      {"X-Acs-Sandbox-Token": self._token}),
             op=str(payload.get("op")), arn=f"eks:{self.pod}", session=self._session_id,
             what=f"eks pod invoke op={payload.get('op')}")

@@ -40,7 +40,7 @@ fi
 : "${NR:=101}"           # real train steps = NR-1 = 100 (GPU runs are expensive)
 : "${RB:=8}"; : "${NS:=8}"; : "${TEMP:=1.0}"
 : "${EVAL_INTERVAL:=20}"; : "${EVAL_NS:=4}"; : "${SAVE_INTERVAL:=100}"
-: "${CONC:=}"            # empty => run.sh uses the farm's slot count (GPU demos: no MODE knob)
+: "${CONC:=}"            # empty => run.sh uses the farm's slot count 
 export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL
 [ -n "$CONC" ] && export CONC
 

@@ -51,7 +51,7 @@ fi
 : "${NR:=101}"           # real train steps = NR-1 = 100 (GPU runs are expensive)
 : "${RB:=8}"; : "${NS:=8}"; : "${TEMP:=1.0}"
 : "${EVAL_INTERVAL:=20}"; : "${EVAL_NS:=4}"; : "${SAVE_INTERVAL:=100}"
-: "${CONC:=}"            # empty => run.sh uses the farm's slot count (GPU demos: no MODE knob)
+: "${CONC:=}"            # empty => run.sh uses the farm's slot count 
 : "${SNAPSHOT_EVERY:=1}" # snapshot/resume the workspace every episode (the demo's point)
 export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL SNAPSHOT_EVERY
 [ -n "$CONC" ] && export CONC

@@ -1,8 +1,9 @@
 #!/bin/bash
 # demo_cpu_swebench_eks — REAL slime CPU trainer on a SWE-bench Verified subset, every episode ISOLATED in
-# its own fresh gVisor POD on EKS. The twin of demo_cpu_swebench (AgentCore Runtime per image): same
-# dataset rows, same wrapped images (same ECR repos), same in-session agent loop, same grader, same
-# metrics — only the sandbox tier differs, so the two runs compare substrates and nothing else.
+# its own fresh gVisor POD on EKS. The twin of demo_cpu_swebench (AgentCore arm64 microVM per episode) and
+# demo_cpu_swebench_ecs (ECS task per episode): same dataset rows, same in-session agent loop, same
+# grader, same metrics — only the sandbox tier differs, so the runs compare substrates and nothing else.
+# Images: the amd64 wrappers (same ECR repos as the ECS twin; AgentCore uses arm64 rebuilds).
 #
 # Each episode routes to ITS instance's image (pool map EKS_SANDBOX_IMAGE_BY_TASK = {instance -> ECR
 # URI@digest}, written by deploy/deploy_swebench.py to swebench/image_by_task.json; an unmapped instance is
@@ -20,7 +21,7 @@
 # AgentCore: opened at submit time and, via the look-ahead data source, TB_PREOPEN_BATCHES rollouts ahead.
 # No heartbeat: pods are not idle-reclaimed.
 #
-# STOCK (Mode A) DRIVER ONLY, as in demo_cpu_swebench (the look-ahead pre-open data source feeds it).
+# FULLY-ASYNC DRIVER, as in demo_cpu_swebench (the look-ahead pre-open data source slides with its draws).
 #
 # ADAPTER TOOL PARSER (the A3/B3 dead-reward fix): SGLANG_ARGS bakes in --sglang-tool-call-parser
 # qwen25 --sglang-reasoning-parser qwen3. Without them the tool loop is dead and reward is structurally 0.
@@ -59,12 +60,24 @@ TB_EXEC_TIMEOUT="${TB_EXEC_TIMEOUT:-180}"     # per bash-tool command timeout (t
 MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-24576}"  # >= one full trajectory: 12 x (1024 gen + ~600 tool) + prompt
 # THE pre-open knob: batches kept booted ahead (x RB x NS = 64 pods; 0 = off). Pods that do not fit on
 # the node group stay Pending and are counted in open_ms — size EKS_NODES for RB x NS x (1 + this).
+# HEARTBEAT (default 1; 0 = A/B): the keeper pings every open sandbox idle past WARM_PING_FRACTION x
+# WARM_IDLE_TIMEOUT (240 x 0.5 = every ~2 min). There is no idle reclaim here, so it is a liveness check:
+# a pre-opened pod that fails it (or is too close to EKS_POD_MAX_LIFETIME) is replaced before a worker
+# claims it ([demo] preopen_replaced=…); a running episode's pod is only logged ([demo] heartbeat_failed).
+WARM_IDLE_TIMEOUT="${WARM_IDLE_TIMEOUT:-240}"
+WARM_PING_FRACTION="${WARM_PING_FRACTION:-0.5}"
+HEARTBEAT="${HEARTBEAT:-1}"
 TB_PREOPEN_BATCHES="${TB_PREOPEN_BATCHES:-2}"
+# Pre-open is capped to the fleet: SANDBOX_SLOTS (EKS_NODES x EKS_PODS_PER_NODE, ~4 per m5.2xlarge) minus the
+# running episodes (HARNESS_WORKERS). Set SANDBOX_SLOTS=0 for no cap. EKS_POD_MAX_LIFETIME must match the deploy.
+SANDBOX_SLOTS="${SANDBOX_SLOTS:-$(( ${EKS_NODES:-4} * ${EKS_PODS_PER_NODE:-4} ))}"
+EKS_POD_MAX_LIFETIME="${EKS_POD_MAX_LIFETIME:-7200}"
+TB_EPISODE_BUDGET_SEC="${TB_EPISODE_BUDGET_SEC:-0}"   # 0 = EPISODE_MAX_TURNS x TB_EXEC_TIMEOUT + 660 s
 
-MODE="${MODE:-A}"
-case "$MODE" in A|a) MODE=A;;
-   B|b) echo "MODE=B (fully-async) unsupported here: the look-ahead pre-open data source feeds the stock driver. Use MODE=A." >&2; exit 1;;
-   *) echo "MODE must be A (got '$MODE')" >&2; exit 1;; esac
+if [ -n "${MODE:-}" ]; then
+  echo "MODE is gone: the fully-async driver is the only rollout driver. Unset MODE." >&2
+  exit 1
+fi
 
 EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
 EVAL_NS="${EVAL_NS:-2}"
@@ -110,7 +123,7 @@ if [ "$EVAL_INTERVAL" != "0" ] && [ -f "$EVAL_DATA" ]; then
       --eval-prompt-data "$EVAL_NAME" "$EVAL_DATA"
       --n-samples-per-eval-prompt "$EVAL_NS"
       --eval-temperature "$TEMP"
-      --eval-function-path slime.rollout.sglang_rollout.generate_rollout
+      --eval-function-path agentcore_slime_demo.mode_b_eval.generate_rollout
    )
 fi
 
@@ -126,13 +139,13 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 1024
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
+   # THE DRIVER: a background worker keeps CONC x engines groups in flight across step boundaries.
+   --rollout-function-path slime.rollout.fully_async_rollout.generate_rollout_fully_async
    # THE POOL HOOK: routes each episode to its instance's Runtime on its own fresh, pre-opened session.
    --custom-generate-function-path agentcore_slime_demo.terminalbench_pool_generate.generate
-   # THE LOOK-AHEAD: peeks the next TB_PREOPEN_BATCHES rollouts' prompts so their sessions boot early.
+   # THE LOOK-AHEAD: peeks the next TB_PREOPEN_BATCHES x RB prompts so their sessions boot early.
    --data-source-path agentcore_slime_demo.tb_lookahead_source.LookaheadDataSource
 )
-
-MODE_ARGS=()
 
 PERF_ARGS=(
    --tensor-model-parallel-size 2
@@ -212,6 +225,13 @@ RUNTIME_ENV_JSON="{
     \"EPISODE_MAX_TURNS\": \"${EPISODE_MAX_TURNS}\",
     \"EPISODE_MAX_TOKENS\": \"${EPISODE_MAX_TOKENS}\",
     \"TB_PREOPEN_BATCHES\": \"${TB_PREOPEN_BATCHES}\",
+    \"WARM_IDLE_TIMEOUT\": \"${WARM_IDLE_TIMEOUT}\",
+    \"WARM_PING_FRACTION\": \"${WARM_PING_FRACTION}\",
+    \"HEARTBEAT\": \"${HEARTBEAT}\",
+    \"SANDBOX_SLOTS\": \"${SANDBOX_SLOTS}\",
+    \"EKS_POD_MAX_LIFETIME\": \"${EKS_POD_MAX_LIFETIME}\",
+    \"TB_EPISODE_BUDGET_SEC\": \"${TB_EPISODE_BUDGET_SEC}\",
+    \"TB_PREOPEN_RECHECK_SEC\": \"${TB_PREOPEN_RECHECK_SEC:-2}\",
     \"MINI_AGENT_MAX_TOOL_CHARS\": \"${MINI_AGENT_MAX_TOOL_CHARS}\",
     \"TB_EXEC_TIMEOUT\": \"${TB_EXEC_TIMEOUT}\"
   }
@@ -227,7 +247,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    "${CKPT_ARGS[@]}" \
    "${EVAL_ARGS[@]}" \
    "${ROLLOUT_ARGS[@]}" \
-   "${MODE_ARGS[@]}" \
    "${OPTIMIZER_ARGS[@]}" \
    "${GRPO_ARGS[@]}" \
    "${PERF_ARGS[@]}" \

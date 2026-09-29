@@ -1,8 +1,8 @@
-"""Held-out eval for demo_cpu_tasks's FULLY-ASYNC (Mode B) training.
+"""Held-out eval for FULLY-ASYNC training.
 
 Why this exists
 ---------------
-Demo A's Mode B trains with slime's fully-async rollout
+Training runs slime's fully-async rollout
 (``slime.rollout.fully_async_rollout.generate_rollout_fully_async``), which runs a **persistent
 background worker thread with its own asyncio event loop**. slime's ``GenerateState`` is a
 process-global singleton, and its ``asyncio.Semaphore`` binds to the FIRST event loop that
@@ -103,7 +103,7 @@ def _quiesce_fully_async_worker() -> None:
 
 
 def generate_rollout(args, rollout_id, data_source, evaluation: bool = False):
-    """slime ``--eval-function-path`` entrypoint. Only meant for eval under Mode B."""
+    """slime ``--eval-function-path`` entrypoint. Only meant for eval under the fully-async driver."""
     from slime.rollout.sglang_rollout import generate_rollout as stock_generate_rollout
 
     if not evaluation:

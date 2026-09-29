@@ -1,7 +1,13 @@
 #!/bin/bash
-# demo_cpu_tasks — ONE demo over many RLVR datasets AND their mixes (DATASET=mbpp|gsm8k|…|terminalbench,
-# default mbpp; DATASET=a,b,c or DATASET=mixed for a MIXED-task batch — see the DATASET selector below; a
-# single dataset is just the one-element mix).
+# demo_cpu_tasks — ONE demo over many RLVR datasets AND their mixes (DATASET=mbpp|gsm8k|…|terminalbench).
+# DEFAULT = a MIXED-task batch of EVERY literature dataset (the real HF RLVR sets + Terminal-Bench; the
+# synthetic zoo and SWE-bench — demo_cpu_swebench — are left out): DATASET=mbpp,humaneval,gsm8k,math500,
+# deepscaler,gretelsql,hotpotqa,xlam,mcp,terminalbench (coding + math + SQL + multi-hop QA + tool calling +
+# Terminal-Bench), interleaved so EVERY training step holds one prompt of each task (RB is raised to the
+# task count, 10, unless set); the [batch] log line and mix/* metrics record each step's
+# task mix. The Terminal-Bench rows need the per-task Runtimes (VARIANT=terminalbench steps 2-4) and
+# switch on the Terminal-Bench run settings below for the whole batch. See the DATASET selector below; a single dataset is just the
+# one-element mix.
 #
 # THE GENERAL PATTERN: ONE ROW = ONE TASK + ONE IMAGE, ONE IMAGE = ONE AgentCore Runtime. Every row names
 # its sandbox image (metadata.task.image); rows may share one (every mbpp row is "cpu", the libs rows
@@ -27,24 +33,19 @@
 # sandbox). slime's async driver (train_async.py) runs trainer GPUs and SGLang inference GPUs on
 # DISJOINT devices. Hard-requires no --colocate (train_async.py asserts it).
 #
-# ASYNC MODE (MODE=A|B, DEFAULT B) for the ablation — see the MODE block below and
-# docs/sandbox-concurrency-ablation.md "Two async modes". The DEFAULT is FULLY-ASYNC (Mode B): on
-# top of train_async.py's 1-step overlap it selects slime's --rollout-function-path
-# generate_rollout_fully_async, a background worker holding a DEEP, warm buffer of in-flight +
-# completed rollouts across step boundaries, so staleness genuinely GROWS with concurrency (CONC).
-# That deep buffer is what lets the sandbox-concurrency ablation observe the real
-# staleness/discard/clip trade-off. MODE=A drops the override and runs train_async.py's stock
-# 1-step-async driver (staleness pinned to ~1 step regardless of CONC) for the A-vs-B comparison.
-# Both modes share the identical custom generate hook + Sample contract
-# (tokens/logprobs/loss-mask/reward); only the rollout DRIVER (and matching eval path) changes.
+# FULLY-ASYNC rollout driver (the only one): on top of train_async.py's disjoint train/infer GPUs,
+# --rollout-function-path generate_rollout_fully_async runs a background worker that keeps
+# CONC x num_engines groups in flight and COMPLETED groups queued ahead of the trainer, across step
+# boundaries — the rollout never waits on a step barrier, and staleness grows with CONC (see
+# docs/sandbox-concurrency-ablation.md). Eval goes through agentcore_slime_demo.mode_b_eval (below).
+# The custom generate hook + Sample contract (tokens/logprobs/loss-mask/reward) is the stock one.
 #
 # GPU split (8xL40S): 4 train + 4 inference + 0 env. MBPP checker is plain Python/IO => CPU envs,
 # so all 8 GPUs serve the policy (train + infer).
 #
 # Sandbox backend (SANDBOX): agentcore-runtime (the only one) -> our own AgentCore Runtime sandbox (needs
 # AGENTCORE_SANDBOX_RUNTIME_ARN(S) — steps 2-4 deploy it, VPC mode). SANDBOX=local and SANDBOX=agentcore
-# (Code Interpreter) are rejected (see the guard below). Tunables: MODE (A|B
-# async mode), RB (rollout-batch-size), NS (n-samples-per-prompt), NR (num-rollout), TEMP
+# (Code Interpreter) are rejected (see the guard below). Tunables: RB (rollout-batch-size), NS (n-samples-per-prompt), NR (num-rollout), TEMP
 # (sampling temp), CONC (sglang-server-concurrency), EVAL_INTERVAL/EVAL_NS, HARNESS_WORKERS (harness
 # tier, default RB x NS), SANDBOX_SESSIONS (opt-in pooled sessions per image, default 0 = fresh per
 # episode), SCALE=1 (the 4:256:256 harness-scaling preset below).
@@ -52,8 +53,8 @@
 # CONCURRENCY KNOBS (decoupled, for the sandbox-concurrency ablation — see
 # docs/sandbox-concurrency-ablation.md):
 #   * CONC       -> SANDBOX/EPISODE concurrency. #episodes (= #concurrent remote sandboxes) in
-#                   flight is S = CONC * num_engines = CONC * 2. This is the knob to SWEEP. In the
-#                   fully-async (Mode B) path it also sets BUFFER DEPTH: the worker keeps up to
+#                   flight is S = CONC * num_engines = CONC * 2. This is the knob to SWEEP. It
+#                   also sets the fully-async BUFFER DEPTH: the worker keeps up to
 #                   S in-flight AND up to S completed groups queued ahead of the trainer (which
 #                   drains RB/step), so raising CONC raises staleness. One knob moves both, which is
 #                   exactly the trade-off the ablation measures.
@@ -64,7 +65,11 @@
 # same reward. Reward variance within groups (harder tasks / higher temp) yields nonzero gradient.
 set -euo pipefail
 # Knobs whose default depends on the dataset (Terminal-Bench rows, below): remember what the caller set.
-_USER_MODE="${MODE:-}"; _USER_CONC="${CONC:-}"
+_USER_CONC="${CONC:-}"; _USER_RB="${RB:-}"
+if [ -n "${MODE:-}" ]; then
+  echo "MODE is gone: the fully-async driver (formerly MODE=B) is the only rollout driver. Unset MODE." >&2
+  exit 1
+fi
 
 SANDBOX="${SANDBOX:-agentcore-runtime}"   # our own VPC Runtime(s) — the only backend.
 # CPU demos run ONLY on remote AgentCore sandbox sessions that can host the agent loop — never local
@@ -97,7 +102,7 @@ fi
 # on DeepScaleR. Any knob below still overrides it. Watch qdepth / sandbox_wait_ms / engine_inflight
 # in the [demo] records to see which tier binds.
 if [ "${SCALE:-0}" = 1 ]; then
-   : "${DATASET:=deepscaler}" "${RB:=32}" "${GPUS_PER_ENGINE:=1}" "${HARNESS_WORKERS:=256}" "${MODE:=A}"
+   : "${DATASET:=deepscaler}" "${RB:=32}" "${GPUS_PER_ENGINE:=1}" "${HARNESS_WORKERS:=256}"
    export DATASET HARNESS_WORKERS
 fi
 RB="${RB:-4}"          # prompts per rollout step
@@ -108,22 +113,8 @@ NR="${NR:-11}"        # num-rollout; real training steps = NR-1 (see NOTE) => 10
                        # boundaries too). The MBPP pool is built at 500 prompts (>= 100*4).
 TEMP="${TEMP:-1.0}"    # rollout sampling temperature (higher => more intra-group diversity)
 GBS=$(( RB * NS ))     # global batch = all samples, 1 optimizer step per rollout
-# ASYNC MODE (the ablation's two async modes — see docs/sandbox-concurrency-ablation.md):
-#   B (DEFAULT) = FULLY-ASYNC. slime's generate_rollout_fully_async runs a background worker with a
-#                 DEEP, warm buffer of in-flight + completed rollouts across step boundaries, so
-#                 staleness genuinely GROWS with concurrency (CONC). This is the vehicle the
-#                 sandbox-concurrency ablation needs to observe the real staleness/discard/clip
-#                 trade-off. Eval routes through our mode_b_eval wrapper (see EVAL_ARGS).
-#   A           = 1-STEP-ASYNC (stock). train_async.py's default rollout path: exactly ONE rollout
-#                 step overlaps the trainer, so staleness is pinned to ~1 step regardless of CONC.
-#                 Kept reachable from this same runner for the A-vs-B comparison. Eval uses the
-#                 stock sync rollout (no fully-async worker to quiesce).
-# Both modes run under train_async.py (no --colocate) and share the identical custom-generate hook
-# + Sample contract; only the rollout DRIVER (and the matching eval path) changes.
-MODE="${MODE:-B}"
-case "$MODE" in B|b) MODE=B;; A|a) MODE=A;; *) echo "MODE must be A or B (got '$MODE')" >&2; exit 1;; esac
 # Held-out eval every N steps (0 => off). Held-out solve-rate is a KEY metric, so eval stays ON
-# under fully-async (Mode B). It does NOT work through the stock rollout path, though: slime's
+# under fully-async. It does NOT work through the stock rollout path, though: slime's
 # GenerateState is a process singleton whose asyncio.Semaphore binds to the FIRST event loop that
 # acquires it — the background fully-async worker's loop — while eval runs generation on the MAIN
 # loop, which would crash with "Semaphore is bound to a different event loop". We route eval
@@ -163,7 +154,7 @@ CONC="${CONC:-4}"
 # metadata.task, and generate._task_from_sample rebuilds the right task PER ROW — so a multi-family
 # batch is transparent to the harness. Each dataset has its own data/<name>_{train,eval}.jsonl (built by
 # prepare_data.sh), its own eval/<name> metric and its own ckpt/Qwen3-4B_<name>_async.
-#   real HF (RLVR):  mbpp (default; alias coding) gsm8k math500 deepscaler humaneval gretelsql
+#   real HF (RLVR):  mbpp (alias coding) gsm8k math500 deepscaler humaneval gretelsql
 #                    hotpotqa xlam mcp
 #   synthetic zoo:   math swe tool_use sql ctf rag regex config data planning (build_family_datasets.py)
 #   mixed:           the prebuilt math+sql+ctf+datasci mix (build_mixed_datasets.py)
@@ -171,12 +162,15 @@ CONC="${CONC:-4}"
 #                    the "libs" Runtime (deploy/Dockerfile.sandbox.libs); mixed's datasci rows too.
 #   terminalbench:   Terminal-Bench (formerly demo_cpu_terminalbench): one image + Runtime PER TASK (~166
 #                    usable), graded by the task's hidden pytest oracle; see TERMINAL-BENCH ROWS below.
-# MIX: DATASET=a,b,c interleaves those datasets' train/eval files round-robin (balanced: each truncated
-# to the shortest) into ckpt/_mix/<a+b+c>_{train,eval}.jsonl, eval metric eval/mix. GRPO normalizes
+# MIX (mix_data.py): whenever the train rows span more than one task — DATASET=a,b,c, or a prebuilt mix
+# like mixed / libs — they are grouped by (dataset, task family), each group seeded-shuffled and
+# truncated to the smallest (balanced), and dealt ROUND-ROBIN into ckpt/_mix/<a+b+c>_train.jsonl; slime
+# then runs WITHOUT --rollout-shuffle, so the RB prompts drawn per step span min(RB, #tasks) tasks
+# (a,b,c eval rows are merged the same way; eval metric eval/mix). GRPO normalizes
 # advantage WITHIN a same-prompt group (one family); mixing is ACROSS groups, so the families' reward
-# scales never need reconciling. A single dataset is the one-element mix (no interleave step).
+# scales never need reconciling. A single-task dataset is left as is (slime shuffles it).
 # FAMILY is kept as an alias of DATASET (older scripts pass FAMILY=<name>).
-DATASET="${DATASET:-${FAMILY:-mbpp}}"
+DATASET="${DATASET:-${FAMILY:-mbpp,humaneval,gsm8k,math500,deepscaler,gretelsql,hotpotqa,xlam,mcp,terminalbench}}"
 IFS=',' read -r -a _DSETS <<< "$DATASET"
 for i in "${!_DSETS[@]}"; do [ "${_DSETS[$i]}" = "coding" ] && _DSETS[$i]=mbpp; done
 if [ -z "${DATA:-}" ]; then
@@ -188,29 +182,26 @@ if [ -z "${DATA:-}" ]; then
     fi
   done
 fi
-if [ "${#_DSETS[@]}" -gt 1 ]; then
-  _DS="$(IFS=+; echo "${_DSETS[*]}")"; _EVAL_NAME=mix
-  if [ -z "${DATA:-}" ]; then
-    mkdir -p "$DEMO_DIR/ckpt/_mix"
-    for split in train eval; do
-      python3 - "$DEMO_DIR/ckpt/_mix/${_DS}_${split}.jsonl" \
-          $(for d in "${_DSETS[@]}"; do printf '%s ' "$DEMO_DIR/data/${d}_${split}.jsonl"; done) <<'PY'
-import sys
-out, srcs = sys.argv[1], sys.argv[2:]
-rows = [[l for l in open(p) if l.strip()] for p in srcs]
-n = min(len(r) for r in rows)
-with open(out, "w") as f:
-    for i in range(n):
-        for r in rows:
-            f.write(r[i] if r[i].endswith("\n") else r[i] + "\n")
-print(f"[mix] {out}: {n} rows x {len(rows)} datasets", file=sys.stderr)
-PY
-    done
-    DATA="$DEMO_DIR/ckpt/_mix/${_DS}_train.jsonl"
-    EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/ckpt/_mix/${_DS}_eval.jsonl}"
+SHUFFLE_ARGS=(--rollout-shuffle)
+if [ "${#_DSETS[@]}" -gt 1 ]; then _DS="$(IFS=+; echo "${_DSETS[*]}")"; _EVAL_NAME=mix
+else _DS="${_DSETS[0]}"; _EVAL_NAME="$_DS"; fi
+if [ -z "${DATA:-}" ]; then
+  mkdir -p "$DEMO_DIR/ckpt/_mix"
+  _MIX="$DEMO_DIR/ckpt/_mix/${_DS}_train.jsonl"
+  _K="$(MIX_MIN_ROWS=$(( NR * RB )) python3 "$DEMO_DIR/mix_data.py" "$_MIX" $(for d in "${_DSETS[@]}"; do printf '%s ' "$DEMO_DIR/data/${d}_train.jsonl"; done))"
+  if [ "$_K" -gt 1 ]; then
+    DATA="$_MIX"; SHUFFLE_ARGS=()      # the interleave IS the order: every step spans the tasks
+    if [ -z "$_USER_RB" ] && [ "$_K" -gt "$RB" ]; then
+      RB="$_K"; GBS=$(( RB * NS ))     # room for one prompt of EVERY task per step (default mix: 10)
+      MIX_MIN_ROWS=$(( NR * RB )) python3 "$DEMO_DIR/mix_data.py" "$_MIX" $(for d in "${_DSETS[@]}"; do printf '%s ' "$DEMO_DIR/data/${d}_train.jsonl"; done) >/dev/null
+    fi
+  else
+    rm -f "$_MIX"                      # one task: nothing to mix, slime shuffles the file itself
   fi
-else
-  _DS="${_DSETS[0]}"; _EVAL_NAME="$_DS"
+  if [ "${#_DSETS[@]}" -gt 1 ] && [ -z "${EVAL_DATA:-}" ]; then
+    EVAL_DATA="$DEMO_DIR/ckpt/_mix/${_DS}_eval.jsonl"
+    python3 "$DEMO_DIR/mix_data.py" "$EVAL_DATA" $(for d in "${_DSETS[@]}"; do printf '%s ' "$DEMO_DIR/data/${d}_eval.jsonl"; done) >/dev/null
+  fi
 fi
 DATA="${DATA:-$DEMO_DIR/data/${_DS}_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/${_DS}_eval.jsonl}"
@@ -227,16 +218,11 @@ export AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE
 # opened ahead of time — the look-ahead data source (tb_lookahead_source.py) boots the next
 # TB_PREOPEN_BATCHES rollouts' sessions (2 = 2 x RB x NS = 64) — a SessionKeeper heartbeat across the
 # weight-sync stall, graded by the task's hidden pytest oracle. The other rows of a mixed batch take the
-# default harness tier. The look-ahead feeds the stock driver, so these runs are MODE=A.
+# default harness tier.
 _FAMS="$(python3 "$DEMO_DIR/image_routing.py" --families "$DATA" "$EVAL_DATA")"
 TB_ROWS=0; case ",$_FAMS," in *,terminalbench,*) TB_ROWS=1 ;; esac
 TB_ARGS=()
 if [ "$TB_ROWS" = 1 ]; then
-  if [ "$_USER_MODE" = B ] || [ "$_USER_MODE" = b ]; then
-    echo "MODE=B (fully-async) is unsupported with Terminal-Bench rows: the look-ahead pre-open data source feeds the stock driver. Use MODE=A." >&2
-    exit 1
-  fi
-  MODE=A
   HARNESS_WORKERS="${HARNESS_WORKERS:-$GBS}"
   # Admit W running + W queued episodes per step (S = CONC x NENG) so a free worker never idles.
   [ -z "$_USER_CONC" ] && CONC=$(( (2 * HARNESS_WORKERS + NENG - 1) / NENG ))
@@ -264,6 +250,13 @@ HEARTBEAT="${HEARTBEAT:-${HEARTBEAT_KEEP_WARM:-1}}"
 # older ones were created with 600 s, new ones get RUNTIME_IDLE_TIMEOUT (3600 s, deploy/agentcore_deploy.py).
 HEARTBEAT_IDLE="${HEARTBEAT_IDLE:-600}"
 HEARTBEAT_PING_FRACTION="${HEARTBEAT_PING_FRACTION:-0.5}"
+# PREOPEN (default ON = one step ahead, RB x NS; PREOPEN=0 is the A/B baseline): keep that many FRESH
+# sessions booted per image for the non-Terminal-Bench rows (agentcore_slime_demo/preopen.py), so the
+# cold start leaves the episode's critical path. Each is still one episode, stopped when it ends, and is
+# heartbeated while it waits. Terminal-Bench rows keep their own per-task look-ahead (TB_PREOPEN_BATCHES).
+# The pool tops up after every take, so about PREOPEN sessions are opened unused at the end of the run
+# (stopped at exit).
+PREOPEN="${PREOPEN:-$GBS}"
 _HB=""; [ "$HEARTBEAT" = "0" ] && [ -z "${AGENTCORE_LOCAL_ENDPOINT:-}" ] && case "$SANDBOX" in agentcore-*) _HB="_noheartbeat" ;; esac
 _SC=""; [ "${SCALE:-0}" = 1 ] && _SC="_scale"
 SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_${_DS}${_HB}${_SC}_async}"
@@ -295,21 +288,15 @@ CKPT_ARGS=(
    --custom-megatron-init-path agentcore_slime_demo.megatron_init.enable_persistent_async_ckpt
 )
 
-# Held-out EVAL. The eval rollout FUNCTION depends on the async MODE:
-#   Mode B (fully-async): the stock rollout path can't run eval (the fully-async worker's event loop
-#     owns slime's GenerateState singleton semaphore, so in-process eval would crash with "Semaphore
-#     is bound to a different event loop"). We route eval through
-#     agentcore_slime_demo.mode_b_eval.generate_rollout, which quiesces the fully-async worker (waits
-#     for its loop thread to fully die), drops the GenerateState singleton so the semaphore rebuilds
-#     on THIS loop, runs slime's stock eval unchanged, then drops the singleton again so the next
-#     training rollout's worker rebuilds it cleanly on the worker loop. (generate_rollout_fully_async
-#     itself raises on evaluation=True, which is exactly why eval needs its own function-path.)
-#   Mode A (1-step-async): no background worker exists, so eval uses slime's stock sync rollout.
-if [ "$MODE" = "B" ]; then
-   EVAL_FN=agentcore_slime_demo.mode_b_eval.generate_rollout
-else
-   EVAL_FN=slime.rollout.sglang_rollout.generate_rollout
-fi
+# Held-out EVAL: the stock rollout path can't run eval (the fully-async worker's event loop owns
+# slime's GenerateState singleton semaphore, so in-process eval would crash with "Semaphore is bound
+# to a different event loop"). We route eval through agentcore_slime_demo.mode_b_eval.generate_rollout,
+# which quiesces the fully-async worker (waits for its loop thread to fully die), drops the
+# GenerateState singleton so the semaphore rebuilds on THIS loop, runs slime's stock eval unchanged,
+# then drops the singleton again so the next training rollout's worker rebuilds it cleanly on the
+# worker loop. (generate_rollout_fully_async itself raises on evaluation=True, which is exactly why
+# eval needs its own function-path.)
+EVAL_FN=agentcore_slime_demo.mode_b_eval.generate_rollout
 EVAL_ARGS=()
 if [ "$EVAL_INTERVAL" != "0" ] && [ -f "$EVAL_DATA" ]; then
    EVAL_ARGS=(
@@ -326,33 +313,25 @@ ROLLOUT_ARGS=(
    --input-key prompt
    --label-key label
    --metadata-key metadata
-   --rollout-shuffle
+   "${SHUFFLE_ARGS[@]}"               # --rollout-shuffle for a single task; off for a mix (see MIX)
    --num-rollout "$NR"
    --rollout-batch-size "$RB"
    --n-samples-per-prompt "$NS"
    --rollout-max-response-len 1024
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
-   # NOTE: the rollout DRIVER (--rollout-function-path) is set by MODE_ARGS below, not here, so it
-   # tracks the A/B async MODE. The custom generate hook is the same for both modes: the worker
-   # (Mode B) and the stock driver (Mode A) both call slime's generate_and_rm_group, which
-   # dispatches to our --custom-generate-function-path, so our token-ids / logprobs / loss-mask /
+   # The fully-async driver (see the note near the top). Its worker calls slime's
+   # generate_and_rm_group, which dispatches to our --custom-generate-function-path, so our token-ids / logprobs / loss-mask /
    # reward Sample contract is preserved UNCHANGED (reward set on the Sample => no --custom-rm-path).
+   --rollout-function-path slime.rollout.fully_async_rollout.generate_rollout_fully_async
    --custom-generate-function-path agentcore_slime_demo.generate.generate
+   # Per-step task mix of the batch actually trained on ([batch] line + mix/n_tasks, mix/{episodes,reward}_<family>)
+   # and each task's held-out reward (eval/<name>_<family>).
+   --custom-rollout-log-function-path agentcore_slime_demo.batch_mix_log.log_rollout_data
+   --custom-eval-rollout-log-function-path agentcore_slime_demo.batch_mix_log.log_eval_rollout_data
    # Terminal-Bench rows only: peek the next TB_PREOPEN_BATCHES rollouts so their sessions boot early.
    "${TB_ARGS[@]}"
 )
-
-# Async MODE driver flags (see the MODE note near the top). Mode B swaps in slime's fully-async
-# rollout: a background worker that keeps a fixed pool of in-flight trajectories (concurrency =
-# sglang_server_concurrency * num_engines = CONC*2) AND up to that many COMPLETED groups queued
-# ahead of the trainer across rollout boundaries. The trainer drains only RB groups/step, so the
-# queue grows deep and samples age => staleness scales with CONC. Mode A omits the override, leaving
-# train_async.py's stock 1-step-async driver (staleness pinned to ~1 step regardless of CONC).
-MODE_ARGS=()
-if [ "$MODE" = "B" ]; then
-   MODE_ARGS=(--rollout-function-path slime.rollout.fully_async_rollout.generate_rollout_fully_async)
-fi
 
 PERF_ARGS=(
    --tensor-model-parallel-size 2
@@ -431,7 +410,7 @@ RUNTIME_ENV_JSON="{
     \"HARNESS\": \"${HARNESS}\",
     \"ADAPTER_PUBLIC_HOST\": \"${ADAPTER_PUBLIC_HOST:-}\",
     \"ADAPTER_PORT_BASE\": \"${ADAPTER_PORT_BASE:-18100}\",
-    \"PREOPEN\": \"${PREOPEN:-0}\",
+    \"PREOPEN\": \"${PREOPEN}\",
     \"HARNESS_WORKERS\": \"${HARNESS_WORKERS:-}\",
     \"SANDBOX_SESSIONS\": \"${SANDBOX_SESSIONS:-0}\",
     \"SANDBOX_OPEN_RATE\": \"${SANDBOX_OPEN_RATE:-20}\",
@@ -465,7 +444,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    "${CKPT_ARGS[@]}" \
    "${EVAL_ARGS[@]}" \
    "${ROLLOUT_ARGS[@]}" \
-   "${MODE_ARGS[@]}" \
    "${OPTIMIZER_ARGS[@]}" \
    "${GRPO_ARGS[@]}" \
    "${PERF_ARGS[@]}" \

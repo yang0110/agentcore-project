@@ -116,7 +116,7 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     slime's dispatch (generate_and_rm) treats a LIST return as the "fan-out" case and hands
     back list[list[Sample]] from generate_and_rm_group. The stock rollout path tolerates that
     nesting everywhere via `isinstance(group[0], list)` guards, but the fully-async path
-    (slime.rollout.fully_async_rollout, used by demo_cpu_tasks's Mode B ablation) does NOT guard its
+    (slime.rollout.fully_async_rollout, every demo's rollout driver) does NOT guard its
     sort key and crashes on the nested shape. Returning a bare Sample keeps us on slime's
     primary (non-fan-out) shape, which BOTH the stock and fully-async paths handle. Behavior
     is identical for the stock demos (one flattened sample per episode either way)."""
@@ -148,7 +148,7 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     async def episode(worker):
         # HEARTBEAT=1 (default on our own remote Runtimes, every demo): wrap the sandbox in a KeptSandbox so a process-wide
         # SessionKeeper heartbeats it if it goes idle across the weight-sync barrier. Off => unchanged.
-        # PREOPEN=N (opt-in): take an already-booted fresh session (still one episode, stopped at the end).
+        # PREOPEN=N (run.sh default RB x NS): take an already-booted fresh session (still one episode, stopped at the end).
         # SANDBOX_SESSIONS=M (opt-in): borrow a pooled session in a fresh workdir instead.
         async with pool.sandbox((kind, image), lambda: maybe_keep_warm(
                 make_sandbox(kind, region=os.environ.get("AGENTCORE_REGION"), image=image))) as (sb, wait_ms, slot):

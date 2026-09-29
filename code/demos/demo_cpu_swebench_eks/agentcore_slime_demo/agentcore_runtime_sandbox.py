@@ -147,7 +147,8 @@ def _local_endpoint() -> str | None:
     return os.environ.get("AGENTCORE_LOCAL_ENDPOINT", "").strip() or None
 
 
-def _http_invoke_sync(url: str, session_id: str, payload: dict, read_timeout: float) -> dict:
+def _http_invoke_sync(url: str, session_id: str, payload: dict, read_timeout: float,
+                      extra_headers: dict | None = None) -> dict:
     """POST one op to a LOCAL AgentCore Runtime's `/invocations` (BedrockAgentCoreApp contract).
     Mirrors the boto3 invoke_agent_runtime round-trip: JSON payload in, JSON handler-return out."""
     import urllib.request
@@ -159,6 +160,7 @@ def _http_invoke_sync(url: str, session_id: str, payload: dict, read_timeout: fl
             # AgentCore's runtime session header (>=33 chars). Locally there is one container so it
             # is advisory, but we send it so the contract is identical to the remote path.
             "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
+            **(extra_headers or {}),
         },
         method="POST",
     )

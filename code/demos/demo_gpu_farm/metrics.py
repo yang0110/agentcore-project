@@ -199,7 +199,7 @@ PEAK_TFLOPS = float(os.environ.get("GPU_PEAK_TFLOPS", "362.0"))
 # Goodput = *useful* trainer throughput = actor_train_tok_per_s * (1 - discard_ratio): tokens/sec
 # that actually land in a gradient step, net of samples the buffer filter discards for staleness.
 # We read discard_ratio from any parsed rollout key that reports it (fully-async buffer filter);
-# absent that (e.g. Mode A / stock rollout, no discards), discard_ratio = 0 so goodput == tok/s.
+# absent that (e.g. no staleness filter, no discards), discard_ratio = 0 so goodput == tok/s.
 _DISCARD_KEYS = ("rollout/discard_ratio", "rollout/staleness_discard_ratio", "perf/discard_ratio")
 
 
@@ -301,7 +301,7 @@ def parse_log(path: Path):
 
     Per-step attribution: every raw record seen SINCE the previous train marker is attributed to
     the NEXT step's marker (that step's rollout finished just before slime printed its metrics).
-    Exact for the coupled / 1-step-async (Mode A) path; approximate under fully-async Mode B, where
+    Approximate under the fully-async driver, where
     the background buffer streams ops across step boundaries — read the per-step split as indicative
     there, and the run-level aggregate (main()) as the ground truth.
     """

@@ -199,7 +199,7 @@ PEAK_TFLOPS = float(os.environ.get("GPU_PEAK_TFLOPS", "362.0"))
 # Goodput = *useful* trainer throughput = actor_train_tok_per_s * (1 - discard_ratio): tokens/sec
 # that actually land in a gradient step, net of samples the buffer filter discards for staleness.
 # We read discard_ratio from any parsed rollout key that reports it (fully-async buffer filter);
-# absent that (e.g. Mode A / stock rollout, no discards), discard_ratio = 0 so goodput == tok/s.
+# absent that (e.g. no staleness filter, no discards), discard_ratio = 0 so goodput == tok/s.
 _DISCARD_KEYS = ("rollout/discard_ratio", "rollout/staleness_discard_ratio", "perf/discard_ratio")
 
 
@@ -301,7 +301,7 @@ def parse_log(path: Path):
 
     Per-step attribution: every raw record seen SINCE the previous train marker is attributed to
     the NEXT step's marker (that step's rollout finished just before slime printed its metrics).
-    Exact for the coupled / 1-step-async (Mode A) path; approximate under fully-async Mode B, where
+    Approximate under the fully-async driver, where
     the background buffer streams ops across step boundaries — read the per-step split as indicative
     there, and the run-level aggregate (main()) as the ground truth.
     """
@@ -678,6 +678,22 @@ def summarize_demo(demo_records: list[dict]) -> None:
                     print(f"        {val:<20} n={len(g):<5} mean_reward={sum(g)/len(g):.4f}")
 
 
+def summarize_mix(rows: dict[int, dict]) -> None:
+    """Task mix of each trained batch (mix/* from agentcore_slime_demo.batch_mix_log), if recorded."""
+    steps = [i for i in sorted(rows) if "mix/n_tasks" in rows[i]]
+    if not steps:
+        return
+    fams = sorted({k[len("mix/episodes_"):] for i in steps for k in rows[i] if k.startswith("mix/episodes_")})
+    n = [int(rows[i]["mix/n_tasks"]) for i in steps]
+    print(f"\ntask mix per trained batch ({len(steps)} steps): tasks/step min={min(n)} max={max(n)}; "
+          f"{sum(x > 1 for x in n)}/{len(n)} steps mixed")
+    for f in fams:
+        eps = [rows[i].get(f"mix/episodes_{f}", 0) for i in steps]
+        rw = [rows[i][f"mix/reward_{f}"] for i in steps if f"mix/reward_{f}" in rows[i]]
+        print(f"    {f:<14} episodes/step mean={sum(eps)/len(eps):5.1f}  "
+              f"train reward first={rw[0]:.3f} last={rw[-1]:.3f} mean={sum(rw)/len(rw):.3f}")
+
+
 def plot(rows: dict[int, dict], eval_rows: dict[int, dict], out: Path) -> None:
     import matplotlib
     matplotlib.use("Agg")  # headless
@@ -689,6 +705,9 @@ def plot(rows: dict[int, dict], eval_rows: dict[int, dict], out: Path) -> None:
     demo_cols = sorted({k for i in ids for k in rows[i] if k.startswith("demo/") and k.endswith("_mean")})
     for c in demo_cols:
         panels.append((c, c.replace("demo/", "demo: ").replace("_mean", " (mean)")))
+    # one panel per task of a mixed batch: its train reward per step (batch_mix_log's mix/reward_<family>)
+    for c in sorted({k for i in ids for k in rows[i] if k.startswith("mix/reward_")}):
+        panels.append((c, f"train reward: {c[len('mix/reward_'):]}"))
     # add one panel per eval/* reward column (skip the eval/step key itself)
     eval_cols = sorted({k for r in eval_rows.values() for k in r} - {"eval/step"})
     for c in eval_cols:
@@ -748,6 +767,7 @@ def main() -> int:
         csv_out = Path(args.csv) if args.csv else log.with_suffix(".csv")
         cols = write_csv(rows, csv_out, KEY_COLUMNS)
         print(f"wrote {len(rows)} step rows x {len(cols)} cols -> {csv_out}")
+        summarize_mix(rows)
 
     if op_records:
         ops_out = Path(args.ops_csv) if args.ops_csv else log.with_suffix(".sandbox_ops.csv")

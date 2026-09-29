@@ -38,12 +38,12 @@ DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_tasks"
 
 : "${NR:=201}"; : "${RB:=8}"; : "${NS:=8}"; : "${TEMP:=1.0}"
 : "${EVAL_INTERVAL:=20}"; : "${EVAL_NS:=4}"; : "${SAVE_INTERVAL:=100}"
-: "${MODE:=B}"; : "${CONC:=4}"
+: "${CONC:=4}"
 : "${DATASET:=deepscaler}"
 : "${HEARTBEAT:=1}"   # keep-warm across the weight-sync barrier (the point of this run)
 : "${SANDBOX:=agentcore-runtime}"   # heartbeat only matters on your own Runtime
-export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC DATASET HEARTBEAT SANDBOX
+export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL CONC DATASET HEARTBEAT SANDBOX
 
 LOG="$DEMO/train.convergence_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_cpu_tasks HEARTBEAT=$HEARTBEAT SANDBOX=$SANDBOX ($DATASET)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
+echo ">>> converging demo_cpu_tasks HEARTBEAT=$HEARTBEAT SANDBOX=$SANDBOX ($DATASET)  NR=$NR RB=$RB NS=$NS steps=$((NR-1))  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

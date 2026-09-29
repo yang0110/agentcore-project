@@ -10,3 +10,4 @@ deploy/acs_ctx/sandbox_server_agent.py
 deploy/acs_ctx_amd64/
 # fetch_swebench.py / deploy/deploy_swebench.py state: manifest (holds the hidden test patches), pool map, oracle.
 swebench/
+deploy/acs_ctx/acs_swe_http_server.py

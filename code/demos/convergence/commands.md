@@ -2,7 +2,7 @@
 
 Run **one at a time**, INSIDE `agentcore_p4` (repo at `/work/code`). Each line trains
 that demo to convergence with the defaults in its script (CPU `NR=201`, GPU `NR=101`,
-`RB=8 NS=8 EVAL_INTERVAL=20 EVAL_NS=4 SAVE_INTERVAL=100`; CPU adds `MODE=B`). Logs land
+`RB=8 NS=8 EVAL_INTERVAL=20 EVAL_NS=4 SAVE_INTERVAL=100`). Logs land
 next to each demo's `ckpt/` as `train.convergence_<timestamp>.log` (01–10 all train the ONE
 `demo_cpu_tasks` folder, one `DATASET` each → `train.convergence_<dataset>_<timestamp>.log`).
 See `README.md`.

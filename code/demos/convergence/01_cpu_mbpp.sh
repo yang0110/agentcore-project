@@ -37,11 +37,10 @@ DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_tasks"
 : "${EVAL_INTERVAL:=20}" # held-out eval every 20 steps
 : "${EVAL_NS:=4}"        # samples per eval prompt
 : "${SAVE_INTERVAL:=100}"# periodic checkpoints — DISK CAVEAT: ~56 GB each
-: "${MODE:=B}"           # fully-async deep buffer (staleness ~ CONC)
 : "${CONC:=4}"           # sandbox/episode concurrency
 : "${DATASET:=mbpp}"   # which dataset of demo_cpu_tasks to train
-export DATASET NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC
+export DATASET NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL CONC
 
 LOG="$DEMO/train.convergence_${DATASET}_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_cpu_tasks DATASET=$DATASET (coding/MBPP)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
+echo ">>> converging demo_cpu_tasks DATASET=$DATASET (coding/MBPP)  NR=$NR RB=$RB NS=$NS steps=$((NR-1))  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

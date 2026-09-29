@@ -21,7 +21,7 @@ The three tiers are sized independently and joined PER EPISODE (no worker owns a
   * inference  the engine with the fewest in-flight episodes (ties rotate), sticky for all turns.
 
 The sandbox is taken BEFORE the engine, so an episode waiting for a session is not engine load.
-Episodes return ONE bare Sample, so slime's stock (MODE=A) and fully-async (MODE=B) drivers both work.
+Episodes return ONE bare Sample, the shape slime's fully-async driver needs.
 
 Which tier binds shows in each episode's `[demo]` record: qdepth > 0 = harness-bound,
 sandbox_wait_ms > 0 = sandbox-bound, engine_inflight climbing = inference-bound.
@@ -53,7 +53,7 @@ def adapter_for(args, engine: str) -> tuple[object, str, str]:
     """Lazily start the AnthropicAdapter for ``engine`` (shared by every episode on it).
 
     Returns (adapter, url for the trainer, url the sandbox session dials back to). Sync and
-    thread-locked, so it is safe from any event loop (MODE=B runs eval on a second loop)."""
+    thread-locked, so it is safe from any event loop (the fully-async driver runs eval on a second loop)."""
     with _ADAPTER_LOCK:
         if engine not in _ADAPTERS:
             from slime.agent.adapters import AnthropicAdapter
@@ -77,7 +77,7 @@ def adapter_for(args, engine: str) -> tuple[object, str, str]:
 
 
 def one_sample(samples, reward: float):
-    """finish_session's list -> ONE bare Sample (the longest), so MODE=B keeps slime's non-fan-out
+    """finish_session's list -> ONE bare Sample (the longest), so the fully-async driver keeps slime's non-fan-out
     shape. Returns (sample, fan_out)."""
     samples = samples if isinstance(samples, list) else [samples]
     out = max(samples, key=lambda s: len(getattr(s, "tokens", []) or []))
@@ -91,10 +91,10 @@ _POOL_LOCK = threading.Lock()
 
 
 def get_pool(args) -> "HarnessPool":
-    """One pool per event loop (MODE=B's fully-async worker and its eval run on different loops).
+    """One pool per event loop (the fully-async worker and its eval run on different loops).
 
     A pool whose loop has stopped is retired here: its pooled sessions are closed in the background,
-    so a driver that rebuilds its loop (MODE=B, per eval) does not pile up M more live sessions per
+    so a driver that rebuilds its loop (fully-async, per eval) does not pile up M more live sessions per
     image each time."""
     loop = asyncio.get_running_loop()
     with _POOL_LOCK:

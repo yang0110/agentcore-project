@@ -84,7 +84,7 @@ sandbox → slime train step → final checkpoint), and record a per-demo PASS/F
 ## Smoke size
 
 Every trainer runs at `NR=3` ⇒ `NR-1 = 2` real train steps + 1 held-out eval + one final save.
-Defaults otherwise (`RB=4`, `NS=8`, `MODE=B` fully-async, `EVAL_INTERVAL=10`, `SAVE_INTERVAL=1e6`
+Defaults otherwise (`RB=4`, `NS=8`, fully-async driver, `EVAL_INTERVAL=10`, `SAVE_INTERVAL=1e6`
 ⇒ save-only-at-end). Offline demos run at their default tiny knobs (seconds).
 
 ## Phases (executed in this order)

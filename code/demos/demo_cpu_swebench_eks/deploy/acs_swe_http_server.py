@@ -6,9 +6,15 @@ body arrives empty and EVERY op is answered as a ping (`{"ok": true, "boot": ...
 rc=1 and no output). The Terminal-Bench microVM path sends Content-Length, which is why it never hit
 this. Kept as a separate shim so the shared server (and every Terminal-Bench image's recipe tag) is
 untouched; the fix is the same two lines if it is ever folded into acs_http_server.py.
+
+Optional per-sandbox token (EKS twin): if the container starts with ACS_SANDBOX_TOKEN set, every
+POST /invocations must carry the same value in `X-Acs-Sandbox-Token`, or it gets 401. It is popped
+from the environment at start, so the agent's exec'd processes do not inherit it. GET /ping (the
+readiness probe) stays open; it only reports health. Unset (AgentCore, ECS) = no check, as before.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import sys
@@ -20,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import acs_http_server as base  # noqa: E402
 
 _first_lock = threading.Lock()
+_TOKEN = os.environ.pop("ACS_SANDBOX_TOKEN", "")
 
 
 def _read_body(h) -> bytes:
@@ -40,6 +47,9 @@ class _Handler(base._Handler):
     def do_POST(self):  # noqa: N802
         if not self.path.startswith("/invocations"):
             self._send(404, {"error": "not found"})
+            return
+        if _TOKEN and not hmac.compare_digest(self.headers.get("X-Acs-Sandbox-Token") or "", _TOKEN):
+            self._send(401, {"error": "bad or missing X-Acs-Sandbox-Token"})
             return
         with _first_lock:
             if base._first_invoke_epoch is None:

@@ -14,7 +14,6 @@
 #                  (harness_pool.py) is every demo's default; SCALE=1 only turns up its sizes.
 #                  The mini_claude loop runs in each episode's sandbox session, so 256 sessions
 #                  carry 256 loops; the trainer keeps only the W dispatch workers + adapters.
-# MODE           : A (the SCALE preset's default); MODE=B also works (one bare Sample per episode).
 # PARSERS        : the run.sh adds --sglang-tool-call-parser qwen25 / --reasoning-parser
 #                  qwen3 so the mini-harness tool loop actually fires (the a3/b3 fix).
 # BOTTLENECK     : throughput = min(inference, sandbox, harness); the [demo] records show
@@ -39,5 +38,5 @@ DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_tasks"
 export SCALE=1 NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL HARNESS_WORKERS SANDBOX_SESSIONS
 
 LOG="$DEMO/train.convergence_scale_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_cpu_tasks SCALE=1 (deepscaler, W=$HARNESS_WORKERS M=$SANDBOX_SESSIONS)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=${MODE:-A}  log=$LOG"
+echo ">>> converging demo_cpu_tasks SCALE=1 (deepscaler, W=$HARNESS_WORKERS M=$SANDBOX_SESSIONS)  NR=$NR RB=$RB NS=$NS steps=$((NR-1))  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

@@ -28,10 +28,10 @@ if [ -f "$DEMO/deploy/runtime.env" ]; then set -a; . "$DEMO/deploy/runtime.env";
 
 : "${NR:=201}"; : "${RB:=8}"; : "${NS:=8}"; : "${TEMP:=1.0}"
 : "${EVAL_INTERVAL:=20}"; : "${EVAL_NS:=4}"; : "${SAVE_INTERVAL:=100}"
-: "${MODE:=B}"; : "${CONC:=4}"
+: "${CONC:=4}"
 : "${DATASET:=libs}"; : "${SANDBOX:=agentcore-runtime}"
-export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC DATASET SANDBOX
+export NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL CONC DATASET SANDBOX
 
 LOG="$DEMO/train.convergence_libs_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_cpu_tasks DATASET=$DATASET SANDBOX=$SANDBOX (pandas/scipy/sklearn on the libs Runtime)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
+echo ">>> converging demo_cpu_tasks DATASET=$DATASET SANDBOX=$SANDBOX (pandas/scipy/sklearn on the libs Runtime)  NR=$NR RB=$RB NS=$NS steps=$((NR-1))  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

@@ -1,4 +1,5 @@
-"""PREOPEN=N (opt-in, default 0): keep N fresh sandbox sessions booted AHEAD of demand.
+"""PREOPEN=N: keep N fresh sandbox sessions booted AHEAD of demand (library default 0 = off;
+demo_cpu_tasks/run.sh defaults it to RB x NS, one step ahead).
 
 The cold start (microVM boot + image pull + server ready) moves off the episode's critical path;
 nothing else changes. Every pre-opened session is still brand-new, serves exactly ONE episode and is

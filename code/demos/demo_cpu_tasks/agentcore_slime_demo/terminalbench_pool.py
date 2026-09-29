@@ -156,7 +156,7 @@ class TerminalBenchPool(HarnessPool):
         self._keeper = None
         # Upcoming episodes, in the order they will run, as their task's Runtime ARN:
         #   _demand — drawn by slime (or submitted without a look-ahead reservation), not yet claimed;
-        #   _future — predicted by the look-ahead data source for the next rollouts (replaced per draw).
+        #   _future — predicted by the look-ahead data source for the next prompts (replaced per draw).
         self._demand: list[str] = []
         self._future: list[str] = []
         # ARN -> unclaimed sessions opened (or opening) on that task's Runtime, oldest first. Any of
@@ -272,10 +272,10 @@ class TerminalBenchPool(HarnessPool):
         """Called by the look-ahead data source on every draw (sync, from slime's rollout loop).
 
         `drawn` = the episodes slime just drew (they will be submitted now); `upcoming` = the episodes
-        of the next rollouts, predicted. One draw per rollout, so this REPLACES the window: anything
-        left from the previous draw is stale (that rollout is over) and its sessions get trimmed.
+        after them, predicted. The fully-async driver draws one group at a time, so `drawn` is APPENDED
+        (earlier draws may still be waiting for a worker) and `upcoming` REPLACES the sliding window.
         """
-        self._demand = list(drawn)
+        self._demand.extend(drawn)
         self._future = list(upcoming)
         try:
             asyncio.get_running_loop().create_task(self._start_and_refill())

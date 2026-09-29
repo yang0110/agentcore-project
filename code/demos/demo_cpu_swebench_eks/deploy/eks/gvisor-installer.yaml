@@ -3,7 +3,12 @@
 # A DaemonSet rather than node user data: AL2023's nodeadm owns /etc/containerd/config.toml at boot, and
 # this also covers nodes the group adds later. Idempotent (skips an installed node on restart).
 # Platform: gVisor's default `systrap` (no KVM), which works on ordinary (non-metal) EC2 instances.
-# GVISOR_RELEASE: "latest" or a dated release, e.g. 20260901 (pin it for reproducible runs).
+# Supply chain: GVISOR_RELEASE is PINNED (not "latest") and the release tarball must match GVISOR_SHA512,
+# a hash pinned HERE — the bucket's own .sha512 is not trusted, since it comes from the same place as the
+# tarball. To move to a new release, set both (eks_deploy.py render substitutes them). Releases since
+# mid-2026 ship one gvisor.tar.bz2 (runsc + containerd-shim-runsc-v1 + the gvisor-bin/ sidecars runsc
+# needs next to it), no longer the bare binaries. The container downloads + verifies + extracts it (its
+# AL2023 image has python3 but no tar/bzip2); only the containerd step runs chroot'ed on the node.
 apiVersion: v1
 kind: ServiceAccount
 metadata: {name: acs-gvisor-installer, namespace: kube-system}
@@ -27,21 +32,29 @@ apiVersion: v1
 kind: ConfigMap
 metadata: {name: acs-gvisor-installer, namespace: kube-system}
 data:
+  fetch.py: |
+    # Runs in the installer container: download the pinned release, check the pinned sha512, extract
+    # runsc + containerd-shim-runsc-v1 + gvisor-bin/ into the node's /usr/local/bin.
+    import hashlib, os, sys, tarfile, urllib.request
+    rel, want = os.environ["GVISOR_RELEASE"], os.environ["GVISOR_SHA512"].strip().lower()
+    url = f"https://storage.googleapis.com/gvisor/releases/release/{rel}/x86_64/gvisor.tar.bz2"
+    stage = "/host/var/lib/acs-gvisor/gvisor.tar.bz2"
+    os.makedirs(os.path.dirname(stage), exist_ok=True)
+    urllib.request.urlretrieve(url, stage)
+    got = hashlib.sha512(open(stage, "rb").read()).hexdigest()
+    if got != want:
+        sys.exit(f"gVisor {rel}: sha512 mismatch (got {got}, pinned {want}) — refusing to install")
+    keep = ("runsc", "containerd-shim-runsc-v1", "gvisor-bin")
+    with tarfile.open(stage, "r:bz2") as tf:
+        members = [m for m in tf.getmembers() if m.name.split("/", 1)[0] in keep
+                   and not m.name.startswith("/") and ".." not in m.name.split("/")]
+        tf.extractall("/host/usr/local/bin", members=members)
+    os.remove(stage)
+    print(f"gVisor {rel} verified + extracted: {[m.name for m in members]}")
   install-host.sh: |
-    # Runs chroot'ed into the node's root filesystem.
+    # Runs chroot'ed into the node's root filesystem, after fetch.py put the binaries in place.
     set -euo pipefail
-    MARK=/var/lib/acs-gvisor/installed
-    if [ -f "$MARK" ] && /usr/local/bin/runsc --version >/dev/null 2>&1 \
-       && containerd config dump 2>/dev/null | grep -q 'io.containerd.runsc.v1'; then
-      echo "gVisor already installed: $(cat "$MARK")"; exit 0
-    fi
-    URL="https://storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/x86_64"
-    tmp="$(mktemp -d)"; cd "$tmp"
-    for f in runsc containerd-shim-runsc-v1; do
-      curl -fsSLO "$URL/$f"; curl -fsSLO "$URL/$f.sha512"
-    done
-    sha512sum -c runsc.sha512 containerd-shim-runsc-v1.sha512
-    install -m 0755 runsc containerd-shim-runsc-v1 /usr/local/bin/
+    /usr/local/bin/runsc --version | head -n 1
     CFG=/etc/containerd/config.toml
     if ! grep -q 'io.containerd.runsc.v1' "$CFG"; then
       if grep -Eq '^version *= *3' "$CFG"; then
@@ -54,9 +67,9 @@ data:
     fi
     systemctl restart containerd
     for _ in $(seq 60); do containerd config dump 2>/dev/null | grep -q 'io.containerd.runsc.v1' && break; sleep 1; done
-    mkdir -p "$(dirname "$MARK")"
-    /usr/local/bin/runsc --version | head -n 1 > "$MARK"
-    echo "gVisor installed: $(cat "$MARK")"
+    mkdir -p /var/lib/acs-gvisor
+    echo "${GVISOR_RELEASE} $(/usr/local/bin/runsc --version | head -n 1)" > /var/lib/acs-gvisor/installed
+    echo "gVisor installed: $(cat /var/lib/acs-gvisor/installed)"
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -79,14 +92,22 @@ spec:
           image: public.ecr.aws/amazonlinux/amazonlinux:2023
           securityContext: {privileged: true}
           env:
-            - {name: GVISOR_RELEASE, value: "latest"}
+            - {name: GVISOR_RELEASE, value: "20260921.0"}
+            - {name: GVISOR_SHA512, value: "7c899979bed334f0987888c41e545cede8e1f7e67a257978c8de244c3867e32bc30d08491e9af36720273c502acd01d8d86c9844ebcbe125790c43fe6bdf563e"}
             - name: NODE_NAME
               valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
           command: [/bin/bash, -c]
           args:
             - |
               set -euo pipefail
-              chroot /host /bin/bash -s < /scripts/install-host.sh
+              MARK=/host/var/lib/acs-gvisor/installed
+              if [ -f "$MARK" ] && grep -q "^${GVISOR_RELEASE} " "$MARK" \
+                 && chroot /host containerd config dump 2>/dev/null | grep -q 'io.containerd.runsc.v1'; then
+                echo "gVisor already installed: $(cat "$MARK")"
+              else
+                python3 /scripts/fetch.py
+                chroot /host /usr/bin/env GVISOR_RELEASE="$GVISOR_RELEASE" /bin/bash -s < /scripts/install-host.sh
+              fi
               SA=/var/run/secrets/kubernetes.io/serviceaccount
               curl -fsS --cacert $SA/ca.crt -H "Authorization: Bearer $(cat $SA/token)" \
                 -H 'Content-Type: application/merge-patch+json' -X PATCH \

@@ -18,7 +18,7 @@
 # CONC can exceed K (many concurrent sessions per Runtime) or be below it. See run.sh's header + the
 # sandbox-concurrency ablation (docs/sandbox-concurrency-ablation.md).
 #
-# Everything else (RB/NS/TEMP/MODE/SANDBOX/DATASET/HEARTBEAT/CKPT_BASE/AWS creds/…) passes straight through to run.sh.
+# Everything else (RB/NS/TEMP/SANDBOX/DATASET/HEARTBEAT/CKPT_BASE/AWS creds/…) passes straight through to run.sh.
 #
 # CONVERGENCE NOTE: the right STEPS is task-dependent — watch eval/<task> (metrics.py) and raise it.
 # slime force-saves at the final step AND at every epoch boundary; staying at STEPS <= (train_rows/RB - 1)

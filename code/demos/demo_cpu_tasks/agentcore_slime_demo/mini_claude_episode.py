@@ -16,7 +16,7 @@ in its final reply is accepted as the submission (the task's extract_submission 
 
 Returns ONE bare Sample: finish_session linearises the adapter's per-session tree into a list,
 which is a single sample for this append-only loop; if it ever yields more we keep the longest
-(and record fan_out) so the fully-async rollout (MODE=B) keeps slime's non-fan-out shape.
+(and record fan_out) so the fully-async rollout keeps slime's non-fan-out shape.
 """
 
 from __future__ import annotations

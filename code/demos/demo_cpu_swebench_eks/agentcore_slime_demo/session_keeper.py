@@ -283,7 +283,7 @@ class KeptSandbox:
 
 # ---- HEARTBEAT=1: the keep-warm feature every demo shares (default on own remote Runtimes) ------
 # One process-wide SessionKeeper per worker process, started lazily on whatever event loop first
-# runs an episode and re-armed if the loop changes (Mode B fully-async worker loop vs the eval
+# runs an episode and re-armed if the loop changes (the fully-async worker loop vs the eval
 # loop). It heartbeats any registered session that goes idle past ping_fraction*idle_timeout — the
 # weight-sync stall, rollout tails — so AgentCore never idle-reclaims a session mid-run.
 _KEEPER: SessionKeeper | None = None

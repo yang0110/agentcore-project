@@ -27,7 +27,6 @@ export SANDBOX=agentcore-runtime
 export NR="${NR:-6}"                 # 5 train steps (steps = NR-1) + 1 eval
 export EVAL_INTERVAL="${EVAL_INTERVAL:-5}"
 export CONC="${CONC:-16}"            # episode concurrency: must exceed 1 for fan-out to matter
-export MODE="${MODE:-B}"            # fully-async (deep buffer) — the goodput regime
 export AWS_REGION="${AWS_REGION:-us-west-2}"
 export AGENTCORE_REGION="${AGENTCORE_REGION:-us-west-2}"
 

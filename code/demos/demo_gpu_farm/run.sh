@@ -1,7 +1,7 @@
 #!/bin/bash
 # demo_gpu_farm — KernelBench (real CUDA-kernel RL) on a Ray GPU-farm sandbox, LOCAL or on a remote g6.
 # Runner (this dir owns data/ + ckpt/; agentcore_slime_demo is the vendored local copy in this dir). Runs INSIDE the
-# persistent slime container (agentcore_p4), async/decoupled (train_async.py, NO --colocate).
+# persistent slime container (agentcore_p4), async/decoupled (train_async.py, NO --colocate) with slime's fully-async rollout driver.
 #
 # The task: the policy writes solution.py, a GPU checker (run_checks.py) compiles/runs it on CUDA and
 # compares against a torch reference, the agent reads the failure and fixes it. The mini_claude loop runs
@@ -46,6 +46,10 @@
 # NOTE step count: slime resumes at loaded_iter+1; a fresh torch_dist ckpt is iter 0 => the loop
 # runs range(1, NR) = (NR-1) real training steps. NR=11 => 10 train (SMOKE; no more needed).
 set -euo pipefail
+if [ -n "${MODE:-}" ]; then
+  echo "MODE is gone: the fully-async driver is the only rollout driver. Unset MODE." >&2
+  exit 1
+fi
 
 LOCAL_GPU="${LOCAL_GPU:-1}"
 # ---- FARM: how the Ray farm partitions its GPUs (MUST match the farm: local_gpu_runtime.sh <mode>,
@@ -180,6 +184,8 @@ if [ "$EVAL_INTERVAL" != "0" ] && [ -f "$EVAL_DATA" ]; then
       --eval-prompt-data "$EVAL_NAME" "$EVAL_DATA"
       --n-samples-per-eval-prompt "$EVAL_NS"
       --eval-temperature "${EVAL_TEMP:-0.2}"
+      # The fully-async worker owns slime's GenerateState loop; this quiesces it for eval.
+      --eval-function-path agentcore_slime_demo.mode_b_eval.generate_rollout
    )
 fi
 
@@ -195,6 +201,9 @@ ROLLOUT_ARGS=(
    --rollout-max-response-len 1024
    --rollout-temperature "$TEMP"
    --global-batch-size "$GBS"
+   # The fully-async driver (the only one): a background worker keeps CONC x engines groups in flight
+   # across step boundaries, so the rollout never waits on a step barrier.
+   --rollout-function-path slime.rollout.fully_async_rollout.generate_rollout_fully_async
    # Harness tier + mini_claude in the sandbox session (+ the SNAPSHOT_EVERY restore/snapshot hooks).
    # The GPU packing is entirely in the sandbox backend (SANDBOX=agentcore-ray-farm ->
    # RayFarmRuntimeSandbox), which make_sandbox() selects per episode.

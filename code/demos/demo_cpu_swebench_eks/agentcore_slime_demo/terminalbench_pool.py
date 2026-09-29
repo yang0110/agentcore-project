@@ -3,8 +3,8 @@
 demo_cpu_swebench_eks: the sandbox tier is a fresh gVisor POD on EKS (eks_pod_sandbox.EksPodSandbox)
 instead of a fresh AgentCore session. The pool map is EKS_SANDBOX_IMAGE_BY_TASK ({instance -> ECR image
 URI}, deploy/deploy_swebench.py -> swebench/image_by_task.json); where the text below says "Runtime ARN"
-read "image URI", and "session/microVM" read "pod". Pods have no idle reclaim, so the SessionKeeper
-heartbeat (item 4) is not registered for them. Everything else — strict routing, pre-open at submit and
+read "image URI", and "session/microVM" read "pod". Pods have no idle reclaim; the SessionKeeper
+heartbeat (item 4, HEARTBEAT=1 default) still pings them as a liveness check. Everything else — strict routing, pre-open at submit and
 via the look-ahead, delete on exit, the in-session agent loop, grading — is unchanged.
 
 Original design (demo_cpu_terminalbench):
@@ -150,14 +150,42 @@ class TerminalBenchPool(HarnessPool):
         self.tasks_dir = os.environ.get(
             "TB_TASKS_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tasks"))
         self.open_attempts = int(os.environ.get("TB_OPEN_ATTEMPTS", "3"))
-        # Serverless microVM idle timeout is ~15 min; heartbeat at half that with margin.
-        self.idle_timeout = float(os.environ.get("WARM_IDLE_TIMEOUT", "900"))
+        # No idle reclaim on a pod/task: this only paces the liveness ping (fraction x this; run.sh: 240 s).
+        self.idle_timeout = float(os.environ.get("WARM_IDLE_TIMEOUT", "240"))
+        # HEARTBEAT (default 1; 0 = the A/B baseline): register every open session with the keeper.
+        self.heartbeat = os.environ.get("HEARTBEAT", "1") != "0"
         # The ONE pre-open knob: how many upcoming batches to keep booted. The session cap follows
         # from slime's own batch shape, so the two can never disagree. 0 = no look-ahead (each episode
         # still starts booting at submit, bounded by the admission gate).
         batches = int(os.environ.get("TB_PREOPEN_BATCHES", "2"))
-        self.preopen_max = (batches * args.rollout_batch_size * args.n_samples_per_prompt
-                            if batches > 0 else self.num_workers)
+        want = (batches * args.rollout_batch_size * args.n_samples_per_prompt
+                if batches > 0 else self.num_workers)
+        # Capacity: the fleet holds SANDBOX_SLOTS pods at once (run.sh derives it from the node count;
+        # 0 = unknown, no cap). Running episodes (<= num_workers) come first and pre-open gets what is
+        # left, so a pre-opened future episode never holds a slot the current step needs, and never
+        # sits Pending until EKS_OPEN_TIMEOUT/ECS_OPEN_TIMEOUT turns it into an infra error.
+        self.slots = int(os.environ.get("SANDBOX_SLOTS", "0"))
+        if self.slots:
+            if self.slots < self.num_workers:
+                logger.warning("[terminalbench_pool] SANDBOX_SLOTS=%d < HARNESS_WORKERS=%d: running episodes "
+                               "alone oversubscribe the fleet (they wait for room); pre-open is off",
+                               self.slots, self.num_workers)
+            cap = max(0, self.slots - self.num_workers)
+            if want > cap:
+                logger.warning("[terminalbench_pool] pre-open capped %d -> %d by SANDBOX_SLOTS=%d - "
+                               "HARNESS_WORKERS=%d; add nodes for the full look-ahead", want, cap,
+                               self.slots, self.num_workers)
+            want = min(want, cap)
+        self.preopen_max = want
+        # Hard lifetime of a pod (EKS_POD_MAX_LIFETIME), counted from its creation, pre-open idle included; a
+        # heartbeat cannot extend it. A pre-opened pod is only handed out if an episode still fits:
+        # agent turns x bash timeout + grading (TB_EPISODE_BUDGET_SEC overrides the estimate).
+        self.max_lifetime = float(os.environ.get("EKS_POD_MAX_LIFETIME", "7200"))
+        self.episode_budget = float(os.environ.get("TB_EPISODE_BUDGET_SEC", "0")) or (
+            self.max_turns * int(os.environ.get("TB_EXEC_TIMEOUT", "180")) + 660)
+        # A pre-opened pod idle longer than this is pinged once at pickup before the episode uses it.
+        self.recheck_idle_s = float(os.environ.get("TB_PREOPEN_RECHECK_SEC", "2"))
+        self.preopen_replaced = collections.Counter()   # why -> count ([demo] preopen_replaced)
         # Strict task -> ECR image URI map (the image pool), parsed once. Kept under the AgentCore
         # name (_arn_by_image) so the pre-open bookkeeping below is byte-identical to the AgentCore demo.
         self._arn_by_image: dict[str, str] = json.loads(
@@ -166,7 +194,7 @@ class TerminalBenchPool(HarnessPool):
         self._keeper = None
         # Upcoming episodes, in the order they will run, as their task's Runtime ARN:
         #   _demand — drawn by slime (or submitted without a look-ahead reservation), not yet claimed;
-        #   _future — predicted by the look-ahead data source for the next rollouts (replaced per draw).
+        #   _future — predicted by the look-ahead data source for the next prompts (replaced per draw).
         self._demand: list[str] = []
         self._future: list[str] = []
         # ARN -> unclaimed sessions opened (or opening) on that task's Runtime, oldest first. Any of
@@ -197,8 +225,9 @@ class TerminalBenchPool(HarnessPool):
 
             self._harness.system_prompt = TerminalBenchTask.SYSTEM
             self._harness.exec_timeout_sec = int(os.environ.get("TB_EXEC_TIMEOUT", "180"))
-            logger.info("[terminalbench_pool] SessionKeeper started (idle_timeout=%.0fs, preopen_max=%d)",
-                        self.idle_timeout, self.preopen_max)
+            logger.info("[terminalbench_pool] SessionKeeper started (idle_timeout=%.0fs, preopen_max=%d, "
+                        "slots=%d, max_lifetime=%.0fs, episode_budget=%.0fs)", self.idle_timeout,
+                        self.preopen_max, self.slots, self.max_lifetime, self.episode_budget)
 
     def arn_for_sample(self, sample) -> str:
         from .generate import _task_from_sample
@@ -243,7 +272,20 @@ class TerminalBenchPool(HarnessPool):
         if not self.workdir and boot.get("workdir"):
             sb._workdir = boot["workdir"]           # the task's own WORKDIR (/app, /app/astropy, ...)
 
-        # No heartbeat: a pod is never idle-reclaimed (activeDeadlineSeconds only caps a leaked one).
+        if self.heartbeat:
+            async def _ping(s=sb) -> None:
+                # A no-op exec. A pod has no idle reclaim, so this is a liveness check. A pre-opened
+                # pod that died (node drained / scaled in, OOM-killed) or is near its lifetime is
+                # replaced here, before a worker claims it; a running episode's pod is left alone.
+                try:
+                    await s.exec("true", timeout=30)
+                except Exception:
+                    self._evict_ready(s, "dead")
+                    raise                               # the keeper logs [demo] heartbeat_failed
+                if self._expiring(s):
+                    self._evict_ready(s, "expiring")
+
+            self._keeper.register(sb._session_id, _ping, self.idle_timeout)
         return sb
 
     @staticmethod
@@ -271,10 +313,10 @@ class TerminalBenchPool(HarnessPool):
         """Called by the look-ahead data source on every draw (sync, from slime's rollout loop).
 
         `drawn` = the episodes slime just drew (they will be submitted now); `upcoming` = the episodes
-        of the next rollouts, predicted. One draw per rollout, so this REPLACES the window: anything
-        left from the previous draw is stale (that rollout is over) and its sessions get trimmed.
+        after them, predicted. The fully-async driver draws one group at a time, so `drawn` is APPENDED
+        (earlier draws may still be waiting for a worker) and `upcoming` REPLACES the sliding window.
         """
-        self._demand = list(drawn)
+        self._demand.extend(drawn)
         self._future = list(upcoming)
         try:
             asyncio.get_running_loop().create_task(self._start_and_refill())
@@ -307,6 +349,54 @@ class TerminalBenchPool(HarnessPool):
         pending = q.popleft() if q else None
         self._refill()                # a slot moved from "ahead" to "running": boot the next one
         return pending
+
+    def _expiring(self, sb) -> bool:
+        """True if an episode started now could outlive the pod's hard lifetime."""
+        born = getattr(sb, "open_sent_epoch", None) or time.time()
+        return self.max_lifetime > 0 and time.time() - born + self.episode_budget > self.max_lifetime
+
+    def _note_replaced(self, sb, why: str) -> None:
+        self.preopen_replaced[why] += 1
+        print(f"[demo] preopen_replaced={why} session={sb._session_id} "
+              f"age_s={time.time() - (getattr(sb, 'open_sent_epoch', None) or time.time()):.0f} "
+              f"total_replaced={sum(self.preopen_replaced.values())}", flush=True)
+
+    def _evict_ready(self, sb, why: str) -> None:
+        """Drop `sb` from the ready queues if it is still unclaimed, close it, and boot a replacement.
+        A claimed pod is no longer in any queue, so a running episode is never touched."""
+        for q in self._ready.values():
+            for t in q:
+                if t.done() and not t.cancelled() and t.exception() is None and t.result() is sb:
+                    q.remove(t)
+                    self._note_replaced(sb, why)
+                    asyncio.get_running_loop().create_task(self._close_session(sb))
+                    self._refill()
+                    return
+
+    async def _take(self, pending, arn: str):
+        """The episode's sandbox: the claimed pre-opened one if it is usable, else a brand-new one.
+        Usable = its open succeeded, it has time left before the pod lifetime, and (if it sat idle
+        past TB_PREOPEN_RECHECK_SEC) it answers a ping."""
+        if pending is None:
+            return await self._open_session(arn)
+        try:
+            sb = await pending
+        except Exception as e:  # noqa: BLE001 — the pre-open failed after its retries: open afresh
+            logger.warning("[terminalbench_pool] pre-opened session on %s failed (%s); opening a new one", arn, e)
+            self.preopen_replaced["open_failed"] += 1
+            return await self._open_session(arn)
+        why = "expiring" if self._expiring(sb) else None
+        if why is None and time.perf_counter() - sb._tb_opened_at > self.recheck_idle_s:
+            try:
+                await asyncio.wait_for(sb._invoke({"op": "ping", "workdir": sb._workdir}), timeout=15)
+            except Exception:  # noqa: BLE001
+                why = "dead_at_claim"
+        if why is None:
+            return sb
+        self._note_replaced(sb, why)
+        with contextlib.suppress(Exception):
+            await self._close_session(sb)
+        return await self._open_session(arn)
 
     async def _discard(self, pending: asyncio.Task) -> None:
         with contextlib.suppress(Exception):
@@ -342,7 +432,7 @@ class TerminalBenchPool(HarnessPool):
         arn = self._arn_for(task)
         pending = self._claim(arn)
         t0 = time.perf_counter()
-        sb = await (pending if pending is not None else self._open_session(arn))
+        sb = await self._take(pending, arn)
         wait_ms = (time.perf_counter() - t0) * 1000.0
         # How long the booted microVM sat idle before this worker claimed it (0 if it was still
         # booting at pickup). This is the gap the SessionKeeper must bridge (< idle timeout).

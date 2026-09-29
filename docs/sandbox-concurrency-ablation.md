@@ -75,7 +75,11 @@ the next section, because Demo 1's default driver does *not* let that happen.**
 The word "async" hides two very different regimes, and **which one you run changes the entire
 shape of the ablation.** slime ships both.
 
-### Mode A — 1-step-async (`train_async.py`) — Demo 1's *default*, **staleness-bounded**
+> **2026-09-28: the demos run Mode B only.** The `MODE` knob is gone; every demo except the experimental
+> `demo_cpu_branching` passes slime's fully-async rollout function. Mode A below is slime's stock driver,
+> kept here only as the contrast that explains why Mode B is the one that exposes the staleness trade-off.
+
+### Mode A — 1-step-async (`train_async.py`, stock; not used by the demos) — **staleness-bounded**
 `train_async.py` is a **one-step-ahead pipeline**, not a deep buffer:
 
 ```python

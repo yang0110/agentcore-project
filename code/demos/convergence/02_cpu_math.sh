@@ -24,10 +24,10 @@ DEMO="$(cd "$CONV_DIR/.." && pwd)/demo_cpu_tasks"
 
 : "${NR:=201}"; : "${RB:=8}"; : "${NS:=8}"; : "${TEMP:=1.0}"
 : "${EVAL_INTERVAL:=20}"; : "${EVAL_NS:=4}"; : "${SAVE_INTERVAL:=100}"
-: "${MODE:=B}"; : "${CONC:=4}"
+: "${CONC:=4}"
 : "${DATASET:=math}"   # which dataset of demo_cpu_tasks to train
-export DATASET NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL MODE CONC
+export DATASET NR RB NS TEMP EVAL_INTERVAL EVAL_NS SAVE_INTERVAL CONC
 
 LOG="$DEMO/train.convergence_${DATASET}_$(date +%Y%m%d_%H%M%S).log"
-echo ">>> converging demo_cpu_tasks DATASET=$DATASET (Hendrycks MATH)  NR=$NR RB=$RB NS=$NS steps=$((NR-1)) MODE=$MODE  log=$LOG"
+echo ">>> converging demo_cpu_tasks DATASET=$DATASET (Hendrycks MATH)  NR=$NR RB=$RB NS=$NS steps=$((NR-1))  log=$LOG"
 bash "$DEMO/run.sh" 2>&1 | tee "$LOG"

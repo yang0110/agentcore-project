@@ -17,7 +17,9 @@ API server itself, agentcore_slime_demo/eks_api.py).
 
 Knobs: EKS_CLUSTER (acs-swe-eks)  EKS_NAMESPACE (acs-swe)  EKS_VERSION (1.35)  EKS_NODE_TYPE (m5.2xlarge)
        EKS_NODES (4)  EKS_NODES_MIN (1)  EKS_NODES_MAX (16)  EKS_NODE_DISK_GIB (300)
-       EKS_PUBLIC_CIDRS (default: this box's public egress IP/32)  EKS_PREPULL (1)  GVISOR_RELEASE (latest)
+       EKS_PUBLIC_CIDRS (default: this box's public egress IP/32; used only while eksctl creates the cluster)
+       EKS_API_PUBLIC (0: `up` locks the API endpoint to private-only; 1 = keep/restore public on EKS_PUBLIC_CIDRS)
+       EKS_PREPULL (1)  GVISOR_RELEASE + GVISOR_SHA512 (pinned in eks/gvisor-installer.yaml; override both together)
 Network: same VPC as the trainer; nodes in the ${NAME_PREFIX}-egress-* NAT subnets (they must already
 exist — the AgentCore demos' RUNTIME_EGRESS=nat created them; `render` does not create subnets).
 """
@@ -45,6 +47,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(DEMO_DIR))
 
 import agentcore_deploy as d  # noqa: E402
+from agentcore_slime_demo.eks_pod_sandbox import SECURITY_CONTEXT  # noqa: E402
 
 REGION, PREFIX = d.REGION, d.PREFIX
 CLUSTER = os.environ.setdefault("EKS_CLUSTER", f"{PREFIX}-swe-eks")
@@ -95,15 +98,30 @@ def render(env: dict) -> None:
         ADAPTER_PORT=d.ADAPTER_PORT)
     (RENDERED / "sandbox-namespace.yaml").write_text(ns_yaml)
 
-    inst = (EKS_DIR / "gvisor-installer.yaml").read_text().replace(
-        'value: "latest"', f'value: "{os.environ.get("GVISOR_RELEASE", "latest")}"')
-    (RENDERED / "gvisor-installer.yaml").write_text(inst)
+    (RENDERED / "gvisor-installer.yaml").write_text(gvisor_installer())
     shutil.copy(EKS_DIR / "runtimeclass.yaml", RENDERED / "runtimeclass.yaml")
     prepull = prepull_manifest()
     if prepull:
         (RENDERED / "prepull.yaml").write_text(yaml.safe_dump(prepull, sort_keys=False))
     else:
         (RENDERED / "prepull.yaml").unlink(missing_ok=True)
+
+
+def gvisor_installer() -> str:
+    """The installer with GVISOR_RELEASE / GVISOR_SHA512 overridden, if set. They go together: a release
+    without its hash would install an unverified binary, so that is refused."""
+    text = (EKS_DIR / "gvisor-installer.yaml").read_text()
+    rel, sha = os.environ.get("GVISOR_RELEASE"), os.environ.get("GVISOR_SHA512")
+    if bool(rel) != bool(sha):
+        d.die("set GVISOR_RELEASE and GVISOR_SHA512 together (the hash of that release's x86_64/gvisor.tar.bz2)")
+    if not rel:
+        return text
+    docs = [o for o in yaml.safe_load_all(text) if o]
+    ds = next(o for o in docs if o["kind"] == "DaemonSet")
+    for e in ds["spec"]["template"]["spec"]["containers"][0]["env"]:
+        if e["name"] in ("GVISOR_RELEASE", "GVISOR_SHA512"):
+            e["value"] = rel if e["name"] == "GVISOR_RELEASE" else sha
+    return yaml.safe_dump_all(docs, sort_keys=False)
 
 
 def prepull_manifest() -> dict | None:
@@ -123,7 +141,8 @@ def prepull_manifest() -> dict | None:
             "metadata": {"labels": {"app": "acs-swe-prepull"}},
             "spec": {"runtimeClassName": "gvisor", "automountServiceAccountToken": False,
                      "initContainers": [{"name": f"img{i}", "image": img, "imagePullPolicy": "IfNotPresent",
-                                         "command": ["/bin/true"], "resources": small}
+                                         "command": ["/bin/true"], "resources": small,
+                                         "securityContext": SECURITY_CONTEXT}
                                         for i, img in enumerate(images)],
                      "containers": [{"name": "pause", "image": PAUSE_IMAGE, "resources": small}]}}}}
 
@@ -183,21 +202,50 @@ def cluster_sg() -> str:
 
 
 def open_sg_rules(env: dict, sg: str) -> None:
-    """trainer -> pod :8080 (ingress on the cluster SG, which managed nodes and their pods carry), and
-    pod -> trainer adapter ports (the AgentCore demos' SG->SG dial-back rule, with the cluster SG)."""
+    """On the cluster SG (carried by managed nodes, their pods and the control plane's private ENIs):
+    trainer -> pod :8080 (sandbox ops) and trainer -> :443 (the private API endpoint, once public access
+    is off). Plus pod -> trainer adapter ports (the AgentCore demos' SG->SG dial-back rule)."""
     from botocore.exceptions import ClientError
 
     ec2 = boto3.client("ec2", region_name=REGION)
     for tsg in env["trainer_sgs"]:
-        try:
-            ec2.authorize_security_group_ingress(GroupId=sg, IpPermissions=[{
-                "IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8080,
-                "UserIdGroupPairs": [{"GroupId": tsg, "Description": "trainer to SWE-bench sandbox pods"}]}])
-            d.err(f"opened tcp/8080 on {sg} from {tsg}")
-        except ClientError as e:
-            if "InvalidPermission.Duplicate" not in str(e):
-                raise
+        for port, why in ((8080, "trainer to SWE-bench sandbox pods"), (443, "trainer to private EKS API")):
+            try:
+                ec2.authorize_security_group_ingress(GroupId=sg, IpPermissions=[{
+                    "IpProtocol": "tcp", "FromPort": port, "ToPort": port,
+                    "UserIdGroupPairs": [{"GroupId": tsg, "Description": why}]}])
+                d.err(f"opened tcp/{port} on {sg} from {tsg}")
+            except ClientError as e:
+                if "InvalidPermission.Duplicate" not in str(e):
+                    raise
     d.open_dialback(sg)
+
+
+def set_api_access(env: dict) -> None:
+    """EKS_API_PUBLIC=0 (default): private-only API endpoint — nothing on the internet can reach the
+    cluster API, even from EKS_PUBLIC_CIDRS. =1 restores public access on those CIDRs (e.g. to run
+    eksctl from outside the VPC). An endpoint update takes a few minutes."""
+    eks = boto3.client("eks", region_name=REGION)
+    public = os.environ.get("EKS_API_PUBLIC", "0") == "1"
+    cfg = eks.describe_cluster(name=CLUSTER)["cluster"]["resourcesVpcConfig"]
+    if cfg.get("endpointPublicAccess") == public and cfg.get("endpointPrivateAccess"):
+        d.err(f"API endpoint already {'public+private' if public else 'private-only'}")
+        return
+    vpc_cfg = {"endpointPublicAccess": public, "endpointPrivateAccess": True}
+    if public:
+        vpc_cfg["publicAccessCidrs"] = [c.strip() for c in env["public_cidrs"].split(",") if c.strip()]
+    upd = eks.update_cluster_config(name=CLUSTER, resourcesVpcConfig=vpc_cfg)["update"]
+    d.err(f"API endpoint -> {'public+private' if public else 'private-only'} (update {upd['id']})")
+    t0 = time.time()
+    while True:
+        st = eks.describe_update(name=CLUSTER, updateId=upd["id"])["update"]
+        if st["status"] == "Successful":
+            return
+        if st["status"] in ("Failed", "Cancelled"):
+            d.die(f"endpoint update {st['status']}: {st.get('errors')}")
+        if time.time() - t0 > 1800:
+            d.die("endpoint update not done after 30 min")
+        time.sleep(20)
 
 
 def revoke_sg_rules(sg: str) -> None:
@@ -225,7 +273,9 @@ async def _smoke(image: str) -> dict:
                                  timeout=60)
         return {"open_s": round(sb.open_recv_epoch - sb.open_sent_epoch, 1), **sb.open_phases,
                 "server_start_after_s": round((boot.get("server_start_epoch") or 0) - sb.open_sent_epoch, 1),
-                "gvisor": int("gVisor" in dmesg), "dmesg_uname": dmesg.strip().replace("\n", " | "),
+                # dmesg may be empty with ALL caps dropped (no CAP_SYSLOG); newer runsc reports
+                # a `*-gvisor` kernel release in uname, so either one proves the runtime
+                "gvisor": int("gvisor" in dmesg.lower()), "dmesg_uname": dmesg.strip().replace("\n", " | "),
                 "testbed_python": py.strip()}
 
 
@@ -236,7 +286,8 @@ def smoke() -> dict:
     res = asyncio.run(_smoke(image))
     d.err(f"[smoke] {res}")
     if os.environ.get("EKS_RUNTIME_CLASS", "gvisor") and not res["gvisor"]:
-        d.die("smoke pod is NOT running under gVisor (dmesg has no 'gVisor') — check the RuntimeClass/installer")
+        d.die("smoke pod is NOT running under gVisor (no 'gvisor' in dmesg or uname) — check the RuntimeClass/"
+              "installer; if dmesg is just empty, compare `uname -r` with the node's")
     return res
 
 
@@ -284,7 +335,8 @@ def cmd_up() -> None:
     if (RENDERED / "prepull.yaml").exists():
         apply_file(api, RENDERED / "prepull.yaml")
         wait_daemonset(api, NAMESPACE, "acs-swe-prepull", 3600)
-    smoke()
+    set_api_access(env)
+    smoke()                                          # also proves the trainer reaches the (private) API
     print(f"export EKS_CLUSTER={CLUSTER}\nexport EKS_NAMESPACE={NAMESPACE}")
 
 

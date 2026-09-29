@@ -11,7 +11,7 @@ its task (`metadata.task`: family, seed files, hidden checker) and its sandbox i
 (`metadata.task.image`). Rows can share an image: every mbpp row is `cpu`, every pandas row `libs`, while
 each Terminal-Bench task has its own. `image_routing.py` maps each image to its Runtime ARN, strictly.
 Each of the `RB × NS` samples of a step then gets **its own fresh session** on its row's Runtime, so
-**sessions per step = RB × NS** (32 by default), spread over however many Runtimes the batch touches.
+**sessions per step = RB × NS** (80 for the default 10-dataset mix, RB=10), spread over however many Runtimes the batch touches.
 A mixed batch (`DATASET=mbpp,terminalbench`) is the same thing with rows that name different images.
 
 **The point of this demo: most agentic-RL tasks from the literature need only a generic sandbox.** One
@@ -53,7 +53,7 @@ sessions per image in a fresh `/workspace/ep-<hex>` workdir), then the least-loa
 sticky for all its turns. `throughput = min(inference, sandbox, harness)`: the harness must scale along
 with SGLang and the sandbox, or a few coroutines silently become the ceiling, and it scales with the
 sandbox (one mini_claude loop per session), not inside the trainer, as in DSec. Episodes return one bare
-Sample, so `MODE=B` fully-async still works. See [`../README.md`](../README.md#harness-tier-default-in-every-demo).
+Sample, the shape slime's fully-async driver (the only rollout driver) needs. See [`../README.md`](../README.md#harness-tier-default-in-every-demo).
 
 ## 1. The tasks: dataset, source, environment, image
 
@@ -64,7 +64,7 @@ its own `eval/<name>` metric and its own `ckpt/Qwen3-4B_<name>_async`.
 
 | `DATASET` | family | dataset (URL) | train/eval | reward | env deps (checker) | image |
 |---|---|---|---:|---|---|---|
-| `mbpp` (default) | coding | [google-research-datasets/mbpp](https://huggingface.co/datasets/google-research-datasets/mbpp) | 500/8 | hidden asserts | python stdlib | `cpu` |
+| `mbpp` | coding | [google-research-datasets/mbpp](https://huggingface.co/datasets/google-research-datasets/mbpp) | 500/8 | hidden asserts | python stdlib | `cpu` |
 | `humaneval` | coding | [openai/openai_humaneval](https://huggingface.co/datasets/openai/openai_humaneval) | 140/24 | the row's own `test` fn | python stdlib | `cpu` |
 | `gsm8k` | math | [openai/gsm8k](https://huggingface.co/datasets/openai/gsm8k) (`main`) | 200/40 | exact integer match | python stdlib | `cpu` |
 | `math500` | math | [HuggingFaceH4/MATH-500](https://huggingface.co/datasets/HuggingFaceH4/MATH-500) (numeric subset) | 160/40 | numeric match, tol 1e-4 | python stdlib | `cpu` |
@@ -92,11 +92,36 @@ unmapped row would run on another image and train on a silent 0 reward.
 - An image larger than 2 GB: an m5 capacity-provider Instance, as in `demo_cpu_swebench`.
 - CUDA: the GPU demos.
 
-**Mixing:** any datasets mix, Terminal-Bench included (`DATASET=gsm8k,terminalbench`). `DATASET=a,b,c` truncates each dataset to the shortest one and interleaves them
-(`a0 b0 c0 a1 …`) into `ckpt/_mix/`, with the eval metric `eval/mix`. GRPO normalizes the advantage
-**within** a group of `NS` repeats of one prompt, so the families' reward scales never mix. `mixed` and
-`libs` are prebuilt mixes (`build_mixed_datasets.py --name <n> --families …`) with per-family eval
-files `<n>_<family>_eval.jsonl`.
+**Mixed-task batches (the default).** With no `DATASET`, a run trains on
+every literature dataset: the real HF RLVR sets plus Terminal-Bench,
+`mbpp,humaneval,gsm8k,math500,deepscaler,gretelsql,hotpotqa,xlam,mcp,terminalbench` (the synthetic zoo
+and SWE-bench, which is `demo_cpu_swebench`, are left out). So **every step's batch holds one prompt of
+each of the 10 datasets**: 2 coding, 3 math, 1 SQL, 1 RAG, 2 tool-calling and 1 Terminal-Bench
+(10 × NS=8 = 80 episodes, on the `cpu` Runtime and the per-task
+Terminal-Bench Runtimes at once). Any comma list works the same way (`DATASET=gsm8k,terminalbench`),
+and so do the prebuilt `mixed` (sql/math/ctf/datasci) and `libs` (datasci/scipy/sklearn).
+How the mix is guaranteed:
+- `mix_data.py` groups the rows into task strata (source dataset × family), balances them to the
+  smallest stratum (135 rows each for the default, capped by Terminal-Bench), and deals them
+  round-robin into `ckpt/_mix/<a+b+…>_train.jsonl`. Row *i* belongs to task *i* mod K.
+- `run.sh` then drops `--rollout-shuffle`, so each run of RB consecutive prompts spans min(RB, K)
+  tasks. If you did not set `RB` and K > RB, RB is raised to K (the default gets RB=10, GBS=80), so
+  no step is missing a task. Instead of per-epoch reshuffles, the file holds as many reshuffled
+  passes as `NR × RB` needs.
+- Eval uses a balanced mix too (`eval/mix` plus `eval/mix_<family>` per task; mbpp's 8 eval rows cap
+  it at 8 per task).
+- **Evidence.** `batch_mix_log.py` (slime's custom rollout/eval log hooks) logs what was *actually*
+  trained on each step: a `[batch] rollout=N n_tasks=5 coding=8 math=8 …` line plus
+  `mix/n_tasks`, `mix/episodes_<family>`, `mix/reward_<family>` in the step metrics. `metrics.py`
+  prints the mix summary (tasks/step, per-family reward first→last) and plots one reward panel per
+  family. Under the fully-async driver the trained batch is the first RB groups to *finish*, so a slow
+  Terminal-Bench group can land a step later than it was drawn; these logs show the true composition.
+
+GRPO normalizes the advantage **within** a group of `NS` repeats of one prompt, so the families'
+reward scales never mix. Terminal-Bench rows in the mix switch on the Terminal-Bench run settings
+(section 3: look-ahead pre-open, 8 turns × 1024 tokens, `MAX_TOKENS_PER_GPU=16384`) for the whole
+batch. `DATASET=<one name>` trains on a single task (shuffled as usual). `mixed`/`libs` are built by
+`build_mixed_datasets.py --name <n> --families …`.
 
 ## 2. Step by step (run from this dir on the HOST — container steps `docker exec` themselves)
 
@@ -106,10 +131,13 @@ bash 2_build_image.sh      # arm64 images from deploy/Dockerfile.sandbox.{cpu,li
 bash 3_push_ecr.sh         # -> ECR acs-tasks-cpu, acs-tasks-libs
 bash 4_deploy_runtime.sh   # VPC Runtimes acs_tasks_cpu + acs_tasks_libs -> deploy/runtime.env
                            #   (AGENTCORE_SANDBOX_RUNTIME_ARNS = cpu, ..._ARN_BY_IMAGE = {cpu, libs})
-bash 5_run.sh              # container: 10 train steps + 1 eval; logs/<tag>.{log,csv,eval.csv,png}
-DATASET=gsm8k bash 5_run.sh     # easiest; good first run
+VARIANT=terminalbench bash 2_build_image.sh && VARIANT=terminalbench bash 4_deploy_runtime.sh
+                           # the per-task Terminal-Bench Runtimes the DEFAULT mix needs (section 3)
+bash 5_run.sh              # container: DEFAULT mixed batch (coding+math+sql+rag+terminalbench), 10 steps + 1 eval
+                           #   logs/<tag>.{log,csv,eval.csv,png}; [batch] lines = per-step task mix
+DATASET=gsm8k bash 5_run.sh     # single task, no Terminal-Bench Runtimes needed; good first run
 DATASET=libs  bash 5_run.sh     # pandas / scipy / sklearn tasks on the libs Runtime
-DATASET=gsm8k,gretelsql,hotpotqa bash 5_run.sh   # ad-hoc mix, eval/mix
+DATASET=gsm8k,gretelsql,hotpotqa bash 5_run.sh   # ad-hoc mix without Terminal-Bench, eval/mix + eval/mix_<family>
 bash 6_cleanup.sh          # delete the Runtimes
 ```
 
@@ -165,6 +193,10 @@ The demo hides that cost instead of avoiding it:
    with a `SessionKeeper`, which pings any session idle past `WARM_PING_FRACTION × WARM_IDLE_TIMEOUT`.
    It is always on for these rows. The `HEARTBEAT` knob covers the family rows.
 
+The other rows get pre-open too (default on): `PREOPEN` (RB×NS, one step) fresh `cpu`/`libs` sessions
+stay booted ahead per image (`agentcore_slime_demo/preopen.py`). No look-ahead is needed there, because
+all those rows share one image. `PREOPEN=0` opens on demand.
+
 **Mixed batches.** `generate.generate` sends Terminal-Bench rows to `TerminalBenchPool`, a
 `HarnessPool` subclass with its own sandbox tier. Every other row goes through the default harness
 tier. Both pools share the engines' adapters, so one batch can span both.
@@ -179,8 +211,9 @@ slime → generate.generate → family == terminalbench → TerminalBenchPool.su
   ONE loss-masked Sample; StopRuntimeSession
 ```
 
-**Run settings `run.sh` applies when the data has Terminal-Bench rows.** `MODE=A`: the look-ahead
-feeds slime's stock driver, so `MODE=B` is rejected. `HARNESS_WORKERS=RB×NS`,
+**Run settings `run.sh` applies when the data has Terminal-Bench rows.** The look-ahead data source
+slides with the fully-async driver's per-group draws (drawn groups appended, the next
+`TB_PREOPEN_BATCHES×RB` prompts announced). `HARNESS_WORKERS=RB×NS`,
 `CONC=⌈2W/E⌉` (W running + W queued), `EPISODE_MAX_TURNS=8`, `EPISODE_MAX_TOKENS=1024`,
 `MINI_AGENT_MAX_TOOL_CHARS=2000`, `TB_EXEC_TIMEOUT=180`, `MAX_TOKENS_PER_GPU=16384` (one full
 trajectory). Each one can be overridden.
@@ -233,7 +266,7 @@ sessions in flight**, each session carrying its own mini_claude loop.
 ```bash
 DATASET=deepscaler bash 1_prepare_data.sh   # the only dataset the preset needs
 SCALE=1 bash 5_run.sh                       # DATASET=deepscaler RB=32 (x NS=8 = 256/step) GPUS_PER_ENGINE=1
-                                            # HARNESS_WORKERS=256 MODE=A CONC=ceil(256/4)=64 -> S=256
+                                            # HARNESS_WORKERS=256 CONC=ceil(256/4)=64 -> S=256
 SCALE=1 SANDBOX_SESSIONS=64 bash 5_run.sh   # 64 pooled sessions: expect sandbox_wait_ms > 0
 ```
 
@@ -269,15 +302,15 @@ HEARTBEAT=0 DATASET=deepscaler bash 5_run.sh   # the no-heartbeat baseline
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `DATASET` (alias `FAMILY`) | `mbpp` | dataset, comma list to mix, `mixed` or `libs` |
+| `DATASET` (alias `FAMILY`) | `mbpp,humaneval,gsm8k,math500,deepscaler,gretelsql,hotpotqa,xlam,mcp,terminalbench` | dataset, comma list to mix (task-interleaved batches), `mixed` or `libs` |
 | `SANDBOX` | `agentcore-runtime` | the only backend. `local` and `agentcore` (Code Interpreter) are rejected |
 | `IMAGES` | `cpu:… libs:…` | images built/deployed by steps 2–4 (`deploy/demo.env`) |
-| `MODE` | `B` (Terminal-Bench rows: `A`, `B` rejected) | fully-async (staleness grows with `CONC`); `A` = 1-step-async |
-| `RB` / `NS` / `NR` / `TEMP` | 4 / 8 / 11 / 1.0 | prompts/step, GRPO group, 10 train + 1 eval, temperature |
-| `CONC` | `4` (`SCALE=1`: ⌈W/E⌉) | concurrent episodes per engine; `S = CONC × engines` |
+| `RB` / `NS` / `NR` / `TEMP` | 4 / 8 / 11 / 1.0 | prompts/step (raised to the task count K of a mix if unset: default 5), GRPO group, 10 train + 1 eval, temperature |
+| `CONC` | `4` (`SCALE=1`: ⌈W/E⌉) | concurrent episodes per engine; `S = CONC × engines`. Also the fully-async buffer depth: staleness grows with `CONC` |
 | `GPUS_PER_ENGINE` | `2` (`SCALE=1`: 1) | TP per SGLang engine; engines E = `ROLLOUT_GPUS / GPUS_PER_ENGINE` |
 | `HARNESS_WORKERS` | empty → RB×NS | harness tier: dispatch workers pulling from one queue |
 | `SANDBOX_SESSIONS` | `0` | 0 = fresh session per episode; M > 0 = M pooled sessions per image, fresh `/workspace/ep-<hex>` per episode (not for tasks that change the OS) |
+| `PREOPEN` | RB×NS (one step) | fresh sessions kept booted ahead per image for the non-Terminal-Bench rows (still one episode each, heartbeated while waiting); `0` = open on demand |
 | `SANDBOX_OPEN_RATE` | `20` | session opens per second (pacing) |
 | `SCALE` | `0` | `1` = the harness-scaling preset (see above) |
 | `EVAL_INTERVAL` / `EVAL_NS` / `SAVE_INTERVAL` | 10 / 2 / 1000000 | eval cadence / samples / save only at the end |

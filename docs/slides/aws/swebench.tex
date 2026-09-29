@@ -19,7 +19,7 @@
 \begin{minipage}{0.56\textwidth}
 {\fontsize{26}{30}\selectfont\bfseries\color{white}SWE-bench on\\AgentCore\par}
 \vspace{4mm}
-{\raggedright\large\color{white}Image sizes, the arm64 and 2\,GB limits, and a two-lane sandbox design for agentic RL\par}
+{\raggedright\large\color{white}Image sizes, the arm64 and 2\,GB limits, and three sandbox demos for agentic RL: AgentCore, EKS, ECS\par}
 \vspace{12mm}
 {\small\color{white}\textbf{Kaige Yang}\\Senior Applied Scientist, AWS\par}
 \vspace{3mm}
@@ -40,7 +40,7 @@
 \agi{fr:task}{01}{Background}{What an SWE-bench task needs from a sandbox}
 \agi{fr:limits}{02}{Survey}{All 500 Verified images vs the AgentCore limits, probed on AWS}
 \agi{fr:ch1}{03}{Challenges and solutions}{arm64, the 2\,GB cap, and a two-lane design}
-\agi{fr:built}{04}{What we built}{\texttt{demo\_cpu\_swebench}, its first smoke run, and an EKS + gVisor twin}
+\agi{fr:built}{04}{What we built}{AgentCore (first run, arm64), EKS + gVisor, ECS: limits of each, compared}
 {\scriptsize\color{footc}Appendix (\hyperlink{fr:appx}{\textcolor{linkc}{from slide~\pageref*{fr:appx}}}): per-repo detail and references.}
 \end{columns}
 \end{frame}
@@ -57,8 +57,8 @@ Limits, probed & The 2\,GB cap counts the \textbf{compressed} size and is enforc
 arm64 & microVMs are arm64-only, but \textbf{prebuilt arm64 images exist for \hl{420 / 500} rows}, all $\le$ 2\,GB (Epoch AI on GHCR; 281 also official) (\sref{fr:arm64}).\\
 Solutions & Re-wrap the existing arm64 images, rebuild the rest per (repo, version) environment, slim what's over 2\,GB, and route the remaining rows to an \textbf{m5 Instance lane}.\\
 Not yet shown & No real SWE-bench image has run on a microVM yet: the 420 are \emph{eligible}, not validated. 139 of them exist only as Epoch builds, assumed to keep the official \texttt{/testbed} layout.\\
-Built (deployed 2026-09-26) & \texttt{demo\_cpu\_swebench}: the Instance lane, 20 SWE-bench tasks. Smoke run: 24 episodes, \hl{0 infra errors}, pre-open hides the $\approx$\,90\,s m5 boot; 0 solved so far.\\
-EKS twin (not deployed) & \texttt{demo\_cpu\_swebench\_eks}: same images and grader, one \textbf{gVisor pod} per episode on shared m5 nodes; no image limits, weaker boundary (\sref{fr:eks}).\\
+Built on AgentCore & \texttt{demo\_cpu\_swebench}, 20 tasks. First run (m5 lane): 24 episodes, \hl{0 infra errors}, the $\approx$\,90\,s boot hidden; 0 solved. Now on \textbf{arm64 microVMs}: local oracle check passes, AWS run pending (\sref{fr:armnow}).\\
+EKS and ECS twins (not deployed) & Same rows, grader and amd64 images: one \textbf{gVisor pod} (\texttt{\_eks}) or one \textbf{ECS task} (\texttt{\_ecs}) per episode on shared m5 nodes; no image limits, weaker boundaries (\sref{fr:cmp3}).\\
 \bottomrule
 \end{tabularx}
 \src{\texttt{code/demos/demo\_cpu\_swebench/} (\texttt{survey\_image\_sizes.py}, \texttt{probe\_image\_cap.py}, smoke log 2026-09-28); checked 2026-09-28.}
@@ -427,7 +427,7 @@ Scale limit & 5000 active sessions & instances in the capacity provider\\
 \sect{What we built}
 
 %====================================================================
-\begin{frame}{\texttt{demo\_cpu\_swebench} runs the Instance lane end to end, reusing the Terminal-Bench pool unchanged}
+\begin{frame}{Demo 1, \texttt{demo\_cpu\_swebench} on AgentCore: the first run used the m5 Instance lane, reusing the Terminal-Bench pool}
 \flabel{fr:built}
 \begin{columns}[T]
 \column{0.60\textwidth}
@@ -453,7 +453,7 @@ Scale limit & 5000 active sessions & instances in the capacity provider\\
 \end{frame}
 
 %====================================================================
-\begin{frame}{The smoke run had 0 infra errors and hid the 90\,s m5 boot, but solved 0 of 24 episodes}
+\begin{frame}{First run on AgentCore: 0 infra errors and the 90\,s m5 boot hidden, but 0 of 24 episodes solved}
 \flabel{fr:smoke}
 \begin{columns}[T]
 \column{0.60\textwidth}
@@ -481,9 +481,53 @@ Trainer & CUDA OOM after 2 rollouts (\texttt{max-tokens-per-gpu} 24576)\\
 \end{frame}
 
 %====================================================================
-\begin{frame}{\texttt{demo\_cpu\_swebench\_eks} swaps only the sandbox: one fresh gVisor pod per episode on a shared EKS node}
+\begin{frame}{Demo 1 now runs on arm64 microVMs: no capacity provider, and a cold open of 22--30\,s instead of $\approx$\,90\,s}
+\flabel{fr:armnow}
+\tabcap{\texttt{demo\_cpu\_swebench}: first run vs the current version (same 20 rows, harness, grader, recipe)}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}>{\bfseries}p{2.3cm}XX@{}}
+\toprule
+ & \textbf{First run: m5 Instance lane} & \textbf{Now: arm64 microVM lane}\\
+\midrule
+Image & stock amd64 \texttt{sweb.eval.x86\_64.*} + server & Epoch AI arm64 build + server, cross-built (buildx + qemu), 0.7--1\,GB\\
+Runtime & one per row on capacity provider \texttt{acs\_swe\_cp} & one plain microVM Runtime per row (\texttt{acs\_swearm\_*}), VPC mode, egress none\\
+Per episode & a brand-new session = a whole m5.xlarge & a brand-new session = its own microVM\\
+Session open & p50 93\,s (measured, \sref{fr:smoke}) & cold 22--30\,s at 1.5--2\,GiB (cap probe, \sref{fr:boot})\\
+Idle cost & m5 instances in the capacity provider & nothing beyond the running microVMs\\
+Oracle check & \texttt{django-15127}: gold solves, empty doesn't (on m5) & same row passes \hl{locally under qemu} (grade 13.7\,s emulated)\\
+Status & deployed 2026-09-26; smoke run done & code switched 2026-09-28; \hl{AWS run pending}\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+{\small\raggedright The old pool (20 \texttt{acs\_swe\_*} Runtimes + \texttt{acs\_swe\_cp}) is kept in \texttt{swebench/m5\_legacy/} until we tear it down; the m5 lane stays the fallback for rows without an arm64 image.\par}
+\src{\texttt{code/demos/demo\_cpu\_swebench/} (\texttt{README.md}, \texttt{swebench/oracle\_local.csv}, \texttt{m5\_legacy/oracle.csv}); checked 2026-09-28.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{AgentCore limits: arm64 and 2\,GB leave 80 rows out, one Runtime per row caps the dataset, and idle sessions need a heartbeat}
+\flabel{fr:aclim}
+\tabcap{Limitations of the AgentCore demo}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}>{\bfseries\raggedright\arraybackslash}p{2.6cm}XX@{}}
+\toprule
+Limitation & Effect & Mitigation\\
+\midrule
+arm64 only [D1] & 80 / 500 Verified rows have no arm64 build (all of xarray); arm64 tests may differ from the validated amd64 run & rebuild per env; oracle check per row; m5 lane for the rest\\
+2\,GB compressed cap [Q2] & not adjustable; rebuilt images near 2.9\,GB won't fit & slim, install at boot, or m5 lane (\sref{fr:ch2})\\
+One Runtime per row [Q1] & 1000 Runtimes per account; SWE-smith has 59,136 rows & one image per environment + \texttt{git checkout}\\
+Cold open per episode & 22--30\,s, and every episode is a new session (no warm reuse) & look-ahead pre-open; warm-pool refill under load not measured\\
+Idle reclaim & sessions idle $\approx$\,15\,min are reclaimed [Q1] & \texttt{SessionKeeper} heartbeat, always on\\
+Dial-back networking & the in-session loop must reach the trainer's adapter & VPC mode + SG$\rightarrow$SG rule on 18100--18163\\
+Not yet shown & arm64 lane never run on AWS; 1 / 20 rows oracle-checked; first run solved 0 / 24 and hit a trainer OOM & AWS oracle check, then smoke (\sref{fr:next})\\
+\bottomrule
+\end{tabularx}
+\src{Survey and cap probe (\sref{fr:arm64}, \sref{fr:capprobe}); smoke run (\sref{fr:smoke}); quotas [Q1, Q2]; checked 2026-09-28.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Demo 2, \texttt{demo\_cpu\_swebench\_eks}, swaps only the sandbox: one fresh gVisor pod per episode on a shared EKS node}
 \flabel{fr:eks}
-\figcap{Same route, image, agent loop and grader; only how an episode's sandbox is opened and closed changes}
+\figcap{Same route, agent loop and grader; only how an episode's sandbox is opened and closed changes}
 \centering
 \begin{tikzpicture}[font=\scriptsize,
   st/.style={box,minimum width=2.75cm,minimum height=1.0cm},
@@ -496,7 +540,7 @@ Trainer & CUDA OOM after 2 rollouts (\texttt{max-tokens-per-gpu} 24576)\\
 \node[font=\scriptsize\bfseries,text=white,anchor=east] at (-1.55,-1.3) {EKS};
 \node[st] (a1) at (0,0.2) {instance id $\rightarrow$\\Runtime ARN};
 \node[st] (a2) at (3.35,0.2) {new \texttt{runtimeSessionId}};
-\node[st] (a3) at (6.7,0.2) {its own m5.xlarge\\(1 session = 1 instance)};
+\node[st] (a3) at (6.7,0.2) {its own arm64 microVM\\(1 session = 1 microVM)};
 \node[st] (a4) at (10.05,0.2) {\texttt{StopRuntimeSession}};
 \node[st,draw=awspurple] (b1) at (0,-1.3) {instance id $\rightarrow$\\ECR \texttt{uri@digest}};
 \node[st,draw=awspurple] (b2) at (3.35,-1.3) {\texttt{POST} pod with\\RuntimeClass \texttt{gvisor}};
@@ -507,38 +551,117 @@ Trainer & CUDA OOM after 2 rollouts (\texttt{max-tokens-per-gpu} 24576)\\
 \end{tikzpicture}
 \vspace{-1mm}
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.2mm}
-\item \textbf{Unchanged:} the ECR images (same repos and tag, so one build serves both), the in-image server on :8080, the in-session agent loop, the hidden-test grader, the pool and slime recipe.
+\item \textbf{Unchanged:} the 20 rows, the in-image server on :8080, the in-session agent loop, the hidden-test grader, the pool and the slime recipe. Images are the \textbf{stock amd64} ones, shared with the ECS twin (\texttt{acs-swe-*} repos).
 \item \textbf{New:} \texttt{EksPodSandbox} (drop-in for the AgentCore sandbox); a Kubernetes API client with no \texttt{kubectl} (boto3-signed EKS token); a DaemonSet that installs gVisor on each node; a NetworkPolicy (in: :8080 from the trainer; out: only the trainer's adapter ports).
-\item \textbf{Status:} code complete and unit-checked; \hl{cluster not created} (render only; \texttt{EKS\_CREATE=1} builds it).
+\item \textbf{Status:} code complete and unit-checked offline; \hl{cluster not created} (render only; \texttt{EKS\_CREATE=1} builds it).
 \end{itemize}
 \src{\texttt{code/demos/demo\_cpu\_swebench\_eks/} (\texttt{eks\_pod\_sandbox.py}, \texttt{eks\_api.py}, \texttt{deploy/eks/}); gVisor [G1]; checked 2026-09-28.}
 \end{frame}
 
 %====================================================================
-\begin{frame}{EKS + gVisor packs 4 episodes per node and drops the image limits, at the price of a weaker boundary and a cluster to run}
-\flabel{fr:eksvs}
-\tabcap{AgentCore Instance lane vs the EKS + gVisor twin, same SWE-bench workload}
+\begin{frame}{EKS limits: nothing measured yet, a syscall tax under gVisor, a shared node, and a cluster to run}
+\flabel{fr:ekslim}
+\tabcap{Limitations of the EKS + gVisor demo}
 \scriptsize
-\begin{tabularx}{\textwidth}{@{}>{\bfseries}p{2.3cm}XX@{}}
+\begin{tabularx}{\textwidth}{@{}>{\bfseries\raggedright\arraybackslash}p{2.6cm}XX@{}}
 \toprule
- & \textbf{AgentCore, Instance lane} & \textbf{EKS + gVisor}\\
+Limitation & Effect & Mitigation\\
 \midrule
-Isolation boundary & a whole machine per episode & gVisor user-space kernel per pod [G1]; node CPU, memory bandwidth and disk are shared\\
-Image limits & none on Instances (amd64); microVMs: arm64, 2\,GB & none: stock amd64 image, any size; disk-bound (3--6\,GB per image per node)\\
-Density & 1 episode per m5.xlarge & \hl{4 per m5.2xlarge} (1.5 vCPU, 6\,GiB each) $\Rightarrow$ $\frac{1}{2}$ m5.xlarge per episode\\
-Session open & $\approx$\,90\,s pull + boot, hidden by pre-open (measured) & \textbf{not measured yet}; images pre-pulled per node, logged as \texttt{schedule\_ms} / \texttt{pod\_ready\_ms}\\
-Idle handling & reclaimed when idle, so a heartbeat keeps it & no idle reclaim; a 2\,h pod deadline caps a leak\\
-Network & VPC mode, SG rule for the dial-back & NetworkPolicy [E1]: in :8080 from the trainer, out only to the adapter\\
-You operate & Runtimes + a capacity provider & cluster, node group, gVisor installer, image disk, autoscaling, upgrades\\
+Not deployed & no cluster exists; open time, density and test fidelity are design values, not measurements & \texttt{EKS\_CREATE=1} on 2 rows first\\
+gVisor syscall tax [G1] & syscall-heavy suites (django) run slower; some tests may break under \texttt{runsc} & oracle check on gVisor pods; \texttt{EKS\_RUNTIME\_CLASS=} for a runc A/B\\
+Weaker boundary & a user-space kernel per pod, but pods share the node's CPU, memory bandwidth, disk and page cache & one pod per episode, never reused; no service-account token\\
+gVisor install & a privileged DaemonSet edits containerd's config; the AMI's containerd layout is a risk & RuntimeClass only schedules on nodes labelled ready\\
+Image disk & 3--6\,GB per image per node; kubelet evicts images above 85\,\% disk & pre-pull DaemonSet; 300\,GiB gp3 per node\\
+Capacity & 4 nodes $\times$ 4 pods = 16 concurrent vs 64 pre-opened & raise \texttt{EKS\_NODES} or lower the pre-open\\
+You operate & control plane (billed), node group, autoscaler, NetworkPolicy, upgrades; \texttt{eksctl} on the host & render first; idempotent up / down\\
 \bottomrule
 \end{tabularx}
-\vspace{1mm}
-\plainen{EKS fits more episodes on each machine and runs any image, but episodes share a machine and we run the cluster ourselves.}
-\src{\texttt{code/demos/demo\_cpu\_swebench\_eks/README.md} (pod sizing, network policy); AgentCore column from the smoke run (\sref{fr:smoke}); checked 2026-09-28.}
+\src{\texttt{code/demos/demo\_cpu\_swebench\_eks/README.md} (design, known risks); VPC CNI network policy [E1]; checked 2026-09-28.}
 \end{frame}
 
 %====================================================================
-\begin{frame}{Next: fix the trainer OOM, then pilot the microVM lane on existing arm64 images}
+\begin{frame}{Demo 3, \texttt{demo\_cpu\_swebench\_ecs}: one fresh ECS task with its own ENI per episode, on a shared EC2 node}
+\flabel{fr:ecs}
+\figcap{Same route, agent loop and grader; the task gets its own ENI and security group}
+\centering
+\begin{tikzpicture}[font=\scriptsize,
+  st/.style={box,minimum width=2.75cm,minimum height=1.0cm},
+  hd/.style={font=\scriptsize\bfseries,text=awsteal,align=center}]
+\node[hd] at (0,1.2)    {Route};
+\node[hd] at (3.35,1.2) {Open};
+\node[hd] at (6.7,1.2)  {Where it runs};
+\node[hd] at (10.05,1.2){Close};
+\node[font=\scriptsize\bfseries,text=white,anchor=east] at (-1.55,0.2) {AgentCore};
+\node[font=\scriptsize\bfseries,text=white,anchor=east] at (-1.55,-1.3) {ECS};
+\node[st] (a1) at (0,0.2) {instance id $\rightarrow$\\Runtime ARN};
+\node[st] (a2) at (3.35,0.2) {new \texttt{runtimeSessionId}};
+\node[st] (a3) at (6.7,0.2) {its own arm64 microVM\\(1 session = 1 microVM)};
+\node[st] (a4) at (10.05,0.2) {\texttt{StopRuntimeSession}};
+\node[st,draw=awspurple] (b1) at (0,-1.3) {instance id $\rightarrow$\\task definition};
+\node[st,draw=awspurple] (b2) at (3.35,-1.3) {\texttt{RunTask} (awsvpc,\\capacity provider)};
+\node[st,draw=awspurple] (b3) at (6.7,-1.3) {shared m5.2xlarge node,\\4 tasks, runc, own ENI};
+\node[st,draw=awspurple] (b4) at (10.05,-1.3) {\texttt{StopTask}};
+\draw[arr] (a1)--(a2); \draw[arr] (a2)--(a3); \draw[arr] (a3)--(a4);
+\draw[arr] (b1)--(b2); \draw[arr] (b2)--(b3); \draw[arr] (b3)--(b4);
+\end{tikzpicture}
+\vspace{-1mm}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.2mm}
+\item \textbf{Unchanged:} rows, server, agent loop, grader, pool and recipe; the amd64 images are the EKS twin's (one task definition per image, pinned by digest).
+\item \textbf{New:} \texttt{EcsTaskSandbox} (drop-in); one poller thread with batched \texttt{DescribeTasks}; \texttt{ecs\_deploy.py} (pure boto3: ASG + capacity provider with managed scaling, ENI trunking). Hardening: all capabilities dropped, no task role, IMDS blocked; the task SG lets it dial back only the adapter ports.
+\item \textbf{Status:} code complete, tested offline against fake AWS clients; \hl{never deployed} (render only; \texttt{ECS\_CREATE=1} builds it).
+\end{itemize}
+\src{\texttt{code/demos/demo\_cpu\_swebench\_ecs/} (\texttt{ecs\_task\_sandbox.py}, \texttt{deploy/ecs\_deploy.py}); checked 2026-09-28.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{ECS limits: the node kernel is shared, so this is only for trusted-model RL, and it is not deployed yet}
+\flabel{fr:ecslim}
+\tabcap{Limitations of the ECS on EC2 demo}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}>{\bfseries\raggedright\arraybackslash}p{2.6cm}XX@{}}
+\toprule
+Limitation & Effect & Mitigation\\
+\midrule
+Shared kernel & a plain runc container: a kernel exploit escapes to the node and its other episodes & caps dropped, no task role, IMDS blocked; add gVisor/Firecracker yourself\\
+Not deployed & nothing measured; the trainer's role has no \texttt{ecs:*} permission today & grant ECS/EC2/ASG/IAM rights; \texttt{ECS\_CREATE=1} on 2 rows\\
+No per-task disk quota & tasks share the node's Docker storage; a runaway episode can fill it & size \texttt{ECS\_NODE\_DISK\_GIB} with headroom\\
+ENI trunking & must be on before nodes register, or a node gets only 3 task ENIs & \texttt{up} sets it first; recycle older nodes\\
+RunTask rate limits & per account and region; bursts get throttled & adaptive retries; pre-open cap 64\\
+No idle reclaim & a leaked task runs (and bills) until killed & entrypoint \texttt{timeout} 7200\,s; \texttt{down} stops all ours\\
+Capacity & 4 nodes $\times$ 4 tasks = 16 concurrent vs 64 pre-opened & raise \texttt{ECS\_NODES\_MAX} or lower the pre-open\\
+\bottomrule
+\end{tabularx}
+\src{\texttt{code/demos/demo\_cpu\_swebench\_ecs/README.md} (design, limitations); checked 2026-09-28.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{AgentCore isolates best with the least to run; EKS and ECS run every image}
+\flabel{fr:cmp3}
+\tabcap{The three SWE-bench demos side by side}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}>{\bfseries}p{1.9cm}*{3}{>{\raggedright\arraybackslash}X}@{}}
+\toprule
+ & \textbf{AgentCore (arm64 microVM)} & \textbf{EKS + gVisor} & \textbf{ECS on EC2}\\
+\midrule
+Isolation & \hl{own microVM} per episode [D1] & gVisor kernel per pod; node shared [G1] & container only; \textbf{node kernel shared}\\
+Image & arm64, $\le$ 2\,GB compressed & stock amd64, any size & stock amd64, any size\\
+Verified rows & 420 / 500 (rest: m5 lane) & 500 / 500 & 500 / 500\\
+Per episode & 1 microVM & 1.5 vCPU / 6\,GiB pod, 4 per node & 1.5 vCPU / 8\,GiB task, 4 per node\\
+Open & cold \hl{22--30\,s} (measured) & pod + \texttt{runsc}; not measured & \texttt{RunTask} + ENI; not measured\\
+Exec path & AWS data plane (Invoke API) & HTTP to the pod IP, gVisor syscall tax & HTTP to the task IP, runc (fastest)\\
+Idle / leaks & reclaimed at 15\,min: heartbeat needed & no reclaim; heartbeat = liveness; 2\,h deadline & no reclaim; heartbeat = liveness; 2\,h timeout\\
+Egress / creds & no-egress subnets + SG; no credentials & NetworkPolicy: adapter ports only; no SA token & task SG: adapter ports only; no role, no IMDS\\
+You operate & Runtimes (one per row); no idle cost & cluster, nodes, gVisor, policy, upgrades; control plane billed & ASG, capacity provider, task defs; nodes billed\\
+Status & m5 run done; arm64: local oracle pass & code complete, not deployed & code complete, not deployed\\
+\bottomrule
+\end{tabularx}
+\par
+\plainen{AgentCore: own VM per episode, no fleet, but arm64 $\le$ 2\,GB only. EKS / ECS: any image, denser, weaker walls, a fleet to run.}
+\src{\sref{fr:armnow}--\sref{fr:ecslim}; demo READMEs under \texttt{code/demos/demo\_cpu\_swebench*}; checked 2026-09-28.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Next: run the arm64 lane on AWS, then fix the trainer OOM; EKS and ECS only when we decide to create them}
 \flabel{fr:next}
 \tabcap{Next steps}
 \scriptsize
@@ -546,19 +669,17 @@ You operate & Runtimes + a capacity provider & cluster, node group, gVisor insta
 \toprule
 \textbf{Next} & \textbf{Why}\\
 \midrule
-Fix the trainer OOM (lower \texttt{MAX\_TOKENS\_PER\_GPU}) and re-run & Get past step 2\\
-Oracle-check the other 19 instances & Only usable rows should reach training\\
-\textbf{microVM pilot:} re-wrap existing arm64 images for django, sympy, matplotlib; oracle-check them & Measure arm64 test fidelity on real rows\\
+Push the 20 arm64 images, register the microVM Runtimes, oracle-check all 20 on AWS & Only usable rows should reach training; validate arm64 fidelity\\
+Smoke run on the microVM lane; lower \texttt{MAX\_TOKENS\_PER\_GPU} for the OOM & Measure open time on real rows; get past step 2\\
+Tear down the m5 pool (\texttt{m5\_legacy}) once the arm64 lane works & Stop paying for idle m5 capacity\\
 Measure warm-pool refill under sustained load & $\approx$\,10 pre-warmed seen only on a fresh Runtime\\
-Check the Epoch layout on a sample & 139 rows exist only as Epoch builds\\
 Per-environment images + checkout at session start & 500 $\rightarrow$ 80 Runtimes; scale beyond Verified\\
 Easier instances, more turns, partial credit & 0 / 24 solves means no GRPO gradient\\
-Create the EKS cluster; run the oracle check and a smoke run on gVisor & Measure open time, test fidelity and density against AgentCore\\
+EKS / ECS: create on 2 rows, oracle check, smoke (ECS needs \texttt{ecs:*} rights first) & Fill the ``not measured'' cells of \sref{fr:cmp3}\\
 \bottomrule
 \end{tabularx}
-\src{Smoke run and cap probe, 2026-09-28.}
+\src{Smoke run and cap probe, 2026-09-28; demo READMEs.}
 \end{frame}
-
 %====================================================================
 \appendix
 \sect{Appendix}

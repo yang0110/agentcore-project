@@ -1,12 +1,18 @@
 # demo_cpu_swebench_eks — SWE-bench Verified RL on EKS: one fresh gVisor pod per episode
 
 **Sandbox substrate: EKS + gVisor, not AgentCore.** This is the EKS twin of
-[`../demo_cpu_swebench`](../demo_cpu_swebench/README.md). Dataset, images, harness, grader and RL
-recipe are the same. Only the thing that hosts an episode changes. On AgentCore, an episode gets a
-fresh `runtimeSessionId` on its instance's Runtime, which is its own m5 Instance. Here it gets a fresh
-**Kubernetes pod** running under the **gVisor** runtime (`runtimeClassName: gvisor`, handler `runsc`)
-on a shared m5 node. The two demos exist side by side so the substrates can be compared on the same
-workload.
+[`../demo_cpu_swebench`](../demo_cpu_swebench/README.md) (AgentCore, one arm64 microVM per episode) and
+the sibling of [`../demo_cpu_swebench_ecs`](../demo_cpu_swebench_ecs/README.md) (one ECS task per
+episode). Dataset rows, harness, grader and RL recipe are the same in all three. Only the thing that
+hosts an episode changes. On AgentCore, an episode gets a fresh `runtimeSessionId` on its instance's
+Runtime, i.e. its own managed microVM. Here it gets a fresh **Kubernetes pod** running under the
+**gVisor** runtime (`runtimeClassName: gvisor`, handler `runsc`) on a shared m5 node. The demos exist
+side by side so the substrates can be compared on the same workload.
+
+**Images.** This twin and the ECS twin share the amd64 wrapper images (stock `swebench/sweb.eval.x86_64.*`,
+`acs-swe-*` ECR repos). The AgentCore demo moved to Epoch AI's arm64 rebuilds (the microVM fleet is
+arm64, with a 2 GB compressed image cap); same `/testbed` layout and conda env, different arch. The
+default subset is pinned to the AgentCore demo's 20 instances (`fetch_swebench.DEFAULT_INSTANCES`).
 
 Created 2026-09-28 as a copy of `demo_cpu_swebench`. The vendored library is unchanged apart from:
 
@@ -29,7 +35,7 @@ least-loaded engine) are all identical. **REMOTE-ONLY** (`SANDBOX` must be `eks-
 
 ## Use case covered
 
-RL on real GitHub issues (django, sympy, sphinx, pytest, astropy, requests, xarray, pylint, flask).
+RL on real GitHub issues (django, sympy, sphinx, pytest, astropy, requests, pylint, flask).
 The agent edits `/testbed` and is rewarded when the instance's hidden FAIL_TO_PASS + PASS_TO_PASS
 tests pass. The episodes run on a **self-managed Kubernetes sandbox fleet** instead of AgentCore
 Runtime. The subset is the same 20 instances by default (16 train + 4 eval).
@@ -43,9 +49,9 @@ Runtime. The subset is the same 20 instances by default (16 train + 4 eval).
   - isolation;
   - operational burden.
 - **It removes AgentCore's limits for this dataset.** No 2 GB microVM image cap and no arm64
-  requirement: the SWE-bench images are amd64 and run as-is. Also no capacity-provider quota and no
-  one-machine-per-session rule. Several episodes share an m5 node, which is much denser than one
-  m5 per episode. So all 500 Verified rows are possible, including the big matplotlib and sklearn
+  requirement: the stock SWE-bench images are amd64 and run as-is, including the ~80 Verified rows
+  with no arm64 rebuild (all xarray). Several episodes share an m5 node, which is denser than one
+  microVM per episode. So all 500 Verified rows are possible, including the big matplotlib and sklearn
   images (see `SWE_QUOTA` / `SWE_MAX_IMAGE_MB`).
 - **gVisor keeps it an honest sandbox.** Plain containers would share the node kernel with untrusted
   agent code. gVisor puts a user-space kernel between them.
@@ -56,18 +62,41 @@ Runtime. The subset is the same 20 instances by default (16 train + 4 eval).
   - `runsc` intercepts every syscall in its own user-space kernel (platform `systrap`, so no KVM or
     nested virtualisation is needed on m5).
   - One pod per episode, never reused, so no state leaks between episodes.
-  - It is weaker than AgentCore's one Instance per session: pods share a node's CPU, memory bandwidth,
+  - It is weaker than AgentCore's one microVM per session: pods share a node's CPU, memory bandwidth,
     disk and page cache.
   - It is stronger than runc. `EKS_RUNTIME_CLASS=` (empty) runs plain runc, for an A/B only.
   - Pods get no Kubernetes credentials: `automountServiceAccountToken: false`, no service links.
-- **Shared images.** `deploy/deploy_swebench.py` keeps the AgentCore demo's wrap recipe unchanged.
-  It pushes to the same `acs-swe-*` ECR repos with the same recipe tag, so an image built by either
-  demo serves both.
+- **Hardening (2026-09-29).** Defence in depth on top of gVisor + NetworkPolicy:
+  - *Pod*: root is kept (SWE-bench's `/testbed` and conda env are root-owned), but the container
+    drops ALL capabilities, has `allowPrivilegeEscalation: false` and the `RuntimeDefault` seccomp
+    profile. This is the same empty capability set AgentCore Runtime containers get, where the
+    SWE-bench oracle already passed.
+  - *Per-pod token*: every pod gets a random `ACS_SANDBOX_TOKEN`. The in-image server pops it from
+    its environment at start, so exec'd commands do not inherit it, and it answers 401 to any
+    `/invocations` call without the matching `X-Acs-Sandbox-Token`. Reaching :8080 is not enough to run
+    commands in a pod. `GET /ping` stays open for the readiness probe.
+  - *IMDS*: nodes are IMDSv2-only with hop limit 1 (`disablePodIMDS`), so a pod cannot fetch the node
+    role's credentials even without the NetworkPolicy.
+  - *API endpoint*: created with public access limited to this box's IP/32 (eksctl needs it while it
+    builds the cluster). `up` then switches it to **private-only** (`EKS_API_PUBLIC=0`, the default),
+    after opening 443 on the cluster SG from the trainer SGs. `EKS_API_PUBLIC=1` restores public access
+    on `EKS_PUBLIC_CIDRS`.
+  - *gVisor supply chain*: release pinned (`20260921.0`) and the tarball must match a sha512 pinned in
+    `gvisor-installer.yaml`. The bucket's own `.sha512` is not trusted.
+  - The server change alters the wrapper recipe tag, which the three SWE twins share. The next
+    `2_build_image.sh` of any twin rebuilds its images once; on AgentCore and ECS the token check
+    stays off (no `ACS_SANDBOX_TOKEN`).
+- **Shared images.** `deploy/deploy_swebench.py` is the same script as the ECS twin's. It pushes to
+  the same `acs-swe-*` ECR repos with the same recipe tag, so an image built by either twin serves
+  both.
   - It registers **no** Runtimes. It writes `swebench/image_by_task.json` ({instance: uri@digest}),
     which the pool routes by. Pinning by digest means a re-push cannot change a running pool.
 - **gVisor install.** EKS managed nodes do not ship gVisor. `deploy/eks/gvisor-installer.yaml` is a
   privileged DaemonSet that does the install on each node. It:
-  1. downloads `runsc` + `containerd-shim-runsc-v1` and checks their sha512;
+  1. downloads the pinned release's `gvisor.tar.bz2` and checks it against the pinned sha512.
+     Releases since mid-2026 ship only this tarball: `runsc` + `containerd-shim-runsc-v1` + the
+     `gvisor-bin/` sidecars that `runsc` needs next to it. The old per-binary URLs, and `latest`,
+     return 404;
   2. adds the `runsc` runtime to containerd's config (containerd 2.x and 1.7 layouts);
   3. restarts containerd;
   4. labels the node `acs/gvisor=ready`.
@@ -81,8 +110,21 @@ Runtime. The subset is the same 20 instances by default (16 train + 4 eval).
     the pool images, so every node pulls all of them once, at deploy time.
   - Disk budget: 3-6 GB per image per node. The default 300 GiB gp3 fits the 20-image subset.
     Kubelet evicts images above 85 % disk use, so size `EKS_NODE_DISK_GIB` to the pool.
-- **No heartbeat.** Pods have no idle reclaim, so the pool does not register sessions with
-  `SessionKeeper`.
+- **Pre-open + heartbeat, both on by default (as in the AgentCore demo).** `TB_PREOPEN_BATCHES=2`
+  keeps the next 2 steps' pods booted. `HEARTBEAT=1` registers every open pod with `SessionKeeper`,
+  which runs a no-op exec on any pod idle past `WARM_PING_FRACTION × WARM_IDLE_TIMEOUT` (120 s).
+  - Pods have no idle reclaim, so here the ping is a liveness check that also heals the pre-open queue.
+    - A pre-opened pod that fails the ping (node drained, OOM-killed) is closed and replaced before a
+      worker claims it (`[demo] preopen_replaced=dead`, plus `[demo] heartbeat_failed=…`).
+    - At claim, a pod idle more than `TB_PREOPEN_RECHECK_SEC` (2 s) is pinged once. If it is dead
+      (`dead_at_claim`) or its boot failed (`open_failed`), the episode opens a fresh pod.
+    - A running episode's pod is only logged, never replaced mid-episode. `HEARTBEAT=0` turns the ping off.
+  - Pre-open is capped to the fleet: `SANDBOX_SLOTS` (default `EKS_NODES × EKS_PODS_PER_NODE` = 4 × 4)
+    minus `HARNESS_WORKERS`. The cap is logged when it applies, so extra pods never sit Pending until
+    `EKS_OPEN_TIMEOUT`. Set `SANDBOX_SLOTS=0` for no cap.
+  - Old pre-opens retire: a pod is only handed out if `age + TB_EPISODE_BUDGET_SEC` (default
+    `EPISODE_MAX_TURNS × TB_EXEC_TIMEOUT + 660 s`) fits within `EKS_POD_MAX_LIFETIME`. Otherwise it is
+    replaced (`[demo] preopen_replaced=expiring`) rather than killed mid-episode by `activeDeadlineSeconds`.
   - A leaked pod (trainer crash) is capped by `activeDeadlineSeconds` (`EKS_POD_MAX_LIFETIME` 7200 s).
   - It can also be cleaned up by deleting the label `app=acs-swe-sandbox`.
 - **Network.**
@@ -115,8 +157,9 @@ Runtime. The subset is the same 20 instances by default (16 train + 4 eval).
   - Each pod requests 1.5 vCPU / 6 GiB (limit 8 GiB) / 10 GiB ephemeral storage.
   - An m5.2xlarge (8 vCPU / 32 GiB) holds 4 pods, so the default 4 nodes run about 16 concurrent
     episodes.
-  - For `TB_PREOPEN_BATCHES=2 × RB × NS` = 64 pre-opened sessions, raise `EKS_NODES` (max 16), or
-    lower the pre-open.
+  - For `TB_PREOPEN_BATCHES=2 × RB × NS` = 64 pre-opened sessions on top of 32 running episodes,
+    raise `EKS_NODES` (max 16, i.e. 64 slots). The pool clips pre-open to the free slots, so at the
+    default 4 nodes pre-open is off and the log says so.
   - Pre-opened pods cost only their slice of a node, not a whole m5.
 
 ## How an episode flows
@@ -158,7 +201,7 @@ EKS_DELETE=1 bash 6_cleanup.sh   # 6. eks_deploy.py down: revoke our SG rules, e
 
   The trainer container needs no kubectl.
 - **Validate on 2 instances first**: `SWE_LIMIT=2 bash 2_build_image.sh && EKS_CREATE=1 bash 4_deploy_runtime.sh`.
-  If the AgentCore demo already pushed the images, step 2 only resolves digests.
+  If the ECS twin already pushed the images, step 2 only resolves digests.
 - `python3 deploy/eks_deploy.py status` lists nodes (with `acs/gvisor` label) and live sandbox pods.
   `python3 deploy/eks_deploy.py smoke` re-runs the smoke pod.
 - Train to convergence (inside the container): `train.sh` (`STEPS`, `EVAL_EVERY`, `SANDBOX_CONC`).
@@ -175,15 +218,21 @@ EKS_DELETE=1 bash 6_cleanup.sh   # 6. eks_deploy.py down: revoke our SG rules, e
 | `EKS_OPEN_TIMEOUT` / `EKS_PULL_FAIL_SEC` / `EKS_POLL_SEC` | `1200` / `180` / `1.0` | open deadline / pull-error grace / status poll |
 | `EKS_VERSION` / `EKS_NODE_TYPE` | `1.35` / `m5.2xlarge` | cluster (render time) |
 | `EKS_NODES` / `EKS_NODES_MIN` / `EKS_NODES_MAX` / `EKS_NODE_DISK_GIB` | 4 / 1 / 16 / 300 | managed node group |
-| `EKS_PUBLIC_CIDRS` | this box's public IP/32 | who may reach the public API endpoint |
-| `EKS_PREPULL` / `GVISOR_RELEASE` | `1` / `latest` | pre-pull DaemonSet / gVisor release |
+| `EKS_PUBLIC_CIDRS` | this box's public IP/32 | who may reach the public API endpoint while eksctl creates the cluster |
+| `EKS_API_PUBLIC` | `0` | `0` = `up` locks the API endpoint to private-only; `1` = keep/restore public access on `EKS_PUBLIC_CIDRS` |
+| `EKS_PREPULL` | `1` | pre-pull DaemonSet |
+| `GVISOR_RELEASE` / `GVISOR_SHA512` | pinned in `gvisor-installer.yaml` | override both together (sha512 of that release's `x86_64/gvisor.tar.bz2`) |
 | `EKS_CREATE` / `EKS_DELETE` | unset | must be `1` to create / delete the cluster |
 | `TB_PREOPEN_BATCHES` | `2` | upcoming batches kept open ahead (`× RB × NS` pods); size the node group to it |
+| `HEARTBEAT` / `WARM_IDLE_TIMEOUT` / `WARM_PING_FRACTION` | `1` / `240` / `0.5` | keeper liveness ping on pods idle past fraction × timeout (dead pre-opens replaced); `0` = off |
+| `SANDBOX_SLOTS` | `EKS_NODES × EKS_PODS_PER_NODE` (16) | fleet capacity; pre-open is clipped to `SANDBOX_SLOTS − HARNESS_WORKERS`; `0` = no cap |
+| `TB_EPISODE_BUDGET_SEC` / `TB_PREOPEN_RECHECK_SEC` | `turns × TB_EXEC_TIMEOUT + 660` / `2` | a pre-opened pod is used only if an episode still fits `EKS_POD_MAX_LIFETIME`; claim-time ping after this much idle |
 | `HARNESS_WORKERS`, `CONC`, `EPISODE_MAX_TURNS`, `RB`/`NS`/`NR`, … | as in `demo_cpu_swebench` | RL + harness knobs are unchanged |
 
 - Deploy / data: `SWE_TASKS`, `SWE_LIMIT`, `SWE_BUILD_CONC`, `SWE_REBUILD`, `SWE_NO_PUSH`, `SWE_QUOTA`,
   `SWE_INSTANCES`, `SWE_MAX_IMAGE_MB`, `SWE_TEST_TIMEOUT`, as in the AgentCore demo.
-- The default subset matches the AgentCore demo on purpose, so results compare directly.
+- The default subset is pinned to the AgentCore demo's 20 instances on purpose, so results compare
+  directly. `SWE_QUOTA` / `SWE_INSTANCES` switch to the quota / explicit selection.
 
 ## What to watch
 
@@ -204,13 +253,20 @@ EKS_DELETE=1 bash 6_cleanup.sh   # 6. eks_deploy.py down: revoke our SG rules, e
 - Kubelet readiness probes under the NetworkPolicy. Ingress from the node subnets is allowed for them.
   If pods stay NotReady, check the policy first.
 - SWE-bench test suites under gVisor. The oracle check in step 4 validates every instance.
+- The hardening, none of it run on a cluster yet:
+  - `disablePodIMDS` / `disableIMDSv1` on an eksctl *managed* node group. Check the launch
+    template's hop limit is 1.
+  - The private-only switch: the trainer must resolve the endpoint to private IPs. That needs VPC
+    DNS support/hostnames, which the default VPC has. If `smoke` fails right after the switch,
+    `EKS_API_PUBLIC=1 python3 deploy/eks_deploy.py up` reopens public access.
+  - `dmesg` under dropped caps. The smoke also accepts a `*-gvisor` kernel release in `uname`.
 
 ## Folder layout (self-contained)
 
 - `agentcore_slime_demo/`: vendored library (as in `demo_cpu_swebench`), plus:
   - `eks_api.py`: EKS token + Kubernetes API over stdlib HTTPS;
   - `eks_pod_sandbox.py`: `EksPodSandbox`, one gVisor pod per episode;
-  - `terminalbench_pool.py`: patched to open `EksPodSandbox`, with no keeper.
+  - `terminalbench_pool.py`: patched to open `EksPodSandbox` (keeper pings = liveness check).
 - `deploy/eks_deploy.py`: render / up / smoke / status / down for the cluster.
 - `deploy/eks/`:
   - `cluster.yaml.tmpl` (eksctl);
@@ -219,7 +275,7 @@ EKS_DELETE=1 bash 6_cleanup.sh   # 6. eks_deploy.py down: revoke our SG rules, e
   - `sandbox-namespace.yaml.tmpl` (namespace + NetworkPolicy);
   - `cluster.yaml` + `rendered/` (gitignored render output).
 - `deploy/deploy_swebench.py`: wrap + push one image per instance, then write `image_by_task.json`.
-- `deploy/acs_swe_http_server.py`: the in-image server (the same one AgentCore uses).
+- `deploy/acs_swe_http_server.py`: the in-image server (the same one AgentCore and ECS use).
 - `swebench_oracle_check.py`: gold/empty check per instance on its own pod → `swebench/oracle.csv`.
 - `fetch_swebench.py` · `prepare_data.sh` (step 1) · `run.sh` (step 5) · `metrics.py` · `train.sh`.
 - `1_…6_*.sh` + `deploy/demo.env`: the numbered steps (`SUBSTRATE=eks`, BUILD/PUSH/DEPLOY/CLEANUP_CMD).
