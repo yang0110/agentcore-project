@@ -1,8 +1,16 @@
 # Fresh env on a persistent (reused) sandbox instance
 
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+
 **Question.** An AgentCore Runtime on a capacity-provider Instance takes ~60–80 s to cold-boot. If
 we keep ONE instance warm and run many RL episodes on it, how do we stop one episode's state from
 leaking into the next — without throwing away the warm-instance speedup?
+
+> **Status (2026-09-30): no current demo reuses an Instance across episodes.** `demo_gpu_single`
+> (g6) and `demo_cpu_instance` (m5) run strictly one session per Instance per episode, and the
+> microVM demos open a fresh session per episode. The warm-shared farms below (`demo_gpu_farm`,
+> `demo_cpu_instance_pool`) are removed; the mechanism (`sandbox_farm_env.py`, `sandbox_cpu_farm.py`,
+> `sandbox_ray_farm.py`) is still vendored in the demo libs and is documented here as a design option.
 
 **Short answer.** Invoke every episode under **one shared `runtimeSessionId`** (so they all land on
 the same warm instance), give every episode a per-episode **`sub_session`**, and inside the server
@@ -21,7 +29,7 @@ microVM), which is cheaper, faster, and perfectly isolated for free. Reuse only 
 **Instances** compute type — a capacity-provider EC2 box that takes **~60–80 s to cold-boot** — and
 that applies to **both** Instance flavours:
 
-- the **GPU `g6`** (`demo_gpu_farm`, `FARM=fractional|whole` — merged 2026-09-26 from `demo_gpu_farm_fractional` + `demo_gpu_farm_whole`; the local form of the remote farm, one GPU instance serving many sessions, trusted-only), and
+- the **GPU `g6`** — historical: `demo_gpu_farm`, `FARM=fractional|whole` (merged 2026-09-26 from `demo_gpu_farm_fractional` + `demo_gpu_farm_whole`; one GPU instance serving many sessions, trusted-only; **removed 2026-09-30**, code in git history), and
 - the **CPU `m5`** — historical: `demo_cpu_instance_pool` (removed 2026-09-28; code in git history) kept a
   warm pool of `SANDBOX_POOL` (default 2) shared m5 sessions and ran each exec of a `sub_session` in its own
   Landlock jail (per-episode uids are impossible in AgentCore's capability-less container; 22/22 isolation

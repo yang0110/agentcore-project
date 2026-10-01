@@ -1,5 +1,7 @@
 # Demo Plan — Minimalist Agentic RL: slime + AgentCore Runtime sandbox + Claude Code harness
 
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+
 **Goal.** Train a policy with slime on a coding task where the agent loop is **Claude Code**, the
 agent's *brain* is the **slime-served policy** (SGLang, not Anthropic's API), and every tool action
 (Bash/Edit) executes inside an **AWS AgentCore Runtime sandbox**. Prove one full RL step end-to-end

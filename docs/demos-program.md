@@ -1,5 +1,7 @@
 # Demos program — the demo taxonomy
 
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+
 This is the anchor for the demo set. It fixes **what demos exist, how they're organized, and the
 bar each must clear.** Every demo folder and its README conforms to this doc.
 
@@ -60,8 +62,8 @@ AgentCore **Code Interpreter** microVM (CPU); the harness was in-process. *(Hist
 > `math500` `deepscaler` `humaneval` `gretelsql` `hotpotqa` `xlam` `mcp`, plus the synthetic `math`
 > `swe` `tool_use` `sql` `ctf` `rag` `regex` `planning` `config` `data`). It replaced the ten
 > per-dataset folders (`demo_cpu_mbpp`, `demo_cpu_math`, …) that differed only in data. Mixed-task
-> batches are the same demo and, since 2026-09-28, its DEFAULT (`mbpp,humaneval,gsm8k,math500,deepscaler,gretelsql,hotpotqa,xlam,mcp,terminalbench`: every literature dataset, SWE-bench excluded,
-> one prompt per task per step): `DATASET=a,b,c` (task-interleaved) or `DATASET=mixed` (math+sql+ctf+datasci,
+> batches are the same demo and, since 2026-09-28, its DEFAULT (`mbpp,humaneval,gsm8k,math500,deepscaler,gretelsql,hotpotqa,xlam,mcp`: the 9 real HF literature datasets,
+> one prompt per dataset per step, RB=9; Terminal-Bench was in this mix 2026-09-28→09-30 and moved back to its own demo): `DATASET=a,b,c` (task-interleaved) or `DATASET=mixed` (math+sql+ctf+datasci,
 > formerly `demo_cpu_mixtask`). All of them run on the DEFAULT managed Code Interpreter
 > (`SANDBOX=agentcore`): no image, no Runtime. The pandas/scipy/sklearn tasks (formerly `demo_cpu_imagepool`,
 > 3 custom images) are `DATASET=libs` there, since the Code Interpreter already has those libraries. The
@@ -69,16 +71,26 @@ AgentCore **Code Interpreter** microVM (CPU); the harness was in-process. *(Hist
 > Code Interpreter), and the custom-vs-managed Runtime check (formerly `demo_cpu_customruntime`) is
 > `demo_cpu_tasks/compare_backends.py`. The ~4 GB image on a CPU capacity-provider Instance (formerly
 > `demo_cpu_bigimage`, then `demo_cpu_tasks VARIANT=bigimage`, then the side note `demo_cpu_instance_pool`) was
-> **removed 2026-09-28** with its AWS resources.
+> **removed 2026-09-28** with its AWS resources, and came back 2026-09-30 as `demo_cpu_instance` (strictly one
+> m5 per session, no warm pool, no Landlock).
 >
-> **Current set (2026-09-28): 3 main demos + the EKS twin `demo_cpu_swebench_eks` + 1 experimental**, in storyline order:
-> `demo_cpu_tasks` (with the `SCALE=1` harness-scaling preset, which replaced the `demo_cpu_scale_lanes`
-> folder, and Terminal-Bench as `DATASET=terminalbench` with its `terminalbench/warmstart/` probe, which replaced
-> `demo_cpu_terminalbench`), `demo_cpu_swebench`,
-> `demo_gpu_farm` (KernelBench; ONE GPU instance serving MANY sessions, `FARM=fractional|whole`, trusted-only;
-> local farm by default, `LOCAL_GPU=0` on a remote g6; merged 2026-09-26 from `demo_gpu_farm_fractional` +
-> `demo_gpu_farm_whole`, and 2026-09-28 with `demo_gpu_single`, now its `LOCAL_GPU=0` mode); experimental `demo_cpu_branching`. Every demo
-> runs the same six step scripts (`1_prepare_data.sh` … `6_cleanup.sh`); see `code/demos/README.md`.
+> **Current set (2026-09-30): 5 main demos + 1 experimental**, in storyline order:
+> `demo_cpu_tasks` (tier 2, own `cpu`/`libs` microVM Runtimes, the 9-dataset literature mix by default, with the
+> `SCALE=1` harness-scaling preset that replaced the `demo_cpu_scale_lanes` folder);
+> `demo_cpu_terminalbench` (tier 3 image pool: one image + VPC Runtime per Terminal-Bench task, 218 deployed of
+> 229, a fresh arm64 microVM per episode, look-ahead pre-open `TB_PREOPEN_BATCHES=2` + heartbeat; its
+> `terminalbench/warmstart/` probe; split back out of `demo_cpu_tasks` 2026-09-30);
+> `demo_cpu_swebench` (tier 3 image pool: 20 SWE-bench Verified instances, Epoch AI arm64 images ≤ 2 GB, a fresh
+> microVM per episode); `demo_gpu_single` (KernelBench, strictly one g6.xlarge capacity-provider Instance per
+> session; split back out of `demo_gpu_farm` 2026-09-30); `demo_cpu_instance` (strictly one m5.xlarge
+> capacity-provider Instance per session); experimental `demo_cpu_branching`. **No demo shares a VM between
+> episodes.** Every demo runs the same six step scripts (`1_prepare_data.sh` … `6_cleanup.sh`); see
+> `code/demos/README.md`.
+>
+> *History (2026-09-28 → 09-30):* the set was 3 main demos (`demo_cpu_tasks` incl. `DATASET=terminalbench`,
+> `demo_cpu_swebench`, `demo_gpu_farm FARM=fractional|whole`, local or `LOCAL_GPU=0` on a remote g6) + the
+> twins `demo_cpu_swebench_eks` / `demo_cpu_swebench_ecs` + branching. `demo_gpu_farm` and both twins were
+> **removed 2026-09-30** (code in git history).
 >
 > **Done (2026-09-28):** `demo_cpu_tasks` runs on our own Runtimes (`cpu` + `libs`, VPC) with the harness
 > *inside* the sandbox session; the Code Interpreter survives only as the `compare_backends.py` probe. The
@@ -95,13 +107,13 @@ instance** (a `g6`, x86_64/amd64); the trainer box keeps all its GPUs for policy
 
 | Demo folder | Task | Notes |
 |---|---|---|
-| `demo_gpu_kernelbench` → built as `demo_gpu_single`, since 2026-09-28 `demo_gpu_farm LOCAL_GPU=0` | KernelBench (level_1 CUDA) | checker = allclose vs torch ref, on `cuda`; one warm g6 (`FARM=fractional`: L4 at 0.5 → 2 slots; `whole`: L4 at 1.0 → 1 slot). Also carries the custom-Runtime angle (`gpu_torch_smoke.py`) and `SNAPSHOT_EVERY=1` (merged 2026-09-25 from `demo_gpu_customruntime` / `demo_gpu_snapshot`) |
-| `demo_gpu_farm` `FARM=fractional` (default, `LOCAL_GPU=1` default) | KernelBench + Ray pack-many farm | ONE GPU instance, MANY sessions: 0.5+0.5 on GPU 6, like a single-GPU `g6.xlarge` (before 2026-09-26 the folder `demo_gpu_farm_fractional`; originally `demo_gpu_shared_single`) |
-| `demo_gpu_farm` `FARM=whole` | KernelBench + Ray farm | ONE GPU instance, MANY sessions: one whole GPU per session on GPUs 6,7, like a multi-GPU `g6.12xlarge` (merged 2026-09-26 from `demo_gpu_farm_whole`; originally `demo_gpu_shared_multi` / `demo_gpu_local`) |
+| `demo_gpu_kernelbench` → built as **`demo_gpu_single`** | KernelBench (level_1 CUDA) | checker = allclose vs torch ref, on `cuda`; **one g6.xlarge Instance per session, one episode per session** (`SANDBOX=agentcore-runtime`, capacity provider `acs_gpu_cp`). Also carries the custom-Runtime angle (`gpu_torch_smoke.py`) and `SNAPSHOT_EVERY=1` (merged 2026-09-25 from `demo_gpu_customruntime` / `demo_gpu_snapshot`) |
 
-`demo_gpu_farm` is **trusted-only: shared kernel + shared GPU** (no MIG on L4/L40S, a cooperative
-memory-fraction cap, no Landlock port, one shared uid on AgentCore), in both `LOCAL_GPU` modes. Full isolation on
-AgentCore is one g6 session per episode, which no current demo runs.
+`demo_gpu_single` gives **full isolation**: an episode owns the whole Instance, kernel, disk and L4.
+*History:* 2026-09-26 → 09-30 the GPU demo was `demo_gpu_farm` (`FARM=fractional`: 0.5+0.5 of one GPU;
+`FARM=whole`: one whole GPU per session; local by default, `LOCAL_GPU=0` on one warm remote g6), a
+trusted-only farm (shared kernel + shared GPU, no MIG, cooperative memory cap, one shared uid). It was
+**removed 2026-09-30**; `demo_gpu_single` was split back out of it as strictly one session per Instance.
 
 ### Tier 3 — Advanced: scale the *measured* bottleneck
 
@@ -117,7 +129,7 @@ Decision procedure:
 2. **`sglang_gen_ms ≫ sandbox_ms`** → **generation-bound** → scale the **inference engine** (more
    SGLang GPUs / replicas). Typical for cheap-checker CPU tasks (math, sql, rag, …).
 3. **`sandbox_ms ≫ sglang_gen_ms`** → **sandbox-bound** → scale the **sandbox** (more microVM
-   sessions; on GPU, the Ray pack-many farm / more capacity). Typical for KernelBench.
+   sessions; on GPU, more g6 Instances within quota). Typical for KernelBench.
 4. Show the throughput / step-time improvement after scaling the correct side — and that scaling the
    *other* side would not have helped.
 
@@ -144,7 +156,7 @@ idle. Surviving that pause is **two patterns on two substrates**:
 | Demo | Substrate | Lever | Survives |
 |---|---|---|---|
 | `HEARTBEAT=1` on any demo (formerly `demo_cpu_heartbeat`; probe [`demo_cpu_tasks/heartbeat_demo.py`](../code/demos/demo_cpu_tasks/heartbeat_demo.py)) | serverless CPU **microVM** (or any warm session) | **heartbeat** (+ quiesce gate) | the *idle timeout* — keep the warm session from being reclaimed during the pause |
-| [`demo_gpu_farm`](../code/demos/demo_gpu_farm/) `SNAPSHOT_EVERY=1` (formerly `demo_gpu_snapshot`, then `demo_gpu_single`) | **GPU Runtime instance** | **application-level snapshot & resume** | a genuine *recycle* — restore workspace state onto a fresh session (there is no VM snapshot; [gpu-snapshot.md](gpu-snapshot.md)) |
+| [`demo_gpu_single`](../code/demos/demo_gpu_single/) `SNAPSHOT_EVERY=1` (formerly `demo_gpu_snapshot`; in `demo_gpu_farm` 2026-09-28 → 09-30) | **GPU Runtime instance** | **application-level snapshot & resume** | a genuine *recycle* — restore workspace state onto a fresh session (there is no VM snapshot; [gpu-snapshot.md](gpu-snapshot.md)) |
 
 **Heartbeat keeps a *live* session warm; snapshot restores a *lost* one.** Both have an offline
 probe (no AWS/GPU) that runs in seconds (`heartbeat_demo.py`, `snapshot_demo.py`). Reusable mechanisms:
@@ -182,14 +194,14 @@ which is exactly why the demo shows the failure first. The robust pattern:
    `recovery.py` self-heal: restart the session and re-seed/restore the workspace, don't crash the
    episode. The *restore-with-progress* form (application-level snapshot to S3, since there is no VM
    snapshot — [gpu-snapshot.md](gpu-snapshot.md)) is built + demonstrated in
-   [`code/demos/demo_gpu_farm/`](../code/demos/demo_gpu_farm/) with `SNAPSHOT_EVERY=1` (`snapshot_store.py`).
+   [`code/demos/demo_gpu_single/`](../code/demos/demo_gpu_single/) with `SNAPSHOT_EVERY=1` (`snapshot_store.py`).
 
 Demo arc: naive "stop invoking" (anti-pattern, silently loses the GPU instance) → heartbeat quiesce
 that survives the idle timeout → resume → recover-if-reclaimed. This deliberately re-couples the
 sandbox to the trainer's sync barrier — a **cost** optimization, not a correctness fix (async RL
 episodes are otherwise designed to span weight versions).
 
-#### Demo 2 — runtime-instance application-level snapshot & resume (`demo_gpu_farm SNAPSHOT_EVERY=1`)
+#### Demo 2 — runtime-instance application-level snapshot & resume (`demo_gpu_single SNAPSHOT_EVERY=1`)
 
 For the **GPU Runtime instance**, the failure mode is not idle reclamation but a **recycle** that
 comes back blank — and AgentCore offers **no VM/EC2 snapshot** ([gpu-snapshot.md](gpu-snapshot.md)).

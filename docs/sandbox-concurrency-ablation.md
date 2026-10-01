@@ -1,5 +1,7 @@
 # Sandbox-concurrency ablation (Demo 1): finding the goodput sweet-spot
 
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+
 ## The question
 
 Demo 1 ([`demo_cpu_tasks`](../code/demos/demo_cpu_tasks/) — in-process mini harness, run against a
@@ -48,7 +50,7 @@ C  ≳  (mean episode wall-time / mean per-episode decode-time) × (inference co
 ```
 
 concurrent episodes to **hide the sandbox latency** — classic latency hiding. When the sandbox runs
-on a *remote* AgentCore Runtime (a Code-Interpreter microVM, or the GPU Runtime in `demo_gpu_farm LOCAL_GPU=0`, formerly `demo_gpu_single`)
+on a *remote* AgentCore Runtime (a microVM Runtime, or the g6 GPU Runtime in `demo_gpu_single`)
 the sandbox phase is an `invoke_agent_runtime` round-trip, so its latency is large and `C` must be
 correspondingly larger before the engines stay busy.
 
@@ -202,8 +204,8 @@ or two are warm-up; the smoke `NR=11` is fine for a quick pass, longer for publi
 **Two sandbox regimes, on purpose (same in-process harness, different sandbox location):**
 - **`demo_cpu_tasks` with `SANDBOX=local`** — cheapest, cleanest isolation of the knob; fast
   iteration, near-zero sandbox latency.
-- **`demo_cpu_tasks` with `SANDBOX=agentcore` (remote Code-Interpreter microVM), or `demo_gpu_farm LOCAL_GPU=0`
-  (remote GPU Runtime, formerly `demo_gpu_single`)** — has the **realistic sandbox latency** (remote `invoke_agent_runtime` per
+- **`demo_cpu_tasks` on its own microVM Runtime (`SANDBOX=agentcore-runtime`), or `demo_gpu_single`
+  (one remote g6 GPU Instance per session)** — has the **realistic sandbox latency** (remote `invoke_agent_runtime` per
   tool call), which is exactly what makes the low-`C` starvation regime real. This is where `C*`
   actually matters operationally.
 

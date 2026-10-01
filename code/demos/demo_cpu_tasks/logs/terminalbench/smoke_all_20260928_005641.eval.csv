@@ -1,2 +1,0 @@
-eval/step,eval/terminalbench,eval/terminalbench-truncated_ratio,eval/terminalbench/avg_cached_tokens_per_sample,eval/terminalbench/prefix_cache_hit_rate,eval/terminalbench/repetition_frac,eval/terminalbench/response_len/max,eval/terminalbench/response_len/mean,eval/terminalbench/response_len/median,eval/terminalbench/response_len/min,eval/terminalbench/truncated_ratio
-1,0.014925373134328358,0.0,0.0,0.0,0.014925373134328358,3621,787.1492537313433,495.0,37,0.0

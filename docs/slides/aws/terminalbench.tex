@@ -5,10 +5,10 @@
 \newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 
-\title{Terminal-Bench on AgentCore}
+\title{Agentic RL on Terminal-Bench with slime and AgentCore Runtime}
 \author{Kaige Yang}
 \institute{Senior Applied Scientist, AWS}
-\date{September 29, 2026}
+\date{September 30, 2026}
 
 \begin{document}
 
@@ -17,13 +17,13 @@
 \begin{frame}[plain]
 \vspace*{6mm}
 \begin{minipage}{0.58\textwidth}
-{\fontsize{24}{28}\selectfont\bfseries\color{white}Terminal-Bench\\on AgentCore\par}
+{\fontsize{22}{26}\selectfont\bfseries\color{white}Agentic RL on Terminal-Bench\\with slime and AgentCore Runtime\par}
 \vspace{4mm}
-{\raggedright\large\color{white}One task, one image, one Runtime; a fresh microVM per episode\par}
-\vspace{12mm}
+{\raggedright\large\color{white}One task, one image, one Runtime; a fresh microVM per episode, pre-opened and heartbeated\par}
+\vspace{10mm}
 {\small\color{white}\textbf{Kaige Yang}\\Senior Applied Scientist, AWS\par}
 \vspace{3mm}
-{\scriptsize\color{inkmuted}September 29, 2026}
+{\scriptsize\color{inkmuted}September 30, 2026 \textperiodcentered{} \tb{code/demos/demo\_cpu\_terminalbench}}
 \end{minipage}
 \end{frame}}
 
@@ -38,26 +38,48 @@
 \toprule
 \textbf{Use case} & RL-train Qwen3-4B (slime GRPO) on tasks that each need \textbf{their own OS image} (\sref{fr:arch})\\
 \textbf{Isolation} & One episode = one new session = one dedicated microVM, sanitized at the end\\
-\textbf{Data} & 241 Terminal-Bench tasks $\rightarrow$ 218 images and Runtimes $\rightarrow$ 166 rows (\srefs{fr:anatomy}{fr:data})\\
+\textbf{Data} & 241 Terminal-Bench tasks $\rightarrow$ 218 images and Runtimes $\rightarrow$ 165 rows (\srefs{fr:anatomy}{fr:data})\\
 \bottomrule
 \end{tabularx}
 \par\vspace{1mm}
-\tabcap{Five conclusions and the evidence behind each}
+\tabcap{Four conclusions and the evidence behind each}
 \scriptsize\setlength{\tabcolsep}{4pt}
 \begin{tabularx}{\textwidth}{@{}P{0.03\textwidth}P{0.33\textwidth}Y P{0.1\textwidth}@{}}
 \toprule
 & \textbf{Conclusion} & \textbf{Evidence} & \textbf{Slides}\\
 \midrule
 1 & \textbf{One image per row works} on AgentCore & 218 of 229 arm64 builds ship (p50 127\,MB, \sref{fr:build}); 382 episodes on 382 fresh microVMs, \hl{0 infra errors} & \sref{fr:smoke}\\
-2 & \textbf{Cold start is the cost; pre-open removes it} & 7 of 8 GRPO siblings boot cold (6--49\,s); with pre-open, boot wait \hl{p95 = 0}, 374 of 382 never waited & \srefs{fr:cold}{fr:preres}\\
+2 & \textbf{Cold start is the cost; pre-open removes it} & 509 of 868 concurrent opens boot cold (6--49\,s); with pre-open, boot wait \hl{p95 = 0}, 374 of 382 never waited & \srefs{fr:cold}{fr:preres}\\
 3 & \textbf{Heartbeat is required}: idle reclaim is silent & 17 of 382 pre-opened sessions idled past 15\,min; pings \hl{kept all 17}, 0 failed & \srefs{fr:hbwhy}{fr:hbhow}\\
 4 & \textbf{The reward, not the sandbox, blocks learning} & 4 of 320 solved; 38 of 40 GRPO groups had no gradient; test-fraction reward gives \hl{2 $\rightarrow$ 17} & \srefs{fr:signal}{fr:next}\\
-5 & \textbf{SWE-bench fits, except the largest images} & \hl{420} of 500 rows on microVMs today, 53 after an arm64 build, 27 need the m5 Instance & \srefs{fr:swehist}{fr:swerun}\\
 \bottomrule
 \end{tabularx}
 \par\vspace{2mm}
 \plainen{one image per row costs a cold boot and a silent 15-minute reclaim; pre-open and heartbeat remove both, so the next run is about the reward.}
-\src{Smoke run 2026-09-23, warm-start and cold-start probes 2026-09-25/29, \tb{terminalbench/tasks/images.csv}, \tb{verified\_image\_sizes.csv}; checked 2026-09-29.}
+\src{Smoke run 2026-09-23, warm-start and cold-start probes 2026-09-25/29, \tb{terminalbench/tasks/images.csv}; checked 2026-09-30.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{The demo: use case covered, why this demo, design considerations}
+\flabel{fr:ucwd}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\tabcap{The demo in three answers}
+\begin{tabularx}{\textwidth}{@{}P{0.17\textwidth}Y@{}}
+\toprule
+\textbf{Use case covered} & Agentic RL where \textbf{every task needs a different OS image} (packages, services, files, compilers) and the agent changes the whole machine through the shell: hundreds of bespoke images, each behind its own AgentCore Runtime, with strict row $\rightarrow$ image $\rightarrow$ Runtime routing.\\
+\textbf{Why this demo} & The hardest sandbox shape in the literature datasets: no generic image can serve it, and a shared session would leak one episode's changes into the next. It shows AgentCore scaling to a \hl{pool of 218 Runtimes} built from the tasks' own Dockerfiles with no per-task code, and the two latency fixes a per-episode microVM needs: \textbf{pre-open} and \textbf{heartbeat}.\\
+\textbf{Design considerations} & \textbf{One fresh microVM session per episode} (\tb{terminalbench\_pool.py}), stopped once graded \textperiodcentered{} \textbf{look-ahead pre-open} of the next 2 batches (\tb{TB\_PREOPEN\_BATCHES=2}) \textperiodcentered{} \textbf{heartbeat} on by default \textperiodcentered{} the \textbf{mini\_claude loop runs inside the session} and dials the trainer's \tb{AnthropicAdapter} back over the VPC (SG$\rightarrow$SG, 18100--18163) \textperiodcentered{} \textbf{harness tier} (\tb{HarnessPool}, W = RB$\times$NS, least-loaded engine, sticky per episode) \textperiodcentered{} each task image is \textbf{wrapped, not rewritten} (standalone \tb{/opt/acs/py} + stdlib server layer) \textperiodcentered{} reward = the task's \textbf{hidden pytest oracle} (RLVR, no judge) \textperiodcentered{} of 229 tasks, \textbf{7 fail to build} for arm64 and \textbf{4 exceed the 2\,GB cap}.\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\tabcap{Status, 2026-09-30}
+\begin{tabularx}{\textwidth}{@{}P{0.17\textwidth}Y@{}}
+\toprule
+\textbf{Scope} & \tb{code/demos/demo\_cpu\_terminalbench} is the only demo since 2026-09-30. The long run is \tb{convergence/20\_cpu\_terminalbench.sh}.\\
+\textbf{Smoke run} & 2026-09-30 re-run on the current code (\tb{5\_run.sh}): \hl{10 steps + final eval in 22\,min}, 449 episodes, \textbf{0 infra errors}, 22/387 train and 1/62 eval solved (\sref{fr:smoke30}). The deep-dive slides use the 2026-09-23 smoke.\\
+\bottomrule
+\end{tabularx}
+\src{\tb{code/demos/demo\_cpu\_terminalbench/README.md}; checked 2026-09-30.}
 \end{frame}
 
 %====================================================================
@@ -67,7 +89,7 @@
 \begin{columns}[T]
 \column{0.44\textwidth}
 \figcap{Agentic RL: trainer, inference, harness, sandbox}
-\centering\figcard[width=0.92\linewidth]{lanes_fig02_rl-loop.pdf}\par
+\centering\figcard[width=0.92\linewidth]{tb_fig02_rl-loop.pdf}\par
 \vspace{1mm}\raggedright
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.4mm}
 \item \textbf{slime} trains, \textbf{SGLang} serves, the \textbf{harness} records tokens + logprobs.
@@ -81,7 +103,7 @@
 \toprule
 \textbf{AgentCore} & \textbf{RL meaning} & \textbf{Terminal-Bench, one step}\\
 \midrule
-\textbf{Image} & the environment (ECR, arm64, $\le$ 2\,GB) & one per task, 218 built\\
+\textbf{Image} & the environment (ECR, arm64, $\le$ 2\,GB) & one per task, 218 deployed\\
 \textbf{Runtime} & a task's env behind one ARN, reusable & 4 tasks drawn $\rightarrow$ 4 Runtimes\\
 \textbf{Session} & one rollout; its first invoke boots it & 4 $\times$ 8 = \hl{32 new sessions}\\
 \textbf{microVM} & isolation of that rollout (2 vCPU, 8\,GB) & 32 VMs, stopped at episode end\\
@@ -99,7 +121,7 @@ No ``create session'' call & a new id's first invoke is a \textbf{cold start} $\
 \bottomrule
 \end{tabularx}
 \end{columns}
-\src{\tb{code/agentcore\_slime\_demo/generate.py}, \tb{harness\_pool.py}; \tb{demo\_cpu\_tasks/run.sh} (RB = 4, NS = 8); AgentCore docs [D3], quotas [Q1][Q2] (\sref{fr:refs}); checked 2026-09-29.}
+\src{\tb{demo\_cpu\_terminalbench/agentcore\_slime\_demo/generate.py}, \tb{harness\_pool.py}; \tb{demo\_cpu\_terminalbench/run.sh} (RB = 4, NS = 8); AgentCore docs [D2], quotas [Q1][Q2] (\sref{fr:refs}); checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
@@ -149,7 +171,7 @@ Nothing beyond the base image & 14\\
 \end{frame}
 
 %====================================================================
-\begin{frame}{241 tasks $\rightarrow$ 218 images $\rightarrow$ 166 rows: the oracle check keeps only trustworthy rewards}
+\begin{frame}{241 tasks $\rightarrow$ 218 images $\rightarrow$ 165 rows: the oracle check keeps only trustworthy rewards}
 \flabel{fr:data}\flabel{fr:funnel}
 \begin{columns}[T]
 \column{0.5\textwidth}
@@ -163,7 +185,7 @@ Terminal-Bench & 241 & & all tasks\\
 Single container & 229 & 12 & need several containers (\tb{postgres}, \tb{redis}, \dots); one session = one VM\\
 Built, $\le$ 2\,GB & \hl{218} & 11 & 7 fail on arm64, 4 over the cap (\sref{fr:build})\\
 Oracle-usable & \hl{166} & 52 & fail the oracle check (below)\\
-Train \textperiodcentered{} eval & 135 \textperiodcentered{} 31 & & disjoint tasks, every 5th per difficulty\\
+Train \textperiodcentered{} eval & 134 \textperiodcentered{} 31 & 1 & \tb{fix-git}: latest rebuild failed (\tb{git clone}); disjoint tasks, every 5th per difficulty to eval\\
 \bottomrule
 \end{tabularx}
 \par\vspace{1.5mm}
@@ -181,7 +203,7 @@ Oracle & run \tb{solution.sh}, then hidden tests & \yes{} pass & \hl{52}\\
 \begin{itemize}\tiny\setlength{\itemsep}{0.4mm}
 \item \textbf{Why:} otherwise reward is 1 for doing nothing, or 0 whatever the policy does. It runs on AgentCore because solutions target x86 Docker, not arm64 microVMs.
 \item \textbf{The 52:} solution passes no test 27, some 18, none collected 2; invoke errors 5. Only 3 causes logged (x86-only wheel, \tb{rustc} drift, no network); \textbf{rest not yet investigated}.
-\item \textbf{218 images, 166 rows:} the check needs a deployed Runtime, so the 52 are deployed but never routed to.
+\item \textbf{218 images, 165 rows:} the check needs a deployed Runtime, so the 52 are deployed but never routed to.
 \end{itemize}
 \column{0.46\textwidth}
 \figcap{Size of the 218 built images (100\,MB bins)}
@@ -222,8 +244,8 @@ Oracle & run \tb{solution.sh}, then hidden tests & \yes{} pass & \hl{52}\\
 \no{} Over 2\,GB & 4 & \tb{mteb-eval}, \tb{-leaderboard}, \tb{-retrieve} 6.7\,GB; \tb{png-generation} 6.5\,GB: 3$\times$ the cap\\
 \midrule
 \grp{3}{\no{} Build failed: 7}\\
-x86-only & 4 & \tb{qemu-alpine-ssh}, \tb{qemu-startup}: no \tb{qemu-system-x86} on arm64 \textperiodcentered{} \tb{reverse-engineering}: x86 assembly \textperiodcentered{} \tb{accelerate-maximal-square}: x86-only base\\
-Download failed & 3 & \tb{leelachess0-pytorch-conversion} (lczero), \tb{word2vec-from-scratch} (HF), \tb{slurm-simple-node-monitoring} (apt): a retry may fix\\
+x86-only & 4 & \tb{qemu-alpine-ssh}, \tb{qemu-startup}: no \tb{qemu-system-x86} on arm64 \textperiodcentered{} \tb{reverse-engineering}: x86 assembly \textperiodcentered{} \tb{accelerate-maximal-square}: likely x86-only base\\
+Download failed & 3 & \tb{leelachess0-pytorch-conversion} (lczero), \tb{word2vec-from-scratch} (HF), \tb{fix-git} (\tb{git clone}; \tb{slurm-simple-node-monitoring} built on retry): a retry may fix\\
 \bottomrule
 \end{tabularx}
 \par\vspace{1.5mm}
@@ -260,34 +282,35 @@ CMD ["/opt/acs/py/bin/python3", "/opt/acs/acs_http_server.py"]
 \flabel{fr:steps}
 \begin{columns}[T]
 \column{0.58\textwidth}
-{\footnotesize\textbf{From \tb{code/demos/demo\_cpu\_tasks/}, on the host}}
+{\footnotesize\textbf{From \tb{code/demos/demo\_cpu\_terminalbench/}, on the host}}
 \begin{lstlisting}[language=bash]
 # --- build the pool (once) ---
-python3 terminalbench/fetch_terminalbench.py     # 1. tasks/ + manifest.json
-VARIANT=terminalbench TB_LIMIT=2 bash 2_build_image.sh    # 2. dry run, 2 tasks
-VARIANT=terminalbench TB_LIMIT=2 bash 4_deploy_runtime.sh
-VARIANT=terminalbench bash 2_build_image.sh      # 3. all tasks, 16 parallel
-VARIANT=terminalbench bash 3_push_ecr.sh         #    -> images.csv
-VARIANT=terminalbench bash 4_deploy_runtime.sh   # 4. -> arn_by_image.json
+TB_LIMIT=2 bash 2_build_image.sh    # 1+2. fetch, dry run
+TB_LIMIT=2 bash 4_deploy_runtime.sh
+bash 2_build_image.sh      # 3. all tasks, 16 parallel
+bash 3_push_ecr.sh         #    report: images.csv
+bash 4_deploy_runtime.sh   # 4. -> arn_by_image.json
 
 # --- every run ---
 docker exec agentcore_p4 python3 \
-  /work/code/demos/demo_cpu_tasks/terminalbench/validate_oracle.py  # 5.
-DATASET=terminalbench bash 1_prepare_data.sh     # 6. usable rows only
-DATASET=terminalbench bash 5_run.sh              # 7. 10 steps + 1 eval
-VARIANT=terminalbench bash 6_cleanup.sh          # 8. delete 218 Runtimes
+  /work/code/demos/demo_cpu_terminalbench/terminalbench/validate_oracle.py  # 5.
+bash 1_prepare_data.sh     # 6. usable rows only
+bash 5_run.sh              # 7. 10 steps + 1 eval
+bash 6_cleanup.sh          # 8. delete 218 Runtimes
 \end{lstlisting}
 \column{0.38\textwidth}
 \begin{enumerate}\scriptsize\setlength{\itemsep}{0.8mm}
+\item[1.] Fetches the corpus once; keeps the 229 single-container tasks.
 \item[2.] Catches layer and IAM errors in minutes.
 \item[3.] Failed and over-cap builds are skipped.
 \item[4.] VPC Runtimes, NAT egress, SG$\rightarrow$SG to the adapter.
 \item[5.] Oracle check (\sref{fr:data}).
+\item[6.] 165 usable rows $\rightarrow$ 134 train, 31 eval.
 \item[7.] In \tb{agentcore\_p4}; 8 GPUs (4 train + 4 infer).
 \item[8.] ECR images are kept.
 \end{enumerate}
 \end{columns}
-\src{\tb{demo\_cpu\_tasks/README.md} section 3, \tb{deploy/demo.env} (\tb{VARIANT=terminalbench}), \tb{5\_run.sh}, \tb{run.sh}; checked 2026-09-29.}
+\src{\tb{demo\_cpu\_terminalbench/README.md}, \tb{deploy/demo.env}, \tb{5\_run.sh}, \tb{run.sh} (standalone demo again since 2026-09-30; no \tb{VARIANT=}/\tb{DATASET=} needed); checked 2026-09-30.}
 \end{frame}
 
 %====================================================================
@@ -320,13 +343,13 @@ VARIANT=terminalbench bash 6_cleanup.sh          # 8. delete 218 Runtimes
 \bottomrule
 \end{tabularx}
 \end{columns}
-\src{\tb{agentcore\_slime\_demo/terminalbench\_pool.py} (\tb{\_run\_episode}, \tb{grade\_episode}), \tb{image\_routing.py}; \tb{demo\_cpu\_tasks/run.sh}; checked 2026-09-29.}
+\src{\tb{agentcore\_slime\_demo/terminalbench\_pool.py} (\tb{\_run\_episode}, \tb{grade\_episode}), \tb{image\_routing.py}; \tb{demo\_cpu\_terminalbench/run.sh}; checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
 \sect{4 \textperiodcentered{} Cold start and pre-open}
 
-\begin{frame}{Only about one warm VM per Runtime: 7 of 8 GRPO siblings pay a cold boot of 6--49\,s}
+\begin{frame}{Only 1--2 warm VMs per Runtime: most concurrent opens pay a cold boot of 6--49\,s}
 \flabel{fr:cold}
 \begin{columns}[T]
 \column{0.54\textwidth}
@@ -362,7 +385,7 @@ VARIANT=terminalbench bash 6_cleanup.sh          # 8. delete 218 Runtimes
 \end{tabularx}
 \par\vspace{1mm}
 \begin{itemize}\tiny\setlength{\itemsep}{0.4mm}
-\item \textbf{Bursty:} 8 siblings start at once on one Runtime; 160 of 217 had exactly 1 warm.
+\item \textbf{Bursty:} 4 at once $\rightarrow$ 509 of 868 cold; 160 of 217 Runtimes had exactly 1 warm. 8 GRPO siblings would fare worse (not probed).
 \item \textbf{Costly:} +32\,\% on a 21\,s median episode.
 \item \textbf{No warm reuse:} a reset would leak OS state; \hl{the session is the isolation boundary}.
 \end{itemize}
@@ -453,7 +476,7 @@ Price: pre-opened VM idle & p50 \textbf{7.3\,min}, max 16.5\,min, for a 21\,s me
 \column{0.5\textwidth}
 \textbf{\footnotesize What AgentCore does}
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
-\item No invoke for \textbf{15 min} $\rightarrow$ session reclaimed [D3].
+\item No invoke for \textbf{15 min} $\rightarrow$ session reclaimed [D2].
 \item \textbf{Silently:} the same id then gets a \hl{fresh, empty sandbox}.
 \end{itemize}
 \textbf{\footnotesize Why our sessions go idle}
@@ -484,7 +507,7 @@ Code Interpreter & on / off & 0 / 3 & ends at \tb{sessionTimeoutSeconds}\\
 \bottomrule
 \end{tabularx}
 \end{columns}
-\src{AgentCore docs [D3]; warm-start probe 2026-09-25 (\tb{terminalbench/warmstart/}, Runtime \tb{acs\_warmstart\_cpu}); smoke run 2026-09-23 (\tb{preopen\_idle\_ms}); checked 2026-09-29.}
+\src{AgentCore docs [D2]; warm-start probe 2026-09-25 (\tb{terminalbench/warmstart/}, Runtime \tb{acs\_warmstart\_cpu}); smoke run 2026-09-23 (\tb{preopen\_idle\_ms}); checked 2026-09-29.}
 \end{frame}
 
 %====================================================================
@@ -525,6 +548,7 @@ keeper.register(sb.session_id, _ping, WARM_IDLE_TIMEOUT)
 \begin{tabularx}{\linewidth}{@{}Yr@{}}
 \toprule
 Pings \textperiodcentered{} sessions pinged & \hl{348} \textperiodcentered{} 214\\
+\quad of which idle only after the claim & 42\\
 Failed pings & 0\\
 Idle past 900\,s, pinged in time & \hl{17 / 17}\\
 \bottomrule
@@ -569,6 +593,46 @@ Whole episode p50 (p90) & 20.9\,s (63.7\,s)\\
 \end{itemize}
 \end{columns}
 \src{\tb{\_smoke\_logs/lanes\_tb\_0923/terminalbench.\{csv,demo.csv,eval.csv\}} (\tb{open\_wait\_ms}, \tb{agent\_ms}, \tb{grade\_ms}, \tb{perf/step\_time}); checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{The 2026-09-30 re-run: 22 minutes end to end, 0 infra errors}
+\flabel{fr:smoke30}
+\tabcap{Smoke run 2026-09-30: same shape (RB = 4 $\times$ NS = 8, 10 steps + 1 eval on 31 held-out tasks), fully-async driver}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.3\textwidth}P{0.18\textwidth}Y@{}}
+\toprule
+\textbf{Metric} & \textbf{2026-09-30} & \textbf{vs 2026-09-23 (\sref{fr:smoke})}\\
+\midrule
+Wall clock, launch to final eval & \hl{22\,min} & $\approx$\,70\,min: the fully-async driver overlaps rollouts with training\\
+Episodes \textperiodcentered{} infra errors & 449 \textperiodcentered{} \textbf{0} & 382 \textperiodcentered{} 0; 449 = 387 train (async over-draw) + 62 eval\\
+Train episodes that waited for a boot & \hl{0 of 385} & pre-open still hides every cold start; eval opens on demand (1--10\,s)\\
+Heartbeat pings needed & 1 & pre-open idle p50 50\,s, max 194\,s, all under the 450\,s ping mark\\
+Step time p50 & 40\,s & 203\,s\\
+Train solved \textperiodcentered{} eval solved & 22/387 (5.7\,\%) \textperiodcentered{} \hl{1/62} & 4/320 \textperiodcentered{} 0/62\\
+GRPO groups with a gradient & 4 of 49 & 2 of 40: reward stays the bottleneck (\sref{fr:signal})\\
+\bottomrule
+\end{tabularx}
+\par\vspace{3mm}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\tabcap{Where a train episode's time goes (p50 / p90)}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}Yr@{}}
+\toprule
+Wait for a session (boot) & 0\,s / 0\,s\\
+Agent loop in the microVM & 12.1\,s / 36.2\,s\\
+Grading (inject tests, pytest) & 8.9\,s / 20.6\,s\\
+Whole episode & 24.9\,s / 71.7\,s\\
+\bottomrule
+\end{tabularx}
+\column{0.48\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
+\item \textbf{Concurrency:} 2 SGLang engines (4 GPUs), 32 harness workers, up to 64 pre-opened sessions; SGLang queued requests in 1 of 233 samples (max 15 running per engine).
+\item \textbf{Fixed in this run:} eval used to hang after its last episode (the pool was bound to the training loop); now one pool per event loop.
+\end{itemize}
+\end{columns}
+\src{\tb{demo\_cpu\_terminalbench/logs/smoke\_tbonly-agentcore-runtime\_20260930\_153115.\{csv,demo.csv,eval.csv\}}; checked 2026-09-30.}
 \end{frame}
 
 %====================================================================
@@ -630,7 +694,7 @@ Agent said it was done & 82 (26\,\%)\\
 \midrule
 1 & Partial credit from \tb{tests\_passed} / \tb{tests\_total} & 2 $\rightarrow$ 17 of 40 groups with a gradient (\sref{fr:signal})\\
 2 & Larger turn and token budget (e.g.\ 16 turns, 2048 tokens) & 74\,\% of episodes stopped on a budget\\
-3 & Easy-first curriculum over the 166 tasks & 4B model solves 1\,\% (4 of 320); start where it sometimes succeeds\\
+3 & Easy-first curriculum over the 165 tasks & 4B model solves 1\,\% (4 of 320); start where it sometimes succeeds\\
 4 & \tb{TB\_PREOPEN\_BATCHES} = 1 & pre-opened VMs idle 7.3\,min p50; one batch should still hide the boot (\sref{fr:preres})\\
 5 & Bake \tb{uv} + pytest into each image & grading is 9.7\,s of a 20.9\,s episode, mostly the install (\sref{fr:smoke})\\
 \bottomrule
@@ -641,122 +705,6 @@ Agent said it was done & 82 (26\,\%)\\
 \end{frame}
 
 %====================================================================
-\sect{7 \textperiodcentered{} SWE-bench: the same analysis}
-
-\begin{frame}{A SWE-bench row is a repo at one commit: 500 Verified rows need 500 images over 80 environments}
-\flabel{fr:swe}
-\begin{columns}[T]
-\column{0.44\textwidth}
-\tabcap{The task}
-\tiny\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}P{0.24\linewidth}Y@{}}
-\toprule
-\textbf{Input} & A real GitHub issue + the repo at \tb{base\_commit}, deps in conda env \tb{testbed}\\
-\textbf{Agent's job} & Explore, edit, run: multi-turn \tb{bash} / \tb{read\_file} / \tb{write\_file}\\
-\textbf{Reward} & Hidden \tb{test\_patch} applied after the agent stops; solved iff every FAIL\_TO\_PASS and PASS\_TO\_PASS test passes\\
-\textbf{Image} & One prebuilt image per row (\tb{swebench/sweb.eval.*.<id>})\\
-\bottomrule
-\end{tabularx}
-\par\vspace{1.5mm}
-\tabcap{Dataset size}
-\tiny
-\begin{tabularx}{\linewidth}{@{}lY@{}}
-\toprule
-Verified (used) & \hl{500} rows, 12 Python repos (django 231, sympy 75, \dots)\\
-Full / SWE-Gym / SWE-smith & 2,294 / 2,438 / 59,136 rows\\
-Our demo today & 20 rows (16 train, 4 eval)\\
-\bottomrule
-\end{tabularx}
-\column{0.52\textwidth}
-\tabcap{Rows, images and environments}
-\tiny\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}Y rr@{}}
-\toprule
-& \textbf{Terminal-Bench} & \textbf{SWE-bench Verified}\\
-\midrule
-Images (one per row) & 218 & \hl{500}\\
-Distinct environments & --- & \hl{80} (repo, version)\\
-Size p50 / max (compressed) & 127\,MB / 2.0\,GB & 1.08\,GB / 2.95\,GB (amd64)\\
-Total size & 48\,GB & 619\,GB\\
-\bottomrule
-\end{tabularx}
-\par\vspace{1.5mm}
-\begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
-\item \textbf{One image per row:} each row pins a commit and its deps.
-\item \textbf{vs Terminal-Bench:} a repo + conda env, not a custom OS; 8$\times$ larger.
-\item \textbf{80 environments:} one image each + checkout at start scales to SWE-Gym.
-\end{itemize}
-\end{columns}
-\src{HF \tb{SWE-bench\_Verified}, \tb{SWE-Gym}, \tb{SWE-smith}; \tb{demo\_cpu\_swebench/swebench/verified\_image\_sizes.csv}; TB \tb{images.csv}; checked 2026-09-29.}
-\end{frame}
-
-%====================================================================
-\begin{frame}{Prebuilt arm64 images sit well under the cap; the 80 rows without one are the heavy ones}
-\flabel{fr:swehist}
-\figcap{Compressed image size per Verified row (100\,MB bins; each panel has its own y-scale)}
-\centering
-\begin{tikzpicture}
-\begin{axis}[name=top,width=0.94\textwidth,height=2.7cm,ybar,bar width=84,bar shift=0pt,xmin=600,xmax=3100,ymin=0,ymax=240,clip=false,
-  xtick={600,800,...,3000},yticklabel style={font=\tiny},ytick={0,100,200},ymajorgrids,grid style={gridc},axis x line*=bottom,axis y line*=left,xticklabels={},ylabel={\scriptsize rows},
-  title={\scriptsize 420 rows with a prebuilt arm64 image (arm64 size)},title style={text=bodytext,at={(0.99,1.0)},anchor=north east}]
-\addplot[fill=awsblue,draw=none] coordinates {(650,28)(750,52)(850,97)(950,229)(1050,7)(1450,1)(1650,1)(1750,5)};
-\draw[draw=awsmagenta,line width=1.2pt] (axis cs:2048,0) -- (axis cs:2048,240) node[left,font=\tiny,text=bodytext,pos=0.55]{2\,GB cap};
-\node[font=\tiny,text=bodytext,anchor=west,align=left] at (axis cs:2150,75) {min 0.67 \textperiodcentered{} p50 0.92 \textperiodcentered{} p90 0.98 \textperiodcentered{} max 1.77\,GB\\368 of 420 in 750--1000\,MB \textperiodcentered{} \textbf{all fit} with the 54\,MB layer};
-\end{axis}
-\begin{axis}[at={(top.south west)},anchor=north west,yshift=-3mm,width=0.94\textwidth,height=2.7cm,ybar,bar width=84,bar shift=0pt,xmin=600,xmax=3100,ymin=0,ymax=30,clip=false,
-  xtick={600,800,...,3000},yticklabel style={font=\tiny},ytick={0,10,20,30},ymajorgrids,grid style={gridc},axis x line*=bottom,axis y line*=left,xticklabel style={font=\tiny},
-  xlabel={\scriptsize compressed image size (MB)},ylabel={\scriptsize rows},
-  title={\scriptsize 80 rows without arm64 (amd64 size)},title style={text=bodytext,at={(0.99,1.0)},anchor=north east},
-  legend style={font=\tiny,draw=none,fill=none,text=bodytext,at={(0.01,0.97)},anchor=north west},area legend]
-\addplot[fill=cat1,draw=none] coordinates {(1050,4)(1150,2)(1450,25)(1850,8)(1950,14)};
-\addplot[fill=inkmuted,draw=none] coordinates {(2950,17)(3050,10)};
-\draw[draw=awsmagenta,line width=1.2pt] (axis cs:2048,0) -- (axis cs:2048,30);
-\legend{53 $\le$ 2\,GB: rebuild for arm64,27 $>$ 2\,GB: matplotlib 3.5--3.7}
-\end{axis}
-\end{tikzpicture}
-\par\vspace{1mm}
-\raggedright
-{\scriptsize The 80: p50 1.93\,GB, none in 2.0--2.75\,GB, so the 27 are not borderline. arm64 $\approx$\,0.83$\times$ amd64, so the 53 should land at 0.9--1.7\,GB (\textbf{not yet built}).\par}
-\src{\tb{demo\_cpu\_swebench/swebench/verified\_image\_sizes.csv}: GHCR \tb{epoch-research/swe-bench.eval.arm64.*} (all 420 arm64), Docker Hub \tb{swebench/sweb.eval.x86\_64.*}; \tb{swebench/images.csv}; checked 2026-09-29.}
-\end{frame}
-
-%====================================================================
-\begin{frame}{420 rows run on microVMs today, 53 after an arm64 build; 27 need the m5 Instance}
-\flabel{fr:swerun}
-\begin{columns}[T]
-\column{0.55\textwidth}
-\tabcap{Where each Verified row can run}
-\scriptsize\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}P{0.34\linewidth}r Y@{}}
-\toprule
-\textbf{Status} & \textbf{Rows} & \textbf{Why}\\
-\midrule
-\yes{} microVM now & \hl{420} & prebuilt arm64, $\le$ 1.77\,GB\\
-\textcolor{inkmuted}{\faWrench}{} after rebuild & 53 & amd64 $\le$ 2\,GB; arm64 likely fits\\
-\no{} m5 Instance & \hl{27} & amd64 $\ge$ 2.75\,GB\\
-\bottomrule
-\end{tabularx}
-\par\vspace{2mm}
-\tabcap{Rows by repo and status}
-\tiny\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}P{0.22\linewidth}Y@{}}
-\toprule
-\yes{} 420 & django 229 \textperiodcentered{} sympy 75 \textperiodcentered{} sphinx 44 \textperiodcentered{} pytest 19 \textperiodcentered{} astropy 18 \textperiodcentered{} pylint 10 \textperiodcentered{} requests 8 \textperiodcentered{} matplotlib 7 \textperiodcentered{} scikit-learn 7 \textperiodcentered{} seaborn 2 \textperiodcentered{} flask 1\\
-\textcolor{inkmuted}{\faWrench}{} 53 & scikit-learn 25 \textperiodcentered{} xarray 22 \textperiodcentered{} astropy 4 \textperiodcentered{} django 2\\
-\no{} 27 & matplotlib 27 (3.5: 7, 3.6: 9, 3.7: 11)\\
-\bottomrule
-\end{tabularx}
-\column{0.41\textwidth}
-\textbf{\footnotesize The limits that decide it}
-\begin{itemize}\scriptsize\setlength{\itemsep}{1mm}
-\item \textbf{arm64 only} on microVMs [D1].
-\item \textbf{2048\,MiB cap}, fixed: 2,042 passes, 2,062 is rejected (probed).
-\item \textbf{1000 Runtimes}: fine for 500, not SWE-Gym's 2,438.
-\item \textbf{m5 Instance} for the 27: amd64, no cap, but $\approx$\,90\,s boot.
-\end{itemize}
-\end{columns}
-\src{\tb{verified\_image\_sizes.csv}; cap probe \tb{probe\_image\_cap.py} (\tb{swebench/capprobe*.csv}, 2026-09-28); quotas [Q1][Q2] (\sref{fr:refs}); \tb{demo\_cpu\_swebench/README.md}; checked 2026-09-29.}
-\end{frame}
 
 %====================================================================
 \appendix
@@ -772,7 +720,7 @@ Total size & 48\,GB & 619\,GB\\
 {[Q1]} & AgentCore quotas:\newline\href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html}{\textcolor{linkc}{\tb{docs.aws.amazon.com/bedrock-agentcore/latest/}}}\newline\href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/bedrock-agentcore-limits.html}{\textcolor{linkc}{\tb{devguide/bedrock-agentcore-limits.html}}} & 1000 Runtimes/account \textperiodcentered{} image $\le$ 2 GB \textperiodcentered{} 15-min request timeout \textperiodcentered{} 15-min idle timeout\\
 {[Q2]} & \tb{aws service-quotas list-service-quotas}\newline\tb{-{}-service-code bedrock-agentcore} (us-west-2, 2026-09-23) & Active Session Workloads = 5000 (L-3E5722B2) \textperiodcentered{} new sessions 25/s (L-8EE2AEA2) \textperiodcentered{} image 2048 MB (L-0A9E32B3)\\
 {[D1]} & AgentCore Runtime developer guide & microVMs are arm64 only\\
-{[D3]} & \href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}{\textcolor{linkc}{\tb{docs.aws.amazon.com/bedrock-agentcore/latest/}}}\newline\href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}{\textcolor{linkc}{\tb{devguide/runtime-how-it-works.html}}} & Session = dedicated microVM; 15-min idle, 8 h max lifetime\\
+{[D2]} & \href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}{\textcolor{linkc}{\tb{docs.aws.amazon.com/bedrock-agentcore/latest/}}}\newline\href{https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html}{\textcolor{linkc}{\tb{devguide/runtime-how-it-works.html}}} & Session = dedicated microVM; 15-min idle, 8 h max lifetime\\
 \bottomrule
 \end{tabularx}
 \src{AWS documentation and service-quotas CLI, us-west-2, 2026-09-23; checked 2026-09-29.}

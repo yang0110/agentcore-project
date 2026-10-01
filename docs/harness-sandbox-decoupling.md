@@ -1,5 +1,7 @@
 # Decoupling harness and sandbox — and why AgentCore is the sandbox, not the harness
 
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+
 **The one claim: AgentCore is the *sandbox*.** In (harnessed) agentic RL the **harness** and the
 **sandbox** are two distinct component types (Agent Lightning v1.0, §1). This project uses
 **AgentCore as the sandbox** — the per-episode execution environment (Code Interpreter for CPU
@@ -128,8 +130,12 @@ ad-hoc, isolated, per-session GPU environment. It does **not** contradict "harne
   physical: trainer box = policy (8 GPU) + proxy + in-process harness; AgentCore GPU instance =
   sandbox only. This is the four-component architecture, cleanly.
 - **Sharing lives on the remote Runtime.** If many episodes must share one g6, that is a concern
-  of the remote Runtime image (a Ray GPU-sharing farm runs *inside* the sandbox Runtime — the
-  remote form of the local farm in `demo_gpu_farm`, `FARM=fractional|whole` — merged 2026-09-26 from `demo_gpu_farm_fractional` + `demo_gpu_farm_whole`; formerly `demo_gpu_shared`), not of the trainer box. That farm is **trusted-only** (shared kernel + shared GPU: no MIG, a cooperative memory cap, one shared uid on AgentCore); full isolation is one session per episode (one g6 each), which no current demo runs; `demo_gpu_farm LOCAL_GPU=0` (formerly `demo_gpu_single`) shares one warm g6.
+  of the remote Runtime image (a Ray GPU-sharing farm runs *inside* the sandbox Runtime), not of the
+  trainer box. Such a farm is **trusted-only** (shared kernel + shared GPU: no MIG, a cooperative
+  memory cap, one shared uid on AgentCore). The farm demos (`demo_gpu_farm FARM=fractional|whole`,
+  local or `LOCAL_GPU=0` on a remote g6) were **removed 2026-09-30**; their code is in git history.
+  The current GPU demo, `demo_gpu_single`, gives full isolation instead: one session per episode,
+  one g6 Instance per session.
 - **Cost/lifecycle:** a GPU Runtime instance bills while up (~$0.80–1/hr + EBS on `g6.xlarge`) and
   must be torn down — see the 08/09 `OBSERVATIONS.md` and the
   capacity-provider/`securityGroups`/`LD_LIBRARY_PATH` gotchas found there. A rollout that

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build one AWS-style deck:  ./build.sh <name>   (compiles <name>.tex; e.g. ./build.sh swebench)
+# Build one AWS-style deck:  ./build.sh <name>   (compiles <name>.tex; e.g. ./build.sh terminalbench)
 # Compiles twice so slide links resolve, fails loudly on any Overfull box, renders previews to png/<name>/.
 # Theme: preamble.tex + art/ (from the aws-beamer-deck skill). Figures live in ../figures/.
 set -u

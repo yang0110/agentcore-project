@@ -1,2 +1,0 @@
-eval/step,eval/kernelbench,eval/kernelbench-truncated_ratio,eval/kernelbench/avg_cached_tokens_per_sample,eval/kernelbench/prefix_cache_hit_rate,eval/kernelbench/repetition_frac,eval/kernelbench/response_len/max,eval/kernelbench/response_len/mean,eval/kernelbench/response_len/median,eval/kernelbench/response_len/min,eval/kernelbench/truncated_ratio
-1,0.925,0.0,0.0,0.0,0.0,1421,955.5,1024.0,37,0.0

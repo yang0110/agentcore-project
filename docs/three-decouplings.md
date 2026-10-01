@@ -1,10 +1,12 @@
 # The three decouplings (quick reference)
 
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+
 A one-page map of the architecture, to refer back to when reviewing the codebase. This project
 *is* the Agent Lightning v1.0 design ("Towards Harnessed Agentic RL", arXiv 2608.17528): five
 components separated by **three decouplings**. Longer treatment in
 [harness-sandbox-decoupling.md](harness-sandbox-decoupling.md); the slide version is in
-`slides/aws/agentcore_slime.tex` ("The three decouplings", "Why decouple?", "Target topology").
+the removed `slides/aws/agentcore_slime.tex` deck (in git history) ("The three decouplings", "Why decouple?", "Target topology").
 
 ```
   ┌──────────────────────────┐
@@ -87,8 +89,8 @@ AL's three decouplings map 1:1 to ①/②/③ below.
   and put **only the sandbox on AgentCore** — as its own Runtime (GPU) or a Code Interpreter session
   (CPU).
 - **Where in code:** the harness = our own in-process `MiniClaudeHarness`
-  (`agentcore_slime_demo/mini_agent.py`). Sandboxes implement the `Sandbox` protocol
-  (`code/agentcore_slime_demo/sandbox.py`): `LocalSandbox`, `AgentCoreSandbox` (Code Interpreter),
+  (`code/demos/demo_cpu_terminalbench/agentcore_slime_demo/mini_agent.py`). Sandboxes implement the `Sandbox` protocol
+  (`code/demos/demo_cpu_terminalbench/agentcore_slime_demo/sandbox.py`): `LocalSandbox`, `AgentCoreSandbox` (Code Interpreter),
   `AgentCoreRuntimeSandbox` (the sandbox on its own AgentCore Runtime — the GPU rows).
 - **Why:** swap CPU ↔ GPU sandbox without touching the harness; isolate untrusted / CUDA tool exec
   off the trainer GPUs; scale harness (latency-bound) and sandbox (tool-exec-bound) separately.
@@ -99,7 +101,7 @@ AL's three decouplings map 1:1 to ①/②/③ below.
 
 | Row | Harness | Sandbox on AgentCore | Status |
 |---|---|---|---|
-| A / B (`demo_cpu_tasks`, `demo_gpu_farm LOCAL_GPU=0`, formerly `demo_gpu_single`) | our `run_episode`, **in-process** | `AgentCoreSandbox` (A, Code Interpreter) / remote GPU Runtime (B) | **the path** |
+| A / B (`demo_cpu_tasks`, `demo_gpu_single`) | our `run_episode`, **in-process** | own microVM Runtime (A) / one remote g6 GPU Instance per session (B) | **the path** |
 
 The configuration is settled: **harness in-process, AgentCore = the sandbox only.** That is the
 proven, natural-fit topology and the one this project's story is built on. Every demo folder now

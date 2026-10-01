@@ -1,5 +1,7 @@
 # Demos Guide — build, run, debug, pitfalls & solutions
 
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+
 The operator's manual for the two end-to-end agentic-RL demos in this repo. It is the
 companion to the client deck: the deck tells the *story*, this tells you how to *run it*.
 

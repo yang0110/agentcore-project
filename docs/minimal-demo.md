@@ -1,5 +1,7 @@
 # Minimal Demo: slime RL with an AgentCore sandbox
 
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+
 Goal: the smallest end-to-end thing that proves the loop works —
 **SGLang generates code → AgentCore runs it → exit code becomes the reward.**
 

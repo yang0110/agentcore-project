@@ -5,8 +5,9 @@ principle is *direction of traffic*: prefer the "pull" shape (you call AWS), and
 ("dial-back") traffic when a task genuinely needs it — then lock it down with a VPC, PrivateLink, and
 security-group **references** (never CIDRs).
 
-Companion tool: `code/demos/demo_cpu_tasks/netcheck.py` is an executable version of this checklist
-(its large-image companion demo, `demo_cpu_instance_pool`, was removed 2026-09-28). Related deep dives: [fault-recovery](fault-recovery.md), [sandbox-comparison](sandbox-comparison.md),
+Companion tool: `netcheck.py` was an executable version of this checklist; it was removed with
+`demo_cpu_tasks` on 2026-09-30 (recover it from git history). The live demo that uses the dial-back
+shape is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md). Related deep dives: [fault-recovery](fault-recovery.md), [sandbox-comparison](sandbox-comparison.md),
 and the VPC-mode war story lives in the `agentcore-vpc-mode-harness` project memory.
 
 ---
@@ -93,4 +94,4 @@ the `/invocations` server is plain HTTP — **do not expose it publicly**:
 
 Default to **IAM-pull + PUBLIC mode + no inbound**. Introduce **VPC + SG→SG + PrivateLink** *only*
 for the adapter dial-back, and layer **Cedar / egress-broker** to bound what executed code can reach.
-Run `demo_cpu_tasks/netcheck.py` against your config to verify the checklist before you deploy.
+Verify the checklist before you deploy (the old `demo_cpu_tasks/netcheck.py` did this; git history).

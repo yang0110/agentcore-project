@@ -1,2 +1,0 @@
-eval/step,eval/ctf,eval/ctf-truncated_ratio,eval/ctf/avg_cached_tokens_per_sample,eval/ctf/prefix_cache_hit_rate,eval/ctf/repetition_frac,eval/ctf/response_len/max,eval/ctf/response_len/mean,eval/ctf/response_len/median,eval/ctf/response_len/min,eval/ctf/truncated_ratio,eval/ctf/zero_std/count_0.0
-4,0.0,0.0,0.0,0.0,0.0,41,39.25,39.5,37,0.0,1

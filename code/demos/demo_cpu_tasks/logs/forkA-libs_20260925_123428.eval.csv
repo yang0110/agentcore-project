@@ -1,2 +1,0 @@
-eval/step,eval/libs,eval/libs-truncated_ratio,eval/libs/avg_cached_tokens_per_sample,eval/libs/prefix_cache_hit_rate,eval/libs/repetition_frac,eval/libs/response_len/max,eval/libs/response_len/mean,eval/libs/response_len/median,eval/libs/response_len/min,eval/libs/truncated_ratio,eval/libs/zero_std/count_1.0
-9,1.0,0.0,0.0,0.0,0.0,85,56.833333333333336,60.5,23,0.0,1

@@ -1,5 +1,7 @@
 # Observability: what to collect across the whole agentic-RL workflow
 
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+
 Training an agent with slime × AgentCore × Claude Code is a **five-stage pipeline**, and each
 stage fails in its own way. If you only watch reward, you can't tell a *learning* problem (flat
 advantage, KL blow-up) from a *plumbing* problem (sandboxes dying, router queueing, weight sync

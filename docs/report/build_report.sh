@@ -20,11 +20,12 @@ TEX="$BASE.tex"
 PDF="$BASE.pdf"
 TEMPLATE=eisvogel.latex
 
-TITLE="Using AgentCore Runtime in an Agentic RL Workflow"
-SUBTITLE="Hands-on guidance, grounded in a working slime + AgentCore project"
+TITLE="Agentic RL on Terminal-Bench with slime and AgentCore Runtime"
+SHORT_TITLE="Terminal-Bench RL on AgentCore"
+SUBTITLE="Hands-on guidance, grounded in a working Terminal-Bench RL demo"
 # ASCII author on purpose: avoids needing a CJK font just for the header line.
 AUTHOR="Kaige Yang --- Senior Applied Scientist, AWS"
-DATE="September 10, 2026"
+DATE="September 30, 2026"
 
 TMP="$(mktemp _build_meta.XXXXXX.md)"
 trap 'rm -f "$TMP" '"$BASE"'.{aux,log,out,toc}' EXIT
@@ -40,6 +41,7 @@ title: "$TITLE"
 subtitle: "$SUBTITLE"
 author: "$AUTHOR"
 date: "$DATE"
+header-left: "$SHORT_TITLE"
 titlepage: true
 titlepage-rule-color: "5F5F5F"
 toc: true
