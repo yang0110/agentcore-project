@@ -10,7 +10,7 @@
 {\bgframe{art/bg_title.jpg}
 \begin{frame}[plain]
 \vspace*{4mm}
-\begin{minipage}{0.60\textwidth}
+\begin{minipage}{0.60\textwidth}\raggedright
 {\fontsize{22}{26}\selectfont\bfseries\color{white}Run full Terminal-Bench agentic RL on AWS\par}
 \vspace{3mm}
 {\raggedright\large\color{white}A hybrid solution: AgentCore microVMs, m5 EC2 instances and g6 GPU Instances, plus KernelBench\par}
@@ -145,7 +145,7 @@ wrong, crashed or not on CUDA & 0\\
 \flabel{fr:tbex}
 \tabcap{Example tasks}
 \scriptsize\setlength{\tabcolsep}{3pt}
-\begin{tabular}{@{}p{0.17\textwidth} p{0.47\textwidth} p{0.30\textwidth}@{}}
+\begin{tabular}{@{}P{0.17\textwidth} P{0.47\textwidth} P{0.30\textwidth}@{}}
 \toprule
 \textbf{Task} & \textbf{Instruction (abridged)} & \textbf{Environment $\rightarrow$ substrate}\\
 \midrule
@@ -184,7 +184,7 @@ One container, but a \textbf{6.7\,GB} image (torch + models): over the 2\,GB mic
 Several containers on a private network (compose) & 12 & \sm\\
 Image over the 2\,GB cap (\tb{mteb-*}, \tb{png-generation}) & 4 & \sm\\
 No arm64 build (x86-only binaries, dead downloads) & 7 & \sm{} if it builds\\
-Reference solution fails on the microVM (no capabilities: raw net, mounts, \tb{chown}) & 53 & \sm{} retry\\
+Reference solution fails on the microVM (e.g.\ needs capabilities, root or x86) & 53 & \sm{} retry\\
 Needs an NVIDIA GPU (KernelBench) & 50 & \sg\\
 \bottomrule
 \end{tabularx}
@@ -206,7 +206,7 @@ Needs an NVIDIA GPU (KernelBench) & 50 & \sg\\
 \begin{frame}{Image sizes: most tasks fit a microVM, the tail and the GPU task do not}
 \flabel{fr:sizes}
 \figcap{Task image sizes against the 2\,GB microVM image cap}
-\centering\includegraphics[width=0.94\textwidth]{fig_image_sizes.png}\par
+\centering\includegraphics[width=0.88\textwidth]{fig_image_sizes.png}\par
 \raggedright\vspace{1mm}
 \begin{columns}[T]
 \column{0.48\textwidth}
@@ -307,6 +307,7 @@ EC2 for 30 tasks) \textperiodcentered{} g5 for KernelBench (works, but g6 is che
 \midrule
 Corpus (229 single + 12 compose) & 241\\
 \smv: arm64 build ships ($\le$ 2\,GB) & 218\\
+\quad of these, moved to the m5 for an oracle retry & 53\\
 \sm: tried (compose, no arm64, $>$ 2\,GB, oracle retry) & 78\\
 \quad built on the m5 builder & 71\\
 \midrule
@@ -356,7 +357,7 @@ Reused? & no, fresh & yes, after a verified reset & no, fresh\\
 Isolation & own kernel & own VM per session & own instance\\
 Visible in & CloudWatch & our EC2 console & CloudWatch only\\
 Ends by & stop / 15-min idle & 5 ways (right) & stop / 600\,s idle\\
-Peak live (\tb{train48}) & 88 & 24 & 42\\
+Peak live (\tb{train48}) & 88 & 24 & 36\\
 \bottomrule
 \end{tabularx}
 \par\vspace{2mm}
@@ -398,7 +399,7 @@ dirty resets / retired & \hl{0 / 0}\\
 4. Grade & inject \tb{tests/}, run pytest & same, in the client & hidden checker: correctness + \tb{speedup=}\\
 5. Close & \tb{StopRuntimeSession} & \tb{compose down -v} + \tb{reset\_check}; clean $\rightarrow$ pool, dirty $\rightarrow$ terminate & \tb{StopRuntimeSession} (instance released)\\
 \midrule
-Open cost (smoke 6, p50) & \textbf{2\,s} & \textbf{68\,s} (cold launch 34--51\,s + pull) & \textbf{135\,s} (boot + $\sim$90\,s torch)\\
+Open cost (smoke 6, p50) & \textbf{2\,s} & \textbf{68\,s} (launch or reuse, pull, \tb{compose up}) & \textbf{135\,s} (boot + $\sim$90\,s torch)\\
 Episode p50 & 24\,s (agent 12\,s, grade 9\,s) & 69\,s (agent 14\,s, grade 7\,s) & not logged per episode\\
 \bottomrule
 \end{tabularx}
@@ -467,7 +468,7 @@ smoke 6 & 177 / 1 & 34 / 0 & 52 / 0 & \textbf{passed}; g6 cap 32, 5 batches ahea
 \begin{columns}[T]
 \column{0.48\textwidth}
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
-\item \textbf{Every run since smoke 3 finished} (\tb{Job \ldots{} succeeded}) with a checkpoint.
+\item \textbf{Every run since smoke 3 finished} (\tb{Job \ldots{} succeeded}); smokes 3--4 saved a 53\,GB checkpoint.
 \item \textbf{0 dirty warm-m5 resets}; all m5s terminated at exit.
 \end{itemize}
 \column{0.48\textwidth}
@@ -484,7 +485,7 @@ smoke 6 & 177 / 1 & 34 / 0 & 52 / 0 & \textbf{passed}; g6 cap 32, 5 batches ahea
 \flabel{fr:reward}
 \begin{columns}[T]
 \column{0.52\textwidth}
-\tabcap{Reward per run (solved / episodes; KernelBench reward counts)}
+\tabcap{Reward per run (TB: solved / episodes; KB: count per reward)}
 \scriptsize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\linewidth}{@{}P{0.16\linewidth}YYY@{}}
 \toprule
@@ -495,7 +496,7 @@ smoke 4 & 13 / 322 & 0 / 58 & 1: 48, 0: 27\\
 smoke 5 & 6 / 157 & 0 / 34 & 0.5: 26, 0: 10\\
 smoke 6 & 4 / 177 & 0 / 34 & 1: 8, 0.5: 34, 0: 10\\
 \midrule
-eval (smoke 6) & 1 / 62 & 0 / 8 & mean 0.45\\
+eval (s6) & 1 / 62 & 0 / 10 & mean 0.45\\
 \bottomrule
 \end{tabularx}
 \column{0.44\textwidth}
@@ -754,7 +755,7 @@ bash 6_cleanup.sh                # KEEP_M5=1
 \grp{4}{AgentCore}\\
 Runtimes per account [Q1] & 1{,}000 & \textbf{440} & 219 this demo + 218 leftover \tb{acs\_tb\_*}: delete before adding a 3rd pool\\
 Docker image size, MB (L-0A9E32B3) & 2{,}048 & max 2{,}003 & why 4 tasks go to the m5 and torch installs at start\\
-Active session workloads (L-3E5722B2) & 5{,}000 & 88 + 42 peak & microVM + g6 sessions live at once (\tb{train48})\\
+Active session workloads (L-3E5722B2) & 5{,}000 & 88 + 36 peak & microVM + g6 sessions live at once (\tb{train48})\\
 New Runtime sessions per s (L-8EE2AEA2) & 25 & bursts at pre-open & pre-open spreads opens over the batch\\
 Runtime data-plane API rate (L-46ED137C) & 1{,}000/s & low & invoke + ping + stop\\
 Control-plane mutations (L-DD349033) & 50/s & step 4 only & creates 219 Runtimes in a loop\\
@@ -763,7 +764,7 @@ Session idle / max lifetime [D2] & 15\,min / 8\,h & pings at 7.5\,min & heartbea
 \grp{4}{EC2 and VPC}\\
 On-Demand Standard vCPU (L-1216C47A) & 1{,}152 & 100 & 24 $\times$ m5.xlarge (4) + builder (4)\\
 On-Demand G and VT vCPU (L-DB2E81BA) & 768 & 192 & the g6e.48xlarge trainer\\
-Network interfaces per Region (L-DF5E4CA3) & 5{,}000 & $\sim$150 & VPC-mode sessions + m5s\\
+Network interfaces per Region (L-DF5E4CA3) & 5{,}000 & not measured & VPC-mode sessions + m5s; check before scaling up\\
 Rules per security group (L-0EA8095F) & 60 & few & SG$\rightarrow$SG 18100--18163, 18300\\
 gp3 storage, TiB (L-7A658B76) & 257 & $\sim$1.5 & 24 $\times$ 40\,GB + 500\,GB builder\\
 \bottomrule
@@ -883,7 +884,7 @@ Agent $\leftrightarrow$ sidecars & n/a & project network only, as upstream\\
 x86 task images crash at start & any \tb{strip} breaks python-build-standalone on x86\_64 & use the \tb{install\_only\_stripped} release asset\\
 Upstream compose collides across episodes on one host & fixed \tb{container\_name}, host ports, \tb{./} mounts & per-episode rewrite from \tb{docker compose config}\\
 Eval killed by \tb{UnboundLocalError} & \tb{except \ldots{} as e} shadowed the engine index & renamed (also fixed in \tb{demo\_cpu\_terminalbench})\\
-An eval stalled for 36\,min & 9 retries of a non-idempotent 4-min \tb{exec} & \tb{INVOKE\_EXEC\_MAX\_RETRIES=1}; m5 read timeout $>$ command\\
+An eval stalled & 9 retries of a non-idempotent 4-min \tb{exec} & \tb{INVOKE\_EXEC\_MAX\_RETRIES=1}; m5 read timeout $>$ command\\
 Agent's bash tool hung after a timeout & detached children kept the pipe open & \tb{session\_runner} no longer waits on them\\
 Final checkpoint save hung (smoke 2) & \tb{expandable\_segments} $\rightarrow$ \tb{pidfd\_getfd} EPERM (no \tb{CAP\_SYS\_PTRACE}) & \tb{PYTORCH\_CUDA\_ALLOC\_CONF} made opt-in\\
 g6 Runtime requests failed to parse & Instance Runtimes forward \textbf{chunked} bodies & \tb{acs\_http\_server\_chunked.py}\\
