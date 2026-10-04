@@ -81,9 +81,9 @@ def substrate_of(route: str) -> str:
 
 
 def m5_mode() -> str:
-    mode = os.environ.get("TB_M5_MODE", "per_episode").strip().lower()
-    if mode not in ("per_episode", "shared"):
-        raise RuntimeError(f"TB_M5_MODE={mode!r}: per_episode | shared")
+    mode = os.environ.get("TB_M5_MODE", "warm").strip().lower()
+    if mode not in ("warm", "per_episode", "shared"):
+        raise RuntimeError(f"TB_M5_MODE={mode!r}: warm | per_episode | shared")
     return mode
 
 
@@ -92,6 +92,10 @@ def new_sandbox(route: str, *, region: str, workdir: str, session_id: str | None
     from .agentcore_runtime_sandbox import AgentCoreRuntimeSandbox
 
     if is_docker_route(route):
+        if m5_mode() == "warm":
+            from .ec2_episode_sandbox import Ec2WarmSandbox
+
+            return Ec2WarmSandbox(route, region=region, workdir=workdir, session_id=session_id)
         if m5_mode() == "per_episode":
             from .ec2_episode_sandbox import Ec2EpisodeSandbox
 
@@ -217,10 +221,10 @@ class TerminalBenchPool(HarnessPool):
         self._arn_by_image: dict[str, str] = json.loads(os.environ.get("TB_ROUTE_BY_IMAGE", "").strip() or "{}")
         # Bounded substrates: at most this many sessions at once (pre-opened + running); an open past it
         # waits here. The m5's own ACS_MAX_PROJECTS is a backstop; a g6 session is a whole instance.
-        m5_cap = (os.environ.get("TB_M5_MAX_INSTANCES", "32") if m5_mode() == "per_episode"
+        m5_cap = (os.environ.get("TB_M5_MAX_INSTANCES", "24") if m5_mode() in ("warm", "per_episode")
                   else os.environ.get("TB_DOCKER_MAX_PROJECTS", "16"))
         self._gates = {"docker": asyncio.Semaphore(int(m5_cap)),
-                       "gpu": asyncio.Semaphore(int(os.environ.get("TB_GPU_MAX_SESSIONS", "4")))}
+                       "gpu": asyncio.Semaphore(int(os.environ.get("TB_GPU_MAX_SESSIONS", "8")))}
         self._keeper = None
         # Upcoming episodes, in the order they will run, as their task's Runtime ARN:
         #   _demand — drawn by slime (or submitted without a look-ahead reservation), not yet claimed;
@@ -239,7 +243,7 @@ class TerminalBenchPool(HarnessPool):
             global _DOCKER_GC_DONE
             if not _DOCKER_GC_DONE and any(is_docker_route(r) for r in self._arn_by_image.values()):
                 _DOCKER_GC_DONE = True
-                if m5_mode() == "per_episode":       # a crashed run's per-episode instances
+                if m5_mode() in ("warm", "per_episode"):   # a crashed run's per-episode / warm instances
                     from .ec2_episode_sandbox import episode_config, terminate_tagged
 
                     n = await asyncio.to_thread(terminate_tagged, self.region, episode_config().get("tag", "acs-tbh-m5-ep"))
@@ -268,13 +272,18 @@ class TerminalBenchPool(HarnessPool):
             logger.info("[terminalbench_pool] SessionKeeper started (idle_timeout=%.0fs, preopen_max=%d)",
                         self.idle_timeout, self.preopen_max)
 
+    def routes(self, task) -> bool:
+        """True if this pool runs `task`: every Terminal-Bench row, and any other row whose image has a
+        route (KernelBench rows -> the g6 tier)."""
+        return getattr(task, "family", "") == "terminalbench" or getattr(task, "image", "") in self._arn_by_image
+
     def arn_for_sample(self, sample) -> str | None:
-        """The Runtime ARN a Terminal-Bench row routes to; None for any other row (a mixed batch),
-        which the default harness tier opens itself."""
+        """The route a row this pool runs goes to; None for any other row (the default harness tier
+        opens those itself)."""
         from .generate import _task_from_sample
 
         task = _task_from_sample(sample)
-        return self._arn_for(task) if getattr(task, "family", "") == "terminalbench" else None
+        return self._arn_for(task) if self.routes(task) else None
 
     def _arn_for(self, task) -> str:
         image = getattr(task, "image", task.task_id)
@@ -349,6 +358,8 @@ class TerminalBenchPool(HarnessPool):
         boot = (getattr(sb, "open_reply", None) or {}).get("boot") or {}
         sent, recv = getattr(sb, "open_sent_epoch", None), getattr(sb, "open_recv_epoch", None)
         out = {"open_ms": round((recv - sent) * 1000.0, 1) if sent and recv else -1.0}
+        # warm m5 pool: was this instance reused, how many episodes it has served, pool size at open
+        out.update({k: boot[k] for k in ("warm_reused", "instance_episodes", "warm_instances") if k in boot})
         srv, first = boot.get("server_start_epoch"), boot.get("first_invoke_epoch")
         if sent and srv:
             out["pull_boot_ms"] = round(max(0.0, srv - sent) * 1000.0, 1)
@@ -441,6 +452,9 @@ class TerminalBenchPool(HarnessPool):
         # booting at pickup). This is the gap the SessionKeeper must bridge (< idle timeout).
         idle_ms = max(0.0, (t0 - sb._tb_opened_at) * 1000.0)
         cold = self._cold_start(sb)
+        if getattr(task, "family", "") != "terminalbench":    # KernelBench (g6 tier): the coding episode
+            return await self._run_coding_episode(worker, task, sampling_params, base_sample, sb, arn,
+                                                  pending is not None, wait_ms, idle_ms, cold)
         spec = task.spec or {}
 
         # Inference AFTER the sandbox: the least-loaded engine, sticky for all of this episode's turns.
@@ -527,6 +541,38 @@ class TerminalBenchPool(HarnessPool):
             ep["session_s"] = round(time.perf_counter() - sb._tb_opened_at, 1)  # microVM-seconds paid
             print("[demo] episode_end " + " ".join(f"{k}={v}" for k, v in ep.items()), flush=True)
             await adapter.drop_session(sid, wait_timeout=30)
+            self.release_engine(e)
+            await self._close_session(sb)
+
+    async def _run_coding_episode(self, worker, task, sampling_params, base_sample, sb, arn, preopened,
+                                  wait_ms, idle_ms, cold):
+        """A routed non-Terminal-Bench row (KernelBench on the g6 tier). Same fresh, pre-opened, gated
+        session as a Terminal-Bench episode, but the CODING episode runs in it: the agent writes
+        solution.py, then the hidden checker (dropped in under a random name, nonce'd PASSED line)
+        builds ModelNew vs the reference Model on the GPU — correct + on CUDA = reward 1; the measured
+        speedup is reported as speedup=… on the [demo] line."""
+        from . import mini_claude_episode, router_trace
+        from .agentcore_runtime_sandbox import _arn_tail
+
+        e, engine = self.acquire_engine()
+        try:
+            router_trace.emit(task_id=task.task_id, rollout_id=getattr(base_sample, "index", "?"),
+                              harness_worker=worker.wid, engine=engine,
+                              engine_pinned=int(len(self._engine_urls) > 1),
+                              adapter_session=getattr(base_sample, "session_id", "?"),
+                              sandbox_id=getattr(sb, "sandbox_id", "?"), sandbox_session=sb._session_id,
+                              runtime_arn=_arn_tail(arn), sandbox_image=task.image, family=task.family)
+            print(f"[demo] worker={worker.wid} qdepth={worker.qdepth} engine={e} engine_inflight={self.inflight(e)} "
+                  f"fresh_session=1 substrate={sb._tb_substrate} preopened={int(preopened)} "
+                  f"open_wait_ms={wait_ms:.1f} preopen_idle_ms={idle_ms:.1f} open_attempts={sb._tb_open_attempts} "
+                  + " ".join(f"{k}={v}" for k, v in cold.items()) + f" arn={_arn_tail(arn)}", flush=True)
+            return await mini_claude_episode.run(self.args, base_sample, task, sampling_params, sb, engine,
+                                                 fields={"substrate": sb._tb_substrate, "infra_error": "none"})
+        except Exception as exc:
+            print(f"[demo] task={task.task_id} family={task.family} substrate={sb._tb_substrate} solved=0 "
+                  f"infra_error={type(exc).__name__}", flush=True)
+            raise
+        finally:
             self.release_engine(e)
             await self._close_session(sb)
 

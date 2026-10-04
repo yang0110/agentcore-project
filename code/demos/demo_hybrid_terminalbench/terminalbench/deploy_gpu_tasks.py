@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Provision demo_hybrid_terminalbench's GPU tier: AgentCore Runtimes on a g6 capacity provider (Instances).
 
-No Terminal-Bench task needs a GPU today (none requests one; accelerate-maximal-square, sam-cell-seg say
-CPU-only), so this tier is EMPTY by default and nothing is created. Name tasks to put on it:
+Two kinds of GPU sandbox:
+  * KernelBench (TB_KERNELBENCH=1, default): ONE image (deploy/Dockerfile.kernelbench_gpu: python + the
+    stdlib server, CUDA torch installed at container start) -> Runtime <prefix>_tbhgpu_kernelbench,
+    route key `kernelbench-gpu`. Every KernelBench row names that image.
+  * Terminal-Bench tasks named in TB_GPU_TASKS=a,b: their own image, as below. No Terminal-Bench task
+    needs a GPU today (none requests one; accelerate-maximal-square, sam-cell-seg say CPU-only).
 
+    python3 terminalbench/deploy_gpu_tasks.py                 # the KernelBench Runtime
     TB_GPU_TASKS=a,b python3 terminalbench/deploy_gpu_tasks.py
 
 For each named task: the task's own Dockerfile + the same wrapper layer as every other image (here the
@@ -88,10 +93,43 @@ def build_one(task: str, ctx: Path) -> str:
     return f"{uri}@{det['imageDigest']}"
 
 
+KB_IMAGE = "kernelbench-gpu"
+
+
+def build_kernelbench(ctx: Path) -> str:
+    """Build + push the KernelBench sandbox image; returns its digest URI."""
+    repo = f"{d.PREFIX}-tbgpu-kernelbench"
+    uri = d.ensure_ecr(repo)
+    d.sh(f"aws ecr get-login-password --region {d.REGION} | docker login --username AWS --password-stdin {uri.split('/')[0]}")
+    subprocess.run(f"docker buildx build --builder {d.BUILDX_BUILDER} --platform linux/amd64 --provenance=false "
+                   f"--sbom=false -f {DEMO_DIR / 'deploy' / 'Dockerfile.kernelbench_gpu'} -t {uri}:latest --push {ctx}",
+                   shell=True, check=True)
+    det = boto3.client("ecr", region_name=d.REGION).describe_images(
+        repositoryName=repo, imageIds=[{"imageTag": "latest"}])["imageDetails"][0]
+    d.err(f"[gpu] kernelbench image {det['imageSizeInBytes'] / 2**20:.0f} MB (cap 2048)")
+    return f"{uri}@{det['imageDigest']}"
+
+
+def _point_at(arn: str, uri: str, xrole: str, cp_arn: str) -> None:
+    """Update an existing Runtime in place if it runs a different image digest; wait READY."""
+    control = boto3.client("bedrock-agentcore-control", region_name=d.REGION)
+    rid = arn.rsplit("/", 1)[1]
+    cur = control.get_agent_runtime(agentRuntimeId=rid)
+    if cur["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] == uri:
+        return
+    control.update_agent_runtime(
+        agentRuntimeId=rid, roleArn=xrole, agentRuntimeArtifact={"containerConfiguration": {"containerUri": uri}},
+        protocolConfiguration={"serverProtocol": "HTTP"}, capacityProviderConfiguration={"capacityProviderArn": cp_arn},
+        lifecycleConfiguration=d.runtime_lifecycle(d.INSTANCE_MAX_LIFETIME), environmentVariables={"AWS_REGION": d.REGION})
+    d.err(f"[gpu] updated {rid} -> {uri.rsplit('@', 1)[-1][:19]}")
+    d._wait_runtime(control, rid)
+
+
 def main() -> int:
     tasks = [t for t in os.environ.get("TB_GPU_TASKS", "").split(",") if t]
-    if not tasks:
-        print("# GPU tier: no TB_GPU_TASKS — nothing to deploy (no Terminal-Bench task needs a GPU)")
+    kernelbench = os.environ.get("TB_KERNELBENCH", "1") == "1"
+    if not tasks and not kernelbench:
+        print("# GPU tier: nothing to deploy (TB_KERNELBENCH=0, no TB_GPU_TASKS)")
         return 0
     missing = [t for t in tasks if not (TASKS_DIR / t).is_dir()]
     if missing:
@@ -106,6 +144,18 @@ def main() -> int:
         shutil.copytree(dock.PY_DIR, ctx / "py", symlinks=True)
         for name, data in dock._server_files().items():
             (ctx / name).write_bytes(data)
+        shutil.copy(DEMO_DIR / "deploy" / "acs_http_server_chunked.py", ctx / "acs_http_server_chunked.py")
+        if kernelbench:
+            row = {"task": KB_IMAGE, "substrate": "gpu", "instance": INSTANCE, "status": "", "arn": "", "error": ""}
+            try:
+                uri = build_kernelbench(ctx)
+                arn = d.runtime_on_cp(runtime_name("kernelbench"), uri, xrole, cp_arn, {"AWS_REGION": d.REGION})
+                _point_at(arn, uri, xrole, cp_arn)        # a reused Runtime must run the image just built
+                row.update(status="registered", arn=arn)
+            except Exception as e:  # noqa: BLE001
+                row.update(status="failed", error=f"{type(e).__name__}: {e}"[-300:])
+            d.err(f"[gpu] kernelbench: {row['status']} {row['error'][:140]}")
+            rows.append(row)
         for task in tasks:
             row = {"task": task, "substrate": "gpu", "instance": INSTANCE, "status": "", "arn": "", "error": ""}
             try:

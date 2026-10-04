@@ -55,7 +55,7 @@ PLATFORM = "linux/amd64"
 PY_DIR = ACS_CTX / "py-x86_64"
 PBS_URL = ("https://github.com/astral-sh/python-build-standalone/releases/download/20260901/"
            "cpython-3.12.14%2B20260901-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz")
-BUILD_CONC = int(os.environ.get("TB_DOCKER_BUILD_CONC", "4"))
+BUILD_CONC = int(os.environ.get("TB_DOCKER_BUILD_CONC", "2"))   # the builder is an m5.xlarge
 REBUILD = os.environ.get("TB_REBUILD") == "1"
 HIDDEN = {"tests", "run-tests.sh", "run_tests.sh", "solution.sh", "solution.yaml"}
 

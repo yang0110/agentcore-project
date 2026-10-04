@@ -130,10 +130,11 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
     # OS) goes to the isolated per-task pool: strict routing to that task's Runtime, a fresh session
     # pre-opened ahead of time (look-ahead data source), graded by the task's hidden pytest oracle.
     # Every other row (none in this demo's data) takes the generic path below.
-    if getattr(task, "family", "") == "terminalbench":
-        from .terminalbench_pool import get_tb_pool
+    from .terminalbench_pool import get_tb_pool
 
-        return await get_tb_pool(args).submit(task, sampling_params, sample)
+    pool = get_tb_pool(args)
+    if pool.routes(task):     # Terminal-Bench rows + routed rows such as KernelBench on the g6 tier
+        return await pool.submit(task, sampling_params, sample)
     # THE HARNESS TIER (harness_pool.py, every demo's default): a free dispatch worker (W =
     # HARNESS_WORKERS, default RB x NS) pulls this episode, takes its sandbox FIRST, then the SGLang
     # engine with the fewest in-flight episodes (sticky for all its turns). The agent loop itself runs

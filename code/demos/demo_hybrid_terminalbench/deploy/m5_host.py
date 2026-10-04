@@ -25,7 +25,7 @@ Two m5 modes (TB_M5_MODE in run.sh):
                the baked AMI, pulling that task's images from ECR; terminated after grading. The
                instance above then only BUILDS images and pushes them to ECR.
 
-Knobs: M5_INSTANCE_TYPE=m5.8xlarge  M5_DISK_GB=500  M5_AZ=<trainer AZ>  M5_MAX_PROJECTS=16
+Knobs: M5_INSTANCE_TYPE=m5.xlarge (builder: builds + ECR push only)  M5_DISK_GB=500  M5_AZ=<trainer AZ>  M5_MAX_PROJECTS=16
 M5_CLIENT_MEM=8g  M5_CLIENT_CPUS=4  M5_INSTANCE_PROFILE=<name> (optional, e.g. for SSM).
 """
 from __future__ import annotations
@@ -55,7 +55,7 @@ BOOTSTRAP = DEMO_DIR / "m5_agent" / "bootstrap.sh"
 NAME = f"{d.PREFIX}-tbh-m5"
 AGENT_PORT = int(os.environ.get("M5_AGENT_PORT", "18300"))
 EPHEMERAL = (32768, 60999)                       # Docker's published-port range (Linux ip_local_port_range)
-INSTANCE_TYPE = os.environ.get("M5_INSTANCE_TYPE", "m5.8xlarge")
+INSTANCE_TYPE = os.environ.get("M5_INSTANCE_TYPE", "m5.xlarge")
 DISK_GB = int(os.environ.get("M5_DISK_GB", "500"))
 COMPOSE_VERSION = os.environ.get("M5_COMPOSE_VERSION", "v5.5.1")   # = the trainer host's (tested here)
 BUILDX_VERSION = os.environ.get("M5_BUILDX_VERSION", "v0.37.1")

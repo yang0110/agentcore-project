@@ -6,8 +6,8 @@ two sandbox substrates, and gets a fresh sandbox per episode on either:
 | Substrate | Tasks | One episode = |
 |---|---|---|
 | **AgentCore microVM** (`acs_tbh_<task>` Runtimes, arm64, ≤ 2 GB) | single-container tasks whose image builds for arm64, fits, and whose oracle passes there | one fresh microVM session |
-| **m5 EC2** (plain EC2, not AgentCore-managed; Amazon Linux 2023, x86_64, Docker + compose) | everything else: the 12 multi-container compose tasks, x86-only and > 2 GB images, and microVM tasks whose reference solution fails on a capability-less microVM | **one fresh `m5.xlarge` (40 GB) per episode** running the task's whole compose project (client + sidecars), terminated after grading (`TB_M5_MODE=per_episode`, default); or one compose project on a shared m5 (`TB_M5_MODE=shared`) |
-| **g6 GPU tier** (AgentCore capacity provider, one session = one instance) | none today: no Terminal-Bench task needs a GPU. Opt in per task with `TB_GPU_TASKS=a,b` | one fresh g6 Instance session |
+| **m5 EC2** (plain EC2, not AgentCore-managed; Amazon Linux 2023, x86_64, Docker + compose) | everything else: the 12 multi-container compose tasks, x86-only and > 2 GB images, and microVM tasks whose reference solution fails on a capability-less microVM | **one `m5.xlarge` (40 GB) per session** running the task's whole compose project (client + sidecars). `TB_M5_MODE=warm` (default): kept after the episode and reused after a *verified* reset; `per_episode`: terminated after grading; `shared`: one compose project each on one shared m5 |
+| **g6 GPU tier** (AgentCore capacity provider `acs_tbh_gpu_cp`, g6.xlarge / NVIDIA L4; one session = one instance) | **KernelBench** (40 level-1 train + 10 level-2 eval rows, mixed into the batch; no Terminal-Bench task needs a GPU, opt in with `TB_GPU_TASKS=a,b`) | one fresh g6 Instance session |
 
 The policy is Qwen3-4B trained by slime (fully-async GRPO). The agent is the mini_claude tool-calling loop
 (`bash` / `write_file` / `read_file`) and it runs **inside the episode's sandbox** on both substrates,
@@ -85,6 +85,41 @@ the EC2 API with boto3, using the g6e's role. See [`docs/m5-per-episode-isolatio
 - **Leftovers** (tag `acs-tbh-m5-ep`) are terminated at the next pool start, by `6_cleanup.sh`, or by
   `deploy/m5_host.py gc-episodes`.
 
+## KernelBench on the g6 tier
+
+KernelBench rows (`kernelbench/`, restored from `demo_gpu_single`) name the image `kernelbench-gpu`, which
+routes to `gpu:<acs_tbhgpu_kernelbench ARN>`. `TerminalBenchPool` runs them with the same fresh, pre-opened,
+gated session as Terminal-Bench rows, but grades them with the coding episode (`mini_claude_episode`):
+- the agent writes `solution.py` with `ModelNew`;
+- the hidden checker (random name, nonce'd PASSED line) builds it next to the reference `Model` on the
+  L4 and checks shape, values, and that it ran on CUDA;
+- it prints `speedup=`.
+
+The image (`deploy/Dockerfile.kernelbench_gpu`, 145 MB) installs CUDA torch at container start, because
+AgentCore's 2 GB image cap applies to capacity-provider Runtimes too. Its server is
+`deploy/acs_http_server_chunked.py`: Instance Runtimes forward request bodies chunked. `g5.xlarge` (A10G) is
+accepted by AgentCore as an alternative (`TB_GPU_INSTANCE`), but g6 is cheaper (~$0.80/h vs ~$1.01/h)
+and the verified default.
+
+## Warm m5 pool (how instances are reused and when they are terminated)
+
+`WarmPool` (`agentcore_slime_demo/ec2_episode_sandbox.py`) serves one session per instance at a time:
+- **Opening:** use an idle instance (prefer one already holding the task's images); else launch one if
+  live + launching < `TB_M5_MAX_INSTANCES` (24); else wait. So the pool grows only to the peak concurrent
+  demand.
+- **After each episode:** `compose down -v`, then `reset_check`: no containers, volumes or non-default
+  networks, an empty episode dir, and disk ≥ 8 GB (cached images are evicted otherwise).
+  - Clean: the instance goes back to the pool.
+  - Dirty, or a failed health check on reuse: it is terminated, never reused.
+- **No periodic recycle:** the agent never touches the host, so a verified reset leaves nothing behind.
+- **Termination** (AgentCore doesn't manage these instances; our code does):
+  - the trainer's `atexit` hook;
+  - `5_run.sh` → `deploy/m5_host.py gc-episodes` (every instance tagged `acs-tbh-m5-ep`);
+  - the next run's pool start;
+  - `6_cleanup.sh`;
+  - a **dead-man switch**: an instance with no trainer call for `TB_M5_IDLE_SHUTDOWN_S` (1800) shuts
+    itself down. Its `InstanceInitiatedShutdownBehavior=terminate` makes that a terminate.
+
 ## Isolation
 
 | | microVM | m5 compose project |
@@ -123,11 +158,13 @@ validates the pipeline on a few tasks first. Manage the m5 directly with
 |---|---|---|
 | `NR` / `EVAL_INTERVAL` | 11 / 10 (5_run.sh) | rollouts (NR-1 train steps) / eval cadence |
 | `TB_PREOPEN_BATCHES` | 2 | batches of sandboxes booted ahead, both substrates (0 = open on demand) |
-| `TB_M5_MODE` | per_episode | `per_episode` = one fresh m5 VM per episode; `shared` = one compose project per episode on the builder |
-| `TB_M5_MAX_INSTANCES` | 32 | per_episode: live m5 instances at once |
+| `TB_M5_MODE` | warm | `warm` = one m5 per session, reused after a verified reset; `per_episode` = terminated after each episode; `shared` = one compose project each on the builder |
+| `TB_M5_MAX_INSTANCES` | 24 | warm / per_episode: live m5 instances at once (~87 % of moments need ≤ 24) |
 | `TB_PREOPEN_BATCHES_SLOW` | 3 | batches ahead for m5 VMs and g6 Instances (microVMs: `TB_PREOPEN_BATCHES`) |
 | `TB_DOCKER_MAX_PROJECTS` | 16 | shared mode: m5 episode projects at once (trainer-side gate; the host's `M5_MAX_PROJECTS` is the backstop) |
-| `TB_GPU_TASKS` / `TB_GPU_MAX_SESSIONS` | empty / 4 | tasks to put on the g6 tier (step 4) / live g6 sessions at once |
+| `TB_KERNELBENCH` / `TB_KB_TRAIN` / `TB_KB_EVAL` | 1 / 40 / 10 | the KernelBench g6 Runtime (step 4) / KernelBench rows in train / eval |
+| `TB_GPU_TASKS` / `TB_GPU_MAX_SESSIONS` / `TB_GPU_INSTANCE` | empty / 8 / g6.xlarge | Terminal-Bench tasks on the g6 tier / live g6 sessions at once (16 lets the next group pre-open) / instance type |
+| `TB_M5_IDLE_SHUTDOWN_S` | 1800 | dead-man switch on m5 episode instances |
 | `INVOKE_EXEC_MAX_RETRIES` | 1 | retries of a failed `exec` (not idempotent; 9 retries of a 4-min call stalled an eval) |
 | `HEARTBEAT` | 1 | keep idle microVM sessions alive across trainer stalls |
 | `EPISODE_MAX_TURNS` / `EPISODE_MAX_TOKENS` | 8 / 1024 | agent turns / tokens per turn |
@@ -184,6 +221,18 @@ reports `eval/terminalbench` (microVM held-out set, = demo_cpu_terminalbench's) 
   - m5 open p50 35 s; episode-start wait p50 11 s. The deeper look-ahead (`TB_PREOPEN_BATCHES_SLOW=3`,
     32 instances) was added after this run started, so the next run is its first.
   - Logs: `logs/smoke3-hybrid_20261004_113716.*`.
+- **Mixed smoke 4 — PASSED** (Terminal-Bench microVM + warm m5 + KernelBench g6, 53 GB checkpoint):
+  - microVM: 322 episodes, 13 solved, 1 infra error.
+  - Warm m5: 58 episodes, 1 infra error. Capped at 24 instances; 31 of 81 opens reused a warm instance;
+    0 dirty resets.
+  - g6 KernelBench: 75 episodes, 48 solved, 0 infra errors; speedup up to 1.29×.
+  - **eval/kernelbench 16/20**, eval/terminalbench 2/62, eval/terminalbench_docker 0/10.
+  - Findings:
+    - g6 episodes all waited at start (p50 240 s), because `TB_GPU_MAX_SESSIONS=8` equals one group, so
+      nothing can pre-open while a group runs. Use 16.
+    - The KernelBench reward is correctness-only and easy (copying `Model` onto CUDA passes); a
+      speedup-gated reward is the next step.
+  - Logs: `logs/smoke4mix-hybrid_20261004_135153.*`.
 
 ## Folder layout (self-contained)
 

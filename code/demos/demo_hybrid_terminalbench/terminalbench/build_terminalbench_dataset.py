@@ -148,6 +148,18 @@ def main() -> int:
     _write(out / "terminalbench_eval.jsonl", [_row(t, max_turns) for t in eval_tasks["microvm"]])
     _write(out / "terminalbench_eval_docker.jsonl", [_row(t, max_turns) for t in eval_tasks["docker"]])
     _write(out / "terminalbench_eval_gpu.jsonl", [_row(t, max_turns) for t in eval_tasks["gpu"]])
+    # KernelBench on the g6 tier (route `kernelbench-gpu`, deploy_gpu_tasks.py): mixed into train, own eval
+    # set. TB_KB_TRAIN / TB_KB_EVAL rows (level_1 train, level_2 held-out); 0 = leave it out.
+    kb_dir = DEMO_DIR / "kernelbench"
+    kb_train, kb_eval = [], []
+    if "kernelbench-gpu" in pool and (kb_dir / "kernelbench_train.jsonl").exists():
+        kb_train = [json.loads(l) for l in open(kb_dir / "kernelbench_train.jsonl")][: int(os.environ.get("TB_KB_TRAIN", "40"))]
+        kb_eval = [json.loads(l) for l in open(kb_dir / "kernelbench_eval.jsonl")][: int(os.environ.get("TB_KB_EVAL", "10"))]
+    train += kb_train
+    _write(out / "terminalbench_train.jsonl", train)
+    _write(out / "kernelbench_eval.jsonl", kb_eval)
+    print(f"kernelbench (g6): +{len(kb_train)} train rows, {len(kb_eval)} held-out eval rows"
+          + ("" if kb_train else " (no kernelbench-gpu route: run deploy_gpu_tasks.py)"))
     n_dc = sum(1 for t in train_tasks if t.spec["substrate"] == "docker")
     print(f"wrote {len(train)} train rows ({len(train_tasks)} tasks x{args.repeat}: {len(train_tasks) - n_dc} "
           f"microvm + {n_dc} docker) + held-out eval {len(eval_tasks['microvm'])} microvm / "

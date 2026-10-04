@@ -22,6 +22,9 @@ hidden-oracle grader, reward) is the code the microVM pool already uses.
     push {task, repo_prefix}        (builder) push every image of a built task — built AND sidecar — to
                                     ECR <repo_prefix>-<task>-<service>, record the URIs (per-episode mode)
     set_record {task, rec}          (episode instance) install a build record whose images live in ECR
+    reset_check                     (warm instance) after `down`: verify NOTHING of the episode is left —
+                                    no containers, no volumes, no non-default networks, empty episode dir —
+                                    evicting cached images if free disk < ACS_MIN_FREE_GB -> {clean, problems}
     logs {episode, tail}            `docker compose logs` of one episode (debugging)
     self_update {b64}               replace this file and exit (systemd restarts it)
 
@@ -68,6 +71,13 @@ CTX, TASKS, BUILT, EPS = (os.path.join(ROOT, d) for d in ("ctx", "tasks", "built
 SERVER_PORT = 8080
 SERVER_CMD = "exec /opt/acs/py/bin/python3 /opt/acs/acs_http_server.py"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,80}$")
+AGENT_VERSION = "2026-10-04.3"      # health reports it; the trainer self_updates an older agent (baked AMI)
+MIN_FREE_GB = float(os.environ.get("ACS_MIN_FREE_GB", "8"))
+# Dead-man switch for episode instances (0 = off, the builder): no authenticated trainer call for this
+# long -> `shutdown -h now`, and the instance (launched with InstanceInitiatedShutdownBehavior=terminate)
+# is terminated. Covers a trainer box that died or a run killed before it could terminate its instances.
+IDLE_SHUTDOWN_S = float(os.environ.get("ACS_IDLE_SHUTDOWN_S", "0"))
+_last_call = [time.time()]
 
 _lock = threading.Lock()
 _live: dict = {}          # project -> {"task", "since"}
@@ -321,11 +331,14 @@ def _up(task: str, episode: str) -> dict:
         cf = os.path.join(ep_dir, "compose.json")
         with open(cf, "w") as f:
             json.dump(model, f)
-        if rec.get("ecr"):
-            _ecr_login(next(iter(rec["ecr"].values())))
-            code, out, err = _sh(["docker", "compose", "-p", project, "-f", cf, "pull", "--quiet"], timeout=1200, cwd=ep_dir)
-            if code != 0:
-                raise RuntimeError(f"compose pull exit {code}: {(out + err)[-600:]}")
+        missing = [u for u in (rec.get("ecr") or {}).values()
+                   if _sh(["docker", "image", "inspect", u], timeout=60)[0] != 0]
+        if missing:                     # a warm instance keeps a task's images: pull only what it lacks
+            _ecr_login(missing[0])
+            for u in missing:
+                code, out, err = _sh(["docker", "pull", "--quiet", u], timeout=1800)
+                if code != 0:
+                    raise RuntimeError(f"pull {u}: {(out + err)[-400:]}")
         pulled_ms = round((time.time() - t0) * 1000.0, 1)
         code, out, err = _sh(["docker", "compose", "-p", project, "-f", cf, "up", "-d", "--pull", "missing",
                               "--no-build", "--quiet-pull"], timeout=900, cwd=ep_dir)
@@ -357,6 +370,35 @@ def _down(episode: str) -> dict:
     with _lock:
         _live.pop(project, None)
     return {"ok": code == 0, "project": project, **({"error": (out + err)[-300:]} if code else {})}
+
+
+def _reset_check() -> dict:
+    """A warm instance's post-episode reset, VERIFIED: the episode only ever touched its own compose
+    project (containers can't reach the host), so after `down -v` nothing of it may remain."""
+    problems = []
+    with _lock:
+        if _live:
+            problems.append(f"live projects {sorted(_live)}")
+    for args, what in ((["docker", "ps", "-aq"], "containers"), (["docker", "volume", "ls", "-q"], "volumes")):
+        code, out, _ = _sh(args, timeout=60)
+        if code != 0 or out.strip():
+            problems.append(f"{what} left: {out.split()[:5]}")
+    code, out, _ = _sh(["docker", "network", "ls", "--format", "{{.Name}}"], timeout=60)
+    extra = sorted(set(out.split()) - {"bridge", "host", "none"})
+    if code != 0 or extra:
+        problems.append(f"networks left: {extra[:5]}")
+    left = os.listdir(EPS) if os.path.isdir(EPS) else []
+    if left:
+        problems.append(f"episode dirs left: {left[:5]}")
+    st = os.statvfs(ROOT)
+    free = st.f_bavail * st.f_frsize / 2**30
+    if free < MIN_FREE_GB:              # image cache, not episode state: evict it and re-measure
+        _sh(["docker", "image", "prune", "-af"], timeout=600)
+        st = os.statvfs(ROOT)
+        free = st.f_bavail * st.f_frsize / 2**30
+        if free < MIN_FREE_GB:
+            problems.append(f"disk free {free:.1f} GB < {MIN_FREE_GB} after eviction")
+    return {"ok": True, "clean": not problems, "problems": problems, "disk_free_gb": round(free, 1)}
 
 
 def _docker_projects() -> list:
@@ -443,7 +485,7 @@ def _health() -> dict:
                    and _record(f[:-5]).get("status") == "built") if os.path.isdir(BUILT) else []
     with _lock:
         live = {p: dict(v) for p, v in _live.items()}
-    return {"ok": code == 0, "docker": out.strip(), "live": len(live), "projects": live,
+    return {"ok": code == 0, "version": AGENT_VERSION, "docker": out.strip(), "live": len(live), "projects": live,
             "max_projects": MAX_PROJECTS, "disk_free_gb": round(st.f_bavail * st.f_frsize / 2**30, 1),
             "built": built, "ctx": os.path.exists(os.path.join(CTX, "py", "bin", "python3")),
             "ctx_tag": open(os.path.join(CTX, "TAG")).read().strip() if os.path.exists(os.path.join(CTX, "TAG")) else ""}
@@ -453,6 +495,10 @@ def handle(req: dict) -> dict:
     op = req.get("op")
     if op == "health":
         return _health()
+    if op == "set_idle_shutdown":          # the trainer arms the switch on the instances it launches
+        global IDLE_SHUTDOWN_S
+        IDLE_SHUTDOWN_S = float(req.get("seconds", 0))
+        return {"ok": True, "idle_shutdown_s": IDLE_SHUTDOWN_S}
     if op == "put_tar":
         return _put_tar(req)
     if op == "build":
@@ -482,6 +528,8 @@ def handle(req: dict) -> dict:
         return {"ok": True}
     if op == "down":
         return _down(req["episode"])
+    if op == "reset_check":
+        return _reset_check()
     if op == "list":
         with _lock:
             return {"ok": True, "live": sorted(_live), "docker": _docker_projects()}
@@ -527,6 +575,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.headers.get("X-ACS-Token", "") != TOKEN:
             return self._send(403, {"error": "bad token"})
         n = int(self.headers.get("Content-Length") or 0)
+        _last_call[0] = time.time()
         try:
             out = handle(json.loads(self.rfile.read(n) or b"{}"))
             self._send(429 if out.get("busy") else 200, out)
@@ -538,6 +587,14 @@ def main() -> int:
     for d in (CTX, TASKS, BUILT, EPS):
         os.makedirs(d, exist_ok=True)
     # Projects left by a previous agent process are unknown to it: the trainer's gc removes them.
+    def _watchdog() -> None:
+        while True:
+            time.sleep(30)
+            if IDLE_SHUTDOWN_S > 0 and time.time() - _last_call[0] > IDLE_SHUTDOWN_S:
+                sys.stderr.write(f"no trainer call for {IDLE_SHUTDOWN_S:.0f}s: shutting down (-> terminate)\n")
+                subprocess.run(["shutdown", "-h", "now"])
+
+    threading.Thread(target=_watchdog, daemon=True).start()
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer((BIND, PORT), _Handler)
     sys.stderr.write(f"compose_agent on :{PORT} root={ROOT} max_projects={MAX_PROJECTS}\n")

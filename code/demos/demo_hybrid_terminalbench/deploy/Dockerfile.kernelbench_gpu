@@ -1,0 +1,18 @@
+# KernelBench sandbox for demo_hybrid_terminalbench's g6 tier: ONE AgentCore session = ONE g6 instance
+# (capacity provider <prefix>_tbh_gpu_cp). Built by terminalbench/deploy_gpu_tasks.py, context = the
+# wrapper build context (acs_http_server.py + sandbox_server_agent.py), linux/amd64.
+#
+# CUDA torch (~2.7 GB) is installed when the container STARTS, not baked in: AgentCore's 2048 MB image
+# cap (L-0A9E32B3) applies to capacity-provider Runtimes too, so a baked image fails CreateAgentRuntime.
+# The install is ~90 s per fresh instance — part of the cold start the look-ahead pre-open hides
+# (TB_PREOPEN_BATCHES_SLOW). The server is the chunked-body variant (Instance Runtimes send chunked bodies). The server binds only after torch is importable, so the first ping (the
+# pool's open) returns only when the sandbox can actually run a kernel.
+FROM public.ecr.aws/docker/library/python:3.12-slim
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /workspace
+COPY acs_http_server.py acs_http_server_chunked.py sandbox_server_agent.py /opt/acs/
+# AgentCore injects the NVIDIA driver (libcuda.so.1) into /usr/lib64 at runtime; the loader needs it at start.
+ENV LD_LIBRARY_PATH=/usr/lib64 SANDBOX_WORKDIR=/workspace PYTHONDONTWRITEBYTECODE=1
+EXPOSE 8080
+CMD ["sh", "-c", "pip install --no-cache-dir -q torch==2.5.1 numpy --index-url https://download.pytorch.org/whl/cu124 --extra-index-url https://pypi.org/simple && exec python3 /opt/acs/acs_http_server_chunked.py"]

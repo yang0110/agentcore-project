@@ -115,12 +115,13 @@ DATA="${DATA:-$DEMO_DIR/data/terminalbench_train.jsonl}"
 EVAL_DATA="${EVAL_DATA:-$DEMO_DIR/data/terminalbench_eval.jsonl}"                 # microVM tasks (= demo_cpu_terminalbench's)
 EVAL_DOCKER_DATA="${EVAL_DOCKER_DATA:-$DEMO_DIR/data/terminalbench_eval_docker.jsonl}"  # m5 tasks
 EVAL_GPU_DATA="${EVAL_GPU_DATA:-$DEMO_DIR/data/terminalbench_eval_gpu.jsonl}"           # g6 tasks (TB_GPU_TASKS)
+EVAL_KB_DATA="${EVAL_KB_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"                   # KernelBench on g6
 EVAL_NAME="${EVAL_NAME:-terminalbench}"
 [ -f "$DATA" ] || { echo "no $DATA — run 1_prepare_data.sh (after steps 2-4)" >&2; exit 2; }
 SHUFFLE_ARGS=(--rollout-shuffle)
 # IMAGE ROUTING: task image -> its route (terminalbench/tasks/route_by_image.json, via image_routing.py).
 # A row whose image has no route is an error here, before any GPU work.
-TB_ROUTE_BY_IMAGE="$(python3 "$DEMO_DIR/image_routing.py" "$DATA" "$EVAL_DATA" "$EVAL_DOCKER_DATA" "$EVAL_GPU_DATA")"
+TB_ROUTE_BY_IMAGE="$(python3 "$DEMO_DIR/image_routing.py" "$DATA" "$EVAL_DATA" "$EVAL_DOCKER_DATA" "$EVAL_GPU_DATA" "$EVAL_KB_DATA")"
 export TB_ROUTE_BY_IMAGE
 # The m5 compose agent's shared secret (deploy/m5_host.json from `deploy/m5_host.py up`), for docker:// routes.
 M5_STATE="$DEMO_DIR/deploy/m5_host.json"
@@ -132,11 +133,11 @@ TB_DOCKER_MAX_PROJECTS="${TB_DOCKER_MAX_PROJECTS:-16}"   # shared mode: m5 episo
 # m5 tier mode: per_episode (default) = ONE fresh EC2 instance per episode, from the AMI baked by
 # `deploy/m5_host.py bake-ami` (deploy/m5_host.json "episode"), terminated after grading; shared = one
 # compose project per episode on the one shared m5.
-TB_M5_MODE="${TB_M5_MODE:-per_episode}"
-TB_M5_MAX_INSTANCES="${TB_M5_MAX_INSTANCES:-32}"          # per_episode: live m5 instances at once (32 x m5.xlarge = 128 vCPU)
+TB_M5_MODE="${TB_M5_MODE:-warm}"
+TB_M5_MAX_INSTANCES="${TB_M5_MAX_INSTANCES:-24}"          # warm/per_episode: live m5 instances at once (~87% of moments need <= 24; see README)
 TB_PREOPEN_BATCHES_SLOW="${TB_PREOPEN_BATCHES_SLOW:-3}"   # m5 VMs / g6 Instances open this many batches ahead (microVMs: TB_PREOPEN_BATCHES)
 TB_M5_EPISODE="${TB_M5_EPISODE:-}"
-if [ "$TB_M5_MODE" = per_episode ] && [ -z "$TB_M5_EPISODE" ] && grep -q 'docker://' <<<"$TB_ROUTE_BY_IMAGE"; then
+if [ "$TB_M5_MODE" != shared ] && [ -z "$TB_M5_EPISODE" ] && grep -q 'docker://' <<<"$TB_ROUTE_BY_IMAGE"; then
   TB_M5_EPISODE="$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get('episode') or ''))" "$M5_STATE")"
   [ "$TB_M5_EPISODE" != '""' ] || { echo "TB_M5_MODE=per_episode but no baked AMI: python3 deploy/m5_host.py roles && python3 deploy/m5_host.py bake-ami (or TB_M5_MODE=shared)" >&2; exit 2; }
 fi
@@ -216,6 +217,7 @@ if [ "$EVAL_INTERVAL" != "0" ] && [ -f "$EVAL_DATA" ]; then
    EVAL_SETS=("$EVAL_NAME" "$EVAL_DATA")
    [ -s "$EVAL_DOCKER_DATA" ] && EVAL_SETS+=("${EVAL_NAME}_docker" "$EVAL_DOCKER_DATA")
    [ -s "$EVAL_GPU_DATA" ] && EVAL_SETS+=("${EVAL_NAME}_gpu" "$EVAL_GPU_DATA")
+   [ -s "$EVAL_KB_DATA" ] && EVAL_SETS+=("kernelbench" "$EVAL_KB_DATA")
    EVAL_ARGS=(
       --eval-interval "$EVAL_INTERVAL"
       --eval-prompt-data "${EVAL_SETS[@]}"
@@ -339,7 +341,10 @@ RUNTIME_ENV_JSON="{
     \"TB_DOCKER_TOKEN\": \"${TB_DOCKER_TOKEN:-}\",
     \"TB_DOCKER_MAX_PROJECTS\": \"${TB_DOCKER_MAX_PROJECTS}\",
     \"TB_DOCKER_OPEN_WAIT_S\": \"${TB_DOCKER_OPEN_WAIT_S:-1800}\",
-    \"TB_GPU_MAX_SESSIONS\": \"${TB_GPU_MAX_SESSIONS:-4}\",
+    \"TB_GPU_MAX_SESSIONS\": \"${TB_GPU_MAX_SESSIONS:-8}\",
+    \"MINI_AGENT_EXEC_TIMEOUT\": \"${MINI_AGENT_EXEC_TIMEOUT:-300}\",
+    \"MINI_SESSION_WALL_SEC\": \"${MINI_SESSION_WALL_SEC:-3840}\",
+    \"MINI_GRADE_TIMEOUT\": \"${MINI_GRADE_TIMEOUT:-600}\",
     \"TB_M5_MODE\": \"${TB_M5_MODE}\",
     \"TB_M5_MAX_INSTANCES\": \"${TB_M5_MAX_INSTANCES}\",
     \"TB_M5_EPISODE\": \"$(printf '%s' "${TB_M5_EPISODE}" | sed 's/\\/\\\\/g; s/\"/\\\"/g')\",

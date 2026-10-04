@@ -112,6 +112,15 @@ class Ec2EpisodeSandbox(DockerComposeSandbox):
                 raise RuntimeError(f"{self._instance_id}: compose agent not ready after {deadline_s:.0f}s")
             await asyncio.sleep(2)
 
+    async def _arm_idle_shutdown(self) -> None:
+        """Per-episode instances: the same dead-man switch (an older baked agent may lack the op)."""
+        try:
+            await asyncio.to_thread(lambda: agent_call(self._agent_host, self._agent_port, {
+                "op": "set_idle_shutdown", "seconds": float(os.environ.get("TB_M5_IDLE_SHUTDOWN_S", "1800"))},
+                timeout=30, token=self._token))
+        except Exception:  # noqa: BLE001 — the trainer-side terminate + gc-episodes still apply
+            pass
+
     async def _upload(self) -> None:
         with open(os.path.join(_RECORDS, f"{self._task}.json")) as f:
             rec = json.load(f)
@@ -131,6 +140,7 @@ class Ec2EpisodeSandbox(DockerComposeSandbox):
             self._instance_id, self._agent_host = await asyncio.to_thread(self._launch_sync)
             t_launch = time.perf_counter()
             await self._wait_agent(float(os.environ.get("TB_M5_BOOT_WAIT_S", "600")))
+            await self._arm_idle_shutdown()
             t_agent = time.perf_counter()
             await self._upload()
             await super().__aenter__()            # up (pull + compose up) + ping; prints [sbx-op] op=open
@@ -154,6 +164,199 @@ class Ec2EpisodeSandbox(DockerComposeSandbox):
             self._instance_id = None
         except Exception as e:  # noqa: BLE001 — teardown: gc-episodes / the next pool start is the fallback
             status = type(e).__name__
+        sys.stdout.write(f"[sbx-op] ts={time.time():.3f} op=stop_session ms={(time.perf_counter() - t0) * 1000.0:.1f} "
+                         f"arn={self._label()} session={self._session_id} status={status}\n")
+        sys.stdout.flush()
+
+
+# ============================================================================ warm pool (TB_M5_MODE=warm)
+# ONE instance serves ONE session at a time, but is KEPT after the episode instead of terminated: the
+# agent runs `down -v` and a VERIFIED reset (reset_check: no containers / volumes / non-default networks /
+# episode dirs left). The episode only ever touched its own compose project — containers can't reach the
+# host — so a clean check means the next episode starts from the same state a fresh instance would. A
+# failed check (or failed health) terminates the instance; it is never reused. An idle instance that
+# already holds a task's images is preferred for that task (no pull: ~6 s open instead of ~35-60 s).
+import threading as _threading
+
+_AGENT_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "m5_agent", "compose_agent.py")
+
+
+class _WarmInstance:
+    def __init__(self, iid: str, ip: str, token: str) -> None:
+        self.iid, self.ip, self.token = iid, ip, token
+        self.busy, self.tasks, self.episodes = True, set(), 0
+
+
+class WarmPool:
+    """Process-wide pool of warm m5 instances (thread-safe: the train and eval event loops share it)."""
+
+    def __init__(self) -> None:
+        self._lock = _threading.Lock()
+        self._insts: list[_WarmInstance] = []
+        self._launching = 0
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {"warm_instances": len(self._insts), "warm_busy": sum(i.busy for i in self._insts)}
+
+    def _take(self, task: str, cap: int):
+        """(instance, reused) or (None, launch?) — prefer an idle instance that already has this task."""
+        with self._lock:
+            idle = [i for i in self._insts if not i.busy]
+            for i in sorted(idle, key=lambda i: task not in i.tasks):
+                i.busy = True
+                return i, True
+            if len(self._insts) + self._launching < cap:
+                self._launching += 1
+                return None, True
+            return None, False
+
+    def _added(self, inst: _WarmInstance | None) -> None:
+        with self._lock:
+            self._launching -= 1
+            if inst is not None:
+                self._insts.append(inst)
+
+    def _drop(self, inst: _WarmInstance) -> None:
+        with self._lock:
+            if inst in self._insts:
+                self._insts.remove(inst)
+
+    def _free(self, inst: _WarmInstance) -> None:
+        with self._lock:
+            inst.busy = False
+
+
+_WARM = WarmPool()
+
+
+def _terminate_warm_at_exit() -> None:
+    """Best effort: a finished run leaves no warm instance behind (5_run.sh and the next pool start
+    also terminate every tagged instance)."""
+    ids = [i.iid for i in _WARM._insts]
+    if ids:
+        try:
+            _ec2(os.environ.get("AWS_REGION", "us-west-2")).terminate_instances(InstanceIds=ids)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+import atexit as _atexit  # noqa: E402
+
+_atexit.register(_terminate_warm_at_exit)
+
+
+class Ec2WarmSandbox(Ec2EpisodeSandbox):
+    """A warm m5 instance for ONE episode at a time; verified reset afterwards instead of terminate."""
+
+    def __init__(self, route: str, **kw) -> None:
+        super().__init__(route, **kw)
+        self._inst: _WarmInstance | None = None
+        self.sandbox_id = f"ec2warm-{self._episode}"
+
+    def _label(self) -> str:
+        return f"ec2warm:{self._task}"
+
+    async def _ensure_agent(self) -> None:
+        """Instances from the baked AMI may run an older agent: push this one (it restarts itself)."""
+        import re
+
+        call = lambda p, t=60: agent_call(self._agent_host, self._agent_port, p, timeout=t, token=self._token)  # noqa: E731
+        with open(_AGENT_SRC, encoding="utf-8") as f:
+            src = f.read()
+        m = re.search(r'AGENT_VERSION = "([^"]+)"', src)
+        want = m.group(1) if m else None
+        h = await asyncio.to_thread(call, {"op": "health"})
+        if want and h.get("version") != want:
+            await asyncio.to_thread(call, {"op": "self_update", "b64": base64.b64encode(src.encode()).decode()})
+            await asyncio.sleep(3)
+            await self._wait_agent(120)
+        # Dead-man switch: if the trainer stops calling (box died, run killed), the instance shuts itself
+        # down, which TERMINATES it (InstanceInitiatedShutdownBehavior=terminate).
+        await asyncio.to_thread(call, {"op": "set_idle_shutdown",
+                                       "seconds": float(os.environ.get("TB_M5_IDLE_SHUTDOWN_S", "1800"))})
+
+    async def __aenter__(self) -> "Ec2WarmSandbox":
+        cap = int(os.environ.get("TB_M5_MAX_INSTANCES", "24"))
+        t0, sent = time.perf_counter(), time.time()
+        self._open_t0 = t0
+        while True:
+            inst, ok = _WARM._take(self._task, cap)
+            if inst is not None:
+                try:   # an idle instance may have shut itself down (dead-man switch) or died: check first
+                    await asyncio.to_thread(lambda: agent_call(inst.ip, self._agent_port, {"op": "health"},
+                                                               timeout=10, token=inst.token))
+                    break
+                except Exception:  # noqa: BLE001
+                    _WARM._drop(inst)
+                    sys.stdout.write(f"[demo] warm_retire instance={inst.iid} reason=unhealthy_on_reuse "
+                                     f"episodes={inst.episodes}\n")
+                    await asyncio.to_thread(lambda: _ec2(self._region).terminate_instances(InstanceIds=[inst.iid]))
+                    continue
+            if ok:
+                break
+            await asyncio.sleep(2)                 # all warm instances busy and at the cap
+        launched = inst is None
+        try:
+            if launched:
+                self._instance_id, self._agent_host = await asyncio.to_thread(self._launch_sync)
+                inst = _WarmInstance(self._instance_id, self._agent_host, self._token)
+                _WARM._added(inst)
+                self._inst = inst                   # from here a failure retires it (drops it from the pool)
+                await self._wait_agent(float(os.environ.get("TB_M5_BOOT_WAIT_S", "600")))
+                await self._ensure_agent()
+            else:
+                self._instance_id, self._agent_host, self._token = inst.iid, inst.ip, inst.token
+            self._inst = inst
+            if self._task not in inst.tasks:       # task dir + ECR record, once per instance
+                await self._upload()
+                inst.tasks.add(self._task)
+            await DockerComposeSandbox.__aenter__(self)     # up (pull only missing images) + ping
+        except BaseException:
+            if launched and inst is None:
+                _WARM._added(None)
+            await self._retire("open_failed")
+            raise
+        inst.episodes += 1
+        self.open_sent_epoch = sent
+        self.open_reply.setdefault("boot", {}).update(instance_id=inst.iid, warm_reused=int(not launched),
+                                                      instance_episodes=inst.episodes, **_WARM.stats())
+        self.demo_fields = {"warm_reused": int(not launched), "instance_episodes": inst.episodes}
+        return self
+
+    async def _retire(self, why: str) -> None:
+        inst, self._inst = self._inst, None
+        if inst is None:
+            if self._instance_id:            # launched but never registered
+                await asyncio.to_thread(lambda: _ec2(self._region).terminate_instances(InstanceIds=[self._instance_id]))
+            return
+        _WARM._drop(inst)
+        try:
+            await asyncio.to_thread(lambda: _ec2(self._region).terminate_instances(InstanceIds=[inst.iid]))
+        finally:
+            sys.stdout.write(f"[demo] warm_retire instance={inst.iid} reason={why} episodes={inst.episodes}\n")
+            sys.stdout.flush()
+
+    async def __aexit__(self, *exc) -> None:
+        inst = self._inst
+        if inst is None:
+            return
+        t0, status = time.perf_counter(), "ok"
+        call = lambda p, t=330: agent_call(inst.ip, self._agent_port, p, timeout=t, token=inst.token)  # noqa: E731
+        try:
+            rep = await asyncio.to_thread(call, {"op": "down", "episode": self._episode})
+            chk = await asyncio.to_thread(call, {"op": "reset_check"}, 600)
+            if rep.get("ok") and chk.get("clean"):
+                self._inst = None
+                _WARM._free(inst)                  # verified clean: next episode may use it
+            else:
+                status = "reset_dirty"
+                sys.stdout.write(f"[demo] warm_reset_dirty instance={inst.iid} problems="
+                                 f"{str(chk.get('problems'))[:200].replace(' ', '_')}\n")
+                await self._retire("reset_dirty")
+        except Exception as e:  # noqa: BLE001 — an unreachable/failed agent: never reuse that instance
+            status = type(e).__name__
+            await self._retire(status)
         sys.stdout.write(f"[sbx-op] ts={time.time():.3f} op=stop_session ms={(time.perf_counter() - t0) * 1000.0:.1f} "
                          f"arn={self._label()} session={self._session_id} status={status}\n")
         sys.stdout.flush()

@@ -17,8 +17,12 @@ TAG="${RUN_TAG:-run}${_SFX}_$(date +%Y%m%d_%H%M%S)"
 C_LOG="$C_DEMO_DIR/logs/$TAG.log"
 mkdir -p "$HERE/logs" 2>/dev/null || true
 log "step 5/6: run.sh  NR=$NR EVAL_INTERVAL=$EVAL_INTERVAL -> logs/$TAG.log"
-in_container "mkdir -p $C_DEMO_DIR/logs && set -o pipefail && bash $C_DEMO_DIR/run.sh 2>&1 | tee $C_LOG"
+in_container "mkdir -p $C_DEMO_DIR/logs && set -o pipefail && bash $C_DEMO_DIR/run.sh 2>&1 | tee $C_LOG" || RUN_RC=$?
 log "parse metrics"
 in_container "python3 $C_DEMO_DIR/metrics.py $C_LOG --csv ${C_LOG%.log}.csv --eval-csv ${C_LOG%.log}.eval.csv --plot ${C_LOG%.log}.png" \
   || echo "!! metrics.py failed (log kept at logs/$TAG.log)"
+if [ -f "$M5_STATE" ]; then   # warm / per-episode m5 instances never outlive a run
+  python3 "$HERE/deploy/m5_host.py" gc-episodes || true
+fi
 log "done — logs/$TAG.{log,csv,eval.csv,png}; tear down with: bash 6_cleanup.sh"
+exit "${RUN_RC:-0}"

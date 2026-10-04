@@ -1,8 +1,8 @@
 #!/bin/bash
 # Step 4/6 — make every task routable AND check it where it will train (HOST, real AWS $):
 #   4a  register one VPC AgentCore Runtime per pushed microVM image (idempotent) -> arn: routes
-#   4g  only with TB_GPU_TASKS=a,b: build those tasks for amd64 and register them on a g6 capacity
-#       provider (one session = one GPU instance) -> gpu: routes. No Terminal-Bench task needs a GPU.
+#   4g  the g6 GPU tier (one session = one GPU instance): the KernelBench Runtime (TB_KERNELBENCH=1,
+#       default) and any TB_GPU_TASKS=a,b -> gpu: routes. No Terminal-Bench task itself needs a GPU.
 #   4b  validate_oracle.py on every route: the reference solution must pass and the untouched env fail
 #   4c  microVM tasks whose oracle failed are retried on the m5 (deploy_docker_tasks.py), then 4d
 #       re-validates the m5 tasks. A task keeps the route it passed on; tasks/oracle.csv says which.
@@ -17,8 +17,8 @@ if [[ ",$SUBS," == *,microvm,* ]]; then
   log "step 4a: register the microVM task Runtimes"
   python3 terminalbench/deploy_terminalbench.py
 fi
-if [ -n "${TB_GPU_TASKS:-}" ]; then
-  log "step 4g: the GPU tier (g6 capacity provider) for TB_GPU_TASKS=$TB_GPU_TASKS"
+if [ "${TB_KERNELBENCH:-1}" = 1 ] || [ -n "${TB_GPU_TASKS:-}" ]; then
+  log "step 4g: the GPU tier (g6 capacity provider): KernelBench${TB_GPU_TASKS:+ + $TB_GPU_TASKS}"
   python3 terminalbench/deploy_gpu_tasks.py
 fi
 if [ "${TB_VALIDATE:-1}" = 1 ]; then

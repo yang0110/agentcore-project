@@ -40,7 +40,11 @@ def _checker_token(stdout: str) -> tuple[str, dict[str, str]]:
         return "NO_OUTPUT", {}
     if "PASSED" in text:
         m = re.search(r"PASSED\s+(\d+)\s*/\s*(\d+)", text)
-        return "PASSED", ({"pass_n": m.group(1), "pass_m": m.group(2)} if m else {})
+        extras = {"pass_n": m.group(1), "pass_m": m.group(2)} if m else {}
+        sp = re.search(r"SPEEDUP vs reference:\s*([0-9.]+)x", text)       # KernelBench's headline metric
+        if sp:
+            extras["speedup"] = sp.group(1)
+        return "PASSED", extras
     for cls in _CHECK_CLASSES:
         if cls in text:
             return cls, {}
