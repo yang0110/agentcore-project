@@ -38,7 +38,7 @@ class LookaheadDataSource(RolloutDataSourceWithBuffer):
         # Peek as far as the deepest substrate looks ahead: slow-to-boot sandboxes (a per-episode m5 VM, a
         # g6 Instance) open TB_PREOPEN_BATCHES_SLOW batches ahead, microVMs TB_PREOPEN_BATCHES.
         fast = int(os.environ.get("TB_PREOPEN_BATCHES", "2"))
-        self.lookahead_batches = max(fast, int(os.environ.get("TB_PREOPEN_BATCHES_SLOW", "3"))) if fast > 0 else 0
+        self.lookahead_batches = max(fast, int(os.environ.get("TB_PREOPEN_BATCHES_SLOW", "5"))) if fast > 0 else 0
 
     def _epoch_samples(self, epoch_id: int) -> list:
         """The dataset's prompt order in `epoch_id`, reproducing Dataset.shuffle without mutating it."""

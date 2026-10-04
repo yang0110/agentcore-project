@@ -123,6 +123,14 @@ async def run(args, sample, task, sampling_params, sb, engine: str, fields: dict
         exit_code, stdout = await _hidden_grade(sb, task)
         solved = exit_code == 0
         reward = float(task.reward(0 if solved else 1))
+        # KernelBench (routed to the g6 tier): correctness alone is easy (a copy of the reference Model on
+        # CUDA passes), so full reward needs a REAL speedup; a correct but not-faster kernel gets half.
+        # The margin covers timing noise (copies measured 1.00-1.03x). TB_KB_SPEEDUP_MIN=0 = correctness only.
+        kb_min = float(os.environ.get("TB_KB_SPEEDUP_MIN", "1.10"))
+        if solved and kb_min > 0 and str(getattr(task, "image", "")).startswith("kernelbench"):
+            import re as _re
+            m = _re.search(r"SPEEDUP vs reference:\s*([0-9.]+)x", stdout or "")
+            reward = 1.0 if (m and float(m.group(1)) >= kb_min) else 0.5
 
         samples = await adapter.finish_session(
             sid, base_sample=sample, reward=reward,

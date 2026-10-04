@@ -214,7 +214,7 @@ class TerminalBenchPool(HarnessPool):
                             if batches > 0 else self.num_workers)
         # Slow-to-boot substrates (a per-episode m5 VM ~35-60 s, a g6 Instance) look further ahead, so
         # their cold start is hidden too; the substrate gates still cap how many are open at once.
-        slow = int(os.environ.get("TB_PREOPEN_BATCHES_SLOW", "3")) if batches > 0 else 0
+        slow = int(os.environ.get("TB_PREOPEN_BATCHES_SLOW", "5")) if batches > 0 else 0
         self.preopen_max_slow = max(self.preopen_max,
                                     slow * args.rollout_batch_size * args.n_samples_per_prompt)
         # Strict task -> route map (AgentCore Runtime ARN or docker:// m5 route), parsed once.
@@ -224,7 +224,7 @@ class TerminalBenchPool(HarnessPool):
         m5_cap = (os.environ.get("TB_M5_MAX_INSTANCES", "24") if m5_mode() in ("warm", "per_episode")
                   else os.environ.get("TB_DOCKER_MAX_PROJECTS", "16"))
         self._gates = {"docker": asyncio.Semaphore(int(m5_cap)),
-                       "gpu": asyncio.Semaphore(int(os.environ.get("TB_GPU_MAX_SESSIONS", "8")))}
+                       "gpu": asyncio.Semaphore(int(os.environ.get("TB_GPU_MAX_SESSIONS", "16")))}
         self._keeper = None
         # Upcoming episodes, in the order they will run, as their task's Runtime ARN:
         #   _demand — drawn by slime (or submitted without a look-ahead reservation), not yet claimed;

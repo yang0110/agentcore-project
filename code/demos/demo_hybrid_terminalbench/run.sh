@@ -135,7 +135,8 @@ TB_DOCKER_MAX_PROJECTS="${TB_DOCKER_MAX_PROJECTS:-16}"   # shared mode: m5 episo
 # compose project per episode on the one shared m5.
 TB_M5_MODE="${TB_M5_MODE:-warm}"
 TB_M5_MAX_INSTANCES="${TB_M5_MAX_INSTANCES:-24}"          # warm/per_episode: live m5 instances at once (~87% of moments need <= 24; see README)
-TB_PREOPEN_BATCHES_SLOW="${TB_PREOPEN_BATCHES_SLOW:-3}"   # m5 VMs / g6 Instances open this many batches ahead (microVMs: TB_PREOPEN_BATCHES)
+TB_M5_IDLE_SHUTDOWN_S="${TB_M5_IDLE_SHUTDOWN_S:-1800}"   # m5 dead-man switch: no trainer call this long -> instance terminates itself (0 = off)
+TB_PREOPEN_BATCHES_SLOW="${TB_PREOPEN_BATCHES_SLOW:-5}"   # m5 VMs / g6 Instances open this many batches ahead (microVMs: TB_PREOPEN_BATCHES); a g6 needs ~2.5 min
 TB_M5_EPISODE="${TB_M5_EPISODE:-}"
 if [ "$TB_M5_MODE" != shared ] && [ -z "$TB_M5_EPISODE" ] && grep -q 'docker://' <<<"$TB_ROUTE_BY_IMAGE"; then
   TB_M5_EPISODE="$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get('episode') or ''))" "$M5_STATE")"
@@ -341,12 +342,14 @@ RUNTIME_ENV_JSON="{
     \"TB_DOCKER_TOKEN\": \"${TB_DOCKER_TOKEN:-}\",
     \"TB_DOCKER_MAX_PROJECTS\": \"${TB_DOCKER_MAX_PROJECTS}\",
     \"TB_DOCKER_OPEN_WAIT_S\": \"${TB_DOCKER_OPEN_WAIT_S:-1800}\",
-    \"TB_GPU_MAX_SESSIONS\": \"${TB_GPU_MAX_SESSIONS:-8}\",
+    \"TB_GPU_MAX_SESSIONS\": \"${TB_GPU_MAX_SESSIONS:-16}\",
+    \"TB_KB_SPEEDUP_MIN\": \"${TB_KB_SPEEDUP_MIN:-1.10}\",
     \"MINI_AGENT_EXEC_TIMEOUT\": \"${MINI_AGENT_EXEC_TIMEOUT:-300}\",
     \"MINI_SESSION_WALL_SEC\": \"${MINI_SESSION_WALL_SEC:-3840}\",
     \"MINI_GRADE_TIMEOUT\": \"${MINI_GRADE_TIMEOUT:-600}\",
     \"TB_M5_MODE\": \"${TB_M5_MODE}\",
     \"TB_M5_MAX_INSTANCES\": \"${TB_M5_MAX_INSTANCES}\",
+    \"TB_M5_IDLE_SHUTDOWN_S\": \"${TB_M5_IDLE_SHUTDOWN_S}\",
     \"TB_M5_EPISODE\": \"$(printf '%s' "${TB_M5_EPISODE}" | sed 's/\\/\\\\/g; s/\"/\\\"/g')\",
     \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",
     \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\",

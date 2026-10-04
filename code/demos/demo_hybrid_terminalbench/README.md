@@ -93,7 +93,9 @@ gated session as Terminal-Bench rows, but grades them with the coding episode (`
 - the agent writes `solution.py` with `ModelNew`;
 - the hidden checker (random name, nonce'd PASSED line) builds it next to the reference `Model` on the
   L4 and checks shape, values, and that it ran on CUDA;
-- it prints `speedup=`.
+- it prints `speedup=`;
+- the reward is 1 if the kernel is correct and ≥ `TB_KB_SPEEDUP_MIN` (1.10×) faster, 0.5 if only correct,
+  0 otherwise. Copies of the reference measured 1.00–1.03×, so the margin is above timing noise.
 
 The image (`deploy/Dockerfile.kernelbench_gpu`, 145 MB) installs CUDA torch at container start, because
 AgentCore's 2 GB image cap applies to capacity-provider Runtimes too. Its server is
@@ -160,11 +162,12 @@ validates the pipeline on a few tasks first. Manage the m5 directly with
 | `TB_PREOPEN_BATCHES` | 2 | batches of sandboxes booted ahead, both substrates (0 = open on demand) |
 | `TB_M5_MODE` | warm | `warm` = one m5 per session, reused after a verified reset; `per_episode` = terminated after each episode; `shared` = one compose project each on the builder |
 | `TB_M5_MAX_INSTANCES` | 24 | warm / per_episode: live m5 instances at once (~87 % of moments need ≤ 24) |
-| `TB_PREOPEN_BATCHES_SLOW` | 3 | batches ahead for m5 VMs and g6 Instances (microVMs: `TB_PREOPEN_BATCHES`) |
+| `TB_PREOPEN_BATCHES_SLOW` | 5 | batches ahead for m5 VMs and g6 Instances (microVMs: `TB_PREOPEN_BATCHES`); a g6 needs ~2.5 min (boot + torch install) |
 | `TB_DOCKER_MAX_PROJECTS` | 16 | shared mode: m5 episode projects at once (trainer-side gate; the host's `M5_MAX_PROJECTS` is the backstop) |
 | `TB_KERNELBENCH` / `TB_KB_TRAIN` / `TB_KB_EVAL` | 1 / 40 / 10 | the KernelBench g6 Runtime (step 4) / KernelBench rows in train / eval |
-| `TB_GPU_TASKS` / `TB_GPU_MAX_SESSIONS` / `TB_GPU_INSTANCE` | empty / 8 / g6.xlarge | Terminal-Bench tasks on the g6 tier / live g6 sessions at once (16 lets the next group pre-open) / instance type |
-| `TB_M5_IDLE_SHUTDOWN_S` | 1800 | dead-man switch on m5 episode instances |
+| `TB_GPU_TASKS` / `TB_GPU_MAX_SESSIONS` / `TB_GPU_INSTANCE` | empty / 16 / g6.xlarge | Terminal-Bench tasks on the g6 tier / live g6 sessions at once (16 = one group running + the next pre-opening) / instance type |
+| `TB_KB_SPEEDUP_MIN` | 1.10 | KernelBench reward: 1 if correct and at least this much faster than the reference, 0.5 if only correct, 0 otherwise (0 = correctness only) |
+| `TB_M5_IDLE_SHUTDOWN_S` | 1800 | m5 dead-man switch: an episode instance with no trainer call for this long terminates itself (0 = off). Must exceed the longest normal silence of an idle warm instance (final checkpoint save, eval: ~10 min); shorter = idle warm instances get replaced mid-run, longer = orphans bill longer after a crash |
 | `INVOKE_EXEC_MAX_RETRIES` | 1 | retries of a failed `exec` (not idempotent; 9 retries of a 4-min call stalled an eval) |
 | `HEARTBEAT` | 1 | keep idle microVM sessions alive across trainer stalls |
 | `EPISODE_MAX_TURNS` / `EPISODE_MAX_TOKENS` | 8 / 1024 | agent turns / tokens per turn |
@@ -233,6 +236,14 @@ reports `eval/terminalbench` (microVM held-out set, = demo_cpu_terminalbench's) 
     - The KernelBench reward is correctness-only and easy (copying `Model` onto CUDA passes); a
       speedup-gated reward is the next step.
   - Logs: `logs/smoke4mix-hybrid_20261004_135153.*`.
+- **Smoke 5 — PASSED** (3 steps + eval; `TB_GPU_MAX_SESSIONS=16`, speedup-gated KernelBench reward):
+  - KernelBench rewards 26 × 0.5, 10 × 0, 0 × 1.0: correct-but-not-faster kernels no longer score 1, so
+    groups carry a real GRPO signal.
+  - eval/kernelbench 0.475 (mean reward), eval/terminalbench 4/62.
+  - All 36 g6 episodes were pre-opened; start wait p50 **82 s** (240 s with cap 8). A g6 needs ~2.5 min
+    and 3 short batches of lead weren't quite enough, so `TB_PREOPEN_BATCHES_SLOW` is now 5.
+  - All 24 warm m5s were terminated at exit.
+  - Logs: `logs/smoke5-hybrid_*`.
 
 ## Folder layout (self-contained)
 
