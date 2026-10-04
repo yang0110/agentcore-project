@@ -1,0 +1,839 @@
+#!/usr/bin/env python3
+"""Parse a slime training log into a per-step CSV and (optionally) plot the key curves.
+
+slime logs metrics to stdout (and to wandb/tensorboard if configured), but for the demos we
+want a self-contained, dependency-light record: a CSV you can open anywhere + a PNG of the
+curves that matter. This script reads the raw ray-job log that a demo's `run.sh` tees to a
+file and extracts the three metric families slime prints, each tagged with the rollout/step id:
+
+    model.py:918            - step N:    {'train/pg_loss': ..., 'train/grad_norm': ..., ...}
+    train_metric_utils.py   - rollout N: {'rollout/raw_reward': ..., 'rollout/advantages': ...}
+    *                       - perf N:    {'perf/step_time': ..., 'perf/wait_time_ratio': ...}
+    rollout_metrics.py:247  - eval N:    {'eval/<name>': <solve rate>, ..., 'eval/step': S}
+
+The train families are merged by id (rollout N is trained as step N) and written to a per-step
+CSV. The `eval` family is a DIFFERENT cadence (held-out eval runs every EVAL_INTERVAL steps, no
+gradient) so it is written to a SEPARATE eval CSV keyed by `eval/step`. Both CSVs, and a PNG of the
+key curves, come from the one raw log. Pure stdlib for parsing; matplotlib only for --plot.
+
+We ALSO parse three raw families our own code prints (not slime's `- perf N:` dicts):
+
+    agentcore_runtime_sandbox._timed_invoke   [sbx-op] op=… ms=…       (one per sandbox round-trip)
+    policy.SGLangPolicy.complete              [sglang-gen] ms=…        (one per pure SGLang decode)
+    <per-demo harness>                        [demo] <k=v …>           (this demo's OWN metric)
+
+`[sbx-op]`/`[sglang-gen]` are written to raw per-op CSVs (`<log>.sandbox_ops.csv`,
+`<log>.sglang_gen.csv`), summarized per op at the run level, AND attributed per-step into
+`perf/sandbox_ms_*` / `perf/sandbox_open_ms_*` / `perf/sglang_gen_ms_*` columns on the train CSV —
+splitting sandbox time and decode time out of slime's aggregate `perf/rollout_time`. Sandbox time
+is itself split into WARM data ops and the COLD session-open op that blocks on the instance boot.
+
+`[demo]` is the GENERIC per-demo channel: whatever demo-specific signal a demo cares about (a
+code demo's compile-vs-assert split, a SQL demo's exec-match rate, a sharing demo's #farm-actors,
+the big-image demo's cold-boot count, …) is emitted by that demo's harness as one `[demo] k=v …`
+line and lands here with NO change to this shared parser. Numeric keys are aggregated per step into
+`demo/<key>_*` columns and summarized at the run level; every record is also dumped raw to
+`<log>.demo.csv`. Non-numeric keys get a run-level value-count. See each demo's README for what it
+emits. (This file is identical across all demos; only what a demo's harness emits differs.)
+
+    python3 metrics.py train.log --csv metrics.csv --eval-csv eval.csv --plot fig.png
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import csv
+import os
+import re
+from pathlib import Path
+
+# " - step 5: {…}" / " - rollout 5: {…}" / " - perf 5: {…}" / " - eval 5: {…}"  (dict to EOL)
+_LINE = re.compile(r"-\s+(step|rollout|perf|eval)\s+(\d+):\s+(\{.*\})\s*$")
+
+# --- Sandbox response-time + SGLang decode-time records (raw per-op lines) ----------------------
+# Emitted by agentcore_slime_demo.agentcore_runtime_sandbox._timed_invoke ("[sbx-op] …", one per
+# invoke_agent_runtime round-trip) and policy.SGLangPolicy.complete ("[sglang-gen] …", one per pure
+# SGLang decode POST). Both are plain `key=value` lines (NOT slime's `- perf N:` dicts) so they get
+# their own regexes. Splitting them lets us separate sandbox latency AND SGLang generation latency
+# out of slime's aggregate perf/rollout_time, which lumps decode + sandbox + harness together.
+_SBX_OP = re.compile(r"\[sbx-op\]\s+(.*)$")
+_SGLANG_GEN = re.compile(r"\[sglang-gen\]\s+(.*)$")
+
+# One per episode, emitted by agentcore_slime_demo.router_trace.emit — the per-episode routing path
+# (pinned SGLang engine / sandbox session / runtime ARN / image / family). Parsed into
+# <log>.router.csv and checked for per-episode stickiness (see check_stickiness).
+_ROUTER = re.compile(r"\[router\]\s+(.*)$")
+
+# The GENERIC per-demo metric channel: `[demo] k=v k=v …`, emitted by a demo's own harness for the
+# signal THAT demo demonstrates (see module docstring). Parsed into <log>.demo.csv, aggregated per
+# step (numeric keys) into demo/<key>_* columns, and summarized at the run level. A demo that emits
+# nothing here simply has no demo/* columns — this shared parser is unchanged either way.
+_DEMO = re.compile(r"\[demo\]\s+(.*)$")
+
+# Sandbox ops that ESTABLISH a session (open / ping / start_session) vs teardown ops (~0 ms,
+# excluded from the warm p50/p95 so they don't skew it). Everything else is a WARM data round-trip
+# (exec / write_file / read_file). A session-open is NOT automatically a cold boot: on the warm-reuse
+# farm, `op=open` just attaches a fresh sub_session to an ALREADY-running instance (~150 ms), while
+# the FIRST open on a cold instance blocks on the capacity-provider launch (~60–80 s). So we bucket
+# all session-opens into perf/sandbox_open_*, and separately COUNT the ones slow enough to be a real
+# instance boot (ms >= COLD_BOOT_MS) — that count is the warm-reuse headline (N boots -> 1).
+_OPEN_OPS = {"ping", "open", "start_session"}
+_SKIP_OPS = {"stop_session", "close"}
+# A session-open this slow (ms) must have blocked on an instance cold-boot rather than re-attached to
+# a warm one. 5 s cleanly separates a warm sub_session attach (~0.1-1 s) from an Instance launch
+# (~60-80 s); microVM opens (~1-2 s) also fall below it. Override with env COLD_BOOT_MS.
+COLD_BOOT_MS = float(os.environ.get("COLD_BOOT_MS", "5000"))
+
+# The AgentCore limits the session-level metrics are read against (us-west-2 defaults; see the deck's
+# "AgentCore limits" slides). A session whose longest gap between ops reaches IDLE_TIMEOUT_S would
+# have been reclaimed without a heartbeat; the peak session-open rate is compared with the 25/s
+# new-session quota and the peak live-session count with the 5000 concurrent-session quota.
+IDLE_TIMEOUT_S = float(os.environ.get("IDLE_TIMEOUT_S", "900"))
+NEW_SESSION_RATE_QUOTA = float(os.environ.get("NEW_SESSION_RATE_QUOTA", "25"))
+CONCURRENT_SESSION_QUOTA = float(os.environ.get("CONCURRENT_SESSION_QUOTA", "5000"))
+
+
+def _kv(s: str) -> dict[str, str]:
+    """Parse a space-separated `k=v k=v` tail into a dict (values stay strings)."""
+    out: dict[str, str] = {}
+    for tok in s.split():
+        if "=" in tok:
+            k, _, v = tok.partition("=")
+            out[k] = v
+    return out
+
+
+def _pct(xs_sorted: list[float], q: float) -> float:
+    """Linear-interpolation percentile of an ALREADY-SORTED list (stdlib only, no numpy)."""
+    if len(xs_sorted) == 1:
+        return xs_sorted[0]
+    pos = (len(xs_sorted) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(xs_sorted) - 1)
+    return xs_sorted[lo] + (xs_sorted[hi] - xs_sorted[lo]) * (pos - lo)
+
+
+def _agg(ms_list: list[float], prefix: str) -> dict[str, float]:
+    """count + mean/p50/p95 of a latency list, as `{prefix}_count`, `{prefix}_ms_{mean,p50,p95}`."""
+    if not ms_list:
+        return {}
+    s = sorted(ms_list)
+    n = len(s)
+    return {
+        f"{prefix}_count": n,
+        f"{prefix}_ms_mean": round(sum(s) / n, 1),
+        f"{prefix}_ms_p50": round(_pct(s, 0.50), 1),
+        f"{prefix}_ms_p95": round(_pct(s, 0.95), 1),
+    }
+
+
+def _agg_plain(vals: list[float], prefix: str) -> dict[str, float]:
+    """count + mean/p50/p95 of a plain numeric list (no `_ms_` infix), as `{prefix}_{count,mean,p50,p95}`.
+    Used for the generic [demo] channel, whose numbers are usually NOT latencies (counts, ratios…)."""
+    if not vals:
+        return {}
+    s = sorted(vals)
+    n = len(s)
+    return {
+        f"{prefix}_count": n,
+        f"{prefix}_mean": round(sum(s) / n, 4),
+        f"{prefix}_p50": round(_pct(s, 0.50), 4),
+        f"{prefix}_p95": round(_pct(s, 0.95), 4),
+    }
+
+def _op_start(r: dict) -> float:
+    """Wall-clock start of a [sbx-op] round-trip: `ts` is stamped when the op RETURNS."""
+    return r["ts"] - r["ms"] / 1000.0
+
+
+def _peak_per_window(times: list[float], window_s: float = 1.0) -> int:
+    """Most events inside any `window_s`-long window (two-pointer sweep over sorted times)."""
+    s = sorted(times)
+    best = lo = 0
+    for hi, t in enumerate(s):
+        while t - s[lo] >= window_s:
+            lo += 1
+        best = max(best, hi - lo + 1)
+    return best
+
+
+def _peak_overlap(intervals: list[tuple[float, float]]) -> int:
+    """Most intervals live at the same instant."""
+    events = sorted([(a, 1) for a, _ in intervals] + [(b, -1) for _, b in intervals])
+    best = cur = 0
+    for _, d in events:
+        cur += d
+        best = max(best, cur)
+    return best
+
+
+def session_records(op_records: list[dict]) -> list[dict]:
+    """One row per sandbox session, built from its [sbx-op] round-trips: first-op start to last-op
+    end (`lifetime_s`), op count, and the longest gap between one op returning and the next starting
+    (`max_idle_s`). A gap >= IDLE_TIMEOUT_S is one AgentCore would have reclaimed without a
+    heartbeat. On the warm-shared farms the session is the shared one, so its lifetime is the run's."""
+    by_sess: dict[str, list[dict]] = {}
+    for r in op_records:
+        if r.get("session") not in (None, "", "?") and r.get("ts"):
+            by_sess.setdefault(r["session"], []).append(r)
+    out = []
+    for sess, recs in by_sess.items():
+        recs.sort(key=_op_start)
+        start, end = _op_start(recs[0]), max(r["ts"] for r in recs)
+        gaps = [_op_start(b) - a["ts"] for a, b in zip(recs, recs[1:])]
+        out.append({"session": sess, "start_ts": round(start, 3), "end_ts": round(end, 3),
+                    "lifetime_s": round(end - start, 3), "ops": len(recs),
+                    "max_idle_s": round(max(gaps, default=0.0), 3),
+                    "first_step": recs[0].get("step"), "last_step": recs[-1].get("step")})
+    return sorted(out, key=lambda s: s["start_ts"])
+
+
+# --- Goodput & MFU (see docs/sandbox-concurrency-ablation.md "Metrics" table) ------------------
+# MFU = achieved trainer FLOPs / peak. slime already logs per-GPU training TFLOPS as
+# `perf/actor_train_tflops` (= 3 * fwd_flops / actor_train_time / world_size, train_metric_utils.py),
+# so MFU is just that / the device's dense BF16 peak. This box is 8x NVIDIA L40S; L40S dense
+# BF16 tensor-core peak is 362 TFLOPS (733 only with 2:4 sparsity, which we don't use).
+# Override for other hardware with env GPU_PEAK_TFLOPS.
+PEAK_TFLOPS = float(os.environ.get("GPU_PEAK_TFLOPS", "362.0"))
+
+# Goodput = *useful* trainer throughput = actor_train_tok_per_s * (1 - discard_ratio): tokens/sec
+# that actually land in a gradient step, net of samples the buffer filter discards for staleness.
+# We read discard_ratio from any parsed rollout key that reports it (fully-async buffer filter);
+# absent that (e.g. no staleness filter, no discards), discard_ratio = 0 so goodput == tok/s.
+_DISCARD_KEYS = ("rollout/discard_ratio", "rollout/staleness_discard_ratio", "perf/discard_ratio")
+
+
+def _discard_ratio(row: dict) -> float:
+    for k in _DISCARD_KEYS:
+        v = row.get(k)
+        if isinstance(v, (int, float)):
+            return float(v)
+    # tolerate any other key that plainly names a discard/drop ratio
+    for k, v in row.items():
+        if isinstance(v, (int, float)) and "discard" in k and "ratio" in k:
+            return float(v)
+    return 0.0
+
+
+def derive_perf_metrics(rows: dict[int, dict]) -> None:
+    """Add derived perf/mfu + perf/goodput_tok_per_s columns to each train row in place."""
+    for row in rows.values():
+        tflops = row.get("perf/actor_train_tflops")
+        if isinstance(tflops, (int, float)) and PEAK_TFLOPS > 0:
+            row["perf/mfu"] = round(float(tflops) / PEAK_TFLOPS, 4)
+        tok_s = row.get("perf/actor_train_tok_per_s")
+        if isinstance(tok_s, (int, float)):
+            row["perf/goodput_tok_per_s"] = round(float(tok_s) * (1.0 - _discard_ratio(row)), 2)
+
+# The columns we care about most, in display order; any other parsed keys are appended after.
+# (Demo-specific `demo/*` columns are discovered at runtime and appended by write_csv.)
+KEY_COLUMNS = [
+    "rollout_id",
+    "rollout/raw_reward",          # solve rate this step (the RL signal)
+    "train/grad_norm",             # is the policy actually moving?
+    "train/pg_loss",
+    "train/kl_loss",               # drift from the frozen reference
+    "train/train_rollout_logprob_abs_diff",  # weight-sync correctness (want ~small/stable)
+    "train/global_batch_size",
+    "rollout/response_lengths",
+    "perf/step_time",
+    "perf/actor_train_tok_per_s",
+    "perf/goodput_tok_per_s",      # useful tok/s = tok/s * (1 - discard_ratio) — the optimization target
+    "perf/actor_train_tflops",     # per-GPU achieved trainer TFLOPS (slime-logged)
+    "perf/mfu",                    # actor_train_tflops / device peak (L40S 362 TFLOPS BF16)
+    "perf/wait_time_ratio",        # pipeline balance (train vs rollout idle); 1-this = starvation-free frac
+    # Sandbox response time — per-step aggregate of the invoke_agent_runtime round-trips this step's
+    # rollout paid (from [sbx-op] records; count = #ops attributed to the step). Split by cost class:
+    # `perf/sandbox_*` = WARM data ops (exec/write_file); `perf/sandbox_open_*` = the COLD session-open
+    # op that blocks on the instance boot (~60-80 s on a capacity-provider Instance, ~1-2 s on a
+    # microVM) — kept separate so the warm p50/p95 isn't swamped by the one-time cold boot.
+    "perf/sandbox_count",
+    "perf/sandbox_ms_mean",
+    "perf/sandbox_ms_p50",
+    "perf/sandbox_ms_p95",
+    "perf/sandbox_open_count",
+    "perf/sandbox_open_ms_mean",
+    "perf/sandbox_open_ms_p50",
+    "perf/sandbox_open_ms_p95",
+    "perf/sandbox_coldboot_count",  # session-opens slow enough to be a real instance boot (>=COLD_BOOT_MS)
+    "perf/sandbox_ready_span_s",    # first session-open issued -> last one returned, this step (burst readiness)
+    "perf/sandbox_open_peak_per_s", # most session-opens started in any 1 s this step (quota: 25/s new sessions)
+    # SGLang decode time — pure /generate round-trips, split OUT of sandbox+harness time
+    # (from [sglang-gen] records; count = #decode turns attributed to the step).
+    "perf/sglang_gen_count",
+    "perf/sglang_gen_ms_mean",
+    "perf/sglang_gen_ms_p50",
+    "perf/sglang_gen_ms_p95",
+]
+
+# Eval CSV columns: the held-out solve rate(s) keyed by the training step eval ran at.
+EVAL_KEY_COLUMNS = ["eval/step"]
+
+# Which columns to plot, and a human title for each panel. `eval/*` reward columns and `demo/*`
+# demo-specific columns are discovered at runtime (their names depend on the eval dataset / demo)
+# and appended.
+PLOT_COLUMNS = [
+    ("rollout/raw_reward", "solve rate (raw_reward)"),
+    ("train/grad_norm", "grad norm"),
+    ("train/kl_loss", "KL(policy‖ref)"),
+    ("train/train_rollout_logprob_abs_diff", "logprob abs diff (weight-sync)"),
+    ("perf/wait_time_ratio", "wait-time ratio"),
+    ("perf/actor_train_tok_per_s", "actor train tok/s"),
+    ("perf/goodput_tok_per_s", "goodput (useful tok/s)"),
+    ("perf/mfu", "MFU (frac of L40S peak)"),
+    ("perf/sandbox_ms_p50", "sandbox warm-op p50 (ms)"),
+    ("perf/sglang_gen_ms_p50", "SGLang decode p50 (ms)"),
+]
+
+
+def parse_log(path: Path):
+    """Parse the log into (train_rows, eval_rows, op_records, gen_records, router_records, demo_records).
+
+    train_rows: {rollout_id: {metric: value}} merged across step/rollout/perf, PLUS the per-step
+                sandbox/decode aggregates (perf/sandbox_*, perf/sandbox_open_*, perf/sglang_gen_*) and
+                the per-step demo aggregates (demo/<key>_*) derived below.
+    eval_rows:  {eval_step: {eval/*: value}} — a separate cadence (eval every N steps), keyed by
+                the `eval/step` value inside each eval dict (fallback: the logged id).
+    op_records: raw [sbx-op] round-trips {ts, step, op, ms, arn, session, status}.
+    gen_records: raw [sglang-gen] decodes {ts, step, ms, prompt_toks, gen_toks}.
+    router_records: per-episode [router] routing paths.
+    demo_records: raw [demo] per-demo metric records (arbitrary k=v, this demo's own signal).
+
+    Per-step attribution: every raw record seen SINCE the previous train marker is attributed to
+    the NEXT step's marker (that step's rollout finished just before slime printed its metrics).
+    Approximate under the fully-async driver, where
+    the background buffer streams ops across step boundaries — read the per-step split as indicative
+    there, and the run-level aggregate (main()) as the ground truth.
+    """
+    train_rows: dict[int, dict] = {}
+    eval_rows: dict[int, dict] = {}
+    op_records: list[dict] = []
+    gen_records: list[dict] = []
+    router_records: list[dict] = []
+    demo_records: list[dict] = []
+    pending_ops: list[dict] = []   # raw records awaiting the next marker (their attributed step)
+    pending_gens: list[dict] = []
+    pending_router: list[dict] = []
+    pending_demo: list[dict] = []
+    op_step_records: dict[int, list[dict]] = {}   # full records (need op name for cold/warm split)
+    gen_buckets: dict[int, list[float]] = {}
+    demo_step_vals: dict[int, dict[str, list[float]]] = {}   # step -> {demo key -> [numeric vals]}
+
+    for line in path.read_text(errors="replace").splitlines():
+        m = _LINE.search(line)
+        if m:
+            kind, sid, payload = m.group(1), int(m.group(2)), m.group(3)
+            try:
+                d = ast.literal_eval(payload)
+            except (ValueError, SyntaxError):
+                continue
+            if not isinstance(d, dict):
+                continue
+            nums = {k: v for k, v in d.items() if isinstance(v, (int, float))}
+            if kind == "eval":
+                step = int(d.get("eval/step", sid))
+                row = eval_rows.setdefault(step, {"eval/step": step})
+                row.update(nums)
+            else:
+                row = train_rows.setdefault(sid, {"rollout_id": sid})
+                row.update(nums)
+                for r in pending_ops:
+                    r["step"] = sid
+                    op_step_records.setdefault(sid, []).append(r)
+                for r in pending_gens:
+                    r["step"] = sid
+                    gen_buckets.setdefault(sid, []).append(r["ms"])
+                for r in pending_router:
+                    r["step"] = sid
+                for r in pending_demo:
+                    r["step"] = sid
+                    for k, v in r.items():
+                        if k in ("ts", "step"):
+                            continue
+                        try:
+                            fv = float(v)
+                        except (TypeError, ValueError):
+                            continue
+                        demo_step_vals.setdefault(sid, {}).setdefault(k, []).append(fv)
+                pending_ops = []
+                pending_gens = []
+                pending_router = []
+                pending_demo = []
+            continue
+        mo = _SBX_OP.search(line)
+        if mo:
+            kv = _kv(mo.group(1))
+            try:
+                rec = {"ts": float(kv.get("ts") or 0), "step": None, "op": kv.get("op", "?"),
+                       "ms": float(kv["ms"]), "arn": kv.get("arn", "?"),
+                       "session": kv.get("session", "?"), "status": kv.get("status", "?")}
+            except (KeyError, ValueError):
+                continue
+            op_records.append(rec)
+            pending_ops.append(rec)
+            continue
+        mg = _SGLANG_GEN.search(line)
+        if mg:
+            kv = _kv(mg.group(1))
+            try:
+                rec = {"ts": float(kv.get("ts") or 0), "step": None, "ms": float(kv["ms"]),
+                       "prompt_toks": int(kv.get("prompt_toks") or 0),
+                       "gen_toks": int(kv.get("gen_toks") or 0)}
+            except (KeyError, ValueError):
+                continue
+            gen_records.append(rec)
+            pending_gens.append(rec)
+            continue
+        mr = _ROUTER.search(line)
+        if mr:
+            kv = _kv(mr.group(1))
+            rec = {"ts": float(kv.get("ts") or 0), "step": None,
+                   "task_id": kv.get("task_id", "?"),
+                   "rollout_id": kv.get("rollout_id", "?"),
+                   "harness_worker": kv.get("harness_worker", "?"),
+                   "engine": kv.get("engine", "?"),
+                   "engine_pinned": kv.get("engine_pinned", "?"),
+                   "adapter_session": kv.get("adapter_session", "?"),
+                   "sandbox_session": kv.get("sandbox_session", "?"),
+                   "runtime_arn": kv.get("runtime_arn", "?"),
+                   "sandbox_slot": kv.get("sandbox_slot", ""),
+                   "sandbox_image": kv.get("sandbox_image", ""),
+                   "family": kv.get("family", "")}
+            router_records.append(rec)
+            pending_router.append(rec)
+            continue
+        md = _DEMO.search(line)
+        if md:
+            kv = _kv(md.group(1))
+            if not kv:
+                continue
+            rec = {"ts": float(kv.get("ts") or 0), "step": None}
+            for k, v in kv.items():
+                if k != "ts":
+                    rec[k] = v
+            demo_records.append(rec)
+            pending_demo.append(rec)
+
+    # Split remote-sandbox latency by op class: a fresh session's first op establishes the session
+    # and blocks on the instance cold-boot, which is a totally different cost from a WARM data
+    # round-trip (exec/write_file). Lumping them makes p50/p95 meaningless, so bucket separately:
+    # `perf/sandbox` = warm ops only, `perf/sandbox_open` = the cold session-open. Teardown dropped.
+    for sid, recs in op_step_records.items():
+        warm = [r["ms"] for r in recs if r["op"] not in _OPEN_OPS and r["op"] not in _SKIP_OPS]
+        opens = [r["ms"] for r in recs if r["op"] in _OPEN_OPS]
+        row = train_rows.setdefault(sid, {"rollout_id": sid})
+        row.update(_agg(warm, "perf/sandbox"))
+        row.update(_agg(opens, "perf/sandbox_open"))
+        # A session-open is a real instance COLD boot only if it was slow enough to have blocked on
+        # the launch (ms >= COLD_BOOT_MS); a warm-farm sub_session attach is a fast "open" and does
+        # NOT count. This per-step count is ~0 on warm steps and jumps only when an instance booted.
+        if opens:
+            row["perf/sandbox_coldboot_count"] = sum(1 for ms in opens if ms >= COLD_BOOT_MS)
+        # Burst readiness: from the step's first session-open being issued to its last one returning,
+        # i.e. how long this step's batch took to get all its sandboxes ready, plus the step's peak
+        # session-open rate (compare with the 25/s new-session quota).
+        open_recs = [r for r in recs if r["op"] in _OPEN_OPS and r["ts"]]
+        if open_recs:
+            row["perf/sandbox_ready_span_s"] = round(
+                max(r["ts"] for r in open_recs) - min(_op_start(r) for r in open_recs), 3)
+            row["perf/sandbox_open_peak_per_s"] = _peak_per_window([_op_start(r) for r in open_recs])
+    for sid, ms_list in gen_buckets.items():
+        train_rows.setdefault(sid, {"rollout_id": sid}).update(_agg(ms_list, "perf/sglang_gen"))
+    for sid, keyvals in demo_step_vals.items():
+        row = train_rows.setdefault(sid, {"rollout_id": sid})
+        for k, vals in keyvals.items():
+            row.update(_agg_plain(vals, f"demo/{k}"))
+    return train_rows, eval_rows, op_records, gen_records, router_records, demo_records
+
+
+def write_csv(rows: dict[int, dict], out: Path, key_columns: list[str]) -> list[str]:
+    ids = sorted(rows)
+    extra = sorted({k for r in rows.values() for k in r} - set(key_columns))
+    columns = key_columns + extra
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
+        w.writeheader()
+        for i in ids:
+            w.writerow(rows[i])
+    return columns
+
+
+def write_raw_csv(records: list[dict], out: Path, columns: list[str]) -> None:
+    """Dump the raw per-op / per-decode records (one row each), in log order."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
+        w.writeheader()
+        for r in records:
+            w.writerow(r)
+
+
+def write_demo_csv(records: list[dict], out: Path) -> list[str]:
+    """Dump the raw [demo] records; columns are the union of keys seen (ts, step first)."""
+    head = ["ts", "step"]
+    cols = head + sorted({k for r in records for k in r} - set(head))
+    write_raw_csv(records, out, cols)
+    return cols
+
+
+def check_stickiness(router_records: list[dict], op_records: list[dict]) -> bool:
+    """Verify each episode stayed on ONE path through the replicated tiers, and print a report.
+
+    Episode key = the sandbox session (also stamped on every [sbx-op]). The invariants:
+      * inference — each episode's turns were served by ONE SGLang engine. This demo makes a fresh
+        policy per episode on ONE engine (harness_pool: least-loaded engine, sticky), so there is one
+        [router] line — hence one engine — per episode by construction; we surface the spread and
+        flag any episode recorded unpinned (engine_pinned=0, discovery fell back to the router).
+      * sandbox/runtime — EVERY [sbx-op] for the episode's sandbox session shares ONE runtime ARN
+        (the sandbox is stateful/sticky for the episode's life). This is the real cross-check: it
+        JOINS the raw per-op records to the episode via `session`.
+
+    When the [router] records carry a harness_worker (the DECOUPLED harness pool, harness_pool.py), we also report how
+    the three tiers were mixed: the worker / engine / pooled-session counts, how many distinct
+    sessions and engines each worker used and how many workers each session served. No worker owns
+    an engine or a session, so a worker spanning several sessions (and a session several workers)
+    is the expected, decoupled shape; the only violation is an episode seen on two runtimes.
+
+    Returns True if all invariants hold (or there is nothing to check)."""
+    if not router_records:
+        return True
+    from collections import Counter
+
+    # sandbox_session -> set of runtime ARNs seen across its raw ops (from [sbx-op] session=/arn=).
+    arns_by_session: dict[str, set[str]] = {}
+    for r in op_records:
+        arns_by_session.setdefault(r.get("session", "?"), set()).add(r.get("arn", "?"))
+
+    violations: list[str] = []
+    for rec in router_records:
+        sess = rec["sandbox_session"]
+        seen = arns_by_session.get(sess)
+        if seen and len(seen) > 1:
+            violations.append(
+                f"episode {rec['rollout_id']} (task {rec['task_id']}): sandbox session {sess} "
+                f"spanned {len(seen)} runtimes {sorted(seen)} — NOT sticky"
+            )
+
+    has_workers = any(str(r.get("harness_worker", "?")) not in ("?", "") for r in router_records)
+    engines = sorted({r["engine"] for r in router_records})
+    unpinned = sum(1 for r in router_records if str(r.get("engine_pinned")) in ("0", "?", ""))
+    print("\nrouter stickiness ([router] episodes joined to [sbx-op] by sandbox session):")
+
+    if has_workers:
+        def _spread(key_a: str, key_b: str) -> list[int]:
+            by: dict[str, set[str]] = {}
+            for rec in router_records:
+                by.setdefault(rec[key_a], set()).add(rec[key_b])
+            return sorted(len(v) for v in by.values())
+
+        def _fmt(xs: list[int]) -> str:
+            return f"min={xs[0]} p50={xs[len(xs) // 2]} max={xs[-1]}" if xs else "n/a"
+
+        workers = {r["harness_worker"] for r in router_records}
+        sessions = {r["sandbox_session"] for r in router_records}
+        eng_dist = Counter(r["engine"] for r in router_records)
+        print(f"  episodes={len(router_records)}  workers={len(workers)}  engines={len(engines)}  "
+              f"sandbox sessions={len(sessions)}  unpinned={unpinned}")
+        for e in engines:
+            print(f"    engine {e} <- {eng_dist[e]} episode(s)")
+        print(f"    sessions per worker: {_fmt(_spread('harness_worker', 'sandbox_session'))}")
+        print(f"    engines  per worker: {_fmt(_spread('harness_worker', 'engine'))}")
+        print(f"    workers per session: {_fmt(_spread('sandbox_session', 'harness_worker'))}")
+        mixed = max(_spread("harness_worker", "sandbox_session"), default=0) > 1
+        ok_msg = ("  ✓ every episode sticky to one worker + one engine + one sandbox session + one runtime"
+                  + ("; workers and sessions are decoupled (a worker used several sessions)" if mixed
+                     else "; (no worker used 2 sessions yet: too few episodes per worker to show mixing)"))
+    else:
+        dist = Counter(r["engine"] for r in router_records)
+        print(f"  episodes={len(router_records)}  engines={len(engines)}  unpinned={unpinned}")
+        for e in engines:
+            print(f"    engine {e} <- {dist[e]} episode(s)")
+        ok_msg = "  ✓ every episode pinned to one engine + one sandbox session + one runtime"
+
+    if violations:
+        print("  STICKINESS VIOLATIONS:")
+        for v in violations:
+            print(f"    ✗ {v}")
+    else:
+        print(ok_msg)
+    return not violations
+
+
+def summarize_latency(op_records: list[dict], gen_records: list[dict]) -> None:
+    """Print the RUN-LEVEL sandbox/decode latency aggregate (the ground truth across the whole run,
+    independent of the approximate per-step attribution). Sandbox is broken out per op type AND by
+    cost class (WARM data ops vs the COLD session-open that blocks on the instance boot)."""
+    def agg_line(label: str, ms: list[float]) -> str:
+        s = sorted(ms)
+        return (f"    {label:<22} n={len(s):<5} mean={sum(s)/len(s):8.1f}  "
+                f"p50={_pct(s, 0.50):8.1f}  p95={_pct(s, 0.95):8.1f}  max={s[-1]:8.1f}  (ms)")
+
+    if op_records:
+        print("sandbox response time ([sbx-op], invoke_agent_runtime round-trips):")
+        by_op: dict[str, list[float]] = {}
+        for r in op_records:
+            by_op.setdefault(r["op"], []).append(r["ms"])
+        for op in sorted(by_op):
+            print(agg_line(op, by_op[op]))
+        # Roll up by cost CLASS: WARM data round-trips (exec/write_file) vs session-open ops (open/
+        # ping/start_session). Teardown ops (_SKIP_OPS, ~0 ms) excluded. A session-open is only a real
+        # instance COLD boot if it was slow (ms >= COLD_BOOT_MS) — on the warm-reuse farm most opens
+        # are fast sub_session attaches, so we report cold-boots vs warm-reopens separately: that
+        # count is the warm-reuse headline (e.g. one shared instance -> cold-boots collapses to ~1).
+        warm = [r["ms"] for r in op_records if r["op"] not in _OPEN_OPS and r["op"] not in _SKIP_OPS]
+        opens = [r["ms"] for r in op_records if r["op"] in _OPEN_OPS]
+        if warm:
+            print(agg_line("WARM data ops", warm))
+        if opens:
+            print(agg_line("session-open ops", opens))
+            coldboots = sum(1 for ms in opens if ms >= COLD_BOOT_MS)
+            print(f"    -> instance cold-boots (open ms>={COLD_BOOT_MS:.0f}) = {coldboots}; "
+                  f"warm session-reopens = {len(opens) - coldboots}; warm data ops = {len(warm)}")
+        errs = sum(1 for r in op_records if r.get("status") not in ("ok", None))
+        if errs:
+            print(f"    ({errs} op(s) ended in an error status — see the ops CSV)")
+    if gen_records:
+        print("SGLang decode time ([sglang-gen], pure /generate round-trips):")
+        print(agg_line("decode", [r["ms"] for r in gen_records]))
+
+
+def summarize_sessions(sessions: list[dict], op_records: list[dict]) -> None:
+    """Print the RUN-LEVEL session view: how long sandboxes lived and idled (vs the idle timeout),
+    how fast they were opened and how many were live at once (vs the AgentCore quotas). On the
+    warm-shared farms a "session" is the per-episode sub_session and most opens are attaches to a
+    running instance, so only the cold boots among them count against the new-session quota."""
+    if not sessions:
+        return
+
+    def line(label: str, xs: list[float]) -> str:
+        s = sorted(xs)
+        return (f"    {label:<22} n={len(s):<5} p50={_pct(s, 0.50):9.1f}  p95={_pct(s, 0.95):9.1f}  "
+                f"p99={_pct(s, 0.99):9.1f}  max={s[-1]:9.1f}  (s)")
+
+    print(f"\nsandbox sessions ({len(sessions)} session(s), from [sbx-op] session=/ts=):")
+    print(line("lifetime", [s["lifetime_s"] for s in sessions]))
+    print(line("longest idle gap", [s["max_idle_s"] for s in sessions]))
+    idle_hits = sum(1 for s in sessions if s["max_idle_s"] >= IDLE_TIMEOUT_S)
+    long_lived = sum(1 for s in sessions if s["lifetime_s"] >= IDLE_TIMEOUT_S)
+    print(f"    -> {idle_hits} session(s) idled >= {IDLE_TIMEOUT_S:.0f} s (reclaimed without a heartbeat); "
+          f"{long_lived} lived >= {IDLE_TIMEOUT_S:.0f} s")
+    opens = [_op_start(r) for r in op_records if r["op"] in _OPEN_OPS and r.get("ts")]
+    peak_rate = _peak_per_window(opens) if opens else 0
+    peak_live = _peak_overlap([(s["start_ts"], s["end_ts"]) for s in sessions])
+    print(f"    -> peak session-opens = {peak_rate}/s (new-session quota {NEW_SESSION_RATE_QUOTA:.0f}/s); "
+          f"peak live sessions = {peak_live} (quota {CONCURRENT_SESSION_QUOTA:.0f})")
+
+
+def summarize_demo(demo_records: list[dict]) -> None:
+    """Print the RUN-LEVEL summary of this demo's OWN [demo] metric channel: numeric keys get
+    count/mean/p50/p95/max; non-numeric keys get a value-count. Nothing prints if the demo emitted
+    no [demo] records (most single-purpose dataset demos rely on rollout/eval + [demo] alike)."""
+    if not demo_records:
+        return
+    from collections import Counter
+
+    numeric: dict[str, list[float]] = {}
+    categorical: dict[str, Counter] = {}
+    for r in demo_records:
+        for k, v in r.items():
+            if k in ("ts", "step"):
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                categorical.setdefault(k, Counter())[v] += 1
+                continue
+            numeric.setdefault(k, []).append(fv)
+    print(f"\ndemo-specific metrics ([demo] channel, {len(demo_records)} record(s)):")
+    for k in sorted(numeric):
+        s = sorted(numeric[k])
+        print(f"    {k:<22} n={len(s):<5} mean={sum(s)/len(s):10.4f}  "
+              f"p50={_pct(s,0.50):10.4f}  p95={_pct(s,0.95):10.4f}  max={s[-1]:10.4f}")
+    for k in sorted(categorical):
+        # categorical keys the numeric loop never touched (a key is one or the other per run)
+        if k in numeric:
+            continue
+        items = ", ".join(f"{val}={cnt}" for val, cnt in categorical[k].most_common(10))
+        print(f"    {k:<22} {items}")
+
+    # Mean reward grouped by each categorical key — the generic way a demo whose batch spans
+    # categories reads out per-category learnability from ONE channel: `family` -> per-family reward
+    # (mixed-task), `image` -> per-image correctness (image routing), `checker` -> reward per outcome class.
+    if "reward" in numeric:
+        for k in sorted(categorical):
+            if k in numeric or k == "task":
+                continue
+            groups: dict[str, list[float]] = {}
+            for r in demo_records:
+                if k in r and "reward" in r:
+                    try:
+                        groups.setdefault(str(r[k]), []).append(float(r["reward"]))
+                    except (TypeError, ValueError):
+                        pass
+            if len(groups) > 1:
+                print(f"    reward by {k}:")
+                for val in sorted(groups):
+                    g = groups[val]
+                    print(f"        {val:<20} n={len(g):<5} mean_reward={sum(g)/len(g):.4f}")
+
+    # demo_hybrid_terminalbench: the same numbers split by sandbox SUBSTRATE (microvm vs the m5 docker
+    # host), so one substrate's opens or solve rate never hide inside the other's average.
+    subs = sorted({str(r["substrate"]) for r in demo_records if "substrate" in r})
+    if len(subs) > 1 or (subs and subs != ["microvm"]):
+        print("    by substrate:")
+        for sub in subs:
+            rs = [r for r in demo_records if r.get("substrate") == sub]
+            parts = []
+            for k in ("solved", "open_ms", "open_wait_ms", "agent_ms", "grade_ms", "episode_ms", "turns"):
+                vals = []
+                for r in rs:
+                    try:
+                        vals.append(float(r[k]))
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                if vals:
+                    v = sorted(vals)
+                    parts.append(f"{k}=mean {sum(v)/len(v):.3f}" if k == "solved"
+                                 else f"{k}=p50 {_pct(v, 0.5):.0f}")
+            infra = sum(1 for r in rs if r.get("infra_error") not in (None, "none"))
+            print(f"        {sub:<8} records={len(rs):<5} infra_error={infra:<3} " + "  ".join(parts))
+
+
+def summarize_mix(rows: dict[int, dict]) -> None:
+    """Task mix of each trained batch (mix/* from agentcore_slime_demo.batch_mix_log), if recorded."""
+    steps = [i for i in sorted(rows) if "mix/n_tasks" in rows[i]]
+    if not steps:
+        return
+    fams = sorted({k[len("mix/episodes_"):] for i in steps for k in rows[i] if k.startswith("mix/episodes_")})
+    n = [int(rows[i]["mix/n_tasks"]) for i in steps]
+    print(f"\ntask mix per trained batch ({len(steps)} steps): tasks/step min={min(n)} max={max(n)}; "
+          f"{sum(x > 1 for x in n)}/{len(n)} steps mixed")
+    for f in fams:
+        eps = [rows[i].get(f"mix/episodes_{f}", 0) for i in steps]
+        rw = [rows[i][f"mix/reward_{f}"] for i in steps if f"mix/reward_{f}" in rows[i]]
+        print(f"    {f:<14} episodes/step mean={sum(eps)/len(eps):5.1f}  "
+              f"train reward first={rw[0]:.3f} last={rw[-1]:.3f} mean={sum(rw)/len(rw):.3f}")
+
+
+def plot(rows: dict[int, dict], eval_rows: dict[int, dict], out: Path) -> None:
+    import matplotlib
+    matplotlib.use("Agg")  # headless
+    import matplotlib.pyplot as plt
+
+    ids = sorted(rows)
+    panels = [(c, t) for c, t in PLOT_COLUMNS if any(c in rows[i] for i in ids)]
+    # add one panel per demo/*_mean column (this demo's own signal), discovered at runtime
+    demo_cols = sorted({k for i in ids for k in rows[i] if k.startswith("demo/") and k.endswith("_mean")})
+    for c in demo_cols:
+        panels.append((c, c.replace("demo/", "demo: ").replace("_mean", " (mean)")))
+    # one panel per task of a mixed batch: its train reward per step (batch_mix_log's mix/reward_<family>)
+    for c in sorted({k for i in ids for k in rows[i] if k.startswith("mix/reward_")}):
+        panels.append((c, f"train reward: {c[len('mix/reward_'):]}"))
+    # add one panel per eval/* reward column (skip the eval/step key itself)
+    eval_cols = sorted({k for r in eval_rows.values() for k in r} - {"eval/step"})
+    for c in eval_cols:
+        panels.append((c, f"held-out {c}"))
+    if not panels:
+        print("no plottable columns found; skipping figure")
+        return
+    ncol = 2
+    nrow = -(-len(panels) // ncol)
+    fig, axes = plt.subplots(nrow, ncol, figsize=(11, 3 * nrow), squeeze=False)
+    for ax, (col, title) in zip(axes.flat, panels):
+        src = eval_rows if col.startswith("eval/") else rows
+        xs = [i for i in sorted(src) if col in src[i]]
+        ys = [src[i][col] for i in xs]
+        ax.plot(xs, ys, marker="o")
+        ax.set_title(title)
+        ax.set_xlabel("training step")
+        ax.grid(True, alpha=0.3)
+    for ax in axes.flat[len(panels):]:
+        ax.set_visible(False)
+    fig.tight_layout()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=120)
+    print(f"wrote figure -> {out}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("log", help="path to the training log (ray job output tee'd by run_*.sh)")
+    ap.add_argument("--csv", default=None, help="per-step train CSV path (default: <log>.csv)")
+    ap.add_argument("--eval-csv", default=None,
+                    help="per-eval CSV path (default: <log>.eval.csv); written only if eval ran")
+    ap.add_argument("--plot", nargs="?", const="", default=None,
+                    help="also write a PNG of the key curves (default: <log>.png)")
+    ap.add_argument("--ops-csv", default=None,
+                    help="raw per-op sandbox-latency CSV (default: <log>.sandbox_ops.csv); "
+                         "written only if [sbx-op] records are present")
+    ap.add_argument("--gen-csv", default=None,
+                    help="raw per-decode SGLang-latency CSV (default: <log>.sglang_gen.csv); "
+                         "written only if [sglang-gen] records are present")
+    ap.add_argument("--router-csv", default=None,
+                    help="per-episode router CSV (default: <log>.router.csv); written only if "
+                         "[router] records are present")
+    ap.add_argument("--demo-csv", default=None,
+                    help="raw per-demo metric CSV (default: <log>.demo.csv); written only if "
+                         "[demo] records are present")
+    args = ap.parse_args()
+
+    log = Path(args.log)
+    rows, eval_rows, op_records, gen_records, router_records, demo_records = parse_log(log)
+    derive_perf_metrics(rows)
+    if not rows and not eval_rows:
+        print(f"no metric rows found in {log} — is the run past step 1?")
+        return 1
+
+    if rows:
+        csv_out = Path(args.csv) if args.csv else log.with_suffix(".csv")
+        cols = write_csv(rows, csv_out, KEY_COLUMNS)
+        print(f"wrote {len(rows)} step rows x {len(cols)} cols -> {csv_out}")
+        summarize_mix(rows)
+
+    if op_records:
+        ops_out = Path(args.ops_csv) if args.ops_csv else log.with_suffix(".sandbox_ops.csv")
+        write_raw_csv(op_records, ops_out,
+                      ["ts", "step", "op", "ms", "arn", "session", "status"])
+        print(f"wrote {len(op_records)} raw sandbox ops -> {ops_out}")
+    if gen_records:
+        gen_out = Path(args.gen_csv) if args.gen_csv else log.with_suffix(".sglang_gen.csv")
+        write_raw_csv(gen_records, gen_out, ["ts", "step", "ms", "prompt_toks", "gen_toks"])
+        print(f"wrote {len(gen_records)} raw SGLang decodes -> {gen_out}")
+    if op_records or gen_records:
+        summarize_latency(op_records, gen_records)
+    sessions = session_records(op_records)
+    if sessions:
+        sess_out = log.with_suffix(".sessions.csv")
+        write_raw_csv(sessions, sess_out, list(sessions[0]))
+        print(f"wrote {len(sessions)} per-session records -> {sess_out}")
+        summarize_sessions(sessions, op_records)
+
+    if router_records:
+        router_out = Path(args.router_csv) if args.router_csv else log.with_suffix(".router.csv")
+        write_raw_csv(router_records, router_out,
+                      ["ts", "step", "rollout_id", "task_id", "harness_worker", "engine",
+                       "engine_pinned", "adapter_session", "sandbox_session", "runtime_arn", "sandbox_slot",
+                       "sandbox_image", "family"])
+        print(f"wrote {len(router_records)} per-episode router records -> {router_out}")
+        check_stickiness(router_records, op_records)
+
+    if demo_records:
+        demo_out = Path(args.demo_csv) if args.demo_csv else log.with_suffix(".demo.csv")
+        dcols = write_demo_csv(demo_records, demo_out)
+        print(f"wrote {len(demo_records)} raw [demo] records x {len(dcols)} cols -> {demo_out}")
+        summarize_demo(demo_records)
+
+    if eval_rows:
+        eval_out = Path(args.eval_csv) if args.eval_csv else log.with_suffix(".eval.csv")
+        ecols = write_csv(eval_rows, eval_out, EVAL_KEY_COLUMNS)
+        print(f"wrote {len(eval_rows)} eval rows x {len(ecols)} cols -> {eval_out}")
+
+    if args.plot is not None:
+        png = Path(args.plot) if args.plot else log.with_suffix(".png")
+        plot(rows, eval_rows, png)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

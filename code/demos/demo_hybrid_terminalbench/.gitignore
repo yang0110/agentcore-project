@@ -1,0 +1,9 @@
+# Terminal-Bench corpus + route map: fetched on demand by terminalbench/fetch_terminalbench.py (241 task
+# dirs) and written by the deploy scripts (account-specific ARNs + the m5 IP); not vendored into the repo.
+terminalbench/tasks/
+# Deploy build context: fetched standalone CPythons (arm64 + x86_64) + a copy of the vendored server.
+terminalbench/acs_ctx/py/
+terminalbench/acs_ctx/py-x86_64/
+terminalbench/acs_ctx/sandbox_server_agent.py
+# m5 host state: instance id, private IP and the agent's shared secret.
+deploy/m5_host.json

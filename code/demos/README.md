@@ -1,13 +1,18 @@
 # Demos: Terminal-Bench on AgentCore
 
-One demo: [`demo_cpu_terminalbench`](demo_cpu_terminalbench/README.md), **agentic RL on Terminal-Bench
-with slime (Qwen3-4B, fully-async GRPO) on a pool of AgentCore microVM Runtimes**. There is one arm64
-image and one VPC Runtime per task, and one fresh microVM session per episode. The folder is a
-self-contained recipe (vendored lib, `deploy/`, numbered step scripts).
+Two demos, both **agentic RL on Terminal-Bench with slime (Qwen3-4B, fully-async GRPO)**, each a
+self-contained recipe (vendored lib, `deploy/`, numbered step scripts):
+- [`demo_cpu_terminalbench`](demo_cpu_terminalbench/README.md) uses a pool of AgentCore microVM
+  Runtimes: one arm64 image and one VPC Runtime per task, one fresh microVM session per episode.
+- [`demo_hybrid_terminalbench`](demo_hybrid_terminalbench/README.md) covers the **whole corpus**. It
+  keeps the microVM pool for the tasks that fit, and adds a plain-EC2 m5 Docker host for the rest
+  (compose, x86-only, > 2 GB, microVM oracle failures), with one fresh `docker compose` project per
+  episode.
 
 | Demo | Dataset | Pool | Reward |
 |---|---|---|---|
 | [`demo_cpu_terminalbench`](demo_cpu_terminalbench/README.md) | Terminal-Bench (single-container tasks) | ~218 Runtimes, one per task, built from each task's own Dockerfile | the task's hidden pytest oracle |
+| [`demo_hybrid_terminalbench`](demo_hybrid_terminalbench/README.md) | Terminal-Bench (all 241 tasks) | `acs_tbh_*` microVM Runtimes + one m5 Docker host, routed per task | the task's hidden pytest oracle |
 
 The machinery, vendored in `demo_cpu_terminalbench/agentcore_slime_demo/`:
 - **Fresh session per episode** (`TerminalBenchPool`): full isolation, because the agent changes the OS.
@@ -32,11 +37,14 @@ to keep only Terminal-Bench, and they are still in git history.
 | 3 | **own Runtime per row, custom image** | the environment differs per row: **Terminal-Bench** |
 
 Terminal-Bench is tier 3 on the managed arm64 microVM fleet. Its 2048 MB image cap cannot be raised, so
-the 4 tasks whose image doesn't fit are reported and left out (as are the 7 that don't build for arm64).
+`demo_cpu_terminalbench` reports and leaves out the 4 tasks whose image doesn't fit, the 7 that don't
+build for arm64, and the 12 multi-container tasks. `demo_hybrid_terminalbench` runs those on an m5
+Docker host instead.
 
 ## Run the demo step by step
 
-Run the numbered scripts from `demo_cpu_terminalbench/` **on the host**. The container steps
+Run the numbered scripts from the demo's folder **on the host** (shown for `demo_cpu_terminalbench`;
+`demo_hybrid_terminalbench` has the same six steps, see its README). The container steps
 `docker exec` into `agentcore_p4` themselves.
 
 ```bash

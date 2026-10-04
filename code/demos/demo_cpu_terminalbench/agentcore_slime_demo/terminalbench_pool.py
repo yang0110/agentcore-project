@@ -411,8 +411,10 @@ class TerminalBenchPool(HarnessPool):
             tg = time.perf_counter()
             try:
                 g = await self._grade(sb, task)
-            except Exception as e:  # noqa: BLE001 — a grading infra failure scores 0, flagged
-                logger.warning("[terminalbench_pool] grade failed for %s: %s", task.task_id, e)
+            except Exception as exc:  # noqa: BLE001 — a grading infra failure scores 0, flagged
+                # NOT `as e`: `e` is the engine index released in `finally`, and Python deletes an
+                # except-variable when its block ends (UnboundLocalError killed an eval, 2026-10-04).
+                logger.warning("[terminalbench_pool] grade failed for %s: %s", task.task_id, exc)
                 g = {"solved": False, "grade_exit": -1, "tests_passed": 0, "tests_total": 0,
                      "grade_timeout": 0}
                 ep["infra_error"] = "grade"
@@ -428,8 +430,8 @@ class TerminalBenchPool(HarnessPool):
             )
             out, ep["fan_out"] = one_sample(samples, float(reward))
             return out
-        except Exception as e:
-            ep["infra_error"] = type(e).__name__
+        except Exception as exc:
+            ep["infra_error"] = type(exc).__name__
             raise
         finally:
             ep["episode_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
