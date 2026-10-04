@@ -103,6 +103,17 @@ AgentCore's 2 GB image cap applies to capacity-provider Runtimes too. Its server
 accepted by AgentCore as an alternative (`TB_GPU_INSTANCE`), but g6 is cheaper (~$0.80/h vs ~$1.01/h)
 and the verified default.
 
+## Where the g6 instances are
+
+AgentCore runs capacity-provider instances in a service-managed account, so they do **not** appear in
+your EC2 console. A g6 is launched when a session's first call arrives (the pool's pre-open ping), serves
+that one session, and is released after `StopRuntimeSession` at the episode's end (any instance with no
+session goes after the capacity provider's 600 s idle timeout).
+
+To see them: CloudWatch log group `/aws/bedrock-agentcore/runtimes/<acs_tbhgpu_kernelbench id>-DEFAULT`
+has one log stream per session (= per g6 instance), named by the session id; the run log has each
+session's `[sbx-op]` open (first `ping`) and `stop_session` lines.
+
 ## Warm m5 pool (how instances are reused and when they are terminated)
 
 `WarmPool` (`agentcore_slime_demo/ec2_episode_sandbox.py`) serves one session per instance at a time:
@@ -165,7 +176,7 @@ validates the pipeline on a few tasks first. Manage the m5 directly with
 | `TB_PREOPEN_BATCHES_SLOW` | 5 | batches ahead for m5 VMs and g6 Instances (microVMs: `TB_PREOPEN_BATCHES`); a g6 needs ~2.5 min (boot + torch install) |
 | `TB_DOCKER_MAX_PROJECTS` | 16 | shared mode: m5 episode projects at once (trainer-side gate; the host's `M5_MAX_PROJECTS` is the backstop) |
 | `TB_KERNELBENCH` / `TB_KB_TRAIN` / `TB_KB_EVAL` | 1 / 40 / 10 | the KernelBench g6 Runtime (step 4) / KernelBench rows in train / eval |
-| `TB_GPU_TASKS` / `TB_GPU_MAX_SESSIONS` / `TB_GPU_INSTANCE` | empty / 16 / g6.xlarge | Terminal-Bench tasks on the g6 tier / live g6 sessions at once (16 = one group running + the next pre-opening) / instance type |
+| `TB_GPU_TASKS` / `TB_GPU_MAX_SESSIONS` / `TB_GPU_INSTANCE` | empty / 32 / g6.xlarge | Terminal-Bench tasks on the g6 tier / live g6 sessions at once, per pool (at 16 the gate was full 66 % of smoke 5 and 31/36 pre-opened sessions were still booting; ~4 KernelBench prompts × 8 are in the look-ahead window) / instance type |
 | `TB_KB_SPEEDUP_MIN` | 1.10 | KernelBench reward: 1 if correct and at least this much faster than the reference, 0.5 if only correct, 0 otherwise (0 = correctness only) |
 | `TB_M5_IDLE_SHUTDOWN_S` | 1800 | m5 dead-man switch: an episode instance with no trainer call for this long terminates itself (0 = off). Must exceed the longest normal silence of an idle warm instance (final checkpoint save, eval: ~10 min); shorter = idle warm instances get replaced mid-run, longer = orphans bill longer after a crash |
 | `INVOKE_EXEC_MAX_RETRIES` | 1 | retries of a failed `exec` (not idempotent; 9 retries of a 4-min call stalled an eval) |

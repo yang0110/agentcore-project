@@ -224,7 +224,7 @@ class TerminalBenchPool(HarnessPool):
         m5_cap = (os.environ.get("TB_M5_MAX_INSTANCES", "24") if m5_mode() in ("warm", "per_episode")
                   else os.environ.get("TB_DOCKER_MAX_PROJECTS", "16"))
         self._gates = {"docker": asyncio.Semaphore(int(m5_cap)),
-                       "gpu": asyncio.Semaphore(int(os.environ.get("TB_GPU_MAX_SESSIONS", "16")))}
+                       "gpu": asyncio.Semaphore(int(os.environ.get("TB_GPU_MAX_SESSIONS", "32")))}
         self._keeper = None
         # Upcoming episodes, in the order they will run, as their task's Runtime ARN:
         #   _demand — drawn by slime (or submitted without a look-ahead reservation), not yet claimed;
