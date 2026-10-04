@@ -1,0 +1,266 @@
+{
+ "corpus": {
+  "total": 241,
+  "single": 229,
+  "multi": 12,
+  "microvm_status": {
+   "registered": 218,
+   "build_failed": 7,
+   "too_large": 4
+  },
+  "m5_status": {
+   "built": 71,
+   "build_failed": 7
+  },
+  "m5_reason_built": {
+   "microvm_build_failed": 2,
+   "routed_m5": 53,
+   "multi_container": 12,
+   "microvm_too_large": 4
+  },
+  "m5_failed": [
+   "fix-git",
+   "leelachess0-pytorch-conversion",
+   "port-compressor",
+   "qemu-alpine-ssh",
+   "qemu-startup",
+   "reverse-engineering",
+   "triton-interpret"
+  ],
+  "routes": {
+   "microvm": 165,
+   "docker": 71
+  },
+  "usable": {
+   "microvm": 163,
+   "docker": 30
+  },
+  "usable_total": 193,
+  "m5_rescued_oracle": 0
+ },
+ "sizes": {
+  "arm_n": 222,
+  "arm_p50": 127.0,
+  "arm_p95": 620.2,
+  "arm_max_fit": 2002.7,
+  "too_large": [
+   [
+    "mteb-eval",
+    6671.9
+   ],
+   [
+    "mteb-leaderboard",
+    6658.1
+   ],
+   [
+    "mteb-retrieve",
+    6671.9
+   ],
+   [
+    "png-generation",
+    6524.8
+   ]
+  ],
+  "m5_n": 71,
+  "m5_p50": 525.3,
+  "m5_max": 9804.5,
+  "kb_image_mb": 145,
+  "kb_torch_mb": 2700
+ },
+ "runs": {
+  "smoke2": {
+   "per": {
+    "microvm": {
+     "n": 401,
+     "solved": 17,
+     "infra": 1
+    },
+    "docker": {
+     "n": 88,
+     "solved": 0,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/terminalbench": 0.0323,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {},
+   "succeeded": false,
+   "speedup_max": 0
+  },
+  "smoke3": {
+   "per": {
+    "microvm": {
+     "n": 382,
+     "solved": 16,
+     "infra": 0
+    },
+    "docker": {
+     "n": 88,
+     "solved": 0,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/terminalbench": 0.0645,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {},
+   "succeeded": true,
+   "speedup_max": 0
+  },
+  "smoke4mix": {
+   "per": {
+    "microvm": {
+     "n": 322,
+     "solved": 13,
+     "infra": 1
+    },
+    "docker": {
+     "n": 58,
+     "solved": 0,
+     "infra": 1
+    },
+    "gpu": {
+     "n": 75,
+     "solved": 48,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/kernelbench": 0.8,
+    "eval/terminalbench": 0.0323,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {
+    "0.0": 27,
+    "1.0": 48
+   },
+   "succeeded": true,
+   "speedup_max": 1.29
+  },
+  "smoke5": {
+   "per": {
+    "microvm": {
+     "n": 157,
+     "solved": 6,
+     "infra": 0
+    },
+    "docker": {
+     "n": 34,
+     "solved": 0,
+     "infra": 0
+    },
+    "gpu": {
+     "n": 36,
+     "solved": 26,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/kernelbench": 0.475,
+    "eval/terminalbench": 0.0645,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {
+    "0.0": 10,
+    "0.5": 26
+   },
+   "succeeded": true,
+   "speedup_max": 1.02
+  },
+  "smoke6": {
+   "per": {
+    "microvm": {
+     "n": 177,
+     "solved": 4,
+     "infra": 1
+    },
+    "docker": {
+     "n": 34,
+     "solved": 0,
+     "infra": 0
+    },
+    "gpu": {
+     "n": 52,
+     "solved": 42,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/kernelbench": 0.45,
+    "eval/terminalbench": 0.0161,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {
+    "0.0": 10,
+    "0.5": 34,
+    "1.0": 8
+   },
+   "succeeded": true,
+   "speedup_max": 1.38
+  }
+ },
+ "preopen_smoke6": {
+  "microvm": {
+   "n": 177,
+   "with_p50": 0.0,
+   "with_p90": 5.6116,
+   "without_p50": 2.0789,
+   "without_p90": 3.0528000000000004,
+   "zero": 121,
+   "saved_s": 223.5311
+  },
+  "docker": {
+   "n": 34,
+   "with_p50": 28.9312,
+   "with_p90": 60.985699999999994,
+   "without_p50": 67.854,
+   "without_p90": 100.0398,
+   "zero": 16,
+   "saved_s": 1350.8647
+  },
+  "gpu": {
+   "n": 52,
+   "with_p50": 27.6095,
+   "with_p90": 99.9466,
+   "without_p50": 135.278,
+   "without_p90": 144.4667,
+   "zero": 22,
+   "saved_s": 4818.1286
+  }
+ },
+ "nopreopen_microvm": {
+  "n": 447,
+  "wait_p50": 0.0,
+  "wait_p90": 2.2859000000000003
+ },
+ "g6_cap": {
+  "smoke4mix": {
+   "cap": 8,
+   "n": 76,
+   "p50": 240.2851,
+   "zero": 0
+  },
+  "smoke5": {
+   "cap": 16,
+   "n": 36,
+   "p50": 81.57130000000001,
+   "zero": 5
+  },
+  "smoke6": {
+   "cap": 32,
+   "n": 52,
+   "p50": 27.6095,
+   "zero": 22
+  }
+ },
+ "warm_smoke6": {
+  "reused": 10,
+  "launched": 24,
+  "pool_max": 24,
+  "dirty": 0,
+  "retired": 0
+ }
+}
