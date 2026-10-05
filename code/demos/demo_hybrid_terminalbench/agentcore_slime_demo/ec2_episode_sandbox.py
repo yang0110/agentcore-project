@@ -181,19 +181,32 @@ import threading as _threading
 _AGENT_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "m5_agent", "compose_agent.py")
 
 
+def _current_loop():
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
 class _WarmInstance:
     def __init__(self, iid: str, ip: str, token: str) -> None:
         self.iid, self.ip, self.token = iid, ip, token
         self.busy, self.tasks, self.episodes = True, set(), 0
+        self.loop = _current_loop()            # the event loop whose session holds it (while busy)
 
 
 class WarmPool:
-    """Process-wide pool of warm m5 instances (thread-safe: the train and eval event loops share it)."""
+    """Process-wide pool of warm m5 instances (thread-safe: the train and eval event loops share it).
+
+    Every busy instance and every launch in progress is charged to the event loop that holds it, so a
+    superseded loop's holdings can be reclaimed (reclaim): eval orphans the fully-async worker's loop,
+    and sessions it pre-opened would otherwise stay busy forever and fill the cap (train48 hung at the
+    step-20 eval with all 24 instances held by the orphaned loop)."""
 
     def __init__(self) -> None:
         self._lock = _threading.Lock()
         self._insts: list[_WarmInstance] = []
-        self._launching = 0
+        self._launching: dict = {}             # loop -> launches in progress
 
     def stats(self) -> dict:
         with self._lock:
@@ -201,21 +214,34 @@ class WarmPool:
 
     def _take(self, task: str, cap: int):
         """(instance, reused) or (None, launch?) — prefer an idle instance that already has this task."""
+        loop = _current_loop()
         with self._lock:
             idle = [i for i in self._insts if not i.busy]
             for i in sorted(idle, key=lambda i: task not in i.tasks):
-                i.busy = True
+                i.busy, i.loop = True, loop
                 return i, True
-            if len(self._insts) + self._launching < cap:
-                self._launching += 1
+            if len(self._insts) + sum(self._launching.values()) < cap:
+                self._launching[loop] = self._launching.get(loop, 0) + 1
                 return None, True
             return None, False
 
     def _added(self, inst: _WarmInstance | None) -> None:
+        loop = _current_loop()
         with self._lock:
-            self._launching -= 1
+            if self._launching.get(loop, 0) > 0:   # 0 if this loop's launches were reclaimed meanwhile
+                self._launching[loop] -= 1
             if inst is not None:
                 self._insts.append(inst)
+
+    def reclaim(self, loop) -> list[str]:
+        """Forget every instance (and launch slot) held by `loop`, a loop that will never close them;
+        returns their ids for the caller to terminate. They are not reused: their compose projects are
+        still up, so their state is unknown."""
+        with self._lock:
+            gone = [i for i in self._insts if i.busy and i.loop is loop]
+            self._insts = [i for i in self._insts if i not in gone]
+            self._launching.pop(loop, None)
+        return [i.iid for i in gone]
 
     def _drop(self, inst: _WarmInstance) -> None:
         with self._lock:
@@ -239,6 +265,19 @@ def _terminate_warm_at_exit() -> None:
             _ec2(os.environ.get("AWS_REGION", "us-west-2")).terminate_instances(InstanceIds=ids)
         except Exception:  # noqa: BLE001
             pass
+
+
+def reclaim_warm(loop, region: str) -> None:
+    """Free the cap held by a superseded event loop's warm sessions; terminate those instances."""
+    ids = _WARM.reclaim(loop)
+    if not ids:
+        return
+    sys.stdout.write(f"[demo] warm_reclaim instances={len(ids)} reason=loop_superseded ids={','.join(ids)}\n")
+    sys.stdout.flush()
+    try:
+        _ec2(region).terminate_instances(InstanceIds=ids)
+    except Exception as e:  # noqa: BLE001 — the dead-man switch and gc-episodes are the backstop
+        sys.stdout.write(f"[demo] warm_reclaim terminate failed: {e}\n")
 
 
 import atexit as _atexit  # noqa: E402

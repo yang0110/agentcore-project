@@ -125,6 +125,12 @@ def get_tb_pool(args) -> "TerminalBenchPool":
             if old is not None and not old.loop.is_closed():
                 with contextlib.suppress(Exception):
                     asyncio.run_coroutine_threadsafe(old.aclose(), old.loop)
+            if old is not None and m5_mode() == "warm":
+                # The old loop may be wedged and never close its sessions: free the m5 cap they hold
+                # now, or this loop's m5 opens wait for an instance forever.
+                from .ec2_episode_sandbox import reclaim_warm
+                with contextlib.suppress(Exception):
+                    reclaim_warm(old.loop, old.region)
     return _TB_POOL
 
 
@@ -414,8 +420,14 @@ class TerminalBenchPool(HarnessPool):
         return pending
 
     async def _discard(self, pending: asyncio.Task) -> None:
+        try:
+            sb = await pending
+        except BaseException:  # noqa: BLE001
+            if pending.cancelled() or pending.done():
+                return                 # the open was cancelled or failed: nothing to close (and aclose
+            raise                      # must go on to the next one, not stop at a CancelledError)
         with contextlib.suppress(Exception):
-            await self._close_session(await pending)
+            await self._close_session(sb)
 
     async def _close_session(self, sb) -> None:
         self._keeper.unregister(sb._session_id)
