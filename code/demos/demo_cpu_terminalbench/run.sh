@@ -213,7 +213,9 @@ ROLLOUT_ARGS=(
    # The fully-async driver (see the note near the top). Its worker calls slime's
    # generate_and_rm_group, which dispatches to our --custom-generate-function-path, so our token-ids / logprobs / loss-mask /
    # reward Sample contract is preserved UNCHANGED (reward set on the Sample => no --custom-rm-path).
-   --rollout-function-path slime.rollout.fully_async_rollout.generate_rollout_fully_async
+   # ...wrapped by last_rollout: after the LAST rollout it stops the worker + Terminal-Bench look-ahead
+   # (cancels pre-opens, stops their sessions) instead of letting it run on through the final save.
+   --rollout-function-path agentcore_slime_demo.last_rollout.generate_rollout
    --custom-generate-function-path agentcore_slime_demo.generate.generate
    # Per-step task mix of the batch actually trained on ([batch] line + mix/n_tasks, mix/{episodes,reward}_<family>)
    # and each task's held-out reward (eval/<name>_<family>).
@@ -295,6 +297,7 @@ RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM:${DEMO_DIR}:/root/slime\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}\",
     \"SANDBOX\": \"${SANDBOX}\",
     \"HEARTBEAT\": \"${HEARTBEAT}\",
     \"HARNESS\": \"${HARNESS}\",

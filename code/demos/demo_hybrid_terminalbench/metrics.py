@@ -697,7 +697,13 @@ def summarize_demo(demo_records: list[dict]) -> None:
                     parts.append(f"{k}=mean {sum(v)/len(v):.3f}" if k == "solved"
                                  else f"{k}=p50 {_pct(v, 0.5):.0f}")
             infra = sum(1 for r in rs if r.get("infra_error") not in (None, "none"))
-            print(f"        {sub:<8} records={len(rs):<5} infra_error={infra:<3} " + "  ".join(parts))
+            # cancelled=abort|shutdown: killed with no sandbox fault (terminalbench_pool._cancel_reason)
+            cancelled = sum(1 for r in rs if r.get("cancelled") not in (None, "none"))
+            # an episode logs a start line AND an end line, both with substrate=; count only the end
+            # (the line carrying solved=), or every episode is counted twice
+            episodes = sum(1 for r in rs if "solved" in r)
+            print(f"        {sub:<8} episodes={episodes:<5} infra_error={infra:<3} cancelled={cancelled:<3} "
+                  + "  ".join(parts))
 
 
 def summarize_mix(rows: dict[int, dict]) -> None:

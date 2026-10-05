@@ -117,10 +117,22 @@ plt.close(fig)
 
 
 # ------------------------------------------------------------------ runs
+SHUTDOWN_MARK = "cannot schedule new futures after shutdown"
+
+
 def episodes(t):
+    """One record per finished episode. Episodes killed with no sandbox fault are dropped: tagged
+    cancelled=abort|shutdown (terminalbench_pool._cancel_reason), or — logs from before that tag —
+    any non-grade error logged after the first executor-shutdown traceback (process teardown)."""
     out = []
-    for l in t.splitlines():
+    cut = t.find(SHUTDOWN_MARK)
+    pos = 0
+    for l in t.splitlines(keepends=True):
+        at, pos = pos, pos + len(l)
         if "[demo]" not in l or "solved=" not in l or ("episode_end" not in l and "family=coding" not in l):
+            continue
+        if "cancelled=" in l or (cut >= 0 and at > cut and "infra_error=none" not in l
+                                 and "infra_error=grade" not in l):
             continue
         s = re.search(r"substrate=(\w+)", l)
         if not s:
@@ -148,8 +160,12 @@ def evals(log):
 
 
 runs = {}
-for tag in ("smoke2", "smoke3", "smoke4mix", "smoke5", "smoke6"):
-    fs = sorted(glob.glob(os.path.join(LOGS, f"{tag}-hybrid_*.log")))
+RUN_LOGS = [(tag, sorted(glob.glob(os.path.join(LOGS, f"{tag}-hybrid_*.log")))[-1:])
+            for tag in ("smoke2", "smoke3", "smoke4mix", "smoke5", "smoke6")]
+# both 48-step training runs: run 1 (eval deadlock at step 20), run 2 (with the fix, completed)
+RUN_LOGS += [(f"train48_run{i}", [f]) for i, f in
+             enumerate(sorted(glob.glob(os.path.join(LOGS, "train48-hybrid_*.log"))), 1)]
+for tag, fs in RUN_LOGS:
     if not fs:
         continue
     t = rd(fs[-1])
@@ -162,6 +178,10 @@ for tag in ("smoke2", "smoke3", "smoke4mix", "smoke5", "smoke6"):
     rw = Counter(x["reward"] for x in eps if x["sub"] == "gpu" and x["reward"] is not None)
     runs[tag] = {"per": per, "eval": evals(fs[-1]), "kb_rewards": {str(k): v for k, v in sorted(rw.items())},
                  "succeeded": bool(re.search(r"Job '[^']+' succeeded", t)),
+                 "cancelled": len(re.findall(r"\[demo\] (?:episode_end|task=).*cancelled=", t))
+                              + (sum(1 for x in re.finditer(r"\[demo\] (?:episode_end|task=)[^\n]*infra_error=(?!none|grade)", t)
+                                     if x.start() > t.find(SHUTDOWN_MARK)) if SHUTDOWN_MARK in t else 0),
+                 "grade_errors": Counter(re.findall(r"episode_end task=(\S+)[^\n]*infra_error=grade", t)),
                  "speedup_max": max([float(x) for x in re.findall(r"speedup=([\d.]+)", t)] or [0])}
 data["runs"] = runs
 
@@ -218,6 +238,56 @@ ax.set_title("Pre-open removes the cold start from the episode's critical path (
 fig.tight_layout()
 fig.savefig(os.path.join(HERE, "fig_preopen.png"), dpi=200)
 plt.close(fig)
+
+# ------------------------------------------------------------------ instances alive during training (run 2)
+# microVM = AgentCore sessions (one microVM each, pre-opened ones included); m5 and g6 = real EC2
+# lifetimes from CloudTrail (demo's instance_timeline.py -> <log>.instances.csv; g6 launched by AgentCore).
+tl = sorted(glob.glob(os.path.join(LOGS, "train48-hybrid_*.instances.csv")))
+if tl:
+    base = tl[-1][:-len(".instances.csv")]
+    kind = {}
+    for r in csv.DictReader(open(base + ".sandbox_ops.csv")):
+        if r["session"] not in kind and r["arn"].startswith("acs_tbh_"):
+            kind[r["session"]] = "microvm"
+    life = {"microvm": [(float(r["start_ts"]), float(r["end_ts"])) for r in csv.DictReader(open(base + ".sessions.csv"))
+                        if kind.get(r["session"]) == "microvm"]}
+    inst = list(csv.DictReader(open(tl[-1])))
+    for s, ty in (("docker", "m5.xlarge"), ("gpu", "g6.xlarge")):
+        life[s] = [(float(r["launch_ts"]), float(r["terminate_ts"])) for r in inst if r["type"] == ty and r["terminate_ts"]]
+    step0 = {}
+    for r in csv.DictReader(open(base + ".sandbox_ops.csv")):
+        if not r["step"]:
+            continue
+        st = int(r["step"]); step0[st] = min(float(r["ts"]), step0.get(st, 9e18))
+    t0 = min(a for v in life.values() for a, _ in v)
+    t_end = max(step0.values())
+    t1 = max(b for v in life.values() for _, b in v)
+    grid = [t0 + 10 * i for i in range(int((t1 - t0) / 10) + 2)]
+    fig, ax = plt.subplots(figsize=(10.5, 3.6))
+    inst_tl = {}
+    for s in ("microvm", "docker", "gpu"):
+        ys = [sum(a <= g < b for a, b in life[s]) for g in grid]
+        ax.plot([(g - t0) / 60 for g in grid], ys, color=C[s], lw=1.6,
+                label=f"{NAME[s].replace(' (warm)', '')}  (peak {max(ys)}, {len(life[s]):,} total)")
+        inst_tl[s] = {"total": len(life[s]), "peak": max(ys),
+                      "mean_training": sum(y for g, y in zip(grid, ys) if g <= t_end) / max(1, sum(g <= t_end for g in grid))}
+    inst_tl["gpu"]["after_run_min"] = (t1 - t_end) / 60
+    gs = {r["session"] for r in csv.DictReader(open(base + ".sandbox_ops.csv")) if "tbhgpu" in r["arn"]}
+    inst_tl["gpu"]["session_p50_min"] = pct([float(r["lifetime_s"]) / 60 for r in csv.DictReader(open(base + ".sessions.csv"))
+                                             if r["session"] in gs], .5)
+    inst_tl["gpu"]["instance_p50_min"] = pct([(b - a) / 60 for a, b in life["gpu"]], .5)
+    ax.set_xlabel("minutes since the first sandbox opened")
+    ax.set_ylabel("alive at once")
+    ax.set_xlim(0, (t1 - t0) / 60)
+    ax.set_ylim(0, ax.get_ylim()[1] * 1.22)
+    ax.legend(loc="upper left", frameon=False, fontsize=8.5, ncol=3, bbox_to_anchor=(0, 1.0))
+    ax.axvline((t_end - t0) / 60, color=MUTED, lw=0.8, ls="--")
+    ax.text((t_end - t0) / 60 + 1, ax.get_ylim()[1] * 0.70, "training ends", fontsize=8.5, color=MUTED)
+    ax.set_title("Sandboxes alive during the 48-step run (train48 run 2)", fontsize=10, color=INK, loc="left")
+    fig.tight_layout()
+    fig.savefig(os.path.join(HERE, "fig_instances.png"), dpi=200)
+    plt.close(fig)
+    data["instances_train48"] = inst_tl
 
 json.dump(data, open(os.path.join(HERE, "data.json"), "w"), indent=1, default=str)
 print(json.dumps(data, indent=1, default=str)[:6000])

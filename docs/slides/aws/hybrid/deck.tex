@@ -31,9 +31,9 @@
 \textbf{Question} & \textbf{Answer} & \textbf{Evidence} & \textbf{Slides}\\
 \midrule
 1. Does it cover the corpus? & \hl{Yes} & \textbf{193} usable Terminal-Bench tasks (163 \smv{} + 30 \sm) vs 165 on microVMs alone, plus \textbf{50 KernelBench} tasks on \sg{} & \srefs{fr:why}{fr:route}\\
-2. Is it reliable? & \hl{Yes} & \textbf{4 infra errors in $\sim$1{,}900 episodes} over 5 smoke runs, on all three substrates; 0 dirty warm-m5 resets & \sref{fr:rel}\\
+2. Is it reliable? & \hl{Yes} & \textbf{12 infra errors in 5{,}332 episodes} (0.2\,\%) over 5 smoke runs and both 48-step runs; 11 are grading time-outs; 0 dirty warm-m5 resets & \sref{fr:rel}\\
 3. Is the sandbox off the critical path? & \hl{Mostly} & pre-open hides opens of 2\,s (\smv), 68\,s (\sm) and 135\,s (\sg); median start wait 0 / 29 / 28\,s & \srefs{fr:pipeline}{fr:preopen}\\
-4. Does the policy learn? & \textbf{Not yet} & Terminal-Bench eval 1--4 of 62; 0 of 302 m5 episodes solved; KernelBench needed a speedup gate to give a gradient & \srefs{fr:reward}{fr:train}\\
+4. Does the policy learn? & \textbf{Not yet} & 48 steps done, but no gradient in 32 of 48 steps; Terminal-Bench eval 0--3 of 62; 0 of 671 m5 episodes solved & \srefs{fr:reward}{fr:train}\\
 \bottomrule
 \end{tabularx}
 \par\vspace{3mm}
@@ -49,7 +49,7 @@
 \item \textbf{Runs end to end from 6 scripts}, build to clean-up (\sref{fr:run}).
 \end{itemize}
 \end{columns}
-\src{Smoke runs 2--6 and \tb{train48}, 4 Oct 2026; \tb{terminalbench/tasks/oracle.csv}; checked 4 Oct 2026.}
+\src{Smoke runs 2--6 (4 Oct) and \tb{train48} runs 1--2 (4--5 Oct 2026); \tb{terminalbench/tasks/oracle.csv}; checked 5 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -497,6 +497,35 @@ smoke 6 & 32 & \hl{28\,s} & 22 / 52\\
 \end{frame}
 
 %====================================================================
+\begin{frame}{Instances during training: 2,020 microVMs, 129 m5 and 546 g6 in one run}
+\flabel{fr:instances}
+\figcap{Sandboxes alive at once over the 48-step run (train48 run 2), sampled every 10\,s}
+\centering\includegraphics[width=0.78\textwidth]{fig_instances.png}\par
+\raggedright\vspace{1mm}
+\begin{columns}[T]
+\column{0.50\textwidth}
+\tabcap{Per substrate, whole run}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}Y r r r@{}}
+\toprule
+& \textbf{total} & \textbf{peak} & \textbf{mean}\\
+\midrule
+\textcolor{cat2}{microVM} (one per session) & 2,020 & 129 & 57\\
+\textcolor{cat1}{m5} (warm pool, 407 sessions) & 129 & 24 & 14\\
+\textcolor{cat3}{g6} (one per session) & 546 & 124 & 46\\
+\bottomrule
+\end{tabularx}
+\column{0.46\textwidth}
+\tabcap{Why g6 peaks above its session cap of 32}
+\tiny
+A g6 session lasts \textbf{3\,min} (median), but AgentCore keeps its Instance for \hl{15\,min}: it is
+reclaimed about 12\,min after the session stops. Most g6 time is idle, and the last Instances
+outlive training by 44\,min. m5 is reused after a verified reset, so 129 hosts served 407 sessions.
+\end{columns}
+\src{\tb{logs/train48-hybrid\_*.\{sessions,sandbox\_ops,instances\}.csv}; m5/g6 lifetimes from CloudTrail (\tb{instance\_timeline.py}); \tb{make\_figures.py}; checked 5 Oct 2026.}
+\end{frame}
+
+%====================================================================
 \begin{frame}{Security and network: private by design, no public ports}
 \flabel{fr:sec}
 \tabcap{Where each component runs and who can reach it}
@@ -531,9 +560,9 @@ Trainer (g6e) & our VPC & tcp 18100--18163 (model adapters) \textbf{from the Run
 %====================================================================
 \sect{Results}
 
-\begin{frame}{Reliability: 4 infra errors in about 1,900 episodes, on all three substrates}
+\begin{frame}{Reliability: 12 infra errors in 5,332 episodes, on all three substrates}
 \flabel{fr:rel}
-\tabcap{Smoke runs on 4 Oct 2026: episodes (train + eval) / infra errors}
+\tabcap{Smoke runs (4 Oct) and the 48-step runs (4--5 Oct 2026): episodes (train + eval) / infra errors}
 \scriptsize\setlength{\tabcolsep}{4pt}
 \begin{tabularx}{\textwidth}{@{}P{0.11\textwidth}P{0.12\textwidth}P{0.10\textwidth}P{0.10\textwidth}Y@{}}
 \toprule
@@ -544,24 +573,27 @@ smoke 3 & 382 / \hl{0} & 88 / \hl{0} & -- & \textbf{passed}, 53\,GB checkpoint; 
 smoke 4 & 322 / 1 & 58 / 1 & 75 / 0 & \textbf{passed}; KernelBench added; g6 cap 8 too small\\
 smoke 5 & 157 / 0 & 34 / 0 & 36 / 0 & \textbf{passed}; speedup-gated reward, g6 cap 16\\
 smoke 6 & 177 / 1 & 34 / 0 & 52 / 0 & \textbf{passed}; g6 cap 32, 5 batches ahead\\
+train48 run 1 & 700 / 1 & 76 / 0 & 160 / 0 & 20 steps, then the eval deadlock $\rightarrow$ warm pool tracks the holding loop\\
+train48 run 2 & 1{,}795 / 5 & 293 / 2 & 404 / 0 & \textbf{passed}, 48 of 48 steps; all 7 errors are grading failures (HTTP 500)\\
 \midrule
-\textbf{total} & 1{,}439 / 3 & 302 / 1 & 163 / 0 & \hl{1{,}904 episodes, 4 infra errors (0.2\,\%)}\\
+\textbf{total} & 3{,}934 / 9 & 671 / 3 & 727 / 0 & \hl{5{,}332 episodes, 12 infra errors (0.2\,\%)}\\
 \bottomrule
 \end{tabularx}
 \par\vspace{2mm}
 \begin{columns}[T]
 \column{0.48\textwidth}
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
-\item \textbf{Every run since smoke 3 finished} (\tb{Job \ldots{} succeeded}); smokes 3--4 saved a 53\,GB checkpoint.
+\item \textbf{Every run since smoke 3 finished} except \tb{train48} run 1 (\tb{Job \ldots{} succeeded}); smokes 3--4 saved a 53\,GB checkpoint.
+\item \textbf{11 of 12 errors are grading failures} (\tb{grade\_exit=-1}: the sandbox returned HTTP 500 to the test run), 7 of them on two tasks: \tb{solve-maze-challenge} (4), \tb{build-initramfs-qemu} (3).
 \item \textbf{0 dirty warm-m5 resets}; all m5s terminated at exit.
 \end{itemize}
 \column{0.48\textwidth}
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
-\item \textbf{\tb{train48} run 1:} 1 infra error in 1{,}876 episodes, then an eval deadlock (\sref{fr:train}).
+\item \textbf{Not counted:} 25 episodes still in flight when run 2 exited (pre-opened for batches that never ran). A bug: the look-ahead ran on past the last step. Fixed: it is now stopped after the last rollout, its sessions closed (\tb{last\_rollout.py}).
 \item Bugs found on the way and their fixes: \sref{fr:lessons}.
 \end{itemize}
 \end{columns}
-\src{\tb{logs/smoke\{2,3,4mix,5,6\}-hybrid\_*.log} (\tb{[demo]} \tb{infra\_error=}); \tb{make\_figures.py} $\rightarrow$ \tb{data.json} (runs); checked 4 Oct 2026.}
+\src{\tb{logs/\{smoke\{2,3,4mix,5,6\},train48\}-hybrid\_*.log} (\tb{[demo] episode\_end} \tb{infra\_error=}, \tb{cancelled=}); \tb{make\_figures.py} $\rightarrow$ \tb{data.json} (runs); checked 5 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -597,37 +629,47 @@ eval (s6) & 1 / 62 & 0 / 10 & mean 0.45\\
 \end{frame}
 
 %====================================================================
-\begin{frame}{Learning: the 48-step training run (re-run in progress)}
+\begin{frame}{Learning: 48 steps ran clean, but most steps carried no gradient}
 \flabel{fr:train}
 \begin{columns}[T]
-\column{0.50\textwidth}
-\tabcap{Run 1 (4 Oct 15:24 UTC): 20 steps, then an eval deadlock}
+\column{0.52\textwidth}
+\tabcap{The two 48-step runs (\tb{RB=4}, \tb{NS=8}: 32 episodes per step)}
 \scriptsize\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}Y r@{}}
+\begin{tabularx}{\linewidth}{@{}Y r r@{}}
 \toprule
-steps done & 20 of 48\\
-mean step time & 130\,s\\
-episodes (\smv{} / \sm{} / \sg) & 1{,}397 / 151 / 328\\
-solved (\smv{} / \sm{} / \sg) & 2.0\,\% / 0\,\% / 59\,\%\\
-infra errors & \hl{1}\\
-eval at step 10 (TB / m5 / KB) & 1/62 / 0/10 / 0.425\\
-peak live sandboxes (\smv{} / \sm{} / \sg) & 88 / 24 / 36\\
+& \textbf{run 1} & \textbf{run 2}\\
+\midrule
+started (UTC) & 4 Oct 15:24 & 5 Oct 00:56\\
+steps done & 20 of 48 & \hl{48 of 48}\\
+wall time & 1\,h + 8\,h hang & 2\,h 58\,min\\
+episodes (\smv{} / \sm{} / \sg) & 700 / 76 / 160 & 1{,}795 / 293 / 404\\
+solved (\smv{} / \sm{} / \sg) & 2.0 / 0 / 59\,\% & 2.3 / 0 / 57\,\%\\
+infra errors & 1 & 7\\
+steps with \tb{grad\_norm} $= 0$ & -- & \hl{32 of 48}\\
 \bottomrule
 \end{tabularx}
 \par\vspace{1mm}
-{\tiny Train reward per step 0--19: 0, 0, .25, .25, 0, .13, .11, 0, .02, 0, .08, 0, 0, .22, 0, .13, 0, .13, 0, --}
-\column{0.46\textwidth}
+\tabcap{Run 2 eval (TB microVM / m5 / KernelBench)}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}Y r r r r@{}}
+\toprule
+step & 10 & 20 & 30 & 40\\
+\midrule
+TB (of 62) & 0 & 3 & 1 & 3\\
+m5 (of 10) & 0 & 0 & 0 & 0\\
+KernelBench & .40 & .45 & .50 & .43\\
+\bottomrule
+\end{tabularx}
+\column{0.44\textwidth}
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
-\item \textbf{What happened:} at the step-20 eval, all 24 warm m5 slots were still held by sessions the
-  paused training loop had pre-opened. That loop was wedged and never released them, so the m5 eval waited
-  for an instance forever (8\,h, GPUs idle).
-\item \textbf{No cost leak:} the dead-man switch terminated every idle m5 after 30\,min.
-\item \textbf{Fix:} the warm pool charges each instance to the event loop holding it; a superseded loop's
-  instances are reclaimed and terminated (\sref{fr:lessons}).
-\item \textbf{Run 2} started 5 Oct 00:56 UTC with the fix; results go here when it ends.
+\item \textbf{Run 1} deadlocked at the step-20 eval: the paused training loop held all 24 warm m5s. Fixed by charging each instance to the event loop holding it (\sref{fr:lessons}).
+\item \textbf{Run 2 is an infra success:} all 48 steps, every eval, a clean exit.
+\item \textbf{But not a learning result:} in 32 steps all 4 groups had 8 equal rewards, so every advantage and the update were zero; the other 16 learned from one group each. (\tb{pg\_loss} reads $\approx 0$ even with a gradient: use \tb{grad\_norm}.)
+\item \textbf{Why:} \smv{} tasks are solved 2.3\,\% of the time, and 42 solves came from just 10 tasks; m5 is 0 of 671 across all runs. KernelBench stays at 0.4--0.5.
+\item \textbf{Next:} partial credit from \tb{tests\_passed}, a curriculum of sometimes-solved tasks (\sref{fr:concl}).
 \end{itemize}
 \end{columns}
-\src{\tb{logs/train48-hybrid\_20261004\_152433.\{log,csv,eval.csv\}} (\tb{metrics.py} by substrate); py-spy dump of the rollout process; checked 5 Oct 2026.}
+\src{\tb{logs/train48-hybrid\_20261004\_152433.*}, \tb{logs/train48-hybrid\_20261005\_005629.\{log,csv,eval.csv\}}; \tb{metrics.py} by substrate; \tb{make\_figures.py}; checked 5 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -991,9 +1033,9 @@ gp3 storage, TiB (L-7A658B76) & 257 & $\sim$1.5 & 24 $\times$ 40\,GB + 500\,GB b
 \midrule
 1 & \textbf{A hybrid tier covers the corpus} & 193 usable Terminal-Bench tasks vs 165 on microVMs alone, plus KernelBench on g6 & \srefs{fr:why}{fr:route}\\
 2 & \textbf{The RL side does not change} & one agent loop, grader, pre-open and metrics path for microVM, m5 and g6 & \srefs{fr:arch}{fr:pipeline}\\
-3 & \textbf{Infra is reliable} & 4 infra errors in 1{,}904 smoke episodes; 0 dirty warm resets & \sref{fr:rel}\\
+3 & \textbf{Infra is reliable} & 12 infra errors in 5{,}332 episodes, incl.\ the full 48-step run; 0 dirty warm resets & \sref{fr:rel}\\
 4 & \textbf{Pre-open depth must match boot time} & g6 start wait p50 240\,s $\rightarrow$ 28\,s with cap 32 and 5 batches ahead & \sref{fr:preopen}\\
-5 & \textbf{The reward limits learning} & TB eval 1--4 of 62; 0 of 302 m5 episodes solved; KernelBench needed a speedup gate & \sref{fr:reward}\\
+5 & \textbf{The reward limits learning} & no gradient in 32 of 48 steps; TB eval 0--3 of 62; 0 of 671 m5 episodes solved & \srefs{fr:reward}{fr:train}\\
 \bottomrule
 \end{tabularx}
 \par\vspace{1.5mm}
@@ -1001,13 +1043,13 @@ gp3 storage, TiB (L-7A658B76) & 257 & $\sim$1.5 & 24 $\times$ 40\,GB + 500\,GB b
 \scriptsize
 \begin{tabularx}{\textwidth}{@{}P{0.03\textwidth}P{0.4\textwidth}Y@{}}
 \toprule
-1 & Finish the 48-step run & re-run with the deadlock fix, started 5 Oct 00:56 (\sref{fr:train})\\
-2 & Partial credit from \tb{tests\_passed} / \tb{tests\_total} & more GRPO groups with a gradient, esp.\ on m5 tasks\\
+1 & Partial credit from \tb{tests\_passed} / \tb{tests\_total} & more GRPO groups with a gradient (32 of 48 steps had none)\\
+2 & Train on tasks the policy can sometimes solve & 42 of 1{,}795 \smv{} solves came from 10 tasks; drop all-0 groups and refill\\
 3 & Host the CUDA torch wheel in S3 & cut the g6 open from $\sim$2.5\,min\\
 4 & Delete the 218 leftover \tb{acs\_tb\_*} Runtimes; stop the m5 builder & frees 22\,\% of the Runtime quota (\sref{fr:quotas}); builder is not needed to train\\
 \bottomrule
 \end{tabularx}
-\src{This deck; checked 4 Oct 2026.}
+\src{This deck; checked 5 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -1159,6 +1201,8 @@ All g6 episodes waited 240\,s & cap 8 = one group, nothing could pre-open & cap 
 KernelBench groups all 1s & copying \tb{Model} to CUDA passed & speedup-gated reward\\
 Tasks broken upstream & deleted repo, 404 downloads & \tb{word2vec} patched; \tb{fix-git}, \tb{leelachess0} dropped\\
 \tb{train48} hung 8\,h at the step-20 eval & the paused training loop kept all 24 warm m5s busy & warm pool tracks the holding loop; reclaim on supersede\\
+22 ``infra errors'' at the end of run 2 & look-ahead episodes killed at exit (\tb{cannot schedule new futures after shutdown}) & logged \tb{cancelled=shutdown}, not counted\\
+Episode counts doubled in \tb{metrics.py} & start and end lines both carry \tb{substrate=} & count only \tb{episode\_end} lines\\
 \bottomrule
 \end{tabularx}
 \src{Commits \tb{40581fa}, \tb{d087d5a}, \tb{0dc6f8e}, \tb{3b26159}; demo README; checked 4 Oct 2026.}

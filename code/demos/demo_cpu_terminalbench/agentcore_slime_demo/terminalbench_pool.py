@@ -237,11 +237,13 @@ class TerminalBenchPool(HarnessPool):
             try:
                 await sb.__aenter__()      # the cold start: allocate + pull + boot + ping
                 break
-            except Exception as e:  # noqa: BLE001
+            except BaseException as e:  # noqa: BLE001
                 last = e
                 logger.warning("[terminalbench_pool] open attempt %d on %s failed: %s", attempt + 1, arn, e)
                 with contextlib.suppress(Exception):
                     await sb.__aexit__(None, None, None)
+                if not isinstance(e, Exception):     # cancelled (a discarded pre-open): stop retrying
+                    raise
         else:
             raise RuntimeError(f"could not open a session on {arn} after {self.open_attempts} attempts: {last}")
         sb._tb_opened_at = time.perf_counter()   # boot done: start of the pre-open idle gap
@@ -320,8 +322,14 @@ class TerminalBenchPool(HarnessPool):
         return pending
 
     async def _discard(self, pending: asyncio.Task) -> None:
+        try:
+            sb = await pending
+        except BaseException:  # noqa: BLE001
+            if pending.cancelled() or pending.done():
+                return                 # the open was cancelled or failed: nothing to close (and aclose
+            raise                      # must go on to the next one, not stop at a CancelledError)
         with contextlib.suppress(Exception):
-            await self._close_session(await pending)
+            await self._close_session(sb)
 
     async def _close_session(self, sb) -> None:
         self._keeper.unregister(sb._session_id)
@@ -456,7 +464,8 @@ class TerminalBenchPool(HarnessPool):
         self._demand, self._future = [], []
         for q in list(self._ready.values()):
             for pending in q:
-                await self._discard(pending)
+                pending.cancel()   # still booting: abort the open (it stops its session) instead of
+                await self._discard(pending)   # waiting for the boot just to close it
         self._ready.clear()
         if self._keeper is not None:
             await self._keeper.aclose()

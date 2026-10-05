@@ -58,6 +58,7 @@ import json
 import logging
 import os
 import secrets
+import sys
 import threading
 import time
 
@@ -72,6 +73,27 @@ _DOCKER_GC_DONE = False        # m5 stale-project gc: once per process (a later 
 
 
 GPU_PREFIX = "gpu:"
+
+
+def _cancel_reason(exc: BaseException) -> str | None:
+    """Why an episode died WITHOUT a sandbox fault, or None if `exc` is a real infra error.
+    "abort": the caller cancelled it (rollout abort / over-sampling). "shutdown": the process tore
+    down under it — the loop's executor or the interpreter is already shut down (the look-ahead
+    pre-opens episodes for batches that never run; train48 run 2 logged 25 of these at exit, all
+    `cannot schedule new futures after shutdown` — last_rollout.stop_lookahead now prevents them). Such episodes are tagged cancelled=<reason> and
+    keep infra_error=none, so they never count as infra errors."""
+    if sys.is_finalizing():
+        return "shutdown"
+    with contextlib.suppress(RuntimeError):
+        if getattr(asyncio.get_running_loop(), "_executor_shutdown_called", False):
+            return "shutdown"
+    seen, cur = set(), exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if "after shutdown" in str(cur) or "interpreter shutdown" in str(cur):
+            return "shutdown"
+        cur = cur.__cause__ or cur.__context__
+    return "abort" if isinstance(exc, asyncio.CancelledError) else None
 
 
 def substrate_of(route: str) -> str:
@@ -545,8 +567,12 @@ class TerminalBenchPool(HarnessPool):
             )
             out, ep["fan_out"] = one_sample(samples, float(reward))
             return out
-        except Exception as exc:
-            ep["infra_error"] = type(exc).__name__
+        except BaseException as exc:
+            reason = _cancel_reason(exc)
+            if reason:
+                ep["cancelled"] = reason
+            else:
+                ep["infra_error"] = type(exc).__name__
             raise
         finally:
             ep["episode_ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
@@ -580,9 +606,11 @@ class TerminalBenchPool(HarnessPool):
                   + " ".join(f"{k}={v}" for k, v in cold.items()) + f" arn={_arn_tail(arn)}", flush=True)
             return await mini_claude_episode.run(self.args, base_sample, task, sampling_params, sb, engine,
                                                  fields={"substrate": sb._tb_substrate, "infra_error": "none"})
-        except Exception as exc:
+        except BaseException as exc:
+            reason = _cancel_reason(exc)
+            tag = f"infra_error=none cancelled={reason}" if reason else f"infra_error={type(exc).__name__}"
             print(f"[demo] task={task.task_id} family={task.family} substrate={sb._tb_substrate} solved=0 "
-                  f"infra_error={type(exc).__name__}", flush=True)
+                  f"{tag}", flush=True)
             raise
         finally:
             self.release_engine(e)
@@ -603,7 +631,8 @@ class TerminalBenchPool(HarnessPool):
         self._demand, self._future = [], []
         for q in list(self._ready.values()):
             for pending in q:
-                await self._discard(pending)
+                pending.cancel()   # still booting: abort the open (it stops its session) instead of
+                await self._discard(pending)   # waiting minutes for a g6 boot just to close it
         self._ready.clear()
         if self._keeper is not None:
             await self._keeper.aclose()

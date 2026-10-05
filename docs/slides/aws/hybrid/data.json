@@ -87,6 +87,10 @@
    },
    "kb_rewards": {},
    "succeeded": false,
+   "cancelled": 0,
+   "grade_errors": {
+    "jq-data-processing": 1
+   },
    "speedup_max": 0
   },
   "smoke3": {
@@ -108,6 +112,8 @@
    },
    "kb_rewards": {},
    "succeeded": true,
+   "cancelled": 0,
+   "grade_errors": {},
    "speedup_max": 0
   },
   "smoke4mix": {
@@ -138,6 +144,11 @@
     "1.0": 48
    },
    "succeeded": true,
+   "cancelled": 0,
+   "grade_errors": {
+    "build-initramfs-qemu": 1,
+    "query-optimize": 1
+   },
    "speedup_max": 1.29
   },
   "smoke5": {
@@ -168,6 +179,8 @@
     "0.5": 26
    },
    "succeeded": true,
+   "cancelled": 0,
+   "grade_errors": {},
    "speedup_max": 1.02
   },
   "smoke6": {
@@ -199,7 +212,81 @@
     "1.0": 8
    },
    "succeeded": true,
+   "cancelled": 0,
+   "grade_errors": {
+    "recover-obfuscated-files": 1
+   },
    "speedup_max": 1.38
+  },
+  "train48_run1": {
+   "per": {
+    "microvm": {
+     "n": 700,
+     "solved": 14,
+     "infra": 1
+    },
+    "docker": {
+     "n": 76,
+     "solved": 0,
+     "infra": 0
+    },
+    "gpu": {
+     "n": 160,
+     "solved": 94,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/kernelbench": 0.425,
+    "eval/terminalbench": 0.0161,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {
+    "0.0": 66,
+    "0.5": 86,
+    "1.0": 8
+   },
+   "succeeded": false,
+   "cancelled": 0,
+   "grade_errors": {},
+   "speedup_max": 1.3
+  },
+  "train48_run2": {
+   "per": {
+    "microvm": {
+     "n": 1795,
+     "solved": 42,
+     "infra": 5
+    },
+    "docker": {
+     "n": 293,
+     "solved": 0,
+     "infra": 2
+    },
+    "gpu": {
+     "n": 404,
+     "solved": 230,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/kernelbench": 0.425,
+    "eval/terminalbench": 0.0484,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {
+    "0.0": 174,
+    "0.5": 214,
+    "1.0": 16
+   },
+   "succeeded": true,
+   "cancelled": 25,
+   "grade_errors": {
+    "hf-lora-adapter": 1,
+    "solve-maze-challenge": 4,
+    "build-initramfs-qemu": 2
+   },
+   "speedup_max": 1.35
   }
  },
  "preopen_smoke6": {
@@ -262,5 +349,25 @@
   "pool_max": 24,
   "dirty": 0,
   "retired": 0
+ },
+ "instances_train48": {
+  "microvm": {
+   "total": 2020,
+   "peak": 129,
+   "mean_training": 57.35406218655968
+  },
+  "docker": {
+   "total": 129,
+   "peak": 24,
+   "mean_training": 14.245737211634905
+  },
+  "gpu": {
+   "total": 546,
+   "peak": 124,
+   "mean_training": 46.06519558676028,
+   "after_run_min": 43.79746666749318,
+   "session_p50_min": 3.1828166666666666,
+   "instance_p50_min": 15.15
+  }
  }
 }
