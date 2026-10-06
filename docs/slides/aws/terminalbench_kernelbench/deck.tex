@@ -62,7 +62,7 @@
 & \textbf{Part} & \textbf{What you get from it} & \textbf{Starts at}\\
 \midrule
 \hl{1} & \textbf{Concepts} & agentic RL in one picture, what slime is and how we plug into it, the RL pipeline, and the words used in the rest of the deck & \sref{fr:loop}\\
-\hl{2} & \textbf{The problem} & the two workloads with example tasks, the 16 challenges they expose, and why one sandbox product cannot run them all & \sref{fr:tb}\\
+\hl{2} & \textbf{The problem} & the two workloads with example tasks, the image builds, the 16 challenges they expose with measured evidence, and why one sandbox product cannot run them all & \sref{fr:tb}\\
 \hl{3} & \textbf{The hybrid solution} & one answer per challenge, architecture, components, who manages each sandbox, code, lifecycles, isolation, pre-open, concurrency, security & \sref{fr:hybrid}\\
 \hl{4} & \textbf{Results} & reliability, reward design, learning curves & \sref{fr:rel}\\
 \hl{5} & \textbf{Hands-on guide} & prerequisites, the six steps, a healthy run, troubleshooting, your own tasks, cost, IAM, quotas & \sref{fr:prereq}\\
@@ -144,12 +144,12 @@
 \textbf{Gym call} & \textbf{Here} & \textbf{Cost per call (\tb{train48}, median) and how it is kept off the critical path}\\
 \midrule
 \tb{env.reset()} & open a \textbf{fresh} sandbox with the task's environment & 0.7\,s \smv{} $\cdot$ 33\,s \sm{} $\cdot$ 133\,s \sg{}: hidden by pre-open\\
-\tb{env.step(a)} & run one tool call (\tb{bash}, \tb{write\_file}, \tb{read\_file}) \textbf{inside} it & 4.6\,s \smv{} / \sm{} (the command itself), 0.2\,s \sg{}; up to 8 per episode\\
+\tb{env.step(a)} & run one tool call (\tb{bash}, \tb{write\_file}, \tb{read\_file}) \textbf{inside} it; the agent runs it locally, no API call per step & $\approx$\,4\,s per turn incl.\ model generation; 16\,s agent loop per episode (p50, \smv{} and \sm); up to 8 turns\\
 reward & copy the hidden tests in after the agent stops, run them & 4--9\,s; 0/1 (+ partial credit in training), KernelBench 0 / 0.5 / 1\\
 \tb{env.close()} & stop the session, or reset and keep the m5 & AgentCore frees microVM / g6; our code resets or terminates the m5\\
 \bottomrule
 \end{tabularx}
-\src{\tb{run.sh}, \tb{logs/train48-hybrid\_20261005\_005629.sandbox\_ops.csv} (op medians); checked 6 Oct 2026.}
+\src{\tb{run.sh}, \tb{logs/train48-hybrid\_20261005\_005629.\{sandbox\_ops,demo\}.csv} (open medians, \tb{agent\_ms} / \tb{turns}); checked 6 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -472,40 +472,111 @@ Needs an NVIDIA GPU (KernelBench) & 50 & \sg\\
 \end{frame}
 
 %====================================================================
+\begin{frame}{Building the images: 308 builds, sizes from 61\,MB to 9.8\,GB}
+\flabel{fr:build}
+\figcap{Every task image is built from the task's own Dockerfile plus our wrapper layer (steps 2 and 4)}
+\centering\includegraphics[width=0.88\linewidth]{fig_build.png}\par
+\vspace{1mm}\raggedright
+\tabcap{Builds per substrate}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}P{0.16\textwidth}P{0.15\textwidth}P{0.20\textwidth}P{0.22\textwidth}Y@{}}
+\toprule
+& \textbf{Builds} & \textbf{Size (p50 / max)} & \textbf{Build time (p50 / max / total)} & \textbf{Where}\\
+\midrule
+\smv{} (arm64) & 229 $\rightarrow$ \hl{218} shipped; 7 failed, 4 over 2\,GB & 128\,MB / 6.7\,GB (compressed) & 6.8\,min / 2.0\,h / 39.6\,h & the trainer host, QEMU cross-build, 16 at once; ECR \tb{acs-tb-*}\\
+\sm{} (amd64) & 78 $\rightarrow$ \hl{71} built (89 images with sidecars) & 525\,MB / 9.8\,GB (unpacked) & 35\,s / 6.8\,min / 1.5\,h & the m5 builder, native; ECR \tb{acs-tbhdk-*}\\
+\sg{} & 1 & 145\,MB & minutes & CUDA torch installed at container start (2\,GB cap)\\
+\bottomrule
+\end{tabularx}
+\src{\tb{terminalbench/tasks/images.csv}, \tb{images\_docker.csv}; arm64 build times from the 23 Sep build (per-task times not kept); \tb{make\_figures.py}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
 \begin{frame}{Together they hit 16 challenges every agentic-RL sandbox has to solve}
 \flabel{fr:chal}
 \tabcap{The challenges, which benchmark exposes each, and what it looked like here}
 \tiny\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\textwidth}{@{}P{0.02\textwidth} P{0.24\textwidth} P{0.07\textwidth} Y@{}}
+\begin{tabularx}{\textwidth}{@{}P{0.02\textwidth} P{0.23\textwidth} P{0.07\textwidth} Y P{0.06\textwidth}@{}}
 \toprule
-& \textbf{Challenge} & \textbf{Exposed by} & \textbf{What it looked like in this demo}\\
+& \textbf{Challenge} & \textbf{Exposed by} & \textbf{What it looked like in this demo} & \textbf{Evidence}\\
 \midrule
-\grp{4}{Environments: every task needs its own machine}\\
-1 & \textbf{One environment per task} & TB & 241 tasks, 241 Dockerfiles: no shared image can serve them\\
-2 & \textbf{Image size limits} & TB, KB & microVM cap 2\,GB; 4 tasks are 6.5--6.7\,GB; CUDA torch alone is $\sim$2.7\,GB\\
-3 & \textbf{CPU architecture} & TB & microVMs are arm64 only; 4 tasks need x86 (QEMU, x86 assembly)\\
-4 & \textbf{Multi-container tasks} & TB & 12 tasks need sidecars (Postgres, web servers) on a private network\\
-5 & \textbf{Missing privileges} & TB & microVMs drop all Linux capabilities: 21 reference solutions fail there\\
-6 & \textbf{Accelerators} & KB & GPUs only on capacity-provider Instances, one session per instance; g6 capacity ran out for hours\\
-\grp{4}{Speed at RL scale: the trainer must never wait for a sandbox}\\
-7 & \textbf{Cold starts on the critical path} & all & opens take 2\,s (microVM), $\sim$35--68\,s (m5), $\sim$2.5\,min (g6) vs a $\sim$20\,s episode\\
-8 & \textbf{Idle reclaim} & TB & an idle microVM session is wiped after 15\,min; pre-opened ones idled up to 16.5\,min\\
-9 & \textbf{Concurrency and quotas} & TB, KB & 32 episodes per step plus look-ahead; Runtime, vCPU and session quotas; no fallback between GPU types\\
-10 & \textbf{Long or hung tool calls} & TB & 4-min commands, detached children, non-idempotent retries stalled an eval\\
-\grp{4}{Correct rewards: the score must mean what it says}\\
-11 & \textbf{Isolation between episodes} & TB & the agent rewrites the OS; any reuse risks leaking state into the next score\\
-12 & \textbf{Reward integrity} & TB, KB & tests must stay hidden; copying \tb{Model} onto CUDA ``passed'' KernelBench\\
-13 & \textbf{Untrustworthy tasks} & TB & deleted repos, 404 downloads, oracles that fail on a substrate: 241 $\rightarrow$ 193 usable\\
-14 & \textbf{Sparse reward, no gradient} & TB, KB & all-or-nothing scores: no GRPO gradient in 32 of 48 steps\\
-\grp{4}{Operating it: safe, visible, and cheap}\\
-15 & \textbf{Network and security} & all & the agent loop runs in the sandbox and must reach the trainer, with no public ports\\
-16 & \textbf{Clean-up, cost and visibility} & all & leftover instances after a crash; g6 instances do not show in your EC2 console\\
+\grp{5}{Environments: every task needs its own machine}\\
+1 & \textbf{One environment per task} & TB & 241 tasks, 241 Dockerfiles: no shared image can serve them & \sref{fr:build}\\
+2 & \textbf{Image size limits} & TB, KB & microVM cap 2\,GB; 4 tasks are 6.5--6.7\,GB; CUDA torch alone is $\sim$2.7\,GB & \sref{fr:sizes}\\
+3 & \textbf{CPU architecture} & TB & microVMs are arm64 only; 4 tasks need x86 (QEMU, x86 assembly) & \sref{fr:build}\\
+4 & \textbf{Multi-container tasks} & TB & 12 tasks need sidecars (Postgres, web servers) on a private network & \sref{fr:why}\\
+5 & \textbf{Missing privileges} & TB & microVMs drop all Linux capabilities: 21 reference solutions fail there & \sref{fr:route}\\
+6 & \textbf{Accelerators} & KB & GPUs only on capacity-provider Instances, one session per instance; g6 capacity ran out for hours & \sref{fr:evspeed}\\
+\grp{5}{Speed at RL scale: the trainer must never wait for a sandbox}\\
+7 & \textbf{Cold starts on the critical path} & all & opens take 2\,s (microVM), $\sim$35--68\,s (m5), $\sim$2.5\,min (g6) vs a $\sim$20\,s episode & \sref{fr:evspeed}\\
+8 & \textbf{Idle reclaim} & TB & an idle microVM session is wiped after 15\,min; pre-opened ones idled up to 16.5\,min & \sref{fr:hbwhy}\\
+9 & \textbf{Concurrency and quotas} & TB, KB & 32 episodes per step plus look-ahead; Runtime, vCPU and session quotas; no fallback between GPU types & \sref{fr:instances}\\
+10 & \textbf{Long or hung tool calls} & TB & 4-min commands, detached children, non-idempotent retries stalled an eval & \sref{fr:evspeed}\\
+\grp{5}{Correct rewards: the score must mean what it says}\\
+11 & \textbf{Isolation between episodes} & TB & the agent rewrites the OS; any reuse risks leaking state into the next score & \sref{fr:reuse}\\
+12 & \textbf{Reward integrity} & TB, KB & tests must stay hidden; copying \tb{Model} onto CUDA ``passed'' KernelBench & \sref{fr:evreward}\\
+13 & \textbf{Untrustworthy tasks} & TB & deleted repos, 404 downloads, oracles that fail on a substrate: 241 $\rightarrow$ 193 usable & \sref{fr:route}\\
+14 & \textbf{Sparse reward, no gradient} & TB, KB & all-or-nothing scores: no GRPO gradient in 32 of 48 steps & \sref{fr:evreward}\\
+\grp{5}{Operating it: safe, visible, and cheap}\\
+15 & \textbf{Network and security} & all & the agent loop runs in the sandbox and must reach the trainer, with no public ports & \sref{fr:sec}\\
+16 & \textbf{Clean-up, cost and visibility} & all & leftover instances after a crash; g6 instances do not show in your EC2 console & \sref{fr:evops}\\
 \bottomrule
 \end{tabularx}
 \par\vspace{1mm}
 {\scriptsize\textbf{Why both benchmarks:} Terminal-Bench brings the \textbf{variety of environments} (1--5, 8, 10--11, 13), KernelBench the
 \textbf{hardware} (2, 6) and a \textbf{measured, gameable reward} (12, 14). Neither alone exposes all 16; together they need all three substrates.\par}
-\src{Sections 2--4 of this deck; \sref{fr:lessons} (Lessons); \tb{images.csv}, \tb{oracle.csv}; checked 6 Oct 2026.}
+\src{Evidence slides \sref{fr:evspeed}--\pageref*{fr:evops}, the linked slides, \sref{fr:lessons} (Lessons); \tb{images.csv}, \tb{oracle.csv}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Evidence for challenges 7--10: speed at RL scale}
+\flabel{fr:evspeed}
+\figcap{\tb{train48} run 2: cold start per substrate, agent time per episode, how long pre-opened sandboxes waited}
+\centering\includegraphics[width=\linewidth]{fig_ev_speed.png}\par
+\vspace{1mm}\raggedright
+\begin{columns}[T]
+\column{0.32\textwidth}
+\tiny\textbf{7. Cold starts:} open p50 / p95 = \hl{0.7 / 2.9\,s} \smv{} (n = 2{,}020), \hl{33 / 92\,s} \sm{} (407), \hl{133 / 184\,s} \sg{} (537), against a 16\,s median agent loop: a g6 boot is 8 episodes long.
+\column{0.32\textwidth}
+\tiny\textbf{10. Long calls:} agent loop p50 16\,s on both, but p95 66\,s (\smv) and 102\,s (\sm): a 4--6$\times$ tail, bounded by the 180\,s per-command timeout and the 8-turn budget.
+\column{0.32\textwidth}
+\tiny\textbf{8. Idle reclaim:} here pre-opened sandboxes waited at most 5.6\,min, under the 7.5\,min ping; the reclaim risk was measured in the microVM-only run (17 of 382 past 15\,min, \sref{fr:hbwhy}). \textbf{9. Concurrency:} \sref{fr:instances}.
+\end{columns}
+\src{\tb{logs/train48-hybrid\_20261005\_005629.\{sandbox\_ops,demo\}.csv}: first \tb{ping} per session (\smv, \sg), \tb{open} (\sm), \tb{agent\_ms}, \tb{preopen\_idle\_ms}; \tb{make\_figures.py}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Evidence for challenges 11--14: the reward}
+\flabel{fr:evreward}
+\figcap{All 9 runs (smoke 2--8, both \tb{train48}): per-task solve rate, partial progress in unsolved episodes, KernelBench speedups}
+\centering\includegraphics[width=\linewidth]{fig_ev_reward.png}\par
+\vspace{1mm}\raggedright
+\begin{columns}[T]
+\column{0.32\textwidth}
+\tiny\textbf{14. Sparse reward:} \hl{143 of 156} \smv{} tasks and \hl{30 of 30} \sm{} tasks were never solved; a never-solved task gives every group 8 zeros, so no gradient.
+\column{0.32\textwidth}
+\tiny\textbf{14. \ldots{} but a signal exists:} \hl{2{,}156 of 4{,}711} unsolved episodes (46\,\%) passed at least one hidden test. That is what partial credit uses (training only).
+\column{0.32\textwidth}
+\tiny\textbf{12. Reward integrity:} of 526 correct kernels, only \hl{50 (9.5\,\%)} beat 1.10$\times$; the median is 1.00$\times$. Without the gate, a copy of the reference would score 1. \textbf{11, 13:} 0 dirty resets; 193 of 241 tasks pass their oracle (\sref{fr:route}).
+\end{columns}
+\src{\tb{logs/*.demo.csv} (\tb{solved}, \tb{tests\_passed}, \tb{tests\_total}, \tb{speedup}; infra errors excluded); \tb{make\_figures.py}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Evidence for challenges 15--16: operating it}
+\flabel{fr:evops}
+\figcap{\tb{train48} run 2 instance lifetimes (CloudTrail), and infra errors by cause over all 9 runs}
+\centering\includegraphics[width=\linewidth]{fig_ev_ops.png}\par
+\vspace{1mm}\raggedright
+\begin{columns}[T]
+\column{0.32\textwidth}
+\tiny\textbf{16. Cost of a g6:} instance lifetime p50 \hl{15.2\,min} for a \hl{3.2\,min} session: boot, the episode, then the capacity provider's 600\,s idle tail. 546 instances in one run.
+\column{0.32\textwidth}
+\tiny\textbf{16. Reuse pays on m5:} 129 instances served 407 sessions (3.2 each), lifetime p50 11.7\,min; every one terminated at exit.
+\column{0.32\textwidth}
+\tiny\textbf{Reliability:} 38 real infra errors in 6{,}074 episodes (\hl{0.6\,\%}): 24 grading time-outs, 13 network, 1 bad reply. The 25 grey ones were look-ahead episodes killed at exit, not errors. \textbf{15:} \sref{fr:sec}.
+\end{columns}
+\src{\tb{logs/train48-hybrid\_20261005\_005629.\{instances,sessions\}.csv} (\tb{instance\_timeline.py}), \tb{logs/*.demo.csv} (\tb{infra\_error}); \tb{make\_figures.py}; checked 6 Oct 2026.}
 \end{frame}
 
 %====================================================================

@@ -335,5 +335,180 @@ if os.path.exists(base + ".csv"):
                                 "eval": {r["eval/step"]: {k: r.get(k) for k in ("eval/kernelbench", "eval/terminalbench",
                                                                                "eval/terminalbench_docker")} for r in ev}}
 
+# ------------------------------------------------------------------ evidence figures (one per challenge group)
+import statistics as stx  # noqa: E402
+
+RUNS = sorted(p[:-len(".demo.csv")] for p in glob.glob(os.path.join(LOGS, "*.demo.csv")))
+fv = lambda r, k: float(r[k]) if r.get(k) not in (None, "") else None  # noqa: E731
+ev: dict = {}
+
+
+def _hist(ax, xs, bins, color, label, alpha=0.85):
+    ax.hist(xs, bins=bins, color=color, alpha=alpha, label=label, edgecolor=BG, linewidth=0.4)
+
+
+# Build: how many images, how big, how long ------------------------------------------
+fig, axs = plt.subplots(1, 3, figsize=(11.5, 3.3))
+ax = axs[0]
+mv_st = Counter(r["status"] for r in img)
+dk_st = Counter(r["status"] for r in dock)
+bars = [("microVM\n(arm64)", mv_st["registered"], len(img) - mv_st["registered"], C["microvm"]),
+        ("m5 tasks\n(amd64)", dk_st["built"], len(dock) - dk_st["built"], C["docker"]),
+        ("g6\n(KernelBench)", 1, 0, C["gpu"])]
+for i, (lab, ok, bad, col) in enumerate(bars):
+    ax.bar(i, ok, color=col, width=0.6)
+    ax.bar(i, bad, bottom=ok, color=GRID, width=0.6)
+    ax.text(i, ok + bad + 4, f"{ok} built" + (f"\n+{bad} failed" if bad else ""), ha="center", fontsize=8, color=INK)
+ax.set_xticks(range(3)); ax.set_xticklabels([b[0] for b in bars], fontsize=8)
+ax.set_ylim(0, 290); ax.set_title("Images built, per substrate", fontsize=10, color=INK, loc="left")
+ax = axs[1]
+mv_sz = [float(r["size_mb"]) for r in img if r["size_mb"]]
+dk_sz = [float(r["size_mb"]) for r in dock if r["size_mb"]]
+lb = [10 ** (1.6 + i * 0.1) for i in range(26)]
+_hist(ax, mv_sz, lb, C["microvm"], f"microVM, compressed (n={len(mv_sz)})")
+_hist(ax, dk_sz, lb, C["docker"], f"m5, unpacked (n={len(dk_sz)})", alpha=0.7)
+ax.axvline(2048, color=INK, lw=1, ls="--"); ax.text(2150, ax.get_ylim()[1] * 0.85, "2 GB\nmicroVM cap", fontsize=7.5, color=INK)
+ax.set_xscale("log"); ax.set_xlabel("image size (MB)"); ax.set_ylabel("images")
+ax.set_title("Image size distribution", fontsize=10, color=INK, loc="left"); ax.legend(frameon=False, fontsize=7.5, loc="upper left")
+ax = axs[2]
+dk_bt = [float(r["build_s"]) / 60 for r in dock if r["build_s"]]
+_hist(ax, dk_bt, [i * 0.5 for i in range(16)], C["docker"], f"m5 task builds (n={len(dk_bt)})")
+ax.set_xlabel("build time (min)"); ax.set_ylabel("tasks")
+ax.set_title("Build time per task (m5, amd64 native)", fontsize=10, color=INK, loc="left")
+ax.text(0.98, 0.97, "microVM arm64 builds (QEMU, 23 Sep):\nper-task times not kept;\np50 6.8 min, max 2.0 h,\n39.6 h total, 16 in parallel",
+        transform=ax.transAxes, ha="right", va="top", fontsize=7.5, color=MUTED)
+ax.legend(frameon=False, fontsize=7.5, loc="center right")
+fig.tight_layout(); fig.savefig(os.path.join(HERE, "fig_build.png"), dpi=200); plt.close(fig)
+ev["build"] = {"microvm": dict(mv_st), "docker": dict(dk_st), "mv_size_p50": pct(mv_sz, .5), "mv_size_max": max(mv_sz),
+               "dk_size_p50": pct(dk_sz, .5), "dk_size_max": max(dk_sz), "dk_build_p50_min": pct(dk_bt, .5),
+               "dk_build_max_min": max(dk_bt), "dk_build_total_h": sum(dk_bt) / 60, "ecr_repos_m5": 89}
+
+# Speed: open time, tool-call latency, pre-open idle ---------------------------------
+T48 = os.path.join(LOGS, "train48-hybrid_20261005_005629")
+ops = list(csv.DictReader(open(T48 + ".sandbox_ops.csv")))
+dem = list(csv.DictReader(open(T48 + ".demo.csv")))
+subst = lambda a: "gpu" if a.startswith("acs_tbhgpu") else "docker" if a.startswith("ec2") else "microvm"  # noqa: E731
+first_ping: dict = {}
+for r in ops:
+    if r["op"] == "ping" and r["session"] not in first_ping:
+        first_ping[r["session"]] = (subst(r["arn"]), float(r["ms"]))
+open_s = {"microvm": [ms / 1000 for s, ms in first_ping.values() if s == "microvm"],
+          "gpu": [ms / 1000 for s, ms in first_ping.values() if s == "gpu"],
+          "docker": [float(r["ms"]) / 1000 for r in ops if r["op"] == "open" and r["arn"].startswith("ec2")]}
+idle_m = {s: [float(r["preopen_idle_ms"]) / 60000 for r in dem if r["preopen_idle_ms"] and r["substrate"] == s] for s in C}
+fig, axs = plt.subplots(1, 3, figsize=(11.5, 3.3))
+ax = axs[0]
+order = ["microvm", "docker", "gpu"]
+bp = ax.boxplot([open_s[s] for s in order], vert=False, widths=0.55, patch_artist=True, showfliers=True,
+                flierprops={"marker": ".", "markersize": 2, "markerfacecolor": MUTED, "markeredgecolor": MUTED},
+                medianprops={"color": INK})
+for patch, s in zip(bp["boxes"], order):
+    patch.set_facecolor(C[s]); patch.set_edgecolor(C[s])
+ax.set_yticks([1, 2, 3]); ax.set_yticklabels([f"{NAME[s].split(' (')[0]}\nn={len(open_s[s])}" for s in order], fontsize=7.5)
+ax.set_xscale("log"); ax.set_xlabel("time to open a sandbox (s)")
+ax.set_title("Cold start (env.reset)", fontsize=10, color=INK, loc="left")
+ax = axs[1]
+# The agent's own tool calls run INSIDE the sandbox (in-session harness), so they are not trainer-side ops;
+# per episode we have the agent-loop wall time and its turns (model generation + tool execution).
+agent_s = {s: [float(r["agent_ms"]) / 1000 for r in dem if r["agent_ms"] and r["substrate"] == s] for s in C}
+ab = [10 ** (0 + i * 0.1) for i in range(29)]
+for s in ("microvm", "docker"):
+    _hist(ax, agent_s[s], ab, C[s], f"{NAME[s].split(' (')[0]} (n={len(agent_s[s]):,})", alpha=0.65)
+ax.set_xscale("log"); ax.set_xlabel("agent loop per episode (s): all turns, model + tools"); ax.set_ylabel("episodes")
+ax.set_title("Episode time in the sandbox (env.step $\\times$ turns)", fontsize=10, color=INK, loc="left"); ax.legend(frameon=False, fontsize=7)
+ax.text(0.98, 0.62, "g6: not logged per episode", transform=ax.transAxes, ha="right", fontsize=7, color=MUTED)
+ax = axs[2]
+ib = [i * 0.5 for i in range(41)]
+for s in order:
+    if idle_m[s]:
+        _hist(ax, [min(x, 20) for x in idle_m[s]], ib, C[s], f"{NAME[s].split(' (')[0]} (n={len(idle_m[s]):,})", alpha=0.65)
+ax.axvline(7.5, color=MUTED, lw=1, ls=":"); ax.axvline(15, color=INK, lw=1, ls="--")
+ax.text(7.7, 3, "heartbeat\nping", fontsize=7.5, color=MUTED); ax.text(15.2, 3, "15-min\nidle reclaim", fontsize=7.5, color=INK)
+ax.set_yscale("log"); ax.set_xlabel("pre-opened sandbox idle before use (min)"); ax.set_ylabel("episodes")
+ax.set_title("Idle time of pre-opened sandboxes", fontsize=10, color=INK, loc="left"); ax.legend(frameon=False, fontsize=7, loc="upper right", bbox_to_anchor=(1.0, 0.8))
+fig.tight_layout(); fig.savefig(os.path.join(HERE, "fig_ev_speed.png"), dpi=200); plt.close(fig)
+ev["speed"] = {s: {"open_p50_s": pct(open_s[s], .5), "open_p95_s": pct(open_s[s], .95), "n_open": len(open_s[s]),
+                   "agent_p50_s": pct(agent_s[s], .5), "agent_p95_s": pct(agent_s[s], .95), "n_agent": len(agent_s[s]),
+                   "idle_p50_min": pct(idle_m[s], .5), "idle_max_min": max(idle_m[s]) if idle_m[s] else None,
+                   "idle_over_7_5": sum(x > 7.5 for x in idle_m[s]), "idle_over_15": sum(x > 15 for x in idle_m[s])}
+               for s in order}
+
+# Rewards: per-task solve rate, partial progress, KernelBench speedup ----------------
+eps = []
+for b in RUNS:
+    for r in csv.DictReader(open(b + ".demo.csv")):
+        if r.get("infra_error") == "none" and (r.get("tests_total") or r.get("checker")):
+            eps.append(r)
+per_task: dict = {}
+for r in eps:
+    if r["substrate"] != "gpu" and r.get("tests_total"):
+        per_task.setdefault((r["substrate"], r["task"]), []).append(int(r["solved"] or 0))
+kb_sp = [float(r["speedup"]) for r in eps if r["substrate"] == "gpu" and r.get("speedup")]
+uns = [int(r["tests_passed"] or 0) / int(r["tests_total"]) for r in eps
+       if r["substrate"] != "gpu" and r.get("tests_total") and int(r["tests_total"]) > 0 and r["solved"] == "0"]
+fig, axs = plt.subplots(1, 3, figsize=(11.5, 3.3))
+ax = axs[0]
+rb = [i / 20 for i in range(21)]
+for s in ("microvm", "docker"):
+    xs = [sum(v) / len(v) for (ss, t), v in per_task.items() if ss == s and len(v) >= 4]
+    _hist(ax, xs, rb, C[s], f"{NAME[s].split(' (')[0]} tasks (n={len(xs)})", alpha=0.75)
+    ev.setdefault("reward", {})[f"{s}_tasks"] = len(xs)
+    ev["reward"][f"{s}_never_solved"] = sum(x == 0 for x in xs)
+    ev["reward"][f"{s}_always_solved"] = sum(x == 1 for x in xs)
+ax.set_yscale("log"); ax.set_xlabel("solve rate per task (all runs, tasks with $\\geq$ 4 episodes)"); ax.set_ylabel("tasks")
+ax.set_title("Most tasks are never solved", fontsize=10, color=INK, loc="left"); ax.legend(frameon=False, fontsize=7.5)
+ax = axs[1]
+_hist(ax, uns, rb, C["microvm"], f"unsolved episodes (n={len(uns):,})")
+ax.set_yscale("log"); ax.set_xlabel("fraction of hidden tests passed"); ax.set_ylabel("episodes")
+ax.set_title("Unsolved is often partly right", fontsize=10, color=INK, loc="left"); ax.legend(frameon=False, fontsize=7.5)
+ax = axs[2]
+sb = [0.8 + i * 0.025 for i in range(25)]
+_hist(ax, [min(max(x, 0.8), 1.39) for x in kb_sp], sb, C["gpu"], f"correct KernelBench kernels (n={len(kb_sp)})")
+ax.axvline(1.10, color=INK, lw=1, ls="--"); ax.axvline(1.0, color=MUTED, lw=0.8, ls=":")
+ax.text(0.62, 0.45, "1.10$\\times$ gate:\nreward 1 above,\n0.5 below", transform=ax.transAxes, fontsize=7.5, color=INK)
+ax.set_yscale("log"); ax.set_xlabel("speedup vs the PyTorch reference"); ax.set_ylabel("episodes")
+ax.set_title("KernelBench: correct is easy, faster is rare", fontsize=10, color=INK, loc="left"); ax.legend(frameon=False, fontsize=7.5, loc="upper right", bbox_to_anchor=(1.0, 0.9))
+ax.set_xticks([0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]); ax.set_xticklabels(["$\\leq$0.8", "0.9", "1.0", "1.1", "1.2", "1.3", "1.4"])
+fig.tight_layout(); fig.savefig(os.path.join(HERE, "fig_ev_reward.png"), dpi=200); plt.close(fig)
+ev["reward"].update({"unsolved_eps": len(uns), "unsolved_partial": sum(x > 0 for x in uns),
+                     "kb_correct": len(kb_sp), "kb_over_gate": sum(x >= 1.10 for x in kb_sp),
+                     "kb_speedup_p50": pct(kb_sp, .5), "runs": [os.path.basename(b) for b in RUNS]})
+
+# Operations: instance lifetimes vs session lifetimes, infra errors ------------------
+inst = list(csv.DictReader(open(T48 + ".instances.csv")))
+ses = {r["session"]: float(r["lifetime_s"]) / 60 for r in csv.DictReader(open(T48 + ".sessions.csv"))}
+gses = {r["session"] for r in ops if r["arn"].startswith("acs_tbhgpu")}
+life = {"g6": [(float(r["terminate_ts"]) - float(r["launch_ts"])) / 60 for r in inst if r["type"].startswith("g6") and r["terminate_ts"]],
+        "m5": [(float(r["terminate_ts"]) - float(r["launch_ts"])) / 60 for r in inst if r["type"].startswith("m5") and r["terminate_ts"]]}
+g_sess = [v for k, v in ses.items() if k in gses]
+infra = Counter()
+for b in RUNS:
+    for r in csv.DictReader(open(b + ".demo.csv")):
+        if r.get("infra_error") not in (None, "", "none"):
+            infra[r["infra_error"]] += 1
+fig, axs = plt.subplots(1, 2, figsize=(11.5, 3.3), gridspec_kw={"width_ratios": [1.6, 1]})
+ax = axs[0]
+lbins = [i * 2.5 for i in range(41)]
+_hist(ax, [min(x, 100) for x in g_sess], lbins, INK, f"g6 session (n={len(g_sess)})", alpha=0.45)
+_hist(ax, [min(x, 100) for x in life["g6"]], lbins, C["gpu"], f"g6 instance (n={len(life['g6'])})", alpha=0.7)
+_hist(ax, [min(x, 100) for x in life["m5"]], lbins, C["docker"], f"m5 instance, warm pool (n={len(life['m5'])})", alpha=0.6)
+ax.set_xlabel("lifetime (min, capped at 100)"); ax.set_ylabel("count")
+ax.set_title("A g6 instance outlives its session; an m5 serves many", fontsize=10, color=INK, loc="left"); ax.legend(frameon=False, fontsize=7.5)
+ax = axs[1]
+ILAB = {"grade": "grading time-out", "URLError": "network (URLError)", "ValueError": "bad reply (ValueError)",
+        "RuntimeError": "killed at exit (not counted)"}
+ks = [k for k, _ in infra.most_common()]
+ax.barh(range(len(ks)), [infra[k] for k in ks], color=[MUTED if k == "RuntimeError" else C["docker"] for k in ks])
+ax.set_yticks(range(len(ks))); ax.set_yticklabels([ILAB.get(k, k) for k in ks], fontsize=8); ax.invert_yaxis()
+ax.set_xlabel("episodes"); ax.set_title(f"Infra errors by cause, all {len(RUNS)} runs", fontsize=10, color=INK, loc="left")
+for i, k in enumerate(ks):
+    ax.text(infra[k] + 0.3, i, str(infra[k]), va="center", fontsize=8, color=INK)
+fig.tight_layout(); fig.savefig(os.path.join(HERE, "fig_ev_ops.png"), dpi=200); plt.close(fig)
+ev["ops"] = {"g6_session_p50_min": pct(g_sess, .5), "g6_instance_p50_min": pct(life["g6"], .5),
+             "g6_instance_p90_min": pct(life["g6"], .9), "m5_instance_p50_min": pct(life["m5"], .5),
+             "m5_instances": len(life["m5"]), "g6_instances": len(life["g6"]), "infra": dict(infra),
+             "episodes_all_runs": sum(1 for b in RUNS for r in csv.DictReader(open(b + ".demo.csv")) if r.get("infra_error"))}
+data["evidence"] = ev
+
 json.dump(data, open(os.path.join(HERE, "data.json"), "w"), indent=1, default=str)
 print(json.dumps(data, indent=1, default=str)[:6000])
