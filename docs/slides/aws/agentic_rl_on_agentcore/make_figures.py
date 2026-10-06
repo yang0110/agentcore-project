@@ -510,6 +510,43 @@ ev["ops"] = {"g6_session_p50_min": pct(g_sess, .5), "g6_instance_p50_min": pct(l
              "episodes_all_runs": sum(1 for b in RUNS for r in csv.DictReader(open(b + ".demo.csv")) if r.get("infra_error"))}
 data["evidence"] = ev
 
+# Why episodes end: the turn / token budget (all runs) -------------------------------
+stop = {s: Counter() for s in C}
+solv = {}
+for b in RUNS:
+    for r in csv.DictReader(open(b + ".demo.csv")):
+        if r.get("infra_error") == "none" and r.get("stop") in ("end_turn", "budget", "max_tokens"):
+            stop[r["substrate"]][r["stop"]] += 1
+            if r["substrate"] != "gpu":
+                a = solv.setdefault(r["stop"], [0, 0]); a[0] += int(r["solved"] or 0); a[1] += 1
+SLAB = {"end_turn": "agent finished", "budget": "hit the 8-turn limit", "max_tokens": "hit 1,024 tokens in a turn"}
+SCOL = {"end_turn": C["gpu"], "budget": C["docker"], "max_tokens": MUTED}
+fig, axs = plt.subplots(1, 2, figsize=(11.5, 3.0), gridspec_kw={"width_ratios": [1.5, 1]})
+ax = axs[0]
+for i, s in enumerate(order):
+    n = sum(stop[s].values()); left = 0
+    for k in ("end_turn", "budget", "max_tokens"):
+        v = 100 * stop[s][k] / n
+        ax.barh(i, v, left=left, color=SCOL[k], height=0.55, label=SLAB[k] if i == 0 else None)
+        if v > 6:
+            ax.text(left + v / 2, i, f"{v:.0f} %", ha="center", va="center", fontsize=8.5, color=BG)
+        left += v
+ax.set_yticks(range(3)); ax.set_yticklabels([f"{NAME[s].split(' (')[0]}\nn={sum(stop[s].values()):,}" for s in order], fontsize=8)
+ax.set_xlim(0, 100); ax.set_xlabel("% of episodes"); ax.invert_yaxis()
+ax.set_title("How episodes end (all 9 runs)", fontsize=10, color=INK, loc="left")
+ax.legend(frameon=False, fontsize=7.5, ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.28))
+ax = axs[1]
+ks = ["end_turn", "budget", "max_tokens"]
+rates = [100 * solv[k][0] / solv[k][1] for k in ks]
+ax.bar(range(3), rates, color=[SCOL[k] for k in ks], width=0.55)
+for i, k in enumerate(ks):
+    ax.text(i, rates[i] + 0.15, f"{solv[k][0]}/{solv[k][1]:,}", ha="center", fontsize=8, color=INK)
+ax.set_xticks(range(3)); ax.set_xticklabels([SLAB[k].replace(" in a turn", "") for k in ks], fontsize=7.5)
+ax.set_ylabel("% solved"); ax.set_ylim(0, max(rates) * 1.35)
+ax.set_title("Terminal-Bench solve rate by how it ended", fontsize=10, color=INK, loc="left")
+fig.tight_layout(); fig.savefig(os.path.join(HERE, "fig_ev_stop.png"), dpi=200); plt.close(fig)
+data["stop_reasons"] = {"by_substrate": {s: dict(v) for s, v in stop.items()}, "tb_solved_by_stop": solv}
+
 # Cost of train48 run 2 in dollars ---------------------------------------------------
 # us-west-2 On-Demand (= us-east-1 for these types), checked 6 Oct 2026; AgentCore [P1]: microVM $0.1276/vCPU-h +
 # $0.0169/GB-h, active CPU only (so the microVM figure is an UPPER bound at 2 vCPU / 8 GB busy all session);

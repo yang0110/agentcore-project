@@ -412,7 +412,7 @@
    "dk_size_max": 9804.5,
    "dk_build_p50_min": 0.5850000000000001,
    "dk_build_max_min": 6.8100000000000005,
-   "dk_build_total_h": 1.4661666666666666,
+   "dk_build_total_h": 1.4620555555555554,
    "ecr_repos_m5": 89
   },
   "speed": {
@@ -491,6 +491,39 @@
     "RuntimeError": 25
    },
    "episodes_all_runs": 6074
+  }
+ },
+ "stop_reasons": {
+  "by_substrate": {
+   "microvm": {
+    "end_turn": 1642,
+    "budget": 1768,
+    "max_tokens": 879
+   },
+   "docker": {
+    "end_turn": 229,
+    "budget": 488,
+    "max_tokens": 67
+   },
+   "gpu": {
+    "end_turn": 571,
+    "max_tokens": 221,
+    "budget": 1
+   }
+  },
+  "tb_solved_by_stop": {
+   "end_turn": [
+    86,
+    1871
+   ],
+   "budget": [
+    38,
+    2256
+   ],
+   "max_tokens": [
+    3,
+    946
+   ]
   }
  },
  "cost_train48": {
