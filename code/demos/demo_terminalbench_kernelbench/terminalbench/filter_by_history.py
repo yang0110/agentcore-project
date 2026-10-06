@@ -15,7 +15,8 @@ Tasks with less history are kept, so a fresh checkout (no logs) trains on everyt
     python3 terminalbench/filter_by_history.py --train data/terminalbench_train.jsonl --logs logs
 
 Rewrites --train in place (the unfiltered rows stay in <train>.all.jsonl) and writes
-data/task_filter.csv (task, episodes, reward mean / min / max, kept). TB_FILTER_HISTORY=0 skips it.
+data/task_filter.csv (task, episodes, reward mean / min / max, kept). Opt-in: prepare_data.sh runs it only with
+TB_FILTER_HISTORY=1 (off by default since 2026-10-06; the demo trains on the full task set).
 """
 from __future__ import annotations
 

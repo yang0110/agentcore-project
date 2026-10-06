@@ -10,7 +10,8 @@ mkdir -p "$OUT"
 [ -f "$DIR/terminalbench/tasks/manifest.json" ] || python3 "$DIR/terminalbench/fetch_terminalbench.py"
 TB=(); [ -n "${LIMIT:-}" ] && TB+=(--limit "$LIMIT"); [ -n "${REPEAT:-}" ] && TB+=(--repeat "$REPEAT")
 python3 "$DIR/terminalbench/build_terminalbench_dataset.py" --out-dir "$OUT" "${TB[@]}"
-# Drop train tasks whose reward never varied in earlier runs (no GRPO gradient); no logs = keep all.
-if [ "${TB_FILTER_HISTORY:-1}" = 1 ]; then
+# Opt-in (off by default since 2026-10-06: the demo trains on the full task set): TB_FILTER_HISTORY=1 drops
+# train tasks whose reward never varied in earlier runs (no GRPO gradient); no logs = keep all.
+if [ "${TB_FILTER_HISTORY:-0}" = 1 ]; then
   python3 "$DIR/terminalbench/filter_by_history.py" --train "$OUT/terminalbench_train.jsonl" --logs "$DIR/logs"
 fi
