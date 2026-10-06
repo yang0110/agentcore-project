@@ -54,7 +54,7 @@ Their AWS resources are being deleted. Everything is still in git history.
 The docs were rewritten around Terminal-Bench under the title "Agentic RL on Terminal-Bench with
 slime and AgentCore Runtime": `README.md`, this file, the report (`docs/report/`) and the deck
 (`docs/slides/aws/terminalbench.tex`, then the only deck; on 2026-10-06 it was folded into
-`docs/slides/aws/terminalbench_kernelbench/deck.tex`, now the only deck). The design notes in `docs/*.md` that
+`docs/slides/aws/terminalbench_kernelbench/deck.tex`, renamed 2026-10-06 to `docs/slides/aws/agentic_rl_on_agentcore/agentic_rl_on_agentcore.tex`, now the only deck). The design notes in `docs/*.md` that
 describe removed demos carry a dated "historical" banner. They were not rewritten.
 
 ## What's next
