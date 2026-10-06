@@ -55,7 +55,7 @@
 %====================================================================
 \begin{frame}{How to read this deck}
 \flabel{fr:agenda}
-\tabcap{Six parts and an appendix; pick the path that fits what you need}
+\tabcap{Seven parts and an appendix; pick the path that fits what you need}
 \footnotesize\setlength{\tabcolsep}{5pt}
 \begin{tabularx}{\textwidth}{@{}P{0.04\textwidth}P{0.22\textwidth}Y P{0.13\textwidth}@{}}
 \toprule
@@ -65,17 +65,18 @@
 \hl{2} & \textbf{The problem} & the two workloads with example tasks, the image builds, the 16 challenges they expose with measured evidence, and why one sandbox product cannot run them all & \sref{fr:tb}\\
 \hl{3} & \textbf{The hybrid solution} & one answer per challenge, architecture, components, who manages each sandbox, code, lifecycles, isolation, pre-open, concurrency, security & \sref{fr:hybrid}\\
 \hl{4} & \textbf{Results} & reliability, reward design, learning curves & \sref{fr:rel}\\
-\hl{5} & \textbf{Hands-on guide} & prerequisites, the six steps, a healthy run, troubleshooting, your own tasks, cost, IAM, quotas & \sref{fr:prereq}\\
-\hl{6} & \textbf{Conclusion} & what the demo shows and what is next & \sref{fr:concl}\\
+\hl{5} & \textbf{Planning your own} & when to use AgentCore, porting to your RL framework, where the trainer runs, scaling, cost in dollars, getting started & \sref{fr:alts}\\
+\hl{6} & \textbf{Hands-on guide} & prerequisites, the six steps, a healthy run, troubleshooting, your own tasks, cost, IAM, quotas & \sref{fr:prereq}\\
+\hl{7} & \textbf{Conclusion} & what the demo shows and what is next & \sref{fr:concl}\\
 \hl{A} & \textbf{Appendix} & how to set every knob, microVM cold boots, look-ahead and heartbeat evidence, m5 hardening, lessons, references & \sref{fr:knobs}\\
 \bottomrule
 \end{tabularx}
-\par\vspace{3mm}
+\par\vspace{1mm}
 \begin{columns}[T]
 \column{0.32\textwidth}
 \idcard{\textbf{Deciding?} Read \sref{fr:key} and \sref{fr:concl}.}
 \column{0.32\textwidth}
-\idcard{\textbf{Designing?} Read parts 2--3.}
+\idcard{\textbf{Designing?} Read parts 2--3; \textbf{planning?} part 5.}
 \column{0.32\textwidth}
 \idcard{\textbf{Building?} Start at \sref{fr:prereq}; tune with the appendix.}
 \end{columns}
@@ -1307,6 +1308,189 @@ KernelBench & .40 & .45 & .50 & .43\\
 \scriptsize\textbf{Right:} KernelBench eval 0.40--0.50, Terminal-Bench microVM 0--3 of 62, m5 0. The fix is reward density (partial credit, task filter), not the sandbox.
 \end{columns}
 \src{\tb{logs/train48-hybrid\_20261005\_005629.\{csv,eval.csv\}} (\tb{rollout/raw\_reward}, \tb{rollout/zero\_std/*}, \tb{train/grad\_norm}); \tb{make\_figures.py}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\sect{Planning your own}
+
+\begin{frame}{When to use AgentCore for RL sandboxes, and when not}
+\flabel{fr:alts}
+\tabcap{Sandbox options for agentic RL on AWS; ``measured'' = this demo, otherwise from the product's documented limits}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}P{0.15\textwidth}YYYY@{}}
+\toprule
+& \textbf{\textcolor{cat2}{AgentCore microVM}} & \textbf{\textcolor{cat3}{AgentCore Instances}} & \textbf{\textcolor{cat1}{Plain EC2} (our m5 path)} & \textbf{ECS / EKS pods}\\
+\midrule
+Isolation & own microVM + kernel per session & own EC2 instance per session & own VM per session; we reset and reuse & shared kernel unless a sandboxed runtime (e.g.\ gVisor) or a VM per pod\\
+Cold start & \hl{0.7\,s} p50 (measured) & \hl{133\,s} p50 on g6 (measured) & 33\,s p50 from our AMI (measured) & seconds with warm nodes; not measured\\
+Image & arm64, $\le$ 2\,GB & $\le$ 2\,GB, x86 or arm & any & any\\
+Root, Docker, compose & no (no capabilities, no daemon) & no (same contract) & \textbf{yes} & partly (privileged pods, DinD)\\
+GPU & no & \textbf{yes} (capacity provider) & yes & yes\\
+Who runs the fleet & AgentCore & AgentCore & \textbf{your code} & you (cluster, autoscaler, node images)\\
+Billing & active vCPU + GB per second & EC2 price + 7.8\,\% (G-series) & EC2 price, incl.\ idle pool & EC2 / Fargate price\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \textbf{Choose AgentCore microVMs} when each task fits one container $\le$ 2\,GB that needs no root powers: fastest open, strongest isolation, nothing to operate. Here: 163 of 241 Terminal-Bench tasks.
+\item \textbf{Choose AgentCore Instances} when the task only needs bigger hardware (a GPU): same API and code path.
+\end{itemize}
+\column{0.48\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \textbf{Choose plain EC2} when the task needs a whole machine: several containers, Docker, x86-only binaries or a big image. You own launch, reuse and clean-up.
+\item \textbf{Consider ECS/EKS} if you already run a cluster and your tasks fit pods; not evaluated here.
+\end{itemize}
+\end{columns}
+\src{\sref{fr:evspeed} (cold starts), \sref{fr:subst}; AgentCore docs and pricing [D1][D2][P1] (\sref{fr:refs}); checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Bring your own RL framework: the contract the sandbox tier needs}
+\flabel{fr:contract}
+\begin{columns}[T]
+\column{0.50\textwidth}
+\tabcap{What any trainer must provide (slime shown)}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.32\linewidth}Y@{}}
+\toprule
+\textbf{Need} & \textbf{In slime / what to look for elsewhere}\\
+\midrule
+1. A per-episode async hook & \tb{-{}-custom-generate-function-path}; elsewhere a custom agent loop / rollout function that may run one multi-turn episode\\
+2. A trajectory record & return token ids, logprobs, a loss mask and the reward for the whole episode\\
+3. A model endpoint the sandbox can call & slime's \tb{AnthropicAdapter} in front of each SGLang engine; elsewhere an OpenAI- or Anthropic-style proxy that \textbf{records the exact tokens} it generated\\
+4. Network reachability & that endpoint must be reachable from the sandbox subnets (SG$\rightarrow$SG)\\
+5. (optional) The upcoming prompts & a data-source peek, so sandboxes can be pre-opened\\
+\bottomrule
+\end{tabularx}
+\column{0.46\textwidth}
+\tabcap{What you can reuse as is}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.45\linewidth}Y@{}}
+\toprule
+\textbf{Module} & \textbf{Framework-specific?}\\
+\midrule
+\tb{agentcore\_runtime\_sandbox.py} & no: AgentCore session client\\
+\tb{docker\_compose\_sandbox.py}, \tb{ec2\_episode\_sandbox.py}, \tb{m5\_agent/} & no: m5 transport, warm pool, compose agent\\
+the task-image wrapper (\tb{acs\_http\_server.py}) & no\\
+\tb{in\_session\_harness.py}, \tb{session\_runner.py} & no: agent loop inside the sandbox; needs only the endpoint URL\\
+\tb{terminalbench\_pool.py} & mostly no; builds slime's \tb{Sample} at the end\\
+\tb{tb\_lookahead\_source.py}, \tb{last\_rollout.py} & \textbf{yes}: slime's data source and rollout\\
+\bottomrule
+\end{tabularx}
+\end{columns}
+\par\vspace{2mm}
+\plainen{the sandbox tier only needs ``run this episode and give me a scored trajectory'' plus a model endpoint it can reach; porting to another framework means re-implementing the two slime-specific hooks and a token-recording proxy. Not yet done for any other framework.}
+\src{\tb{agentcore\_slime\_demo/}; \tb{run.sh}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Where the trainer can run, and the one network rule that decides it}
+\flabel{fr:place}
+\begin{columns}[T]
+\column{0.44\textwidth}
+\textbf{\footnotesize The rule}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
+\item The agent runs \textbf{inside} each sandbox and calls the model endpoint for every turn, so the sandbox subnets must reach the endpoint's IP and ports (here 18100--18163) privately.
+\item The trainer must also reach the AgentCore and EC2 APIs (private endpoints or NAT) with a role that can invoke Runtimes and launch m5s (\sref{fr:iam2}).
+\item Sessions are in your VPC (VPC mode), so the simplest setup puts trainer and sandboxes in the \textbf{same VPC}.
+\end{itemize}
+\column{0.52\textwidth}
+\tabcap{Trainer placements}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.30\linewidth}P{0.16\linewidth}Y@{}}
+\toprule
+\textbf{Placement} & \textbf{Status} & \textbf{What changes}\\
+\midrule
+One GPU EC2 instance, same VPC & \hl{tested} & nothing: this demo (g6e.48xlarge)\\
+Multi-node trainer (Ray across nodes) & not tested & one endpoint per inference engine, each reachable; SG rule per node\\
+SageMaker HyperPod (Slurm or EKS) & not tested & cluster nodes in subnets the sandboxes can route to; same SG rules\\
+EKS GPU node group & not tested & pod IPs reachable from sandbox subnets (VPC CNI), or a load balancer per engine\\
+Another account or VPC & not tested & Runtimes in subnets routed to the trainer (peering / Transit Gateway); cross-account roles\\
+\bottomrule
+\end{tabularx}
+\end{columns}
+\par\vspace{2mm}
+\plainen{wherever the trainer runs, the sandbox has to be able to call it back; plan the network for that first.}
+\src{\sref{fr:sec}, \sref{fr:arch}; \tb{in\_session\_harness.py} (adapter bind address), \tb{deploy/agentcore\_deploy.py} (VPC mode, SG rules); checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Scaling up: the sandbox tier is not the first limit, inference is}
+\flabel{fr:scale}
+\tabcap{Episodes per hour: what this demo did, and what each limit would allow}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}P{0.27\textwidth}P{0.18\textwidth}Y@{}}
+\toprule
+\textbf{Limit} & \textbf{Episodes / hour} & \textbf{How it is derived}\\
+\midrule
+\textbf{This demo} (measured) & \hl{$\sim$845} & 2{,}510 episodes in 2.97\,h; 32 running at once; 4 inference GPUs (2 SGLang engines)\\
+Inference throughput & scales with GPUs & 32 agents saturate 2 engines here: \textbf{add engines first} (more GPUs or nodes, \sref{fr:place})\\
+AgentCore live sessions (5{,}000) & $\sim$59{,}000 & 5{,}000 sessions / 5.1\,min mean session life incl.\ pre-open\\
+AgentCore new sessions (25/s) & 90{,}000 & 25 $\times$ 3{,}600; pre-open spreads the opens\\
+Warm VMs per Runtime (1--2) & -- & bursts of 8 same-task opens cold-boot in 6--49\,s (\sref{fr:cold}): pre-open must start earlier\\
+m5: Standard vCPU quota (1{,}152) & -- & 288 m5.xlarge or 144 m5.2xlarge at once; raise the quota for more\\
+g6: capacity & -- & ran out for hours on 5 Oct; capacity-provider quota behaviour not verified\\
+Network interfaces (5{,}000 / Region) & -- & VPC sessions and m5s use ENIs; not measured here\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\scriptsize\textbf{What we tested:} 32 episodes at once, up to 129 live microVMs, 24 m5s and 124 g6 instances. Beyond that is a projection from quotas, not a measurement.
+\column{0.48\textwidth}
+\scriptsize\textbf{Order to scale:} inference engines $\rightarrow$ \tb{RB}$\times$\tb{NS} (workers) $\rightarrow$ caps (\tb{TB\_M5\_MAX\_INSTANCES}, \tb{TB\_GPU\_MAX\_SESSIONS}) $\rightarrow$ quotas (\sref{fr:quotas}).
+\end{columns}
+\src{\tb{logs/train48-hybrid\_20261005\_005629.*} (episodes, \tb{sessions.csv} lifetimes); quotas on \sref{fr:quotas}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{What a run costs in dollars, and what drives it}
+\flabel{fr:usd}
+\figcap{\tb{train48} run 2 (48 steps, 2{,}510 episodes): cost by component, and sandbox cost per 1{,}000 episodes}
+\centering\includegraphics[width=\linewidth]{fig_cost.png}\par
+\vspace{1mm}\raggedright
+\begin{columns}[T]
+\column{0.32\textwidth}
+\tiny\textbf{Total $\approx$ \$294} for 48 steps ($\approx$ \$6 per step). Prices: g6e.48xlarge \$30.13/h, g6.xlarge \$0.805/h + 7.8\,\%, m5.xlarge \$0.192/h; microVM \$0.1276/vCPU-h + \$0.0169/GB-h.
+\column{0.32\textwidth}
+\tiny\textbf{The g6 dominates the sandbox bill:} 149 instance-hours for 33 session-hours, because each instance boots ($\sim$2.2\,min) and idles 600\,s after its session. Fixes: idle 900\,s (done), torch from S3, fewer, longer GPU sessions.
+\column{0.32\textwidth}
+\tiny\textbf{microVM is an upper bound:} 171 session-hours priced as 2\,vCPU and 8\,GB busy the whole time; AgentCore bills only active CPU and used memory, so the real figure is lower. The trainer costs the same whether it trains or waits.
+\end{columns}
+\src{\tb{logs/train48-hybrid\_20261005\_005629.\{sessions,instances,demo\}.csv}; prices [P1][P2] (On-Demand, us-west-2), checked 6 Oct 2026; \tb{make\_figures.py}.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Getting started: code, Regions, capacity and time to first run}
+\flabel{fr:start}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\tabcap{Time to a first result (this demo)}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}Yr@{}}
+\toprule
+Build 229 arm64 task images under QEMU (16 at once) & 39.6\,h\\
+Build 78 m5 task images, native & 1.5\,h\\
+Deploy 219 Runtimes + validate every oracle (step 4) & hours\\
+Smoke run (\tb{5\_run.sh}, 10 steps) & $\sim$20\,min\\
+48-step run & 3\,h\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1mm}
+{\tiny\textbf{Cut the 39.6\,h:} build arm64 images on an arm64 (Graviton) host instead of emulating; not measured here. Start with \tb{TB\_LIMIT=2} to check IAM, network and quotas in minutes.\par}
+\column{0.48\textwidth}
+\textbf{\footnotesize Before you plan a project}
+\begin{itemize}\tiny\setlength{\itemsep}{0.6mm}
+\item \textbf{Code:} \tb{code/demos/demo\_terminalbench\_kernelbench} (self-contained, six step scripts); the repository is private today, so ask for access or a published sample.
+\item \textbf{Region:} tested only in \textbf{us-west-2}; check AgentCore Runtime and capacity-provider availability in your Region.
+\item \textbf{GPU capacity:} g6.xlarge ran out for hours on 5 Oct and AgentCore did not fall back to other listed types. List the type that has capacity first; consider reserved capacity for long runs.
+\item \textbf{Quotas:} ask early for Runtimes ($\ge$ 220 here), vCPU and ENIs (\sref{fr:quotas}).
+\item \textbf{Result so far:} the infrastructure is proven; learning is not yet (\sref{fr:curves}).
+\end{itemize}
+\end{columns}
+\src{\sref{fr:build}, \sref{fr:run}; \tb{deploy\_gpu\_tasks.py} (capacity note, 5 Oct); checked 6 Oct 2026.}
 \end{frame}
 
 %====================================================================

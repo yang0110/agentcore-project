@@ -510,5 +510,51 @@ ev["ops"] = {"g6_session_p50_min": pct(g_sess, .5), "g6_instance_p50_min": pct(l
              "episodes_all_runs": sum(1 for b in RUNS for r in csv.DictReader(open(b + ".demo.csv")) if r.get("infra_error"))}
 data["evidence"] = ev
 
+# Cost of train48 run 2 in dollars ---------------------------------------------------
+# us-west-2 On-Demand (= us-east-1 for these types), checked 6 Oct 2026; AgentCore [P1]: microVM $0.1276/vCPU-h +
+# $0.0169/GB-h, active CPU only (so the microVM figure is an UPPER bound at 2 vCPU / 8 GB busy all session);
+# Instances = EC2 On-Demand + 7.8 % management fee for G-series.
+PRICE = {"g6e.48xlarge": 30.131, "g6.xlarge": 0.805, "m5.xlarge": 0.192}
+sess_h = Counter()
+sub_of = {}
+for r in ops:
+    sub_of.setdefault(r["session"], subst(r["arn"]))
+for r in csv.DictReader(open(T48 + ".sessions.csv")):
+    if r["session"] in sub_of:
+        sess_h[sub_of[r["session"]]] += float(r["lifetime_s"]) / 3600
+inst_h = Counter()
+for r in inst:
+    if r["terminate_ts"]:
+        inst_h[r["type"]] += (float(r["terminate_ts"]) - float(r["launch_ts"])) / 3600
+wall_h = 2.97
+eps_n = Counter(r["substrate"] for r in dem if r.get("infra_error"))
+cost = {"trainer (g6e.48xlarge)": wall_h * PRICE["g6e.48xlarge"],
+        "g6 Instances": inst_h["g6.xlarge"] * PRICE["g6.xlarge"] * 1.078,
+        "microVM sessions (upper bound)": sess_h["microvm"] * (2 * 0.1276 + 8 * 0.0169),
+        "m5 warm pool": inst_h["m5.xlarge"] * PRICE["m5.xlarge"]}
+fig, axs = plt.subplots(1, 2, figsize=(11.5, 2.9), gridspec_kw={"width_ratios": [1.5, 1]})
+ax = axs[0]
+cols = [MUTED, C["gpu"], C["microvm"], C["docker"]]
+left = 0
+for (k, v), col in zip(cost.items(), cols):
+    ax.barh(0, v, left=left, color=col, height=0.5, label=f"{k}: \\${v:.0f}")
+    if v > 20:
+        ax.text(left + v / 2, 0, f"\\${v:.0f}", ha="center", va="center", fontsize=9, color=BG)
+    left += v
+ax.set_xlim(0, left * 1.02); ax.set_ylim(-0.5, 1.3); ax.set_yticks([])
+ax.legend(frameon=False, fontsize=7.5, ncol=2, loc="upper left")
+ax.set_xlabel("US dollars"); ax.set_title(f"One 48-step run (train48 run 2): about \\${left:.0f} in {wall_h:.1f} h", fontsize=10, color=INK, loc="left")
+ax = axs[1]
+per = {"microVM": cost["microVM sessions (upper bound)"] / eps_n["microvm"] * 1000,
+       "m5": cost["m5 warm pool"] / eps_n["docker"] * 1000, "g6": cost["g6 Instances"] / eps_n["gpu"] * 1000}
+ax.bar(list(per), list(per.values()), color=[C["microvm"], C["docker"], C["gpu"]], width=0.55)
+for i, v in enumerate(per.values()):
+    ax.text(i, v + 6, f"\\${v:.0f}", ha="center", fontsize=9, color=INK)
+ax.set_ylabel("\\$ per 1,000 episodes"); ax.set_ylim(0, max(per.values()) * 1.25)
+ax.set_title("Sandbox cost per 1,000 episodes", fontsize=10, color=INK, loc="left")
+fig.tight_layout(); fig.savefig(os.path.join(HERE, "fig_cost.png"), dpi=200); plt.close(fig)
+data["cost_train48"] = {"usd": cost, "total": left, "per_1000_eps": per, "session_h": dict(sess_h),
+                        "instance_h": dict(inst_h), "episodes": dict(eps_n)}
+
 json.dump(data, open(os.path.join(HERE, "data.json"), "w"), indent=1, default=str)
 print(json.dumps(data, indent=1, default=str)[:6000])
