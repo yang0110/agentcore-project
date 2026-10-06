@@ -62,8 +62,8 @@
 & \textbf{Part} & \textbf{What you get from it} & \textbf{Starts at}\\
 \midrule
 \hl{1} & \textbf{Concepts} & agentic RL in one picture, and the words used in the rest of the deck & \sref{fr:loop}\\
-\hl{2} & \textbf{The problem} & the two workloads, and why one sandbox product cannot run them all & \sref{fr:tb}\\
-\hl{3} & \textbf{The hybrid solution} & architecture, how a task picks its substrate, an episode, sessions, pre-open, security & \sref{fr:hybrid}\\
+\hl{2} & \textbf{The problem} & the two workloads with example tasks, the 16 challenges they expose, and why one sandbox product cannot run them all & \sref{fr:tb}\\
+\hl{3} & \textbf{The hybrid solution} & one answer per challenge, architecture, how a task picks its substrate, an episode, sessions, pre-open, security & \sref{fr:hybrid}\\
 \hl{4} & \textbf{Results} & reliability, reward design, learning & \sref{fr:rel}\\
 \hl{5} & \textbf{Hands-on guide} & prerequisites, the six steps, a healthy run, troubleshooting, your own tasks, cost, IAM, quotas & \sref{fr:prereq}\\
 \hl{6} & \textbf{Conclusion} & what the demo shows and what is next & \sref{fr:concl}\\
@@ -175,6 +175,40 @@ multi-container compose (client + sidecars) & 12\\
 \end{frame}
 
 %====================================================================
+\begin{frame}{A taste of Terminal-Bench: three tasks, from solved often to never solved}
+\flabel{fr:tbex}
+\tabcap{Three real tasks (instructions abridged) and how our Qwen3-4B policy did on them}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}P{0.16\textwidth} P{0.33\textwidth} Y P{0.17\textwidth}@{}}
+\toprule
+\textbf{Task} & \textbf{The instruction} & \textbf{What the agent has to do, and how it is checked} & \textbf{Our policy}\\
+\midrule
+\textbf{fix-permissions}\newline\textcolor{inkmuted}{easy, system admin}\newline\smv{} &
+``A script called \tb{/app/process\_data.sh} won't run. Figure out what's wrong and fix it so the script can run successfully.'' &
+Inspect the file (\tb{ls -l}, \tb{head}), spot the missing execute bit, \tb{chmod +x}, run it.\newline
+\textbf{1 hidden test} runs the script and checks it has the execute bit and prints its success line. &
+\hl{solved 62\,\%}\newline of 16 episodes\\[1.4mm]
+\textbf{acl-permissions-inheritance}\newline\textcolor{inkmuted}{medium, system admin}\newline\smv{} &
+``Create \tb{/srv/shared} owned by group \tb{research}, setgid, mode 2770; give \tb{research}, \tb{alice} and \tb{bob} rwx
+ACLs, current \textbf{and} default; others nothing. Do NOT create files: the tests will.'' &
+\tb{chgrp}, \tb{chmod 2770}, several \tb{setfacl -m} / \tb{-d -m} calls and a mask, in the right order.\newline
+\textbf{9 hidden tests} create files as alice, bob and an outsider, and check who can read them. &
+\hl{reward 0.36}\newline mean of 40; often \textbf{partly} right\\[1.4mm]
+\textbf{postgres-csv-clean}\newline\textcolor{inkmuted}{medium, data + services}\newline\sm{} (2 containers) &
+``Using the configs in \tb{docker-compose.yml}, connect to the Postgres DB, \tb{\textbackslash COPY} in \tb{customers.csv},
+remove duplicates, lowercase emails, keep only digits in phones, export \tb{cleaned\_customers.csv}. Editing the CSV
+directly will fail.'' &
+Find the DB host and password in the compose file, then do the work in SQL on a \textbf{sidecar} \tb{postgres:16}.\newline
+\textbf{14 hidden tests} compare the CSV with a baseline and read \tb{pg\_stat\_statements} to prove the work ran in Postgres. &
+\hl{never solved}\newline 32 episodes, reward 0.03 (1 of 14 tests)\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1mm}
+\plainen{a task is a short instruction plus a machine in a known state; hidden tests check the machine's end state, and some check \emph{how} the work was done.}
+\src{\tb{terminalbench/tasks/<task>/\{task.yaml,tests/test\_outputs.py\}}; outcomes from \tb{data/task\_filter.csv} (smoke 5 to smoke 8 and \tb{train48}, training reward incl.\ partial credit); checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
 \begin{frame}{KernelBench: write a faster CUDA kernel, graded on a real GPU}
 \flabel{fr:kb}
 \begin{columns}[T]
@@ -209,34 +243,47 @@ wrong, crashed or not on CUDA & 0\\
 \end{frame}
 
 %====================================================================
-\begin{frame}{Three tasks show why each needs its own environment and substrate}
-\flabel{fr:tbex}
-\tabcap{Example tasks}
+\begin{frame}[fragile]{A taste of KernelBench: three problems, three outcomes}
+\flabel{fr:kbex}
+\begin{columns}[T]
+\column{0.40\textwidth}
+{\footnotesize\textbf{What the agent is given} \textcolor{inkmuted}{(problem 1-10, abridged)}}
+\begin{lstlisting}[language=Python]
+class Model(nn.Module):
+    def forward(self, A, B):
+        # A: (16, 1024, 2048), B: (2048, 768)
+        return torch.matmul(A, B)
+
+def get_inputs():
+    return [torch.rand(16, 1024, 2048),
+            torch.rand(2048, 768)]
+\end{lstlisting}
+{\scriptsize The agent writes \tb{solution.py} with \tb{ModelNew}: same inputs, same outputs (within $10^{-2}$), on CUDA.
+The hidden checker times both on the g6's L4 and prints \tb{speedup=}.\par}
+\column{0.56\textwidth}
+\tabcap{Three problems and how our policy did}
 \scriptsize\setlength{\tabcolsep}{3pt}
-\begin{tabular}{@{}P{0.17\textwidth} P{0.47\textwidth} P{0.30\textwidth}@{}}
+\begin{tabularx}{\linewidth}{@{}P{0.30\linewidth} Y P{0.20\linewidth}@{}}
 \toprule
-\textbf{Task} & \textbf{Instruction (abridged)} & \textbf{Environment $\rightarrow$ substrate}\\
+\textbf{Problem} & \textbf{What it takes} & \textbf{Our policy}\\
 \midrule
-\textbf{jq-data-processing}\newline\textcolor{inkmuted}{easy, data processing} &
-``Use jq to transform \texttt{/app/users.json}: keep active users, reformat the ISO-8601 last\_login
-dates, write \texttt{/app/active\_users\_report.json}.'' &
-One container, small image (jq + data file).\newline\textcolor{cat2}{\textbf{AgentCore microVM}}\\[1mm]
-\textbf{postgres-csv-clean}\newline\textcolor{inkmuted}{medium, file operations} &
-``Connect to the Postgres DB from the compose config, import \texttt{customers.csv}, clean the data,
-export a cleaned CSV.'' &
-\textbf{Two containers}: \texttt{client} + a \texttt{postgres:16} sidecar on a private network.\newline
-\textcolor{cat1}{\textbf{m5 EC2}} (compose project)\\[1mm]
-\textbf{mteb-eval}\newline\textcolor{inkmuted}{medium, data science} &
-``Evaluate an embedding model from Hugging Face on STS12 with \texttt{mteb} so that cosine\_spearman
-$>$ 0.7; store the model in the default cache.'' &
-One container, but a \textbf{6.7\,GB} image (torch + models): over the 2\,GB microVM cap.\newline
-\textcolor{cat1}{\textbf{m5 EC2}}\\
+\textbf{3D tensor $\times$ matrix}\newline\textcolor{inkmuted}{level 1, train} &
+A batched matmul that one large 2-D GEMM can do faster: there is real headroom over the reference. &
+\hl{reward 1 in 35 of 35}\newline speedup p50 1.12$\times$ (max 1.38$\times$)\\[1.5mm]
+\textbf{Square matmul}\newline\textcolor{inkmuted}{level 1, train} &
+$4096 \times 4096$ \tb{torch.matmul} is already cuBLAS: beating it needs a hand-tuned kernel. &
+\hl{0.5 in 36 of 36}\newline always correct, $\approx$1.0$\times$\\[1.5mm]
+\textbf{ConvTranspose3d + clamp + divide}\newline\textcolor{inkmuted}{level 2, held out} &
+Three ops in a row; the win is \textbf{fusing} clamp and divide into one pass after the convolution. &
+\hl{0.5 in 16 of 18}\newline 2 wrong; 1.00$\times$: no fusion yet\\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \par\vspace{2mm}
-\plainen{the environment decides the substrate: small and single-container goes to a microVM; several containers, x86-only or a big image goes to an m5.}
-\src{\tb{terminalbench/tasks/manifest.json}, \tb{images.csv}, \tb{route\_by\_image.json}; checked 4 Oct 2026.}
+\plainen{every problem is a PyTorch model to re-implement faster; ``correct'' is easy, ``faster'' is the real test, and the 1.10$\times$ gate tells the two apart.}
+\end{columns}
+\src{\tb{kernelbench/kernelbench\_\{train,eval\}.jsonl}; outcomes and \tb{speedup} from \tb{logs/*.demo.csv} (smoke 5 to smoke 8, \tb{train48}); checked 6 Oct 2026.}
 \end{frame}
+
 
 %====================================================================
 \begin{frame}{Five things a microVM cannot do, and where those tasks go instead}
@@ -293,8 +340,85 @@ Needs an NVIDIA GPU (KernelBench) & 50 & \sg\\
 \end{frame}
 
 %====================================================================
+\begin{frame}{Together they hit 16 challenges every agentic-RL sandbox has to solve}
+\flabel{fr:chal}
+\tabcap{The challenges, which benchmark exposes each, and what it looked like here}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}P{0.02\textwidth} P{0.24\textwidth} P{0.07\textwidth} Y@{}}
+\toprule
+& \textbf{Challenge} & \textbf{Exposed by} & \textbf{What it looked like in this demo}\\
+\midrule
+\grp{4}{Environments: every task needs its own machine}\\
+1 & \textbf{One environment per task} & TB & 241 tasks, 241 Dockerfiles: no shared image can serve them\\
+2 & \textbf{Image size limits} & TB, KB & microVM cap 2\,GB; 4 tasks are 6.5--6.7\,GB; CUDA torch alone is $\sim$2.7\,GB\\
+3 & \textbf{CPU architecture} & TB & microVMs are arm64 only; 4 tasks need x86 (QEMU, x86 assembly)\\
+4 & \textbf{Multi-container tasks} & TB & 12 tasks need sidecars (Postgres, web servers) on a private network\\
+5 & \textbf{Missing privileges} & TB & microVMs drop all Linux capabilities: 21 reference solutions fail there\\
+6 & \textbf{Accelerators} & KB & GPUs only on capacity-provider Instances, one session per instance; g6 capacity ran out for hours\\
+\grp{4}{Speed at RL scale: the trainer must never wait for a sandbox}\\
+7 & \textbf{Cold starts on the critical path} & all & opens take 2\,s (microVM), $\sim$35--68\,s (m5), $\sim$2.5\,min (g6) vs a $\sim$20\,s episode\\
+8 & \textbf{Idle reclaim} & TB & an idle microVM session is wiped after 15\,min; pre-opened ones idled up to 16.5\,min\\
+9 & \textbf{Concurrency and quotas} & TB, KB & 32 episodes per step plus look-ahead; Runtime, vCPU and session quotas; no fallback between GPU types\\
+10 & \textbf{Long or hung tool calls} & TB & 4-min commands, detached children, non-idempotent retries stalled an eval\\
+\grp{4}{Correct rewards: the score must mean what it says}\\
+11 & \textbf{Isolation between episodes} & TB & the agent rewrites the OS; any reuse risks leaking state into the next score\\
+12 & \textbf{Reward integrity} & TB, KB & tests must stay hidden; copying \tb{Model} onto CUDA ``passed'' KernelBench\\
+13 & \textbf{Untrustworthy tasks} & TB & deleted repos, 404 downloads, oracles that fail on a substrate: 241 $\rightarrow$ 193 usable\\
+14 & \textbf{Sparse reward, no gradient} & TB, KB & all-or-nothing scores: no GRPO gradient in 32 of 48 steps\\
+\grp{4}{Operating it: safe, visible, and cheap}\\
+15 & \textbf{Network and security} & all & the agent loop runs in the sandbox and must reach the trainer, with no public ports\\
+16 & \textbf{Clean-up, cost and visibility} & all & leftover instances after a crash; g6 instances do not show in your EC2 console\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1mm}
+{\scriptsize\textbf{Why both benchmarks:} Terminal-Bench brings the \textbf{variety of environments} (1--5, 8, 10--11, 13), KernelBench the
+\textbf{hardware} (2, 6) and a \textbf{measured, gameable reward} (12, 14). Neither alone exposes all 16; together they need all three substrates.\par}
+\src{Sections 2--4 of this deck; \sref{fr:lessons} (Lessons); \tb{images.csv}, \tb{oracle.csv}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
 \sect{The hybrid solution}
 
+\begin{frame}{How the demo answers each challenge, at a glance}
+\flabel{fr:sol}
+\begin{columns}[T]
+\column{0.49\textwidth}
+\textbf{\footnotesize Environments}
+\begin{itemize}\tiny\setlength{\itemsep}{0.3mm}
+\item[1] \textbf{One image + one Runtime per task}, built from the task's own Dockerfile plus one small wrapper (\sref{fr:route}).
+\item[2] \textbf{Route by measured size}: $>$ 2\,GB goes to an m5; the GPU image stays small and installs CUDA torch at start.
+\item[3] \textbf{Route by build result}: arm64 failures run on x86 m5s.
+\item[4] \textbf{Whole compose project on its own m5}, rewritten per episode so names, ports and mounts never collide.
+\item[5] \textbf{Validate every oracle} on its substrate; microVM failures are retried on an m5 and kept where they pass.
+\item[6] \textbf{g6 capacity provider}, one fresh Instance per episode; list the GPU type that has capacity first.
+\end{itemize}
+\textbf{\footnotesize Speed at RL scale}
+\begin{itemize}\tiny\setlength{\itemsep}{0.3mm}
+\item[7] \textbf{Look-ahead pre-open}: boot the next 2 batches (5 for m5 and g6) while the current one runs (\sref{fr:preopen}).
+\item[8] \textbf{Heartbeat}: ping idle pre-opened sessions at half the idle timeout.
+\item[9] \textbf{Per-substrate caps} (m5 instances, g6 sessions), sized to the look-ahead; quotas checked up front (\sref{fr:quotas}).
+\item[10] \textbf{Per-command timeouts}, no retry of non-idempotent \tb{exec}, the harness never waits on detached children.
+\end{itemize}
+\column{0.49\textwidth}
+\textbf{\footnotesize Correct rewards}
+\begin{itemize}\tiny\setlength{\itemsep}{0.3mm}
+\item[11] \textbf{Fresh sandbox per episode}; a warm m5 is reused only after a \textbf{verified} reset (\sref{fr:sessions}).
+\item[12] \textbf{Tests injected only after the agent stops}; random-named checker with a nonce'd PASSED line; KernelBench needs a \textbf{1.10$\times$ speedup} for full reward.
+\item[13] \textbf{Routing is data}: only tasks whose oracle passes are trained on; broken upstream tasks are dropped.
+\item[14] \textbf{Denser reward}: partial credit for passed tests in training (eval stays 0/1), the 0 / 0.5 / 1 KernelBench gate, and dropping tasks whose reward never varies (\sref{fr:reward}).
+\end{itemize}
+\textbf{\footnotesize Operating it}
+\begin{itemize}\tiny\setlength{\itemsep}{0.3mm}
+\item[15] \textbf{Private by design}: VPC Runtimes, SG-to-SG rules, m5 agent behind a shared secret, no public ports (\sref{fr:sec}).
+\item[16] \textbf{Close on every path}: stop sessions at episode end, terminate m5s at exit, a dead-man switch on each m5, \tb{6\_cleanup.sh}; CloudTrail timeline for the g6s.
+\end{itemize}
+\vspace{1mm}
+\colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\scriptsize\textbf{One RL code path:} none of the 16 answers touches slime, the agent loop or the grader; they all live in the sandbox tier.}}
+\end{columns}
+\src{Demo README; \tb{terminalbench\_pool.py}, \tb{ec2\_episode\_sandbox.py}, \tb{deploy\_gpu\_tasks.py}, \tb{filter\_by\_history.py}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
 \begin{frame}{The demo: use case covered, why this demo, design considerations}
 \flabel{fr:hybrid}
 \scriptsize\setlength{\tabcolsep}{4pt}
