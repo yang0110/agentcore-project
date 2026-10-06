@@ -318,11 +318,6 @@
    "saved_s": 4818.1286
   }
  },
- "nopreopen_microvm": {
-  "n": 447,
-  "wait_p50": 0.0,
-  "wait_p90": 2.2859000000000003
- },
  "g6_cap": {
   "smoke4mix": {
    "cap": 8,
@@ -368,6 +363,36 @@
    "after_run_min": 43.79746666749318,
    "session_p50_min": 3.1828166666666666,
    "instance_p50_min": 15.15
+  }
+ },
+ "learning_train48": {
+  "steps": 48,
+  "no_grad_steps": 32,
+  "flat_groups": 176.0,
+  "groups": 192,
+  "reward_first10": 0.1078125,
+  "reward_last10": 0.0375,
+  "eval": {
+   "9": {
+    "eval/kernelbench": "0.4",
+    "eval/terminalbench": "0.0",
+    "eval/terminalbench_docker": "0.0"
+   },
+   "19": {
+    "eval/kernelbench": "0.45",
+    "eval/terminalbench": "0.04838709677419355",
+    "eval/terminalbench_docker": "0.0"
+   },
+   "29": {
+    "eval/kernelbench": "0.5",
+    "eval/terminalbench": "0.016129032258064516",
+    "eval/terminalbench_docker": "0.0"
+   },
+   "39": {
+    "eval/kernelbench": "0.425",
+    "eval/terminalbench": "0.04838709677419355",
+    "eval/terminalbench_docker": "0.0"
+   }
   }
  }
 }

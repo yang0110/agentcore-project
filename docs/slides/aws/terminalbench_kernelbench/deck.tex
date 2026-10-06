@@ -1,7 +1,7 @@
 \input{preamble}
 \renewcommand{\deckfooter}{demo\_terminalbench\_kernelbench $\cdot$ agentcore-project $\cdot$ October 2026}
 
-\title{Run full Terminal-Bench agentic RL on AWS}
+\title{Agentic RL on Terminal-Bench and KernelBench on AWS}
 \date{October 2026}
 
 \begin{document}
@@ -11,13 +11,13 @@
 \begin{frame}[plain]
 \vspace*{4mm}
 \begin{minipage}{0.60\textwidth}\raggedright
-{\fontsize{22}{26}\selectfont\bfseries\color{white}Run full Terminal-Bench agentic RL on AWS\par}
+{\fontsize{22}{26}\selectfont\bfseries\color{white}Agentic RL on Terminal-Bench and KernelBench on AWS\par}
 \vspace{3mm}
-{\raggedright\large\color{white}A hybrid solution: AgentCore microVMs, m5 EC2 instances and g6 GPU Instances, plus KernelBench\par}
+{\raggedright\large\color{white}One slime run, three sandbox substrates: AgentCore microVMs, AgentCore g6 GPU Instances and plain-EC2 m5 hosts\par}
 \vspace{8mm}
 {\small\color{white}\textbf{demo\_terminalbench\_kernelbench}\\slime (Qwen3-4B, fully-async GRPO) on a g6e.48xlarge trainer\par}
 \vspace{3mm}
-{\scriptsize\color{inkmuted}Data as of 4 October 2026 (us-west-2)}
+{\scriptsize\color{inkmuted}Data as of 6 October 2026 (us-west-2)}
 \end{minipage}
 \end{frame}}
 
@@ -61,10 +61,10 @@
 \toprule
 & \textbf{Part} & \textbf{What you get from it} & \textbf{Starts at}\\
 \midrule
-\hl{1} & \textbf{Concepts} & agentic RL in one picture, and the words used in the rest of the deck & \sref{fr:loop}\\
+\hl{1} & \textbf{Concepts} & agentic RL in one picture, what slime is and how we plug into it, the RL pipeline, and the words used in the rest of the deck & \sref{fr:loop}\\
 \hl{2} & \textbf{The problem} & the two workloads with example tasks, the 16 challenges they expose, and why one sandbox product cannot run them all & \sref{fr:tb}\\
-\hl{3} & \textbf{The hybrid solution} & one answer per challenge, architecture, how a task picks its substrate, an episode, sessions, pre-open, security & \sref{fr:hybrid}\\
-\hl{4} & \textbf{Results} & reliability, reward design, learning & \sref{fr:rel}\\
+\hl{3} & \textbf{The hybrid solution} & one answer per challenge, architecture, components, who manages each sandbox, code, lifecycles, isolation, pre-open, concurrency, security & \sref{fr:hybrid}\\
+\hl{4} & \textbf{Results} & reliability, reward design, learning curves & \sref{fr:rel}\\
 \hl{5} & \textbf{Hands-on guide} & prerequisites, the six steps, a healthy run, troubleshooting, your own tasks, cost, IAM, quotas & \sref{fr:prereq}\\
 \hl{6} & \textbf{Conclusion} & what the demo shows and what is next & \sref{fr:concl}\\
 \hl{A} & \textbf{Appendix} & how to set every knob, microVM cold boots, look-ahead and heartbeat evidence, m5 hardening, lessons, references & \sref{fr:knobs}\\
@@ -113,6 +113,138 @@
 \end{columns}
 \src{\tb{run.sh} (\tb{RB}=4, \tb{NS}=8, 4 train + 4 rollout GPUs), \tb{agentcore\_slime\_demo/terminalbench\_pool.py}; checked 5 Oct 2026.}
 \end{frame}
+
+%====================================================================
+\begin{frame}{The agentic RL workload pipeline, and where the sandbox sits in it}
+\flabel{fr:pipe}
+\figcap{Fully-async GRPO with environments that are whole machines}
+\centering
+\begin{tikzpicture}[every node/.style={font=\tiny}, b/.style={box,text width=27mm,minimum height=9mm}]
+\node[b] (data) at (0,0) {\textbf{Dataset}\\Terminal-Bench + KernelBench rows, one per task};
+\node[b,draw=awsteal] (look) at (0,-1.3) {\textbf{Look-ahead}\\peeks the next batches' tasks};
+\node[b,text width=31mm,minimum height=14mm] (roll) at (3.9,-0.35) {\textbf{Rollout} (slime \tb{RolloutManager})\\W = 32 workers, one episode each, our \tb{generate()}};
+\node[b,draw=cat2,text width=34mm] (env) at (8.3,0.4) {\textbf{Sandbox = the env}\\\smv{} $\cdot$ \sm{} $\cdot$ \sg, one per episode\\reset $\cdot$ step $\cdot$ reward $\cdot$ close};
+\node[b,text width=34mm] (inf) at (8.3,-1.1) {\textbf{Policy server}\\SGLang, 2 engines (4 GPUs), behind an Anthropic-style API};
+\node[b] (buf) at (3.9,-2.3) {\textbf{Buffer}\\trajectories: tokens, logprobs, loss mask, reward};
+\node[b,text width=34mm] (tr) at (8.3,-2.4) {\textbf{Trainer}\\Megatron GRPO (4 GPUs): advantage = reward $-$ group mean};
+\draw[arr] (data.east) -- node[above,text=inkmuted]{prompts} ($(roll.west)+(0,2.5mm)$);
+\draw[arr,awsteal,dashed] (look.east) -- ($(roll.west)+(0,-4mm)$) node[pos=0.5,above,text=awsteal]{pre-open};
+\draw[arr] (data) -- (look);
+\draw[arr,cat2] (roll.north east) -- (env.west) node[pos=0.35,above left,text=inkmuted]{env calls};
+\draw[arr] (env.south) -- node[right,text=inkmuted]{agent asks for its next action} (inf.north);
+\draw[arr] (roll.south) -- node[right,text=inkmuted]{scored episode} (buf.north);
+\draw[arr] (buf.east) -- node[below,text=inkmuted]{4 groups $\times$ 8} (tr.west);
+\draw[arr,dashed] (tr.east) to[out=20,in=-20] node[right,text=inkmuted,align=left]{new\\weights} (inf.east);
+\end{tikzpicture}
+\par\vspace{0mm}\raggedright
+\tabcap{The sandbox in RL terms}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}P{0.13\textwidth}P{0.33\textwidth}Y@{}}
+\toprule
+\textbf{Gym call} & \textbf{Here} & \textbf{Cost per call (\tb{train48}, median) and how it is kept off the critical path}\\
+\midrule
+\tb{env.reset()} & open a \textbf{fresh} sandbox with the task's environment & 0.7\,s \smv{} $\cdot$ 33\,s \sm{} $\cdot$ 133\,s \sg{}: hidden by pre-open\\
+\tb{env.step(a)} & run one tool call (\tb{bash}, \tb{write\_file}, \tb{read\_file}) \textbf{inside} it & 4.6\,s \smv{} / \sm{} (the command itself), 0.2\,s \sg{}; up to 8 per episode\\
+reward & copy the hidden tests in after the agent stops, run them & 4--9\,s; 0/1 (+ partial credit in training), KernelBench 0 / 0.5 / 1\\
+\tb{env.close()} & stop the session, or reset and keep the m5 & AgentCore frees microVM / g6; our code resets or terminates the m5\\
+\bottomrule
+\end{tabularx}
+\src{\tb{run.sh}, \tb{logs/train48-hybrid\_20261005\_005629.sandbox\_ops.csv} (op medians); checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}[fragile]{What slime is, and how this demo plugs into it without changing it}
+\flabel{fr:slime}
+\begin{columns}[T]
+\column{0.47\textwidth}
+\textbf{\footnotesize slime} {\scriptsize(THUDM/slime): an open-source RL post-training framework}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \textbf{Trainer:} Megatron-LM, here on 4 GPUs (GRPO update).
+\item \textbf{Rollout:} SGLang inference engines, here 2 engines $\times$ 2 GPUs.
+\item \textbf{Orchestration:} one Ray job; a \tb{RolloutManager} actor generates while the trainer trains (\textbf{fully-async}).
+\item \textbf{Extension points:} Python hooks named on the command line. slime calls them; it does not know what a sandbox is.
+\end{itemize}
+\vspace{1mm}
+\colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\scriptsize\textbf{The integration in one line:} slime asks our \tb{generate()} for one scored episode; everything about sandboxes (AgentCore, m5, g6) lives behind that call.}}
+\column{0.49\textwidth}
+\tabcap{The six slime hooks this demo sets (\tb{run.sh})}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.47\linewidth}Y@{}}
+\toprule
+\textbf{slime flag $\rightarrow$ our module} & \textbf{What it does}\\
+\midrule
+\tb{-{}-custom-generate-function-path}\newline\tb{generate.generate} & \hl{the core}: one episode = route the task, open its sandbox, run the agent, grade, return a \tb{Sample} (tokens, logprobs, loss mask, reward)\\
+\tb{-{}-data-source-path}\newline\tb{tb\_lookahead\_source} & slime's dataset, plus a peek at the next batches so their sandboxes boot early\\
+\tb{-{}-rollout-function-path}\newline\tb{last\_rollout} & slime's fully-async rollout; stops the look-ahead after the last step\\
+\tb{-{}-eval-function-path}\newline\tb{mode\_b\_eval} & held-out eval through the same \tb{generate()}\\
+\tb{-{}-custom-rollout-log-function-path} & per-benchmark and per-substrate metrics\\
+\tb{-{}-custom-megatron-init-path} & async checkpoint save\\
+\bottomrule
+\end{tabularx}
+\end{columns}
+\src{\tb{run.sh} (slime flags), \tb{agentcore\_slime\_demo/\{generate,tb\_lookahead\_source,last\_rollout,mode\_b\_eval,batch\_mix\_log\}.py}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{AgentCore Runtime foundations: image, Runtime, session, machine}
+\flabel{fr:agentcore}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\figcap{Image $\rightarrow$ Runtime $\rightarrow$ sessions $\rightarrow$ machines}
+\centering
+\begin{tikzpicture}[every node/.style={font=\tiny}, s/.style={box,minimum height=6mm}]
+\node[s,text width=17mm] (img) at (0,0) {\textbf{Image} (ECR)\\the task's environment};
+\node[s,text width=17mm] (rt) at (2.5,0) {\textbf{Runtime}\\one ARN per image};
+\node[s,draw=cat2,text width=17mm] (s1) at (5.0,0.75) {session 1};
+\node[s,draw=cat2,text width=17mm] (s2) at (5.0,0) {session 2};
+\node[s,draw=cat2,text width=17mm] (s3) at (5.0,-0.75) {session 8};
+\draw[arr] (img) -- (rt); \foreach \s in {s1,s2,s3} \draw[arr,cat2] (rt.east) -- (\s.west);
+\node[font=\tiny,text=inkmuted,align=left,anchor=north west,text width=52mm] at (-0.9,-1.2) {each session = its own microVM (or, on a capacity provider, its own EC2 Instance, e.g.\ a g6)};
+\end{tikzpicture}
+\par\raggedright
+{\tiny\textbf{What it is.} Amazon Bedrock AgentCore Runtime is a managed host for agent code. You give it a container image and get a Runtime ARN. Every new \tb{runtimeSessionId} you invoke gets a \hl{dedicated machine}, isolated from all others and torn down when the session stops.\par}
+\vspace{1mm}
+\tabcap{The three calls this demo uses}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.36\linewidth}Y@{}}
+\toprule
+\tb{CreateAgentRuntime} & once per task (step 4): image, VPC, role, idle timeout\\
+\tb{InvokeAgentRuntime} & every op; \textbf{a new session id's first call boots its machine}\\
+\tb{StopRuntimeSession} & episode end: the machine is destroyed\\
+\bottomrule
+\end{tabularx}
+\column{0.46\textwidth}
+\tabcap{AgentCore concepts, read as agentic RL}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.24\linewidth}P{0.34\linewidth}Y@{}}
+\toprule
+\textbf{AgentCore} & \textbf{RL meaning} & \textbf{Here}\\
+\midrule
+Image & the environment & one per task\\
+Runtime & a task's env behind one ARN & 218 \tb{acs\_tbh\_*} + 1 GPU\\
+Session & one episode (rollout) & 32 new sessions per step\\
+microVM & that episode's isolated machine & arm64, destroyed after grading\\
+Capacity provider & a fleet of EC2 Instances AgentCore runs for you & g6.xlarge for KernelBench\\
+GRPO group & 8 sessions on one Runtime & same start state, nothing shared\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1mm}
+\tabcap{Facts that shape the RL design}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.40\linewidth}Y@{}}
+\toprule
+No ``create session'' call & the first invoke is the cold start $\rightarrow$ pre-open (\sref{fr:prehow})\\
+Idle sessions are reclaimed & set at create time (900\,s here) $\rightarrow$ heartbeat (\sref{fr:hbwhy})\\
+microVMs: arm64, image $\le$ 2\,GB, no capabilities & some tasks need an m5 (\sref{fr:subst})\\
+GPUs only on capacity providers & KernelBench runs on g6 Instances\\
+Quotas [Q1][Q2] & 5{,}000 live sessions, 25 new/s, 1{,}000 Runtimes\\
+\bottomrule
+\end{tabularx}
+\end{columns}
+\src{AgentCore docs [D1][D2], quotas [Q1][Q2] (\sref{fr:refs}); \tb{agentcore\_runtime\_sandbox.py}, \tb{deploy/agentcore\_deploy.py}; checked 6 Oct 2026.}
+\end{frame}
+
+
 
 %====================================================================
 \begin{frame}{Vocabulary used in this deck}
@@ -447,44 +579,218 @@ EC2 for 30 tasks) \textperiodcentered{} g5 for KernelBench (works, but g6 is che
 \end{frame}
 
 %====================================================================
-\begin{frame}{One trainer, one router, three sandbox substrates}
-\flabel{fr:arch}
-\figcap{Components: the trainer routes each row; the agent loop runs inside the sandbox and dials back}
-\centering
-\begin{tikzpicture}[node distance=4mm]
-\node[box,minimum width=44mm,minimum height=30mm,align=left] (tr) {%
-  \textbf{\small g6e.48xlarge trainer} (8$\times$L40S)\\[1mm]
-  slime fully-async GRPO, Qwen3-4B\\
-  4 GPUs train $\cdot$ 4 GPUs SGLang\\
-  \tb{AnthropicAdapter} per engine\\[1mm]
-  \textbf{\tb{TerminalBenchPool}}\\
-  route map $\cdot$ pre-open $\cdot$ gates\\
-  grader (hidden tests)};
-\node[box,draw=cat2,right=26mm of tr,yshift=13mm,text width=54mm,align=left] (mv) {%
-  \textbf{\textcolor{cat2}{AgentCore microVM}}\quad 218 Runtimes \tb{acs\_tbh\_*}\\
-  arm64, $\le$ 2\,GB $\cdot$ 1 session = 1 microVM};
-\node[box,draw=cat1,right=26mm of tr,text width=54mm,align=left] (m5) {%
-  \textbf{\textcolor{cat1}{m5 EC2}}\quad warm pool, $\le$ 24 \tb{m5.xlarge}\\
-  Docker + compose agent $\cdot$ 1 session = 1 VM};
-\node[box,draw=cat3,right=26mm of tr,yshift=-13mm,text width=54mm,align=left] (g6) {%
-  \textbf{\textcolor{cat3}{AgentCore g6 Instance}}\quad \tb{acs\_tbhgpu\_kernelbench}\\
-  g6.xlarge L4 $\cdot$ 1 session = 1 instance};
-\draw[arr,cat2] (tr.east)+(0,4mm) -- node[above,sloped,font=\tiny,text=inkmuted]{InvokeAgentRuntime} (mv.west);
-\draw[arr,cat1] (tr.east) -- node[above,font=\tiny,text=inkmuted]{EC2 API + HTTP} (m5.west);
-\draw[arr,cat3] (tr.east)+(0,-4mm) -- node[below,sloped,font=\tiny,text=inkmuted]{InvokeAgentRuntime} (g6.west);
-\node[font=\tiny,text=inkmuted,align=left,right=2mm of m5] {agent loop runs\\here and calls\\\tb{/v1/messages}\\back over the VPC};
-\end{tikzpicture}
-\par\vspace{2mm}\raggedright
+\begin{frame}{Why three substrates, and why only the m5 is outside AgentCore}
+\flabel{fr:subst}
 \begin{columns}[T]
 \column{0.32\textwidth}
-\scriptsize\textbf{\textcolor{cat2}{microVM}:} 163 tasks. Managed by AgentCore; an idle session is wiped after 15\,min, so a heartbeat keeps pre-opened ones alive.
+\textbf{\footnotesize\textcolor{cat2}{AgentCore microVM}} {\tiny 163 tasks}
+\begin{itemize}\tiny\setlength{\itemsep}{0.5mm}
+\item[+] Fully managed: nothing to launch or clean up.
+\item[+] Own kernel per session; $<$ 1\,s to open when warm.
+\item[$-$] \textbf{arm64 only}: x86-only tasks fail.
+\item[$-$] \textbf{2\,GB image cap}, not raisable.
+\item[$-$] \textbf{No Linux capabilities, no Docker daemon}: no compose sidecars, no mounts or raw networking.
+\item[$-$] \textbf{No GPU}.
+\item[$-$] Idle sessions are reclaimed; only 1--2 warm per Runtime, so bursts cold-boot in 6--49\,s (\sref{fr:cold}).
+\end{itemize}
 \column{0.32\textwidth}
-\scriptsize\textbf{\textcolor{cat1}{m5}:} 30 tasks. \textbf{Our code} launches and terminates them (boto3, the g6e's role), from a baked AMI; images from ECR.
+\textbf{\footnotesize\textcolor{cat1}{m5, plain EC2}} {\tiny 30 tasks}
+\begin{itemize}\tiny\setlength{\itemsep}{0.5mm}
+\item \textbf{Why not AgentCore:} AgentCore Instances run the \textbf{same container contract} as microVMs: no capabilities, no Docker daemon, the 2\,GB cap. A CPU Instance would not fix compose, root or big images.
+\item \textbf{Why plain EC2:} a whole VM with Docker is how Terminal-Bench runs upstream; any arch, any image size, root inside the VM.
+\item \textbf{The price:} we own the lifecycle: launch, reuse, isolation, termination (\sref{fr:manage}, \sref{fr:reuse}).
+\item Rejected: ECS/EKS (more moving parts for 30 tasks).
+\end{itemize}
 \column{0.32\textwidth}
-\scriptsize\textbf{\textcolor{cat3}{g6}:} KernelBench. In an AgentCore-managed account: \textbf{not in our EC2 console}; one CloudWatch log stream per session.
+\textbf{\footnotesize\textcolor{cat3}{AgentCore g6 Instance}} {\tiny KernelBench}
+\begin{itemize}\tiny\setlength{\itemsep}{0.5mm}
+\item \textbf{Why AgentCore:} the task is one small container (145\,MB) that needs no root or Docker, only a GPU. AgentCore's contract fits.
+\item \textbf{Same API as a microVM}, so the same code path; AgentCore launches, isolates (1 session = 1 instance) and terminates.
+\item \textbf{Why not a microVM:} GPUs exist only on capacity-provider Instances.
+\item[$-$] $\sim$2.2\,min to open (boot + CUDA torch install), capacity shortages, no fallback between GPU types, not in your EC2 console.
+\end{itemize}
 \end{columns}
-\src{\tb{agentcore\_slime\_demo/\{terminalbench\_pool, docker\_compose\_sandbox, ec2\_episode\_sandbox\}.py}, \tb{image\_routing.py}, \tb{run.sh}; checked 4 Oct 2026.}
+\par\vspace{2mm}
+\plainen{use the managed microVM wherever the task fits; use AgentCore Instances when the task only needs bigger hardware; drop to plain EC2 only when the task needs a whole machine with Docker and root.}
+\src{\tb{images.csv}, \tb{oracle.csv}, \tb{route\_by\_image.json}; AgentCore quotas [Q1] (\sref{fr:refs}); \tb{docs/terminalbench-unsupported-tasks.md}; checked 6 Oct 2026.}
 \end{frame}
+
+%====================================================================
+\begin{frame}{Architecture: what runs where, and which API connects it}
+\flabel{fr:arch}
+\figcap{One trainer host drives three sandbox substrates; the agent loop runs inside each sandbox and calls back}
+\centering
+\begin{tikzpicture}[every node/.style={font=\tiny}, c/.style={box,align=left,inner sep=2.5pt}]
+% column A: trainer host
+\node[c,text width=38mm] (slm) at (0,1.0) {\textbf{slime} (one Ray job)\\Megatron trainer, 4 GPUs\\SGLang, 2 engines, 4 GPUs};
+\node[c,text width=38mm] (ad) at (0,-0.1) {\textbf{AnthropicAdapter}, one per engine\\\tb{/v1/messages}; records tokens};
+\node[c,text width=38mm,draw=awsteal] (pool) at (0,-1.3) {\textbf{our \tb{generate()} + \tb{TerminalBenchPool}}\\route, pre-open, heartbeat, caps, grade\\AgentCore client $\cdot$ EC2 client};
+\begin{scope}[on background layer]
+\node[draw=inkmuted,dashed,rounded corners=3pt,fit=(slm)(ad)(pool),inner sep=2.5mm,
+  label={[font=\tiny\bfseries,text=inkmuted,align=center]above:Trainer host (g6e.48xlarge)}] (host) {};
+\end{scope}
+% column B: AgentCore + EC2
+\node[c,text width=37mm,draw=cat2] (mv) at (5.6,1.05) {\textbf{\textcolor{cat2}{microVM Runtimes}} (218)\\1 session = 1 fresh microVM};
+\node[c,text width=37mm,draw=cat3] (g6) at (5.6,0.15) {\textbf{\textcolor{cat3}{GPU capacity provider}}\\1 session = 1 g6.xlarge};
+\begin{scope}[on background layer]
+\node[draw=cat2,dashed,rounded corners=3pt,fit=(mv)(g6),inner sep=2mm,
+  label={[font=\tiny\bfseries,text=inkmuted]above:AgentCore (it manages these)}] (ac) {};
+\end{scope}
+\node[c,text width=37mm,draw=cat1] (m5) at (5.6,-1.25) {\textbf{\textcolor{cat1}{m5 warm pool}} ($\le$ 24 \tb{m5.2xlarge})\\Docker + compose agent, from our AMI};
+\node[c,text width=37mm] (bld) at (5.6,-2.05) {m5 builder: images + oracle checks};
+\begin{scope}[on background layer]
+\node[draw=cat1,dashed,rounded corners=3pt,fit=(m5)(bld),inner sep=2mm,
+  label={[font=\tiny\bfseries,text=inkmuted]above:EC2 in our account (our code manages these)}] (ec2) {};
+\end{scope}
+% column C: shared services
+\node[c,text width=22mm] (ecr) at (10.0,1.0) {\textbf{ECR}: one repo per task image};
+\node[c,text width=22mm] (cw) at (10.0,0.1) {\textbf{CloudWatch} logs, \textbf{CloudTrail}};
+\node[c,text width=22mm] (iam) at (10.0,-0.8) {\textbf{IAM}: one role per actor};
+\node[c,text width=22mm] (vpc) at (10.0,-1.7) {\textbf{VPC}: private subnets, SG$\rightarrow$SG rules};
+% arrows
+\draw[arr,cat2] (pool.east) ++(0,1.5mm) coordinate (p1) -- (p1 -| ac.west) node[pos=0.5,above,text=cat2]{AgentCore API};
+\draw[arr,cat1] (pool.east) ++(0,-1.5mm) coordinate (p2) -- (p2 -| ec2.west) node[pos=0.5,below,text=cat1]{EC2 API + HTTP};
+\draw[arr,dashed,awsteal] (ad.east -| ac.west) -- (ad.east) node[pos=0.5,above,text=awsteal]{agent: next turn};
+\draw[arr,inkmuted] (ecr.west) -- (ecr.west -| ac.east) node[pos=0.5,above,text=inkmuted]{pull};
+\draw[arr,inkmuted] (ecr.south west) -- (ec2.north east);
+\end{tikzpicture}
+\par\vspace{1mm}\raggedright
+\begin{columns}[T]
+\column{0.32\textwidth}
+\scriptsize\textbf{Control path (solid):} our code, inside slime's rollout process, calls AgentCore for \smv{} and \sg{}, and EC2 for \sm.
+\column{0.32\textwidth}
+\scriptsize\textbf{Agent path (dashed):} the agent runs \emph{in} the sandbox and calls the adapter over the VPC for every turn (also from the m5s).
+\column{0.32\textwidth}
+\scriptsize\textbf{Nothing public:} VPC Runtimes, private subnets, SG-to-SG rules only (\sref{fr:sec}).
+\end{columns}
+\src{\tb{run.sh}, \tb{agentcore\_slime\_demo/\{terminalbench\_pool,agentcore\_runtime\_sandbox,ec2\_episode\_sandbox\}.py}, \tb{deploy/}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Components on the trainer host: purpose, need, example}
+\flabel{fr:comp1}
+\tabcap{All in the \tb{agentcore\_p4} container: the first two rows are stock slime, the rest is our code behind its hooks}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}P{0.17\textwidth}P{0.24\textwidth}P{0.24\textwidth}Y@{}}
+\toprule
+\textbf{Component} & \textbf{Purpose} & \textbf{Why we need it} & \textbf{Example from this demo}\\
+\midrule
+slime trainer & GRPO update from scored episodes & the RL algorithm itself & 4 Megatron GPUs; 48 steps; one 53\,GB checkpoint\\
+SGLang engines & serve the policy for every agent turn & 32 agents share 4 GPUs of fast batched inference & 2 engines $\times$ 2 GPUs; an episode stays on the least-loaded engine\\
+\tb{AnthropicAdapter} & Anthropic Messages API in front of SGLang; records token ids and logprobs & the agent loop in the sandbox speaks \tb{/v1/messages}; RL needs the exact tokens & one per engine, ports 18100+; a fix-permissions episode sends 3--8 turns to it\\
+\tb{generate()} + \tb{TerminalBenchPool} & per episode: route, open, run, grade, close & one code path for all three substrates & \tb{postgres-csv-clean} $\rightarrow$ \tb{docker://}; \tb{fix-permissions} $\rightarrow$ \tb{arn:\ldots acs\_tbh\_fix\_permissions}\\
+\tb{HarnessPool} & W = RB $\times$ NS = 32 workers; each takes a sandbox first, then an engine & a worker waiting for a sandbox holds no GPU slot & 4 tasks $\times$ 8 tries = 32 episodes in flight\\
+Look-ahead + pre-open & boot the next batches' sandboxes before they are needed & cold starts reach 2.5\,min (\sg) & 2 batches ahead for \smv, 5 for \sm{} and \sg\\
+Heartbeat (session keeper) & ping pre-opened sessions that sit idle & AgentCore reclaims an idle session after its timeout & pings at half the 15-min idle timeout\\
+Grader & copy the hidden tests in after the agent stops, run them & the agent must never see the tests & 14 tests for \tb{postgres-csv-clean}; KernelBench prints \tb{speedup=}\\
+\tb{WarmPool} (\tb{Ec2EpisodeSandbox}) & launch, reset-check, reuse and terminate m5s & AgentCore does not manage plain EC2 & $\le$ 24 \tb{m5.2xlarge}; 129 instances served 407 sessions in \tb{train48}\\
+\bottomrule
+\end{tabularx}
+\src{\tb{run.sh}; \tb{agentcore\_slime\_demo/\{generate,terminalbench\_pool,harness\_pool,tb\_lookahead\_source,session\_keeper,ec2\_episode\_sandbox\}.py}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Components in AWS: purpose, need, example}
+\flabel{fr:comp2}
+\tabcap{All in us-west-2; created once by steps 2--4, removed by step 6 (ECR, AMI and IAM are kept)}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}P{0.17\textwidth}P{0.24\textwidth}P{0.24\textwidth}Y@{}}
+\toprule
+\textbf{Component} & \textbf{Purpose} & \textbf{Why we need it} & \textbf{Example from this demo}\\
+\midrule
+\smv{} Runtime per task & a registered task image; each session is a fresh microVM & managed, isolated, $<$ 1\,s to open when warm & 218 Runtimes, e.g.\ \tb{acs\_tbh\_fix\_permissions} from ECR \tb{acs-tb-fix-permissions}\\
+\sg{} capacity provider + GPU Runtime & g6.xlarge Instances, one per session & GPUs exist only on AgentCore Instances & \tb{acs\_tbhgpu\_kernelbench} on \tb{acs\_tbh\_gpu\_g6\_g5\_g6e\_cp}\\
+\sm{} warm pool (plain EC2) & a whole VM with Docker + compose & compose, x86-only, $>$ 2\,GB and root-level tasks & \tb{postgres-csv-clean}: client + \tb{postgres:16} from \tb{acs-tbhdk-postgres-csv-clean-\{client,db\}}\\
+compose agent (on each m5) & the same ops as the AgentCore wrapper, over HTTP :18300 & lets the m5 look like a Runtime to our code & per episode: rewrite names and ports, \tb{compose up}, \tb{exec}, \tb{down -v}, reset check\\
+Per-episode AMI & Docker and the agent baked in & a fresh m5 opens in $\sim$33\,s, not minutes & \tb{ami-REDACTEDbf653f3d}\\
+m5 builder & builds amd64 images, validates oracles & m5 task images; not needed while training & \tb{acs-tbh-m5} (one instance)\\
+Amazon ECR & one repo per task image & both AgentCore and EC2 pull from it & 229 \tb{acs-tb-*}, 89 \tb{acs-tbhdk-*}, \tb{acs-tbgpu-kernelbench}\\
+VPC, SGs, endpoints, NAT & private paths in both directions & the agent in the sandbox must reach the trainer; no public ports & SG$\rightarrow$SG 18100--18163 (adapter), 18300 (m5 agent); an existing NAT for \tb{pip}\\
+IAM roles & least privilege per actor & each actor gets only its own job & \tb{acs-exec-role}, \tb{acs-operator-role}, \tb{acs-tbh-m5-builder}, \tb{acs-tbh-m5-episode} (\sref{fr:iam})\\
+CloudWatch, CloudTrail & per-session logs; launch and terminate records & g6s are not in your EC2 console & \tb{instance\_timeline.py} rebuilds a run's instances from CloudTrail\\
+\bottomrule
+\end{tabularx}
+\src{\tb{deploy/m5\_host.json}, \tb{terminalbench/tasks/route\_by\_image.json}, \tb{aws ecr describe-repositories}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Who launches and terminates each sandbox: AgentCore or our code}
+\flabel{fr:manage}
+\tabcap{One \tb{generate()} call to slime, two owners underneath; every call comes from slime's rollout process}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}P{0.11\textwidth}YYY@{}}
+\toprule
+& \textbf{\textcolor{cat2}{microVM}} (AgentCore) & \textbf{\textcolor{cat3}{g6 Instance}} (AgentCore) & \textbf{\textcolor{cat1}{m5}} (plain EC2, \textbf{our code})\\
+\midrule
+\textbf{Launch} & first \tb{InvokeAgentRuntime} with a new \tb{runtimeSessionId}: AgentCore boots a microVM from the task's image & the same call on the GPU Runtime: the capacity provider launches a g6.xlarge in an AgentCore-managed account & \tb{WarmPool} reuses an idle m5, or calls \tb{RunInstances} (baked AMI, tag \tb{acs-tbh-m5-ep}, a fresh secret); the agent pulls from ECR and runs \tb{compose up}\\
+\textbf{Use} & each tool call = one \tb{InvokeAgentRuntime} on that session & same & each tool call = one HTTP POST to the compose agent (:18300)\\
+\textbf{Close} & \tb{StopRuntimeSession}: AgentCore destroys the microVM & \tb{StopRuntimeSession}: the session ends; the capacity provider terminates the idle instance after 600\,s & \tb{compose down -v} + verified reset $\rightarrow$ back to the pool; dirty $\rightarrow$ \tb{TerminateInstances}\\
+\textbf{If our code misses the close} & AgentCore reaps it at the idle timeout (900\,s) or max lifetime; an exit hook stops what is left & same, plus a 4\,h max lifetime per session & exit hook terminates the pool; \tb{5\_run.sh} \tb{gc-episodes}; next pool start; \tb{6\_cleanup.sh}; dead-man switch: 30\,min without the trainer $\rightarrow$ the VM terminates itself\\
+\textbf{You see it in} & CloudWatch (one log stream per session) & CloudWatch + CloudTrail, \textbf{not} your EC2 console & your EC2 console (tag \tb{acs-tbh-m5-ep})\\
+\textbf{You pay for} & session time & instance time, incl.\ boot and the 600\,s idle tail & instance time, incl.\ idle time in the warm pool\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\scriptsize\textbf{How AgentCore is integrated:} \tb{AgentCoreRuntimeSandbox} turns each sandbox op (\tb{exec}, \tb{write\_file}, \tb{read\_file}, \tb{put\_tar}) into an \tb{InvokeAgentRuntime} call whose JSON payload names the op; the task image's wrapper (\tb{acs\_http\_server.py}) runs it.
+\column{0.48\textwidth}
+\scriptsize\textbf{How the m5 is integrated:} \tb{DockerComposeSandbox} is a subclass that swaps only the transport (HTTP instead of \tb{InvokeAgentRuntime}); the same wrapper runs as the compose \tb{client}, so the agent loop and grader cannot tell the difference.
+\end{columns}
+\src{\tb{agentcore\_slime\_demo/\{agentcore\_runtime\_sandbox,docker\_compose\_sandbox,ec2\_episode\_sandbox\}.py}, \tb{m5\_agent/compose\_agent.py}, \tb{6\_cleanup.sh}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}[fragile]{In code: slime calls one hook; the pool does the rest}
+\flabel{fr:code}
+\begin{columns}[T]
+\column{0.47\textwidth}
+{\footnotesize\textbf{1. Tell slime about the hooks} \textcolor{inkmuted}{(\tb{run.sh}, abridged)}}
+\begin{lstlisting}[language=bash]
+ray job submit -- python3 slime/train_async.py \
+  --custom-generate-function-path \
+      agentcore_slime_demo.generate.generate \
+  --data-source-path \
+      agentcore_slime_demo.tb_lookahead_source.LookaheadDataSource \
+  --rollout-function-path \
+      agentcore_slime_demo.last_rollout.generate_rollout \
+  --rollout-batch-size 4 --n-samples-per-prompt 8 ...
+\end{lstlisting}
+{\footnotesize\textbf{2. slime calls it once per episode} \textcolor{inkmuted}{(\tb{generate.py}, abridged)}}
+\begin{lstlisting}[language=Python]
+async def generate(args, sample, sampling_params,
+                   evaluation=False):
+    task = _task_from_sample(sample)    # row -> task
+    pool = get_tb_pool(args)            # one per loop
+    return await pool.submit(task, sampling_params,
+                             sample, evaluation)
+    # -> a Sample: tokens, logprobs, loss mask, reward
+\end{lstlisting}
+\column{0.49\textwidth}
+{\footnotesize\textbf{3. One episode} \textcolor{inkmuted}{(\tb{TerminalBenchPool.\_run\_episode}, abridged)}}
+\begin{lstlisting}[language=Python]
+arn = self._arn_for(task)       # arn: / docker:// / gpu:
+sb = self._claim(arn) or await self._open_session(arn)
+                                # pre-opened if possible
+e, engine = self.acquire_engine()   # least-loaded SGLang
+adapter.open_session(sid)           # records tokens
+res = await self._harness.run(      # agent loop runs
+    sb, adapter_url=session_url,    # INSIDE the sandbox,
+    prompt=task.instruction)        # dials back per turn
+g = await self._grade(sb, task)     # inject hidden tests
+reward = self._reward(g, evaluation)
+sample = adapter.finish_session(sid, reward=reward)
+await self._close_session(sb)       # stop / reset / terminate
+\end{lstlisting}
+\vspace{1mm}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.5mm}
+\item \tb{\_open\_session} picks the client from the route: \tb{AgentCoreRuntimeSandbox} (\smv, \sg) or \tb{Ec2WarmSandbox} (\sm).
+\item No slime source is patched: all of this is behind the flags in step 1.
+\end{itemize}
+\end{columns}
+\src{\tb{run.sh}, \tb{agentcore\_slime\_demo/generate.py}, \tb{agentcore\_slime\_demo/terminalbench\_pool.py} (\tb{submit}, \tb{\_run\_episode}, \tb{\_open\_session}, \tb{\_close\_session}); checked 6 Oct 2026.}
+\end{frame}
+
 
 %====================================================================
 \begin{frame}{Which substrate does a task get? Four questions, answered from data}
@@ -542,46 +848,133 @@ Episode p50 & 24\,s (agent 12\,s, grade 9\,s) & 69\,s (agent 14\,s, grade 7\,s) 
 \end{frame}
 
 %====================================================================
-\begin{frame}{Sessions and instances: one session per instance, three lifecycles}
+\begin{frame}{Lifecycles: a microVM or g6 serves one episode; an m5 is reset and reused}
 \flabel{fr:sessions}
+\figcap{From launch to gone, per substrate (times: \tb{train48} medians)}
+\centering
+\begin{tikzpicture}[every node/.style={font=\tiny}, s/.style={box,text width=16mm,minimum height=8.5mm}, node distance=2.5mm]
+\node[font=\scriptsize\bfseries,text=cat2,anchor=east] at (-0.3,0) {microVM};
+\node[s,draw=cat2] (a1) at (0.8,0) {\textbf{pre-open}\\boot 0.7\,s};
+\node[s,draw=cat2,right=of a1] (a2) {\textbf{wait}\\heartbeat pings};
+\node[s,draw=cat2,right=of a2] (a3) {\textbf{episode}\\$\le$ 8 calls, $\sim$24\,s};
+\node[s,draw=cat2,right=of a3] (a4) {\textbf{grade}\\hidden tests, 4--9\,s};
+\node[s,draw=cat2,right=of a4] (a5) {\textbf{stop session}\\microVM destroyed};
+\foreach \x/\y in {a1/a2,a2/a3,a3/a4,a4/a5} \draw[arr,cat2] (\x) -- (\y);
+\node[font=\scriptsize\bfseries,text=cat3,anchor=east] at (-0.3,-1.5) {g6};
+\node[s,draw=cat3] (g1) at (0.8,-1.5) {\textbf{pre-open}\\g6 launch $\sim$2.2\,min};
+\node[s,draw=cat3,right=of g1] (g2) {\textbf{wait}\\heartbeat pings};
+\node[s,draw=cat3,right=of g2] (g3) {\textbf{episode}\\kernel, $\sim$30\,s};
+\node[s,draw=cat3,right=of g3] (g4) {\textbf{grade}\\correct? speedup?};
+\node[s,draw=cat3,right=of g4] (g5) {\textbf{stop session}\\gone after 600\,s};
+\foreach \x/\y in {g1/g2,g2/g3,g3/g4,g4/g5} \draw[arr,cat3] (\x) -- (\y);
+\node[font=\scriptsize\bfseries,text=cat1,anchor=east] at (-0.3,-3.0) {m5};
+\node[s,draw=cat1] (m1) at (0.8,-3.0) {\textbf{open}\\reuse, or launch (33\,s)};
+\node[s,draw=cat1,right=of m1] (m2) {\textbf{compose up}\\client + sidecars};
+\node[s,draw=cat1,right=of m2] (m3) {\textbf{episode}\\tool calls over HTTP};
+\node[s,draw=cat1,right=of m3] (m4) {\textbf{grade}\\hidden tests};
+\node[s,draw=cat1,right=of m4] (m5) {\textbf{reset check}\\clean?};
+\node[s,draw=cat1,right=of m5] (mt) {\textbf{terminate}\\dirty or run end};
+\foreach \x/\y in {m1/m2,m2/m3,m3/m4,m4/m5} \draw[arr,cat1] (\x) -- (\y);
+\draw[arr,cat1] (m5) -- node[above,text=cat1]{dirty} (mt);
+\draw[arr,cat1,dashed] (m5.south) -- ++(0,-3mm) -| node[below,pos=0.25,text=cat1]{clean: back to the warm pool for the next m5 episode} (m1.south);
+\end{tikzpicture}
+\par\vspace{1mm}\raggedright
 \begin{columns}[T]
-\column{0.54\textwidth}
-\tabcap{Who owns each instance, and how it ends}
-\scriptsize\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}P{0.20\linewidth}YYY@{}}
+\column{0.32\textwidth}
+\tiny\textbf{\textcolor{cat2}{microVM}:} one session = one microVM = one episode. AgentCore owns it; we start and stop the session.
+\column{0.32\textwidth}
+\tiny\textbf{\textcolor{cat3}{g6}:} the same on a GPU Instance; the instance outlives its session by the 600\,s idle timeout.
+\column{0.32\textwidth}
+\tiny\textbf{\textcolor{cat1}{m5}:} our code owns it; reused only after a verified reset (\sref{fr:reuse}): 129 instances served 407 sessions in \tb{train48}.
+\end{columns}
+\src{\tb{logs/train48-hybrid\_20261005\_005629.\{sandbox\_ops,demo\}.csv}; \tb{agentcore\_runtime\_sandbox.py}, \tb{ec2\_episode\_sandbox.py} (\tb{WarmPool}); checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Isolation per substrate, and how a warm m5 is reused safely}
+\flabel{fr:reuse}
+\begin{columns}[T]
+\column{0.47\textwidth}
+\tabcap{What one episode shares with the next}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.20\linewidth}YY@{}}
 \toprule
-& \textbf{\textcolor{cat2}{microVM}} & \textbf{\textcolor{cat1}{m5}} & \textbf{\textcolor{cat3}{g6}}\\
+& \textbf{Own per episode} & \textbf{Shared with later episodes}\\
 \midrule
-Managed by & AgentCore & \textbf{our trainer} & AgentCore\\
-Reused? & no, fresh & yes, after a verified reset & no, fresh\\
-Isolation & own kernel & own VM per session & own instance\\
-Visible in & CloudWatch & our EC2 console & CloudWatch only\\
-Ends by & stop / 15-min idle & 5 ways (right) & stop / 600\,s idle\\
-Peak live (\tb{train48}) & 88 & 24 & 36\\
+\smv & microVM, kernel, disk & the read-only image\\
+\sg & GPU Instance & the read-only image\\
+\sm & containers, networks, volumes, task-dir copy (removed by \tb{down -v}) & the VM's kernel and cached images, \textbf{only after a verified reset}\\
 \bottomrule
 \end{tabularx}
 \par\vspace{2mm}
-\tabcap{Warm m5 pool in smoke 6}
-\scriptsize
-\begin{tabular}{@{}l r@{}}
-\toprule
-instances launched / episodes on a reused one & 24 / 10\\
-pool peak (cap \tb{TB\_M5\_MAX\_INSTANCES}) & 24 (24)\\
-dirty resets / retired & \hl{0 / 0}\\
-\bottomrule
-\end{tabular}
-\column{0.42\textwidth}
-\begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
-\item \textbf{Verified reset} after every m5 episode: no containers, volumes or extra networks, empty episode
-  dir, $\ge$ 8\,GB disk. Dirty or unhealthy $\rightarrow$ terminated, never reused. No periodic recycle.
-\item \textbf{m5 termination, 5 ways:} trainer \tb{atexit}; \tb{5\_run.sh} \tb{gc-episodes}; next pool start;
-  \tb{6\_cleanup.sh}; a \textbf{dead-man switch} (no trainer call for 30\,min $\rightarrow$ the VM shuts
-  itself down = terminate).
-\item \textbf{g6:} a launch per session, so a pre-open must start $\sim$2.5\,min early (\sref{fr:preopen}).
-\item Isolation and hardening details: \sref{fr:harden}.
+\textbf{\footnotesize Why reuse the m5 at all}
+\begin{itemize}\tiny\setlength{\itemsep}{0.5mm}
+\item A fresh one costs a launch ($\sim$33\,s) plus an image pull on the critical path, every episode.
+\item The agent works only inside containers; it never touches the host, so a reset can be checked.
+\item \tb{train48}: 129 instances for 407 sessions; \textbf{0 dirty resets} in every run.
+\item \tb{TB\_M5\_MODE=per\_episode} gives one VM per episode (terminated after grading) if you need it.
+\end{itemize}
+\column{0.49\textwidth}
+\figcap{After every m5 episode}
+\centering
+\begin{tikzpicture}[every node/.style={font=\tiny}, s/.style={box,draw=cat1,text width=46mm}, node distance=3mm]
+\node[s] (r1) {\textbf{1.} \tb{docker compose down -v}: containers, networks, volumes removed};
+\node[s,below=of r1] (r2) {\textbf{2. reset check}: no containers, no volumes, no extra networks, empty episode dir, $\ge$ 8\,GB disk};
+\node[s,below=4mm of r2.south west,anchor=north west,text width=21mm] (ok) {\textbf{clean} $\rightarrow$ idle pool; the next open prefers an m5 that already holds the task's images};
+\node[s,below=4mm of r2.south east,anchor=north east,text width=21mm] (bad) {\textbf{dirty} or a failed health check $\rightarrow$ terminated, never reused};
+\draw[arr,cat1] (r1) -- (r2); \draw[arr,cat1] (r2) -- (ok); \draw[arr,cat1] (r2) -- (bad);
+\end{tikzpicture}
+\par\vspace{1mm}\raggedright
+\begin{itemize}\tiny\setlength{\itemsep}{0.4mm}
+\item \textbf{Host hardening:} no IAM role beyond ECR pull, IMDSv2 hop limit 1, containers blocked from the host and from 169.254.169.254, per-instance agent secret, SG-only access (\sref{fr:harden}).
+\item \textbf{Compose rewrite:} fixed names and ports made unique; privileged, host network, \tb{docker.sock} refused.
 \end{itemize}
 \end{columns}
-\src{\tb{agentcore\_slime\_demo/ec2\_episode\_sandbox.py} (\tb{WarmPool}); \tb{logs/smoke6-hybrid\_*}, \tb{logs/train48-hybrid\_*} (\tb{[sbx-op]}, \tb{warm\_reused}); checked 4 Oct 2026.}
+\src{\tb{ec2\_episode\_sandbox.py} (\tb{WarmPool}, \tb{reset\_check}), \tb{m5\_agent/compose\_agent.py}, \tb{m5\_agent/bootstrap.sh}; \tb{logs/train48-hybrid\_*}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{How pre-open works: boot the next batches before they run}
+\flabel{fr:prehow}
+\figcap{What is booted while step $k$ runs (\tb{RB} = 4 tasks $\times$ \tb{NS} = 8 tries = 32 episodes per batch)}
+\centering
+\begin{tikzpicture}[every node/.style={font=\tiny}, b/.style={box,minimum width=17mm,minimum height=6mm}]
+\node[b,draw=awsteal,line width=1pt] (k) at (0,0) {\textbf{batch $k$}: running};
+\node[b,draw=cat2] (k1) at (1.95,0) {$k{+}1$}; \node[b,draw=cat2] (k2) at (3.9,0) {$k{+}2$};
+\node[b,draw=inkmuted,text=inkmuted] (k3) at (5.85,0) {$k{+}3$}; \node[b,draw=inkmuted,text=inkmuted] (k4) at (7.8,0) {$k{+}4$};
+\node[b,draw=inkmuted,text=inkmuted] (k5) at (9.75,0) {$k{+}5$};
+\draw[decorate,decoration={brace,amplitude=4pt,mirror},cat2] (1.0,-0.45) -- node[below=3pt,text=cat2]{\smv{}: 2 batches ahead (64 sessions)} (4.85,-0.45);
+\draw[decorate,decoration={brace,amplitude=4pt},cat1] (1.0,0.45) -- node[above=3pt,text=cat1]{\sm{} and \sg{}: 5 batches ahead (slow to boot), within their caps} (10.7,0.45);
+\end{tikzpicture}
+\par\vspace{2mm}\raggedright
+\begin{columns}[T]
+\column{0.55\textwidth}
+\tabcap{The mechanism, step by step}
+\tiny
+\begin{enumerate}\setlength{\itemsep}{0.5mm}
+\item \textbf{Peek:} each time slime draws a group, our data source also reads the next batches' tasks. slime's order is a seeded shuffle, so the peek is exact and changes no state.
+\item \textbf{Reserve:} the pool gets the ordered list of upcoming episodes (each task $\times$ 8 tries).
+\item \textbf{Refill:} open a sandbox for each wanted episode not yet booted, within the window and the caps; stop surplus ones.
+\item \textbf{Claim:} a worker starting an episode takes the ready sandbox for its task, so it starts at once; each claim triggers another refill.
+\item \textbf{Keep alive:} waiting \smv{} and \sg{} sessions get heartbeat pings.
+\item \textbf{Stop:} after the last rollout the look-ahead stops and unused sandboxes are closed.
+\end{enumerate}
+\column{0.41\textwidth}
+\tabcap{What it buys (smoke 6, per substrate)}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+& \textbf{boot hidden} & \textbf{wait saved}\\
+\midrule
+\smv{} (open $\sim$2\,s) & 121 / 177 & 4\,min\\
+\sm{} (open $\sim$68\,s) & 16 / 34 & 23\,min\\
+\sg{} (open $\sim$135\,s) & 22 / 52 & \hl{80\,min}\\
+\bottomrule
+\end{tabular}
+\par\vspace{1mm}
+{\tiny\textbf{The cost:} sandboxes that wait idle (VM time), and wrong guesses that are stopped unused. Results: \sref{fr:preopen}.\par}
+\end{columns}
+\src{\tb{agentcore\_slime\_demo/tb\_lookahead\_source.py}, \tb{terminalbench\_pool.py} (\tb{reserve}, \tb{\_refill}, \tb{\_claim}), \tb{last\_rollout.py}; \tb{logs/smoke6-hybrid\_*}; checked 6 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -618,6 +1011,38 @@ smoke 6 & 32 & \hl{28\,s} & 22 / 52\\
 \par\vspace{0.5mm}{\tiny A cap of 8 equals one group, so nothing could open ahead.}
 \end{columns}
 \src{\tb{logs/smoke\{4mix,5,6\}-hybrid\_*.log} (\tb{[demo]} \tb{open\_wait\_ms}, \tb{open\_ms}); ``saved'' = $\sum$ max(0, open $-$ wait); \tb{make\_figures.py}; checked 4 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{How many sandboxes run at once, and what bounds each substrate}
+\flabel{fr:conc}
+\tabcap{Running episodes are capped by the 32 workers; pre-opened sandboxes by the look-ahead window and a per-substrate cap}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\textwidth}{@{}P{0.12\textwidth}P{0.24\textwidth}P{0.24\textwidth}Y@{}}
+\toprule
+& \textbf{\textcolor{cat2}{microVM}} & \textbf{\textcolor{cat1}{m5}} & \textbf{\textcolor{cat3}{g6}}\\
+\midrule
+Running at once & \multicolumn{3}{l}{at most W = \tb{RB} $\times$ \tb{NS} = 32 episodes in total, shared by all substrates (\tb{HarnessPool} workers)}\\
+Pre-opened & next 2 batches (up to 64) & next 5 batches, within the cap & next 5 batches, within the cap\\
+Cap and how it is enforced & none of ours; AgentCore quota 5{,}000 active sessions, 25 new/s & \tb{TB\_M5\_MAX\_INSTANCES} = 24: live + launching; an open waits when full & \tb{TB\_GPU\_MAX\_SESSIONS} = 32: a gate held from open to close\\
+Peak in \tb{train48} & 129 microVMs & 24 instances (cap) & 124 instances for $\le$ 32 sessions\\
+Total in \tb{train48} & 2{,}020 microVMs & 129 instances, 407 sessions & 546 instances\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \textbf{Why g6 instances exceed the session cap:} the capacity provider keeps each instance $\sim$10\,min after its session ends, and late stops left some sessions open. Since commit \tb{6c1bde8} late stops are retried and re-sent, and the idle timeout is 900\,s.
+\item \textbf{Why the m5 cap is low:} each m5 is a whole VM we pay for while it idles in the pool.
+\end{itemize}
+\column{0.48\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \textbf{Sizing rule:} a cap must cover the running episodes plus the pre-open window for that substrate, or pre-open cannot start early (cap 8 for g6 meant 240\,s waits, \sref{fr:preopen}).
+\item Over time: \sref{fr:instances}; quotas: \sref{fr:quotas}.
+\end{itemize}
+\end{columns}
+\src{\tb{terminalbench\_pool.py} (\tb{preopen\_max}, gates), \tb{ec2\_episode\_sandbox.py} (\tb{WarmPool}); \tb{logs/train48-hybrid\_20261005\_005629.*}; \tb{make\_figures.py}; checked 6 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -794,6 +1219,23 @@ KernelBench & .40 & .45 & .50 & .43\\
 \end{itemize}
 \end{columns}
 \src{\tb{logs/train48-hybrid\_20261004\_152433.*}, \tb{logs/train48-hybrid\_20261005\_005629.\{log,csv,eval.csv\}}; \tb{metrics.py} by substrate; \tb{make\_figures.py}; checked 5 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Learning curves: almost every group has no gradient}
+\flabel{fr:curves}
+\figcap{\tb{train48} run 2: training reward, GRPO signal per step, held-out eval}
+\centering\includegraphics[width=\linewidth]{fig_learning.png}\par
+\vspace{1mm}\raggedright
+\begin{columns}[T]
+\column{0.32\textwidth}
+\scriptsize\textbf{Left:} the mean training reward does not rise: 0.11 over the first 10 steps, 0.04 over the last 10.
+\column{0.32\textwidth}
+\scriptsize\textbf{Middle:} \hl{176 of 192} groups had 8 equal rewards (orange), so their advantage is zero; 32 of 48 steps learned nothing at all.
+\column{0.32\textwidth}
+\scriptsize\textbf{Right:} KernelBench eval 0.40--0.50, Terminal-Bench microVM 0--3 of 62, m5 0. The fix is reward density (partial credit, task filter), not the sandbox.
+\end{columns}
+\src{\tb{logs/train48-hybrid\_20261005\_005629.\{csv,eval.csv\}} (\tb{rollout/raw\_reward}, \tb{rollout/zero\_std/*}, \tb{train/grad\_norm}); \tb{make\_figures.py}; checked 6 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -1125,7 +1567,7 @@ Checkpoints & 53\,GB each (\tb{ckpt/} holds 210\,GB after 4 smokes)\\
 \textbf{Quota (code)} & \textbf{Limit} & \textbf{We use} & \textbf{Note}\\
 \midrule
 \grp{4}{AgentCore}\\
-Runtimes per account [Q1] & 1{,}000 & \textbf{440} & 219 this demo + 218 leftover \tb{acs\_tb\_*}: delete before adding a 3rd pool\\
+Runtimes per account [Q1] & 1{,}000 & \textbf{221} & 219 this demo (the 218 microVM-only \tb{acs\_tb\_*} were deleted 6 Oct)\\
 Docker image size, MB (L-0A9E32B3) & 2{,}048 & max 2{,}003 & why 4 tasks go to the m5 and torch installs at start\\
 Active session workloads (L-3E5722B2) & 5{,}000 & 88 + 36 peak & microVM + g6 sessions live at once (\tb{train48})\\
 New Runtime sessions per s (L-8EE2AEA2) & 25 & bursts at pre-open & pre-open spreads opens over the batch\\
@@ -1167,13 +1609,13 @@ gp3 storage, TiB (L-7A658B76) & 257 & $\sim$1.5 & 24 $\times$ 40\,GB + 500\,GB b
 \scriptsize
 \begin{tabularx}{\textwidth}{@{}P{0.03\textwidth}P{0.4\textwidth}Y@{}}
 \toprule
-1 & Partial credit from \tb{tests\_passed} / \tb{tests\_total} & more GRPO groups with a gradient (32 of 48 steps had none)\\
+1 & Train with partial credit (\tb{tests\_passed} / \tb{tests\_total}) and the task filter: both in the code since 6 Oct, not yet trained & more GRPO groups with a gradient (32 of 48 steps had none)\\
 2 & Train on tasks the policy can sometimes solve & 42 of 1{,}795 \smv{} solves came from 10 tasks; drop all-0 groups and refill\\
 3 & Host the CUDA torch wheel in S3 & cut the g6 open from $\sim$2.5\,min\\
-4 & Delete the 218 leftover \tb{acs\_tb\_*} Runtimes; stop the m5 builder & frees 22\,\% of the Runtime quota (\sref{fr:quotas}); builder is not needed to train\\
+4 & Apply the 900\,s idle timeout to the live Runtimes (in the deploy code since 6 Oct) & a missed stop then costs 15\,min of g6 time, not 60\\
 \bottomrule
 \end{tabularx}
-\src{This deck; checked 5 Oct 2026.}
+\src{This deck; checked 6 Oct 2026.}
 \end{frame}
 
 %====================================================================

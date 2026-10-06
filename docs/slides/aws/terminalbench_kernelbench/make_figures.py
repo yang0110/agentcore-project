@@ -289,5 +289,51 @@ if tl:
     plt.close(fig)
     data["instances_train48"] = inst_tl
 
+# ------------------------------------------------------------------ learning curves (train48 run 2)
+base = os.path.join(LOGS, "train48-hybrid_20261005_005629")
+if os.path.exists(base + ".csv"):
+    steps = list(csv.DictReader(open(base + ".csv")))
+    ev = list(csv.DictReader(open(base + ".eval.csv")))
+    f = lambda r, k: float(r[k]) if r.get(k) not in (None, "") else 0.0  # noqa: E731
+    x = list(range(1, len(steps) + 1))
+    rew = [f(r, "rollout/raw_reward") for r in steps]
+    flat = [f(r, "rollout/zero_std/count_0.0") + f(r, "rollout/zero_std/count_0.5") + f(r, "rollout/zero_std/count_1.0")
+            for r in steps]                                     # groups whose 8 rewards are all equal (RB = 4)
+    gn = [f(r, "train/grad_norm") for r in steps]
+    fig, axs = plt.subplots(1, 3, figsize=(11.5, 3.3))
+    ax = axs[0]
+    ax.plot(x, rew, color=INK, lw=1.0, alpha=0.45, label="per step")
+    k = 5
+    ax.plot(x[k - 1:], [sum(rew[i - k + 1:i + 1]) / k for i in range(k - 1, len(rew))], color=C["microvm"], lw=2,
+            label=f"{k}-step mean")
+    ax.set_title("Training reward (mean of 32 episodes)", fontsize=10, color=INK, loc="left")
+    ax.set_xlabel("training step"); ax.set_ylim(0, max(rew) * 1.25)
+    ax.legend(frameon=False, fontsize=8)
+    ax = axs[1]
+    ax.bar(x, [4] * len(x), color=GRID, width=0.85, label="groups with a gradient")
+    ax.bar(x, flat, color=C["docker"], width=0.85, label="groups with no gradient (all 8 equal)")
+    ax.scatter([s for s, g in zip(x, gn) if g == 0], [4.25] * sum(g == 0 for g in gn), marker="v", s=12, color=INK,
+               label="grad norm = 0 (step learns nothing)")
+    ax.set_title("GRPO signal: 4 groups per step", fontsize=10, color=INK, loc="left")
+    ax.set_xlabel("training step"); ax.set_ylim(0, 7.2); ax.set_yticks([0, 1, 2, 3, 4])
+    ax.legend(frameon=False, fontsize=7.5, loc="upper left", ncol=1)
+    ax = axs[2]
+    es = [int(float(r["eval/step"])) for r in ev]
+    for key, lab, col in (("eval/kernelbench", "KernelBench (mean reward, 0 / 0.5 / 1)", C["gpu"]),
+                          ("eval/terminalbench", "Terminal-Bench microVM (solve rate)", C["microvm"]),
+                          ("eval/terminalbench_docker", "Terminal-Bench m5 (solve rate)", C["docker"])):
+        ax.plot(es, [f(r, key) for r in ev], marker="o", ms=4, lw=1.8, color=col, label=lab)
+    ax.set_title("Held-out eval", fontsize=10, color=INK, loc="left")
+    ax.set_xlabel("training step"); ax.set_ylim(0, 0.65)
+    ax.legend(frameon=False, fontsize=7.5, loc="upper left")
+    fig.tight_layout()
+    fig.savefig(os.path.join(HERE, "fig_learning.png"), dpi=200)
+    plt.close(fig)
+    data["learning_train48"] = {"steps": len(x), "no_grad_steps": sum(g == 0 for g in gn),
+                                "flat_groups": sum(flat), "groups": 4 * len(x),
+                                "reward_first10": sum(rew[:10]) / 10, "reward_last10": sum(rew[-10:]) / 10,
+                                "eval": {r["eval/step"]: {k: r.get(k) for k in ("eval/kernelbench", "eval/terminalbench",
+                                                                               "eval/terminalbench_docker")} for r in ev}}
+
 json.dump(data, open(os.path.join(HERE, "data.json"), "w"), indent=1, default=str)
 print(json.dumps(data, indent=1, default=str)[:6000])
