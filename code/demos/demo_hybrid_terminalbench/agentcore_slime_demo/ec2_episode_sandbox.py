@@ -83,7 +83,7 @@ class Ec2EpisodeSandbox(DockerComposeSandbox):
         script = ("#!/bin/bash\nset -e\nexec > /var/log/acs-episode.log 2>&1\numask 077\n"
                   f"echo '{self._token}' > /srv/acs/token\nsystemctl restart acs-compose-agent\n")
         inst = _ec2(self._region).run_instances(
-            ImageId=c["ami"], InstanceType=c.get("instance_type", "m5.xlarge"), MinCount=1, MaxCount=1,
+            ImageId=c["ami"], InstanceType=c.get("instance_type", "m5.2xlarge"), MinCount=1, MaxCount=1,
             UserData=gzip.compress(script.encode()),
             IamInstanceProfile={"Name": c["profile"]},
             NetworkInterfaces=[{"DeviceIndex": 0, "SubnetId": c["subnet"], "Groups": [c["sg"]],

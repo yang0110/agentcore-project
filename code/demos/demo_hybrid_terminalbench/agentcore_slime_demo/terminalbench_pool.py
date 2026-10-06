@@ -232,6 +232,7 @@ class TerminalBenchPool(HarnessPool):
             "TB_TASKS_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                          "terminalbench", "tasks"))
         self.open_attempts = int(os.environ.get("TB_OPEN_ATTEMPTS", "3"))
+        self.partial_credit = float(os.environ.get("TB_PARTIAL_CREDIT", "0.5"))   # see _reward
         # Serverless microVM idle timeout is ~15 min; heartbeat at half that with margin.
         self.idle_timeout = float(os.environ.get("WARM_IDLE_TIMEOUT", "900"))
         # The ONE pre-open knob: how many upcoming batches to keep booted. The session cap follows
@@ -460,12 +461,26 @@ class TerminalBenchPool(HarnessPool):
             if gate is not None:
                 gate.release()
 
+    def _reward(self, g: dict, evaluation: bool) -> float:
+        """1 if every hidden test passes. Otherwise, in TRAINING only, partial credit
+        TB_PARTIAL_CREDIT x (tests passed / tests total), default 0.5, so a solve still beats any
+        partial run. All-or-nothing gave GRPO almost no signal: in train48 run 2, 32 of 48 steps had
+        every group at one reward (grad_norm 0), while 873 of 1,940 unsolved episodes passed some
+        tests. Eval stays 0/1, so eval/terminalbench remains the solve rate. TB_PARTIAL_CREDIT=0 =
+        the old reward."""
+        if g["solved"]:
+            return 1.0
+        total = int(g.get("tests_total") or 0)
+        if evaluation or self.partial_credit <= 0 or total <= 0:
+            return 0.0
+        return self.partial_credit * min(1.0, int(g.get("tests_passed") or 0) / total)
+
     async def _grade(self, sb, task) -> dict:
         return await grade_episode(sb, task.task_id, self.tasks_dir,
                                    float(task.spec.get("max_test_timeout_sec") or 180))
 
     # ---- the episode: its own fresh session on THIS task's Runtime -----------
-    async def _run_episode(self, worker, task, sampling_params, base_sample):
+    async def _run_episode(self, worker, task, sampling_params, base_sample, evaluation: bool = False):
         from . import router_trace
         from .agentcore_runtime_sandbox import _arn_tail
 
@@ -558,7 +573,8 @@ class TerminalBenchPool(HarnessPool):
             g.pop("grade_tail", None)
             ep.update(g, grade_ms=round((time.perf_counter() - tg) * 1000.0, 1))
             ep["solved"] = int(g["solved"])
-            reward = 1.0 if g["solved"] else 0.0
+            reward = self._reward(g, evaluation)
+            ep["reward"] = round(reward, 4)
 
             samples = await adapter.finish_session(
                 sid, base_sample=base_sample, reward=float(reward),
@@ -617,14 +633,14 @@ class TerminalBenchPool(HarnessPool):
             await self._close_session(sb)
 
     # ---- public entry point: start the episode's cold start at enqueue time --
-    async def submit(self, task, sampling_params, base_sample):
+    async def submit(self, task, sampling_params, base_sample, evaluation: bool = False):
         await self._ensure_started()
         arn = self._arn_for(task)          # fail fast on an unmapped task, before queueing
         if not (getattr(base_sample, "metadata", None) or {}).get("tb_reserved"):
             # Not announced by the look-ahead source (eval, or no source wired): start its boot now.
             self._demand.append(arn)
         self._refill()
-        return await self.run(lambda worker: self._run_episode(worker, task, sampling_params, base_sample))
+        return await self.run(lambda worker: self._run_episode(worker, task, sampling_params, base_sample, evaluation))
 
     # ---- shutdown: stop any still-pre-opened sessions + the keeper -----------
     async def aclose(self) -> None:

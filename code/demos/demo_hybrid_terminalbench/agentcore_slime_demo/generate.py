@@ -134,7 +134,7 @@ async def generate(args, sample, sampling_params, evaluation: bool = False):
 
     pool = get_tb_pool(args)
     if pool.routes(task):     # Terminal-Bench rows + routed rows such as KernelBench on the g6 tier
-        return await pool.submit(task, sampling_params, sample)
+        return await pool.submit(task, sampling_params, sample, evaluation=evaluation)
     # THE HARNESS TIER (harness_pool.py, every demo's default): a free dispatch worker (W =
     # HARNESS_WORKERS, default RB x NS) pulls this episode, takes its sandbox FIRST, then the SGLang
     # engine with the fewest in-flight episodes (sticky for all its turns). The agent loop itself runs

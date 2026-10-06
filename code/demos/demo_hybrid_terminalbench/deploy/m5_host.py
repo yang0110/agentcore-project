@@ -21,7 +21,7 @@ limit 1 + the bootstrap's DOCKER-USER rule keep containers away from instance me
 
 Two m5 modes (TB_M5_MODE in run.sh):
   shared       (the instance above) many episodes at once, one compose project each — shared kernel
-  per_episode  ONE fresh EC2 instance per episode (M5_EP_INSTANCE_TYPE=m5.xlarge, M5_EP_DISK_GB=40), from
+  per_episode  ONE fresh EC2 instance per episode (M5_EP_INSTANCE_TYPE=m5.2xlarge, M5_EP_DISK_GB=40), from
                the baked AMI, pulling that task's images from ECR; terminated after grading. The
                instance above then only BUILDS images and pushes them to ECR.
 
@@ -191,7 +191,7 @@ def bake_ami() -> int:
     finally:
         ec2.terminate_instances(InstanceIds=[iid])
     st["episode"] = {"ami": img["ImageId"], "subnet": st["subnet"], "sg": st["sg"], "profile": st["episode_profile"],
-                     "instance_type": os.environ.get("M5_EP_INSTANCE_TYPE", "m5.xlarge"), "disk_gb": disk,
+                     "instance_type": os.environ.get("M5_EP_INSTANCE_TYPE", "m5.2xlarge"), "disk_gb": disk,
                      "agent_port": AGENT_PORT, "ecr_prefix": st.get("ecr_prefix", ""), "tag": EP_NAME}
     STATE.write_text(json.dumps(st, indent=2))
     print(f"# per-episode AMI {img['ImageId']} ({st['episode']['instance_type']}, {disk} GB) -> {STATE}")

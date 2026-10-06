@@ -8,7 +8,7 @@
 \title{Agentic RL on Terminal-Bench with slime and AgentCore Runtime}
 \author{Kaige Yang}
 \institute{Senior Applied Scientist, AWS}
-\date{September 30, 2026}
+\date{October 1, 2026}
 
 \begin{document}
 
@@ -23,22 +23,21 @@
 \vspace{10mm}
 {\small\color{white}\textbf{Kaige Yang}\\Senior Applied Scientist, AWS\par}
 \vspace{3mm}
-{\scriptsize\color{inkmuted}September 30, 2026 \textperiodcentered{} \tb{code/demos/demo\_cpu\_terminalbench}}
+{\scriptsize\color{inkmuted}October 1, 2026 \textperiodcentered{} \tb{code/demos/demo\_cpu\_terminalbench}}
 \end{minipage}
 \end{frame}}
 
 %====================================================================
 \sect{Overview}
-
 \begin{frame}{Key conclusions: the sandbox is solved, the reward is the bottleneck}
 \flabel{fr:key}
 \tabcap{The setting}
 \scriptsize\setlength{\tabcolsep}{4pt}
 \begin{tabularx}{\textwidth}{@{}P{0.12\textwidth}Y@{}}
 \toprule
-\textbf{Use case} & RL-train Qwen3-4B (slime GRPO) on tasks that each need \textbf{their own OS image} (\sref{fr:arch})\\
-\textbf{Isolation} & One episode = one new session = one dedicated microVM, sanitized at the end\\
-\textbf{Data} & 241 Terminal-Bench tasks $\rightarrow$ 218 images and Runtimes $\rightarrow$ 165 rows (\srefs{fr:anatomy}{fr:data})\\
+\textbf{Use case} & RL-train Qwen3-4B (slime GRPO) on tasks that each need \textbf{their own OS image} (\srefs{fr:agrl}{fr:arch})\\
+\textbf{Isolation} & One episode = one new session = one dedicated microVM, stopped once graded\\
+\textbf{Data} & 241 Terminal-Bench tasks $\rightarrow$ 218 images and Runtimes $\rightarrow$ 165 rows (\srefs{fr:tbwhat}{fr:data})\\
 \bottomrule
 \end{tabularx}
 \par\vspace{1mm}
@@ -48,85 +47,204 @@
 \toprule
 & \textbf{Conclusion} & \textbf{Evidence} & \textbf{Slides}\\
 \midrule
-1 & \textbf{One image per row works} on AgentCore & 218 of 229 arm64 builds ship (p50 127\,MB, \sref{fr:build}); 382 episodes on 382 fresh microVMs, \hl{0 infra errors} & \sref{fr:smoke}\\
-2 & \textbf{Cold start is the cost; pre-open removes it} & 509 of 868 concurrent opens boot cold (6--49\,s); with pre-open, boot wait \hl{p95 = 0}, 374 of 382 never waited & \srefs{fr:cold}{fr:preres}\\
-3 & \textbf{Heartbeat is required}: idle reclaim is silent & 17 of 382 pre-opened sessions idled past 15\,min; pings \hl{kept all 17}, 0 failed & \srefs{fr:hbwhy}{fr:hbhow}\\
-4 & \textbf{The reward, not the sandbox, blocks learning} & 4 of 320 solved; 38 of 40 GRPO groups had no gradient; test-fraction reward gives \hl{2 $\rightarrow$ 17} & \srefs{fr:signal}{fr:next}\\
+1 & \textbf{One image per row works} on AgentCore & 218 of 229 arm64 builds ship (p50 127\,MB); 894 episodes on fresh microVMs in two runs, \hl{0 infra errors} & \srefs{fr:build}{fr:smoke30}\\
+2 & \textbf{Boots stay off the critical path} & 0 boot waits on steps 2--9 with or without look-ahead; cold boots (6--49\,s) appear only in bursts & \srefs{fr:cold}{fr:precmp}\\
+3 & \textbf{One batch ahead is enough}; heartbeat is insurance & 2-batch look-ahead: same speed, \hl{+37\,\%} microVM time; heartbeat kept all 17 over-idle sessions in the long run & \srefs{fr:precmp}{fr:hbhow}\\
+4 & \textbf{The reward, not the sandbox, blocks learning} & 4 of 49 GRPO groups had a gradient, eval 1 of 62; test-fraction reward gives \hl{2 $\rightarrow$ 17} of 40 & \srefs{fr:signal}{fr:concl}\\
 \bottomrule
 \end{tabularx}
 \par\vspace{2mm}
-\plainen{one image per row costs a cold boot and a silent 15-minute reclaim; pre-open and heartbeat remove both, so the next run is about the reward.}
-\src{Smoke run 2026-09-23, warm-start and cold-start probes 2026-09-25/29, \tb{terminalbench/tasks/images.csv}; checked 2026-09-30.}
+\plainen{one image per task costs a boot and a silent 15-minute reclaim; the async driver plus heartbeat hide both, so the next run is about the reward.}
+\src{Smoke runs 2026-09-23/30 and 2026-10-01, warm-start and cold-start probes 2026-09-25/29, \tb{terminalbench/tasks/images.csv}; checked 2026-10-01.}
 \end{frame}
 
 %====================================================================
-\begin{frame}{The demo: use case covered, why this demo, design considerations}
-\flabel{fr:ucwd}
-\scriptsize\setlength{\tabcolsep}{4pt}
-\tabcap{The demo in three answers}
-\begin{tabularx}{\textwidth}{@{}P{0.17\textwidth}Y@{}}
-\toprule
-\textbf{Use case covered} & Agentic RL where \textbf{every task needs a different OS image} (packages, services, files, compilers) and the agent changes the whole machine through the shell: hundreds of bespoke images, each behind its own AgentCore Runtime, with strict row $\rightarrow$ image $\rightarrow$ Runtime routing.\\
-\textbf{Why this demo} & The hardest sandbox shape in the literature datasets: no generic image can serve it, and a shared session would leak one episode's changes into the next. It shows AgentCore scaling to a \hl{pool of 218 Runtimes} built from the tasks' own Dockerfiles with no per-task code, and the two latency fixes a per-episode microVM needs: \textbf{pre-open} and \textbf{heartbeat}.\\
-\textbf{Design considerations} & \textbf{One fresh microVM session per episode} (\tb{terminalbench\_pool.py}), stopped once graded \textperiodcentered{} \textbf{look-ahead pre-open} of the next 2 batches (\tb{TB\_PREOPEN\_BATCHES=2}) \textperiodcentered{} \textbf{heartbeat} on by default \textperiodcentered{} the \textbf{mini\_claude loop runs inside the session} and dials the trainer's \tb{AnthropicAdapter} back over the VPC (SG$\rightarrow$SG, 18100--18163) \textperiodcentered{} \textbf{harness tier} (\tb{HarnessPool}, W = RB$\times$NS, least-loaded engine, sticky per episode) \textperiodcentered{} each task image is \textbf{wrapped, not rewritten} (standalone \tb{/opt/acs/py} + stdlib server layer) \textperiodcentered{} reward = the task's \textbf{hidden pytest oracle} (RLVR, no judge) \textperiodcentered{} of 229 tasks, \textbf{7 fail to build} for arm64 and \textbf{4 exceed the 2\,GB cap}.\\
-\bottomrule
-\end{tabularx}
-\par\vspace{2mm}
-\tabcap{Status, 2026-09-30}
-\begin{tabularx}{\textwidth}{@{}P{0.17\textwidth}Y@{}}
-\toprule
-\textbf{Scope} & \tb{code/demos/demo\_cpu\_terminalbench} is the only demo since 2026-09-30. The long run is \tb{convergence/20\_cpu\_terminalbench.sh}.\\
-\textbf{Smoke run} & 2026-09-30 re-run on the current code (\tb{5\_run.sh}): \hl{10 steps + final eval in 22\,min}, 449 episodes, \textbf{0 infra errors}, 22/387 train and 1/62 eval solved (\sref{fr:smoke30}). The deep-dive slides use the 2026-09-23 smoke.\\
-\bottomrule
-\end{tabularx}
-\src{\tb{code/demos/demo\_cpu\_terminalbench/README.md}; checked 2026-09-30.}
-\end{frame}
-
-%====================================================================
-
-\begin{frame}{The sandbox is the reward source; to AgentCore an RL batch is just Runtimes and session ids}
-\flabel{fr:arch}
+\sect{1 \textperiodcentered{} Background: agentic RL, AgentCore, slime}
+\begin{frame}{Agentic RL: many tool turns on a machine, scored by its end state}
+\flabel{fr:agrl}
 \begin{columns}[T]
-\column{0.44\textwidth}
-\figcap{Agentic RL: trainer, inference, harness, sandbox}
-\centering\figcard[width=0.92\linewidth]{tb_fig02_rl-loop.pdf}\par
-\vspace{1mm}\raggedright
-\begin{itemize}\scriptsize\setlength{\itemsep}{0.4mm}
-\item \textbf{slime} trains, \textbf{SGLang} serves, the \textbf{harness} records tokens + logprobs.
-\item \textbf{AgentCore} runs tool calls and hidden tests: \hl{it produces the reward}.
-\item \textbf{No slime fork:} three plugin hooks (generate, reward, data source).
-\end{itemize}
-\column{0.52\textwidth}
+\column{0.46\textwidth}
+\figcap{The agentic RL loop}
+\centering\figcard[width=0.9\linewidth]{tb_fig02_rl-loop.pdf}\par
+\vspace{1.5mm}\raggedright
+\begin{enumerate}\scriptsize\setlength{\itemsep}{0.5mm}
+\item \textbf{Rollout:} the policy reads the task, calls a tool (\tb{bash}), reads the output, calls again, \dots
+\item \textbf{Reward:} the environment checks the \hl{final machine state} (hidden tests).
+\item \textbf{Update:} GRPO compares the N tries of one task; better-than-average tries are reinforced.
+\end{enumerate}
+\column{0.5\textwidth}
+\tabcap{Single-turn RL vs agentic RL}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.2\linewidth}P{0.31\linewidth}Y@{}}
+\toprule
+& \textbf{Single-turn (math, code)} & \textbf{Agentic (Terminal-Bench)}\\
+\midrule
+Action & one answer & up to 8 turns of tool calls\\
+Environment & none, or a checker & a stateful Linux machine\\
+Reward & match the answer & hidden tests on the end state\\
+Cost per rollout & GPU only, seconds & GPU + sandbox, \textbf{25\,s p50}\\
+Isolation & not needed & \hl{one machine per try}\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+\tabcap{What the sandbox must give an RL batch}
+\tiny
+\begin{tabularx}{\linewidth}{@{}P{0.3\linewidth}Y@{}}
+\toprule
+Same start state & all N tries of a task start from one image\\
+Isolation & one try cannot see another's changes\\
+Scale & 32 machines per step, 96 alive while training (\sref{fr:conc})\\
+Low latency & a boot on the critical path stalls the step\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1mm}
+{\tiny\textbf{GRPO caveat:} if all N tries get the same reward, the group has zero advantage and teaches nothing (\sref{fr:signal}).\par}
+\end{columns}
+\src{\tb{run.sh} (RB = 4 tasks $\times$ NS = 8 tries, 8 turns); smoke run 2026-09-30; checked 2026-10-01.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{AgentCore Runtime: one image per ARN, one microVM per session}
+\flabel{fr:agentcore}
+\begin{columns}[T]
+\column{0.5\textwidth}
+\figcap{Image $\rightarrow$ Runtime $\rightarrow$ sessions $\rightarrow$ microVMs}
+\centering\figcard[width=0.88\linewidth]{tb_fig01_cardinality.pdf}\par
+\vspace{1.5mm}\raggedright
+{\footnotesize\textbf{What it is.}} {\scriptsize Amazon Bedrock AgentCore Runtime is a managed, serverless host for agent code. You give it an arm64 container image; it gives you an ARN. Each \tb{runtimeSessionId} you invoke gets a \hl{dedicated microVM}, torn down at the end.\par}
+\vspace{1mm}
+\tabcap{The three calls the demo uses}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.4\linewidth}Y@{}}
+\toprule
+\tb{CreateAgentRuntime} & once per task: image, VPC, role\\
+\tb{InvokeAgentRuntime} & per op; a \textbf{new id's first call boots it}\\
+\tb{StopRuntimeSession} & episode end: the microVM is gone\\
+\bottomrule
+\end{tabularx}
+\column{0.46\textwidth}
 \tabcap{AgentCore concepts seen from agentic RL}
 \tiny\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}P{0.17\linewidth}P{0.3\linewidth}Y@{}}
+\begin{tabularx}{\linewidth}{@{}P{0.2\linewidth}P{0.34\linewidth}Y@{}}
 \toprule
-\textbf{AgentCore} & \textbf{RL meaning} & \textbf{Terminal-Bench, one step}\\
+\textbf{AgentCore} & \textbf{RL meaning} & \textbf{One step here}\\
 \midrule
-\textbf{Image} & the environment (ECR, arm64, $\le$ 2\,GB) & one per task, 218 deployed\\
-\textbf{Runtime} & a task's env behind one ARN, reusable & 4 tasks drawn $\rightarrow$ 4 Runtimes\\
-\textbf{Session} & one rollout; its first invoke boots it & 4 $\times$ 8 = \hl{32 new sessions}\\
-\textbf{microVM} & isolation of that rollout (2 vCPU, 8\,GB) & 32 VMs, stopped at episode end\\
-GRPO group & 8 sessions on \textbf{one} Runtime & same start state, no sharing\\
+\textbf{Image} & the environment (ECR, arm64, $\le$ 2\,GB) & one per task, 218 built\\
+\textbf{Runtime} & a task's env behind one ARN & 4 tasks $\rightarrow$ 4 Runtimes\\
+\textbf{Session} & one rollout & 4 $\times$ 8 = \hl{32 new sessions}\\
+\textbf{microVM} & that rollout's isolation (2 vCPU, 8\,GB) & stopped when graded\\
+GRPO group & 8 sessions on \textbf{one} Runtime & same start, nothing shared\\
 \bottomrule
 \end{tabularx}
-\par\vspace{2mm}
+\par\vspace{1mm}
 \tabcap{Lifecycle facts that shape the RL design}
 \tiny
-\begin{tabularx}{\linewidth}{@{}P{0.36\linewidth}Y@{}}
+\begin{tabularx}{\linewidth}{@{}P{0.4\linewidth}Y@{}}
 \toprule
-No ``create session'' call & a new id's first invoke is a \textbf{cold start} $\rightarrow$ pre-open (\sref{fr:cold})\\
-15-min idle reclaim, silent & a waiting session comes back empty $\rightarrow$ heartbeat (\sref{fr:hbwhy})\\
-5000 sessions \textperiodcentered{} 25 new/s \textperiodcentered{} 1000 Runtimes & bounds rollouts in flight, burst rate, distinct images [Q1][Q2]\\
+No ``create session'' call & first invoke = \textbf{cold start} $\rightarrow$ pre-open (\sref{fr:cold})\\
+15-min idle reclaim, silent & id comes back empty $\rightarrow$ heartbeat (\sref{fr:hbwhy})\\
+arm64 only, image $\le$ 2\,GB & 11 of 229 tasks can't ship (\sref{fr:build})\\
+Quotas [Q1][Q2] & 5000 live sessions, 25 new/s, 1000 Runtimes\\
 \bottomrule
 \end{tabularx}
 \end{columns}
-\src{\tb{demo\_cpu\_terminalbench/agentcore\_slime\_demo/generate.py}, \tb{harness\_pool.py}; \tb{demo\_cpu\_terminalbench/run.sh} (RB = 4, NS = 8); AgentCore docs [D2], quotas [Q1][Q2] (\sref{fr:refs}); checked 2026-09-29.}
+\src{AgentCore docs [D1][D2], quotas [Q1][Q2] (\sref{fr:refs}); \tb{agentcore\_runtime\_sandbox.py}; checked 2026-10-01.}
 \end{frame}
 
 %====================================================================
-\sect{1 \textperiodcentered{} Task and dataset}
+\begin{frame}[fragile]{slime + AgentCore: plugin hooks, agent loop inside the microVM}
+\flabel{fr:arch}
+\begin{columns}[T]
+\column{0.5\textwidth}
+\tabcap{The box: one 8-GPU host (8 $\times$ L40S) running slime}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.32\linewidth}Y@{}}
+\toprule
+Megatron trainer & Qwen3-4B, GRPO, 4 GPUs\\
+SGLang engines & 2 engines $\times$ 2 GPUs serve the policy\\
+Fully-async driver & rollouts keep running while the trainer steps\\
+AnthropicAdapter & one per engine, ports 18100+; records tokens + logprobs\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1.5mm}
+{\footnotesize\textbf{\tb{run.sh}} \textcolor{inkmuted}{(the slime flags that plug AgentCore in)}}
+\begin{lstlisting}[language=bash]
+--rollout-function-path  slime...generate_rollout_fully_async
+--custom-generate-function-path  agentcore_slime_demo.generate.generate
+--data-source-path  ...tb_lookahead_source.LookaheadDataSource
+--eval-function-path  agentcore_slime_demo.mode_b_eval.generate_rollout
+\end{lstlisting}
+\column{0.46\textwidth}
+\tabcap{One episode across the two sides}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.06\linewidth}P{0.2\linewidth}Y@{}}
+\toprule
+& \textbf{Where} & \textbf{What}\\
+\midrule
+1 & slime & \tb{generate} gets a row; a harness worker picks the least-loaded engine\\
+2 & AgentCore & take the task's pre-opened session (\sref{fr:prehow})\\
+3 & microVM & write \tb{session\_runner.py}; the mini\_claude loop runs \textbf{in the VM}\\
+4 & VPC & each turn dials back to the engine's adapter (SG$\rightarrow$SG rule)\\
+5 & microVM & inject hidden tests, run them: \hl{reward}\\
+6 & slime & adapter turns the transcript into a \tb{Sample} (tokens, logprobs, loss mask, reward)\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1.5mm}
+\begin{itemize}\tiny\setlength{\itemsep}{0.4mm}
+\item \textbf{Why the loop runs in the VM:} the harness scales with the sandboxes, not the trainer.
+\item \textbf{Why an adapter:} the loop speaks the Anthropic Messages API; slime still gets exact token ids.
+\item \textbf{Eval} is slime's stock eval, run on its own loop by \tb{mode\_b\_eval}.
+\end{itemize}
+\end{columns}
+\src{\tb{demo\_cpu\_terminalbench/run.sh}, \tb{agentcore\_slime\_demo/\{generate, harness\_pool, terminalbench\_pool, in\_session\_harness, mode\_b\_eval\}.py}; checked 2026-10-01.}
+\end{frame}
 
+%====================================================================
+\sect{2 \textperiodcentered{} Terminal-Bench deep dive}
+\begin{frame}{Terminal-Bench: 241 shell tasks, each a machine + hidden tests}
+\flabel{fr:tbwhat}
+\begin{columns}[T]
+\column{0.42\textwidth}
+{\footnotesize\textbf{What it is.}} {\scriptsize An open benchmark (\tb{laude-institute/terminal-bench}) for agents that work in a Linux shell: compile, configure services, debug, analyse data, train models, crack hashes. The agent gets an instruction and a terminal; \hl{hidden pytest checks} on the final machine state decide pass or fail.\par}
+\vspace{1.5mm}
+\tabcap{How many tasks}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}Yrrrr@{}}
+\toprule
+& \textbf{All} & \textbf{Easy} & \textbf{Med.} & \textbf{Hard}\\
+\midrule
+Terminal-Bench (main) & 241 & & & \\
+Single container & 229 & 59 & 113 & 57\\
+\hl{Our training rows} & \hl{165} & 47 & 79 & 39\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1mm}
+{\tiny 12 tasks need several containers (database + app); one session is one VM, so they are left out. How 229 become 165: \sref{fr:data}.\par}
+\column{0.54\textwidth}
+\tabcap{What the 229 tasks contain (26 categories)}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.3\linewidth}rY@{}}
+\toprule
+\textbf{Category} & \textbf{Tasks} & \textbf{Example}\\
+\midrule
+software-engineering & 46 & \tb{broken-python}: ``pip can't install packages'', fix it\\
+system-administration & 25 & \tb{git-multibranch}: a Git server over SSH\\
+data-science & 19 & \tb{bank-trans-filter}: filter a CSV with typos\\
+scientific-computing & 18 & \tb{raman-fitting}: fit graphene G and 2D peaks\\
+security & 18 & \tb{crack-7z-hash}: recover a 7z password\\
+debugging & 17 & repair a broken build or script\\
+mathematics & 13 & \tb{countdown-game}: reach 462 from 6 numbers\\
+model-training & 13 & \tb{train-fasttext}: a small, accurate Yelp model\\
+file-operations & 13 & \tb{hello-world}: write one file\\
+games & 9 & \tb{chess-best-move}: read a board image\\
+16 others & 38 & ML, algorithms, video, protocols, \dots\\
+\bottomrule
+\end{tabularx}
+\end{columns}
+\src{\tb{terminalbench/tasks/manifest.json} (\tb{fetch\_terminalbench.py}, \href{https://github.com/laude-institute/terminal-bench}{\textcolor{linkc}{\tb{laude-institute/terminal-bench}}} main), \tb{data/terminalbench\_*.jsonl}; checked 2026-10-01.}
+\end{frame}
+
+%====================================================================
 \begin{frame}{A task is a whole machine in a known state, so every row needs its own image}
 \flabel{fr:anatomy}
 \begin{columns}[T]
@@ -228,8 +346,6 @@ Oracle & run \tb{solution.sh}, then hidden tests & \yes{} pass & \hl{52}\\
 \end{frame}
 
 %====================================================================
-\sect{2 \textperiodcentered{} Building the images}
-
 \begin{frame}[fragile]{Of 229 arm64 builds, 218 ship; 4 exceed 2\,GB and 7 fail (4 x86-only, 3 downloads)}
 \flabel{fr:build}
 \begin{columns}[T]
@@ -278,77 +394,6 @@ CMD ["/opt/acs/py/bin/python3", "/opt/acs/acs_http_server.py"]
 \end{frame}
 
 %====================================================================
-\begin{frame}[fragile]{Four scripts build the pool once; each run is then oracle check, data, train, clean up}
-\flabel{fr:steps}
-\begin{columns}[T]
-\column{0.58\textwidth}
-{\footnotesize\textbf{From \tb{code/demos/demo\_cpu\_terminalbench/}, on the host}}
-\begin{lstlisting}[language=bash]
-# --- build the pool (once) ---
-TB_LIMIT=2 bash 2_build_image.sh    # 1+2. fetch, dry run
-TB_LIMIT=2 bash 4_deploy_runtime.sh
-bash 2_build_image.sh      # 3. all tasks, 16 parallel
-bash 3_push_ecr.sh         #    report: images.csv
-bash 4_deploy_runtime.sh   # 4. -> arn_by_image.json
-
-# --- every run ---
-docker exec agentcore_p4 python3 \
-  /work/code/demos/demo_cpu_terminalbench/terminalbench/validate_oracle.py  # 5.
-bash 1_prepare_data.sh     # 6. usable rows only
-bash 5_run.sh              # 7. 10 steps + 1 eval
-bash 6_cleanup.sh          # 8. delete 218 Runtimes
-\end{lstlisting}
-\column{0.38\textwidth}
-\begin{enumerate}\scriptsize\setlength{\itemsep}{0.8mm}
-\item[1.] Fetches the corpus once; keeps the 229 single-container tasks.
-\item[2.] Catches layer and IAM errors in minutes.
-\item[3.] Failed and over-cap builds are skipped.
-\item[4.] VPC Runtimes, NAT egress, SG$\rightarrow$SG to the adapter.
-\item[5.] Oracle check (\sref{fr:data}).
-\item[6.] 165 usable rows $\rightarrow$ 134 train, 31 eval.
-\item[7.] In \tb{agentcore\_p4}; 8 GPUs (4 train + 4 infer).
-\item[8.] ECR images are kept.
-\end{enumerate}
-\end{columns}
-\src{\tb{demo\_cpu\_terminalbench/README.md}, \tb{deploy/demo.env}, \tb{5\_run.sh}, \tb{run.sh} (standalone demo again since 2026-09-30; no \tb{VARIANT=}/\tb{DATASET=} needed); checked 2026-09-30.}
-\end{frame}
-
-%====================================================================
-\sect{3 \textperiodcentered{} Running on AgentCore microVMs}
-
-\begin{frame}{One episode: route, fresh session, agent loop in the microVM, grade, stop}
-\flabel{fr:episode}
-\figcap{route $\rightarrow$ fresh session $\rightarrow$ agent loop $\rightarrow$ grade $\rightarrow$ stop}
-\centering\figcard[height=0.33\textheight]{tb_fig03_episode-workflow.pdf}\par
-\vspace{1mm}
-\raggedright
-\begin{columns}[T]
-\column{0.5\textwidth}
-\begin{enumerate}\tiny\setlength{\itemsep}{0.4mm}
-\item \textbf{Route and open:} \tb{task.image} $\rightarrow$ Runtime ARN; take a pre-opened session. A new id's first invoke \textbf{is} the boot.
-\item \textbf{Agent loop in the microVM}, calling the policy over a VPC dial-back; up to 8 turns.
-\item \textbf{Grade:} inject \tb{tests/}, run them; then \tb{StopRuntimeSession}.
-\end{enumerate}
-\column{0.46\textwidth}
-\tabcap{Run settings for Terminal-Bench rows (\tb{run.sh})}
-\tiny\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}P{0.5\linewidth}Y@{}}
-\toprule
-\tb{RB} $\times$ \tb{NS} = \tb{HARNESS\_WORKERS} & 4 $\times$ 8 = 32 fresh VMs per step\\
-\tb{EPISODE\_MAX\_TURNS} / \tb{\_TOKENS} & 8 / 1024 per turn\\
-\tb{TB\_EXEC\_TIMEOUT} & 180\,s per bash command\\
-\tb{MAX\_TOKENS\_PER\_GPU} & 16384: one trajectory per micro-batch\\
-\tb{TB\_PREOPEN\_BATCHES} & 2 batches booted ahead (\sref{fr:prehow})\\
-\tb{WARM\_IDLE\_TIMEOUT} $\times$ \tb{PING\_FRACTION} & 900 $\times$ 0.5 = ping at 450\,s (\sref{fr:hbhow})\\
-\bottomrule
-\end{tabularx}
-\end{columns}
-\src{\tb{agentcore\_slime\_demo/terminalbench\_pool.py} (\tb{\_run\_episode}, \tb{grade\_episode}), \tb{image\_routing.py}; \tb{demo\_cpu\_terminalbench/run.sh}; checked 2026-09-29.}
-\end{frame}
-
-%====================================================================
-\sect{4 \textperiodcentered{} Cold start and pre-open}
-
 \begin{frame}{Only 1--2 warm VMs per Runtime: most concurrent opens pay a cold boot of 6--49\,s}
 \flabel{fr:cold}
 \begin{columns}[T]
@@ -394,6 +439,90 @@ bash 6_cleanup.sh          # 8. delete 218 Runtimes
 \end{frame}
 
 %====================================================================
+\sect{3 \textperiodcentered{} Our demo, step by step}
+\begin{frame}{The demo: use case covered, why this demo, design considerations}
+\flabel{fr:ucwd}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\tabcap{The demo in three answers}
+\begin{tabularx}{\textwidth}{@{}P{0.17\textwidth}Y@{}}
+\toprule
+\textbf{Use case covered} & Agentic RL where \textbf{every task needs a different OS image} (packages, services, files, compilers) and the agent changes the whole machine through the shell: hundreds of bespoke images, each behind its own AgentCore Runtime, with strict row $\rightarrow$ image $\rightarrow$ Runtime routing.\\
+\textbf{Why this demo} & The hardest sandbox shape in the literature datasets: no generic image can serve it, and a shared session would leak one episode's changes into the next. It shows AgentCore scaling to a \hl{pool of 218 Runtimes} built from the tasks' own Dockerfiles with no per-task code, and the two latency fixes a per-episode microVM needs: \textbf{pre-open} and \textbf{heartbeat}.\\
+\textbf{Design considerations} & \textbf{One fresh microVM session per episode} (\tb{terminalbench\_pool.py}), stopped once graded \textperiodcentered{} \textbf{look-ahead pre-open} of the next 2 batches (\tb{TB\_PREOPEN\_BATCHES=2}) \textperiodcentered{} \textbf{heartbeat} on by default \textperiodcentered{} the \textbf{mini\_claude loop runs inside the session} and dials the trainer's \tb{AnthropicAdapter} back over the VPC (SG$\rightarrow$SG, 18100--18163) \textperiodcentered{} \textbf{harness tier} (\tb{HarnessPool}, W = RB$\times$NS, least-loaded engine, sticky per episode) \textperiodcentered{} each task image is \textbf{wrapped, not rewritten} (standalone \tb{/opt/acs/py} + stdlib server layer) \textperiodcentered{} reward = the task's \textbf{hidden pytest oracle} (RLVR, no judge) \textperiodcentered{} of 229 tasks, \textbf{7 fail to build} for arm64 and \textbf{4 exceed the 2\,GB cap}.\\
+\bottomrule
+\end{tabularx}
+\src{\tb{code/demos/demo\_cpu\_terminalbench/README.md}; checked 2026-09-30.}
+\end{frame}
+
+%====================================================================
+\begin{frame}[fragile]{Four scripts build the pool once; each run is then oracle check, data, train, clean up}
+\flabel{fr:steps}
+\begin{columns}[T]
+\column{0.58\textwidth}
+{\footnotesize\textbf{From \tb{code/demos/demo\_cpu\_terminalbench/}, on the host}}
+\begin{lstlisting}[language=bash]
+# --- build the pool (once) ---
+TB_LIMIT=2 bash 2_build_image.sh    # 1+2. fetch, dry run
+TB_LIMIT=2 bash 4_deploy_runtime.sh
+bash 2_build_image.sh      # 3. all tasks, 16 parallel
+bash 3_push_ecr.sh         #    report: images.csv
+bash 4_deploy_runtime.sh   # 4. -> arn_by_image.json
+
+# --- every run ---
+docker exec agentcore_p4 python3 \
+  /work/code/demos/demo_cpu_terminalbench/terminalbench/validate_oracle.py  # 5.
+bash 1_prepare_data.sh     # 6. usable rows only
+bash 5_run.sh              # 7. 10 steps + 1 eval
+bash 6_cleanup.sh          # 8. delete 218 Runtimes
+\end{lstlisting}
+\column{0.38\textwidth}
+\begin{enumerate}\scriptsize\setlength{\itemsep}{0.8mm}
+\item[1.] Fetches the corpus once; keeps the 229 single-container tasks.
+\item[2.] Catches layer and IAM errors in minutes.
+\item[3.] Failed and over-cap builds are skipped.
+\item[4.] VPC Runtimes, NAT egress, SG$\rightarrow$SG to the adapter.
+\item[5.] Oracle check (\sref{fr:data}).
+\item[6.] 165 usable rows $\rightarrow$ 134 train, 31 eval.
+\item[7.] In \tb{agentcore\_p4}; 8 GPUs (4 train + 4 infer).
+\item[8.] ECR images are kept.
+\end{enumerate}
+\end{columns}
+\src{\tb{demo\_cpu\_terminalbench/README.md}, \tb{deploy/demo.env}, \tb{5\_run.sh}, \tb{run.sh} (standalone demo again since 2026-09-30; no \tb{VARIANT=}/\tb{DATASET=} needed); checked 2026-09-30.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{One episode: route, fresh session, agent loop in the microVM, grade, stop}
+\flabel{fr:episode}
+\figcap{route $\rightarrow$ fresh session $\rightarrow$ agent loop $\rightarrow$ grade $\rightarrow$ stop}
+\centering\figcard[height=0.33\textheight]{tb_fig03_episode-workflow.pdf}\par
+\vspace{1mm}
+\raggedright
+\begin{columns}[T]
+\column{0.5\textwidth}
+\begin{enumerate}\tiny\setlength{\itemsep}{0.4mm}
+\item \textbf{Route and open:} \tb{task.image} $\rightarrow$ Runtime ARN; take a pre-opened session. A new id's first invoke \textbf{is} the boot.
+\item \textbf{Agent loop in the microVM}, calling the policy over a VPC dial-back; up to 8 turns.
+\item \textbf{Grade:} inject \tb{tests/}, run them; then \tb{StopRuntimeSession}.
+\end{enumerate}
+\column{0.46\textwidth}
+\tabcap{Run settings for Terminal-Bench rows (\tb{run.sh})}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.5\linewidth}Y@{}}
+\toprule
+\tb{RB} $\times$ \tb{NS} = \tb{HARNESS\_WORKERS} & 4 $\times$ 8 = 32 fresh VMs per step\\
+\tb{EPISODE\_MAX\_TURNS} / \tb{\_TOKENS} & 8 / 1024 per turn\\
+\tb{TB\_EXEC\_TIMEOUT} & 180\,s per bash command\\
+\tb{MAX\_TOKENS\_PER\_GPU} & 16384: one trajectory per micro-batch\\
+\tb{TB\_PREOPEN\_BATCHES} & 2 batches booted ahead (\sref{fr:prehow})\\
+\tb{WARM\_IDLE\_TIMEOUT} $\times$ \tb{PING\_FRACTION} & 900 $\times$ 0.5 = ping at 450\,s (\sref{fr:hbhow})\\
+\bottomrule
+\end{tabularx}
+\end{columns}
+\src{\tb{agentcore\_slime\_demo/terminalbench\_pool.py} (\tb{\_run\_episode}, \tb{grade\_episode}), \tb{image\_routing.py}; \tb{demo\_cpu\_terminalbench/run.sh}; checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\sect{4 \textperiodcentered{} Pre-open and heartbeat}
 \begin{frame}[fragile]{Pre-open replays slime's data order and boots the next 64 episodes' sessions ahead}
 \flabel{fr:prehow}
 \begin{columns}[T]
@@ -429,9 +558,86 @@ def _claim(self, arn):          # a worker starts an episode
 \vspace{0.5mm}
 {\tiny\textbf{Rejected:} reset a warm session (leaks) \textperiodcentered{} pool per task (1,328 idle VMs).\par}
 \vspace{1mm}
-\colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\tiny Live microVMs $\le$ W + P = 32 + 64. Quota: \textbf{5000} active sessions, 25 new/s [Q2] (\sref{fr:refs}).}}
+\colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\tiny Training holds W + P = 32 + 64 = 96 live microVMs; eval opens on top (peak 137, \sref{fr:conc}). Quota: \textbf{5000} active sessions, 25 new/s [Q2] (\sref{fr:refs}).}}
 \end{columns}
 \src{\tb{agentcore\_slime\_demo/tb\_lookahead\_source.py}, \tb{terminalbench\_pool.py} (\tb{reserve}, \tb{\_refill}, \tb{\_claim}); checked 2026-09-29.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Live microVMs: 96 with look-ahead, 64 without; peaks come from eval}
+\flabel{fr:conc}
+\begin{columns}[T]
+\column{0.56\textwidth}
+\figcap{Live microVM sessions over the two 10-step smoke runs}
+\centering\figcard[width=0.9\linewidth]{tb_fig04_concurrency.pdf}\par
+\vspace{1.5mm}\raggedright
+{\scriptsize\textbf{Read it as:} while training, each run holds a flat plateau; at minute 9 training ends, eval opens its 62 sessions on demand on top of what is left, then everything drains.\par}
+\column{0.4\textwidth}
+\tabcap{Concurrent microVMs}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}Yrr@{}}
+\toprule
+\tb{TB\_PREOPEN\_BATCHES} & \textbf{2} & \textbf{0}\\
+\midrule
+Plateau while training & \hl{96} & \hl{64}\\
+\quad running (W = RB $\times$ NS) & 32 & 32\\
+\quad booted ahead & 64 & 32\\
+\textbf{Peak} (eval starts) & 137 & 111\\
+Time-weighted mean & 79 & 54\\
+Sessions opened & 514 & 479\\
+Opened, never used & 64 & 32\\
+Peak / 5000-session quota & 2.7\,\% & 2.2\,\%\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1.5mm}
+\begin{itemize}\tiny\setlength{\itemsep}{0.4mm}
+\item \textbf{``0'' still boots one batch ahead:} the fully-async driver admits 2W episodes, and each opens its session at submit.
+\item \textbf{Never-used sessions:} both runs book sessions past the last training step; capping at the steps left removes them.
+\end{itemize}
+\end{columns}
+\src{\tb{logs/smoke\_\{tbonly,nopreopen\}-agentcore-runtime\_\{20260930\_153115,20261001\_001609\}.sessions.csv}; \tb{figures/tb\_fig04\_concurrency.py}; checked 2026-10-01.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{With vs without look-ahead: same speed, 37\,\% more microVM time}
+\flabel{fr:precmp}
+\begin{columns}[T]
+\column{0.58\textwidth}
+\tabcap{Two 10-step smoke runs, identical except \tb{TB\_PREOPEN\_BATCHES}}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}Yrr@{}}
+\toprule
+& \textbf{2 (default)} & \textbf{0 (off)}\\
+\midrule
+Wall clock, launch to end & 21.6\,min & 22.1\,min\\
+Training steps 1--9, summed step time & 469\,s & 452\,s\\
+\textbf{Boot waits, steps 2--9} & \hl{0} & \hl{0}\\
+Boot waits, first batch (nothing booted yet) & 31, max 10.7\,s & 32, max 7.5\,s\\
+Boot waits, eval (opened on demand in both) & p50 1.1\,s & p50 1.3\,s\\
+Session open time p50 / p95 / max & 0.77 / 3.7 / 4.0\,s & 0.65 / 2.3 / 3.3\,s\\
+Opens $\ge$ 5\,s (cold boots) & 0 of 447 & 0 of 447\\
+Booted session idle before use, p50 / max & 50 / 194\,s & 29 / 112\,s\\
+\textbf{microVM-minutes} & \hl{926} & \hl{674}\\
+Heartbeat pings & 1 & 0\\
+Solved, train + eval \textperiodcentered{} eval only & 23/431 \textperiodcentered{} 1/62 & 19/432 \textperiodcentered{} 1/62\\
+\bottomrule
+\end{tabularx}
+\column{0.38\textwidth}
+\textbf{\footnotesize Why no speed-up here}
+\begin{enumerate}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \textbf{The driver already looks ahead one batch:} with look-ahead off, the 32 queued episodes boot while the 32 running ones finish, so a free worker still finds a session ready.
+\item \textbf{Boots were warm:} no open took 5\,s or more, unlike the 6--49\,s cold boots of the burst probe (\sref{fr:cold}).
+\end{enumerate}
+\vspace{1mm}
+\textbf{\footnotesize When look-ahead still pays}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item a cold fleet or a burst of opens per Runtime (\sref{fr:cold});
+\item a synchronous driver with no admission queue: $-20$\,\% makespan in the probe (\sref{fr:preres}).
+\end{itemize}
+\vspace{1mm}
+\colorbox{panel}{\parbox{\dimexpr\linewidth-2\fboxsep}{\scriptsize\textbf{Takeaway:} under fully-async, 1 batch ahead is enough; the second costs \hl{+37\,\%} microVM time.}}
+\end{columns}
+\src{\tb{logs/smoke\_tbonly-\dots\_20260930\_153115} vs \tb{logs/smoke\_nopreopen-\dots\_20261001\_001609} (\tb{.demo.csv}, \tb{.sessions.csv}, \tb{.csv}); checked 2026-10-01.}
 \end{frame}
 
 %====================================================================
@@ -468,8 +674,6 @@ Price: pre-opened VM idle & p50 \textbf{7.3\,min}, max 16.5\,min, for a 21\,s me
 \end{frame}
 
 %====================================================================
-\sect{5 \textperiodcentered{} Heartbeat}
-
 \begin{frame}{An idle session is silently wiped after 15 min, and pre-opened sessions idle up to 16.5 min}
 \flabel{fr:hbwhy}
 \begin{columns}[T]
@@ -558,44 +762,7 @@ Idle past 900\,s, pinged in time & \hl{17 / 17}\\
 \end{frame}
 
 %====================================================================
-\sect{6 \textperiodcentered{} Smoke run results}
-
-\begin{frame}{The smoke run answers three questions: yes, yes, and not yet}
-\flabel{fr:smoke}
-\tabcap{Smoke run 2026-09-23: Qwen3-4B, RB = 4 $\times$ NS = 8, 10 steps + 1 eval on 31 held-out tasks, $\approx$\,70 min}
-\scriptsize\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}P{0.28\textwidth}P{0.08\textwidth}Y P{0.1\textwidth}@{}}
-\toprule
-\textbf{Question} & \textbf{Answer} & \textbf{Evidence} & \textbf{Slide}\\
-\midrule
-1. Does one-image-per-task RL run end to end? & \hl{Yes} & 382 episodes (train + eval) on 382 fresh microVMs, 71 tasks; \textbf{0} infra errors, retries, grading timeouts & below\\
-2. Is the sandbox off the critical path? & \hl{Yes} & boot wait p95 \textbf{0\,ms} (pre-open); all 17 over-idle sessions pinged in time (heartbeat) & \srefs{fr:preres}{fr:hbhow}\\
-3. Does the policy learn? & \textbf{Not yet} & 4 of 320 train, 0 of 62 eval solved; 8 of 10 steps had zero gradient & \sref{fr:signal}\\
-\bottomrule
-\end{tabularx}
-\par\vspace{4mm}
-\begin{columns}[T]
-\column{0.48\textwidth}
-\tabcap{Where an episode's time goes (p50)}
-\scriptsize
-\begin{tabularx}{\linewidth}{@{}Yr@{}}
-\toprule
-Wait for a session (boot) & 0\,s\\
-Agent loop in the microVM & 9.0\,s\\
-Grading (inject tests, pytest) & 9.7\,s\\
-Whole episode p50 (p90) & 20.9\,s (63.7\,s)\\
-\bottomrule
-\end{tabularx}
-\column{0.48\textwidth}
-\begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
-\item \textbf{Rollout-bound:} a step is 203\,s p50; the trainer waits on the slowest episode, not on boots.
-\item \textbf{Grading is half the episode:} it installs \tb{uv} + pytest each time.
-\end{itemize}
-\end{columns}
-\src{\tb{\_smoke\_logs/lanes\_tb\_0923/terminalbench.\{csv,demo.csv,eval.csv\}} (\tb{open\_wait\_ms}, \tb{agent\_ms}, \tb{grade\_ms}, \tb{perf/step\_time}); checked 2026-09-29.}
-\end{frame}
-
-%====================================================================
+\sect{5 \textperiodcentered{} Results}
 \begin{frame}{The 2026-09-30 re-run: 22 minutes end to end, 0 infra errors}
 \flabel{fr:smoke30}
 \tabcap{Smoke run 2026-09-30: same shape (RB = 4 $\times$ NS = 8, 10 steps + 1 eval on 31 held-out tasks), fully-async driver}
@@ -606,7 +773,7 @@ Whole episode p50 (p90) & 20.9\,s (63.7\,s)\\
 \midrule
 Wall clock, launch to final eval & \hl{22\,min} & $\approx$\,70\,min: the fully-async driver overlaps rollouts with training\\
 Episodes \textperiodcentered{} infra errors & 449 \textperiodcentered{} \textbf{0} & 382 \textperiodcentered{} 0; 449 = 387 train (async over-draw) + 62 eval\\
-Train episodes that waited for a boot & \hl{0 of 385} & pre-open still hides every cold start; eval opens on demand (1--10\,s)\\
+Train episodes that waited for a boot & \hl{0} on steps 2--9 & only the first batch (31, $\le$ 10.7\,s); eval opens on demand (1--3\,s)\\
 Heartbeat pings needed & 1 & pre-open idle p50 50\,s, max 194\,s, all under the 450\,s ping mark\\
 Step time p50 & 40\,s & 203\,s\\
 Train solved \textperiodcentered{} eval solved & 22/387 (5.7\,\%) \textperiodcentered{} \hl{1/62} & 4/320 \textperiodcentered{} 0/62\\
@@ -628,7 +795,7 @@ Whole episode & 24.9\,s / 71.7\,s\\
 \end{tabularx}
 \column{0.48\textwidth}
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
-\item \textbf{Concurrency:} 2 SGLang engines (4 GPUs), 32 harness workers, up to 64 pre-opened sessions; SGLang queued requests in 1 of 233 samples (max 15 running per engine).
+\item \textbf{Concurrency:} 2 SGLang engines (4 GPUs), 32 harness workers, 96 live microVMs while training, 137 at peak (\sref{fr:conc}); SGLang queued requests in 1 of 233 samples (max 15 running per engine).
 \item \textbf{Fixed in this run:} eval used to hang after its last episode (the pool was bound to the training loop); now one pool per event loop.
 \end{itemize}
 \end{columns}
@@ -684,27 +851,73 @@ Agent said it was done & 82 (26\,\%)\\
 \end{frame}
 
 %====================================================================
-\begin{frame}{Next: fix the reward and the budget, then halve the idle cost}
-\flabel{fr:next}
-\tabcap{Next steps, in order}
-\footnotesize\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}P{0.04\textwidth}P{0.38\textwidth}Y@{}}
+\sect{6 \textperiodcentered{} Conclusion}
+\begin{frame}{Conclusion: one image per task runs at RL speed; the reward is what is left}
+\flabel{fr:concl}
+\tabcap{What the demo shows}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.03\textwidth}P{0.3\textwidth}Y P{0.09\textwidth}@{}}
 \toprule
-& \textbf{Change} & \textbf{Why (evidence)}\\
+& \textbf{Conclusion} & \textbf{Evidence} & \textbf{Slides}\\
 \midrule
-1 & Partial credit from \tb{tests\_passed} / \tb{tests\_total} & 2 $\rightarrow$ 17 of 40 groups with a gradient (\sref{fr:signal})\\
-2 & Larger turn and token budget (e.g.\ 16 turns, 2048 tokens) & 74\,\% of episodes stopped on a budget\\
-3 & Easy-first curriculum over the 165 tasks & 4B model solves 1\,\% (4 of 320); start where it sometimes succeeds\\
-4 & \tb{TB\_PREOPEN\_BATCHES} = 1 & pre-opened VMs idle 7.3\,min p50; one batch should still hide the boot (\sref{fr:preres})\\
-5 & Bake \tb{uv} + pytest into each image & grading is 9.7\,s of a 20.9\,s episode, mostly the install (\sref{fr:smoke})\\
+1 & \textbf{One image per task works} on AgentCore & 218 of 229 tasks ship as arm64 images; 165 rows; 894 episodes on 894 fresh microVMs over two runs, \hl{0 infra errors} & \srefs{fr:build}{fr:smoke30}\\
+2 & \textbf{The sandbox is off the critical path} & 0 boot waits on training steps 2--9 in both runs; sessions open in 0.7\,s p50; peak 137 live microVMs, 2.7\,\% of quota & \srefs{fr:conc}{fr:precmp}\\
+3 & \textbf{Pre-open: one batch ahead is enough} under fully-async & look-ahead off gave the same speed with 37\,\% less microVM time; the 2-batch look-ahead matters for cold bursts (6--49\,s) and sync drivers & \srefs{fr:precmp}{fr:preres}\\
+4 & \textbf{Heartbeat is cheap insurance} & 0--1 pings in 22-min runs; in the 70-min run it kept all 17 sessions that idled past 15\,min & \srefs{fr:hbwhy}{fr:hbhow}\\
+5 & \textbf{The reward limits learning}, not the sandbox & 4 of 49 GRPO groups had a gradient; eval 1 of 62; 42\,\% of episodes hit the 8-turn cap & \sref{fr:signal}\\
 \bottomrule
 \end{tabularx}
-\par\vspace{3mm}
-\plainen{the plumbing works and costs no waiting time; the task set is too hard for a 4B model with all-or-nothing reward, so the next run is about the reward, not the sandbox.}
-\src{Smoke run 2026-09-23, \tb{code/demos/\_smoke\_logs/lanes\_tb\_0923}; checked 2026-09-29.}
+\par\vspace{1.5mm}
+\tabcap{Next steps}
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}P{0.03\textwidth}P{0.4\textwidth}Y@{}}
+\toprule
+1 & 200-step convergence run, 16 turns per episode & \textbf{running since 2026-10-01 00:40}: eval every 20 steps\\
+2 & Partial credit from \tb{tests\_passed} / \tb{tests\_total} & 2 $\rightarrow$ 17 of 40 groups get a gradient (\sref{fr:signal})\\
+3 & Easy-first curriculum over the 165 tasks & a 4B model solves about 5\,\%; start where it sometimes succeeds\\
+4 & \tb{TB\_PREOPEN\_BATCHES=1}; stop booking past the last step & keep the hidden boot, drop the idle microVMs\\
+\bottomrule
+\end{tabularx}
+\src{Smoke runs 2026-09-23, 2026-09-30 and 2026-10-01; cold-start probe 2026-09-29; warm-start probe 2026-09-25; checked 2026-10-01.}
 \end{frame}
 
 %====================================================================
+\appendix
+\sect{Appendix}
+\begin{frame}{The smoke run answers three questions: yes, yes, and not yet}
+\flabel{fr:smoke}
+\tabcap{Smoke run 2026-09-23: Qwen3-4B, RB = 4 $\times$ NS = 8, 10 steps + 1 eval on 31 held-out tasks, $\approx$\,70 min}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.28\textwidth}P{0.08\textwidth}Y P{0.1\textwidth}@{}}
+\toprule
+\textbf{Question} & \textbf{Answer} & \textbf{Evidence} & \textbf{Slide}\\
+\midrule
+1. Does one-image-per-task RL run end to end? & \hl{Yes} & 382 episodes (train + eval) on 382 fresh microVMs, 71 tasks; \textbf{0} infra errors, retries, grading timeouts & below\\
+2. Is the sandbox off the critical path? & \hl{Yes} & boot wait p95 \textbf{0\,ms} (pre-open); all 17 over-idle sessions pinged in time (heartbeat) & \srefs{fr:preres}{fr:hbhow}\\
+3. Does the policy learn? & \textbf{Not yet} & 4 of 320 train, 0 of 62 eval solved; 8 of 10 steps had zero gradient & \sref{fr:signal}\\
+\bottomrule
+\end{tabularx}
+\par\vspace{4mm}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\tabcap{Where an episode's time goes (p50)}
+\scriptsize
+\begin{tabularx}{\linewidth}{@{}Yr@{}}
+\toprule
+Wait for a session (boot) & 0\,s\\
+Agent loop in the microVM & 9.0\,s\\
+Grading (inject tests, pytest) & 9.7\,s\\
+Whole episode p50 (p90) & 20.9\,s (63.7\,s)\\
+\bottomrule
+\end{tabularx}
+\column{0.48\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
+\item \textbf{Rollout-bound:} a step is 203\,s p50; the trainer waits on the slowest episode, not on boots.
+\item \textbf{Grading is half the episode:} it installs \tb{uv} + pytest each time.
+\end{itemize}
+\end{columns}
+\src{\tb{\_smoke\_logs/lanes\_tb\_0923/terminalbench.\{csv,demo.csv,eval.csv\}} (\tb{open\_wait\_ms}, \tb{agent\_ms}, \tb{grade\_ms}, \tb{perf/step\_time}); checked 2026-09-29.}
+\end{frame}
 
 %====================================================================
 \appendix
@@ -725,5 +938,9 @@ Agent said it was done & 82 (26\,\%)\\
 \end{tabularx}
 \src{AWS documentation and service-quotas CLI, us-west-2, 2026-09-23; checked 2026-09-29.}
 \end{frame}
+
+\end{document}
+
+%====================================================================
 
 \end{document}

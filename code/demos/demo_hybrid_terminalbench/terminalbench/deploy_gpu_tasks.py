@@ -14,7 +14,12 @@ Two kinds of GPU sandbox:
 For each named task: the task's own Dockerfile + the same wrapper layer as every other image (here the
 x86_64 standalone CPython), built for linux/amd64 and pushed to ECR <prefix>-tbgpu-<task>; one Runtime
 <prefix>_tbhgpu_<task> on the capacity provider <prefix>_tbh_gpu_cp (TB_GPU_INSTANCE, default g6.xlarge,
-NAT-egress subnets so run-tests.sh can install pytest). AgentCore maps one runtimeSessionId to one whole
+NAT-egress subnets so run-tests.sh can install pytest). TB_GPU_INSTANCE may list several types,
+but AgentCore did NOT fall back between them: on 5 Oct 2026 (no g6.xlarge in any us-west-2 AZ for
+hours) a g6.xlarge,g5.xlarge,g6e.xlarge provider only ever retried g6, while g5.xlarge,g6e.xlarge got
+a g5.xlarge (A10G; torch 2.5.1/cu124 runs as is) in 227 s. So list the type that has capacity FIRST.
+A capacity provider's types can't be changed after creation, so each type list gets its own provider
+(<prefix>_tbh_gpu_<g5_g6e>_cp) and the Runtimes are re-pointed to it. AgentCore maps one runtimeSessionId to one whole
 instance, so every episode gets its own g6 (cold boot ~60-80 s + image pull; pre-open hides it, and
 TB_GPU_MAX_SESSIONS caps how many run at once). The route is `gpu:<runtime arn>`; the pool opens it with
 the same AgentCoreRuntimeSandbox as a microVM and heartbeats it the same way.
@@ -45,8 +50,11 @@ import deploy_docker_tasks as dock  # noqa: E402  (x86_64 CPython + the wrapper'
 import deploy_terminalbench as tb  # noqa: E402  (_prepare: task Dockerfile + wrapper layer)
 
 GPU_PREFIX = "gpu:"
-INSTANCE = os.environ.get("TB_GPU_INSTANCE", "g6.xlarge")
-CP_NAME = f"{d.PREFIX}_tbh_gpu_cp"
+INSTANCES = [s.strip() for s in os.environ.get("TB_GPU_INSTANCE", "g6.xlarge").split(",") if s.strip()]
+INSTANCE = ",".join(INSTANCES)
+# The original single-g6 provider keeps its name; any other type list gets its own.
+CP_NAME = (f"{d.PREFIX}_tbh_gpu_cp" if INSTANCES == ["g6.xlarge"]
+           else f"{d.PREFIX}_tbh_gpu_{'_'.join(i.split('.')[0] for i in INSTANCES)}_cp")
 
 
 def runtime_name(task: str) -> str:
@@ -66,7 +74,7 @@ def ensure_cp() -> str:
         permissionsConfiguration={"capacityProviderOperatorRoleArn": d.operator_role(f"{d.PREFIX}-operator-role")},
         computeConfiguration={"ec2Configuration": {
             "launchTemplateSource": {"launchParameters": {
-                "operatingSystem": "LINUX_X86_64", "instanceRequirements": {"allowedInstanceTypes": [INSTANCE]}}},
+                "operatingSystem": "LINUX_X86_64", "instanceRequirements": {"allowedInstanceTypes": INSTANCES}}},
             "vpcConfiguration": {"subnets": net["subnets"], "securityGroups": net["securityGroups"]},
             "rootVolume": {"freeSpaceGiB": int(os.environ.get("TB_GPU_ROOT_GIB", "60")), "volumeType": "gp3"},
             "lifecycleConfiguration": {"idleInstanceTimeout": d.CP_IDLE_INSTANCE_TIMEOUT,
@@ -111,17 +119,18 @@ def build_kernelbench(ctx: Path) -> str:
 
 
 def _point_at(arn: str, uri: str, xrole: str, cp_arn: str) -> None:
-    """Update an existing Runtime in place if it runs a different image digest; wait READY."""
+    """Update an existing Runtime in place if it runs a different image digest or capacity provider; wait READY."""
     control = boto3.client("bedrock-agentcore-control", region_name=d.REGION)
     rid = arn.rsplit("/", 1)[1]
     cur = control.get_agent_runtime(agentRuntimeId=rid)
-    if cur["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] == uri:
+    if (cur["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] == uri
+            and (cur.get("capacityProviderConfiguration") or {}).get("capacityProviderArn") == cp_arn):
         return
     control.update_agent_runtime(
         agentRuntimeId=rid, roleArn=xrole, agentRuntimeArtifact={"containerConfiguration": {"containerUri": uri}},
         protocolConfiguration={"serverProtocol": "HTTP"}, capacityProviderConfiguration={"capacityProviderArn": cp_arn},
         lifecycleConfiguration=d.runtime_lifecycle(d.INSTANCE_MAX_LIFETIME), environmentVariables={"AWS_REGION": d.REGION})
-    d.err(f"[gpu] updated {rid} -> {uri.rsplit('@', 1)[-1][:19]}")
+    d.err(f"[gpu] updated {rid} -> {uri.rsplit('@', 1)[-1][:19]} on {cp_arn.rsplit('/', 1)[-1]}")
     d._wait_runtime(control, rid)
 
 
