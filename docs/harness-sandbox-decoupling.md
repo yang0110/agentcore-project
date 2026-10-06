@@ -1,6 +1,6 @@
 # Decoupling harness and sandbox — and why AgentCore is the sandbox, not the harness
 
-> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30 (and the microVM-only `demo_cpu_terminalbench` on 2026-10-06); the only live demo is [`code/demos/demo_terminalbench_kernelbench`](../code/demos/demo_terminalbench_kernelbench/README.md).
 
 **The one claim: AgentCore is the *sandbox*.** In (harnessed) agentic RL the **harness** and the
 **sandbox** are two distinct component types (Agent Lightning v1.0, §1). This project uses

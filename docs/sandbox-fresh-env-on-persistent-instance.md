@@ -1,6 +1,6 @@
 # Fresh env on a persistent (reused) sandbox instance
 
-> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30 (and the microVM-only `demo_cpu_terminalbench` on 2026-10-06); the only live demo is [`code/demos/demo_terminalbench_kernelbench`](../code/demos/demo_terminalbench_kernelbench/README.md).
 
 **Question.** An AgentCore Runtime on a capacity-provider Instance takes ~60–80 s to cold-boot. If
 we keep ONE instance warm and run many RL episodes on it, how do we stop one episode's state from

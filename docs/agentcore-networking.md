@@ -7,7 +7,7 @@ security-group **references** (never CIDRs).
 
 Companion tool: `netcheck.py` was an executable version of this checklist; it was removed with
 `demo_cpu_tasks` on 2026-09-30 (recover it from git history). The live demo that uses the dial-back
-shape is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md). Related deep dives: [fault-recovery](fault-recovery.md), [sandbox-comparison](sandbox-comparison.md),
+shape is [`code/demos/demo_terminalbench_kernelbench`](../code/demos/demo_terminalbench_kernelbench/README.md). Related deep dives: [fault-recovery](fault-recovery.md), [sandbox-comparison](sandbox-comparison.md),
 and the VPC-mode war story lives in the `agentcore-vpc-mode-harness` project memory.
 
 ---

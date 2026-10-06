@@ -1,6 +1,6 @@
 # Fault tolerance & auto-recovery: surviving sandbox failures during agentic RL
 
-> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30 (and the microVM-only `demo_cpu_terminalbench` on 2026-10-06); the only live demo is [`code/demos/demo_terminalbench_kernelbench`](../code/demos/demo_terminalbench_kernelbench/README.md).
 
 In agentic RL you run thousands of rollouts, each booting a fresh sandbox session. Sessions
 **will** die mid-training — idle/lifetime timeouts, microVM crashes, severed transport, throttling.
@@ -8,7 +8,7 @@ If a dying sandbox crashes the rollout coroutine, you lose the whole training st
 (1) what AgentCore/E2B actually do on failure, (2) the recovery strategy this repo implements, and
 (3) how it's tested offline. **Every external claim has a source URL.**
 
-Companion code: [`recovery.py`](../code/demos/demo_cpu_terminalbench/agentcore_slime_demo/recovery.py) (vendored in the Terminal-Bench demo lib). The offline
+Companion code: [`recovery.py`](../code/demos/demo_terminalbench_kernelbench/agentcore_slime_demo/recovery.py) (vendored in the Terminal-Bench demo lib). The offline
 demo `code/scripts/recovery_smoke.py` and the tests in `code/tests/` were removed on 2026-09-30 (git history).
 
 ---

@@ -1,7 +1,9 @@
 # Terminal-Bench tasks the microVM pool can't run: x86-only, docker-compose, and big images
 
-**Scope.** `demo_cpu_terminalbench` runs 218 of the 241 Terminal-Bench tasks, each on its own AgentCore
-**serverless microVM** Runtime (`acs_tb_<task>`, arm64, one fresh session per episode). This doc covers
+**Scope.** The microVM-only `demo_cpu_terminalbench` (removed 2026-10-06) ran 218 of the 241 Terminal-Bench
+tasks, each on its own AgentCore **serverless microVM** Runtime (`acs_tb_<task>`, arm64, one fresh session
+per episode). `demo_terminalbench_kernelbench` now runs the rest on m5 EC2 Docker hosts
+([plan](terminalbench-kernelbench-demo-plan.md)). This doc covers
 the 23 tasks that are left out (`terminalbench/tasks/manifest.json` + `images.csv`). For each of the
 three blockers it says whether a **capacity-provider Instance** (e.g. `m5.xlarge`) or a change to how
 the task is packaged fixes it.
@@ -244,7 +246,7 @@ Steps 1–3 recover ~14 tasks without new infrastructure.
 
 ## Related
 
-- `code/demos/demo_cpu_terminalbench/README.md`: the pool, pre-open, heartbeat.
+- `code/demos/demo_terminalbench_kernelbench/README.md`: the pool, pre-open, heartbeat, and the m5 tier for these tasks.
 - `docs/agentcore-networking.md`: SG→SG dial-back checklist (applies to 5b).
 - `docs/sandbox-fresh-env-on-persistent-instance.md`: why warm-shared Instances don't fit TB.
 - `terminalbench/tasks/images.csv`, `manifest.json`: per-task status and size.

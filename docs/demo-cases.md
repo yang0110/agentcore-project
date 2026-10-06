@@ -1,6 +1,6 @@
 # Demo cases — CPU-based vs GPU-supported AgentCore Runtime sandbox
 
-> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30 (and the microVM-only `demo_cpu_terminalbench` on 2026-10-06); the only live demo is [`code/demos/demo_terminalbench_kernelbench`](../code/demos/demo_terminalbench_kernelbench/README.md).
 
 Two runnable demo cases that share **one harness and one reward mechanism** and differ only in
 how the sandbox is provisioned on AWS AgentCore and what the task demands of it. Both run offline

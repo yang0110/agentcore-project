@@ -1,6 +1,6 @@
 # m5 tier: one shared instance vs. one instance per episode
 
-Context: `demo_hybrid_terminalbench` runs the Terminal-Bench tasks AgentCore can't (multi-container
+Context: `demo_terminalbench_kernelbench` runs the Terminal-Bench tasks AgentCore can't (multi-container
 compose, x86-only, > 2 GB images, tasks needing root powers) on m5 EC2 instances. This note answers two
 questions: do episodes share an m5, and which instances does AgentCore manage?
 

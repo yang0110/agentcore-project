@@ -4,12 +4,14 @@
 
 September 30, 2026
 
+> **Update (2026-10-06).** The microVM-only demo this report was written around, `demo_cpu_terminalbench`, was removed on 2026-10-06 together with its 218 `acs_tb_*` Runtimes. Its successor and the only demo now is **`code/demos/demo_terminalbench_kernelbench`**. It runs the same microVM pipeline on its own `acs_tbh_*` Runtimes, built from the same `acs-tb-*` ECR images, and adds per-episode m5 EC2 Docker hosts for the tasks a microVM can't run, plus KernelBench on g6 GPU Instances. The step scripts keep the same names. The measured results below come from the microVM-only demo unless stated otherwise. See the demo's README for the hybrid runs.
+
 ---
 
 
 ## Introduction
 
-This report is a **hands-on guide for AWS customers doing agentic RL**, built around one working demo: **RL on Terminal-Bench with slime and AgentCore Runtime** (`code/demos/demo_cpu_terminalbench`). The policy is Qwen3-4B, trained by slime with fully-async GRPO. The sandbox is an **image pool of 218 AgentCore arm64 microVM Runtimes in VPC mode, one per Terminal-Bench task**, with a fresh session per episode. The agent loop runs **inside that session**, and the reward is the task's own hidden pytest oracle. The claims are grounded in the **official AgentCore docs** [D1] and in this project's run logs.
+This report is a **hands-on guide for AWS customers doing agentic RL**, built around one working demo: **RL on Terminal-Bench with slime and AgentCore Runtime** (written for `code/demos/demo_cpu_terminalbench`, now `code/demos/demo_terminalbench_kernelbench`; see the update note above). The policy is Qwen3-4B, trained by slime with fully-async GRPO. The sandbox is an **image pool of 218 AgentCore arm64 microVM Runtimes in VPC mode, one per Terminal-Bench task**, with a fresh session per episode. The agent loop runs **inside that session**, and the reward is the task's own hidden pytest oracle. The claims are grounded in the **official AgentCore docs** [D1] and in this project's run logs.
 
 **After reading it, you will know:**
 
@@ -819,7 +821,7 @@ Because each episode mints a **fresh** `runtimeSessionId`, there is no warm sess
 
 This is the concrete cost lever: packing episodes onto one instance (B4) raises sandbox concurrency on a GPU task **without** paying for N instances, but gives up the VM boundary between episodes; the project now pays for the instances (one session per episode) and hides the cold boot with pre-open.
 
-**A mixed-task batch — same session budget, different task per row.** When a batch spans task families (a comma-list `DATASET=`), the lifecycle above is **unchanged**: one Runtime image serves every family, and the harness writes each row's task files into its session and picks the *task*, not the image (§"A mixed-family batch"). A mixed-family batch therefore consumes exactly the same Runtime / session / microVM / instance budget as a single-family batch of the same size — the family mix changes what runs *inside* each session, not how many sessions exist. Capability routing (a different image per family) changes that by one Runtime per extra image — `demo_cpu_terminalbench` does exactly this at task scale (one Runtime per task, strict routing).
+**A mixed-task batch — same session budget, different task per row.** When a batch spans task families (a comma-list `DATASET=`), the lifecycle above is **unchanged**: one Runtime image serves every family, and the harness writes each row's task files into its session and picks the *task*, not the image (§"A mixed-family batch"). A mixed-family batch therefore consumes exactly the same Runtime / session / microVM / instance budget as a single-family batch of the same size — the family mix changes what runs *inside* each session, not how many sessions exist. Capability routing (a different image per family) changes that by one Runtime per extra image — the Terminal-Bench demo does exactly this at task scale (one Runtime per task, strict routing).
 
 **Latency — measure, don't assume.** The docs promise "fast cold starts" but publish no number [D2]; a GPU first-invoke can take **minutes** to launch the EC2. This project therefore instruments every sandbox round-trip (`[sbx-op]` → `perf/sandbox_ms_{p50,p95}`) and every generation (`[sglang-gen]` → `perf/sglang_gen_ms_*`) — the same signals the scaling analysis in §"Scaling the loop" depends on.
 
@@ -899,7 +901,7 @@ For a **GPU** sandbox this step is preceded by **`CreateCapacityProvider`** (`ec
 The Terminal-Bench demo bundles these steps into its numbered scripts. Both are idempotent and resumable: `bash 2_build_image.sh` does the ECR create, buildx and push per task, and `bash 4_deploy_runtime.sh` calls `terminalbench/deploy_terminalbench.py`, which uses `deploy/agentcore_deploy.py` to mint the roles, register one VPC Runtime per image and write the image → ARN map:
 
 ```bash
-cd code/demos/demo_cpu_terminalbench
+cd code/demos/demo_terminalbench_kernelbench
 bash 2_build_image.sh      # ECR create → buildx --platform linux/arm64 → push, per task
 bash 4_deploy_runtime.sh   # exec role → CreateAgentRuntime (VPC) per image → arn_by_image.json
 ```
@@ -1167,7 +1169,7 @@ In this project the policy is always **Qwen3-4B**, trained by slime, with AgentC
 
 ## The Terminal-Bench demo
 
-The demo lives in `code/demos/demo_cpu_terminalbench/`. It is a self-contained recipe: a vendored library (`agentcore_slime_demo/`), the Terminal-Bench tooling (`terminalbench/`), the deploy helpers (`deploy/`) and six numbered step scripts. The policy is **Qwen3-4B**, trained by **slime** with fully-async GRPO. **AgentCore is the sandbox**, and the **harness is the mini_claude loop, running inside each episode's sandbox session**. It is **REMOTE-ONLY**: `SANDBOX=agentcore-runtime` is the only backend.
+The demo lives in `code/demos/demo_terminalbench_kernelbench/` (it was `code/demos/demo_cpu_terminalbench/`, the microVM-only version described here, until 2026-10-06). It is a self-contained recipe: a vendored library (`agentcore_slime_demo/`), the Terminal-Bench tooling (`terminalbench/`), the deploy helpers (`deploy/`) and six numbered step scripts. The policy is **Qwen3-4B**, trained by **slime** with fully-async GRPO. **AgentCore is the sandbox**, and the **harness is the mini_claude loop, running inside each episode's sandbox session**. It is **REMOTE-ONLY**: `SANDBOX=agentcore-runtime` is the only backend.
 
 ### Which sandbox does a task need? Three tiers
 
@@ -1263,7 +1265,7 @@ Rollout throughput is `min(inference, sandbox, harness)` (§"Scaling the loop").
 
 ### Run it step by step
 
-Run the numbered scripts from `code/demos/demo_cpu_terminalbench/` **on the host**; the container steps `docker exec` into `agentcore_p4` themselves.
+Run the numbered scripts from `code/demos/demo_terminalbench_kernelbench/` **on the host**; the container steps `docker exec` into `agentcore_p4` themselves.
 
 ```bash
 bash 2_build_image.sh      # fetch the corpus (once) + build/push one arm64 image per task (resumable, ~2 h cold)
@@ -1386,7 +1388,7 @@ This is the disaggregation of §"Agentic RL and its reference architecture" made
 
 ### Measured — the 2026-09-23 smoke (first folder)
 
-This run used the first `demo_cpu_terminalbench` folder, before the 2026-09-28 merge (`_smoke_logs/lanes_tb_0923/terminalbench.log`). It ran 382 episodes in ~70 min, ended `Job succeeded` and had 0 infrastructure errors.
+This run used the first `demo_cpu_terminalbench` folder (removed 2026-10-06), before the 2026-09-28 merge (`_smoke_logs/lanes_tb_0923/terminalbench.log`). It ran 382 episodes in ~70 min, ended `Job succeeded` and had 0 infrastructure errors.
 
 - **Cold start fully hidden.** `open_wait_ms` p95 was 0, the open p50 was 0.66 s, and 100 % of opens were warm hits.
 - **The price: idle pre-opened time.** `preopen_idle_ms` p50 was 7.3 min against an episode p50 of 21 s, so about **95 % of the pre-opened microVM time was idle**.

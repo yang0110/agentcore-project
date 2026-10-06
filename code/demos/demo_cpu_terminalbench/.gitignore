@@ -1,8 +1,0 @@
-# Terminal-Bench corpus + pool map: fetched on demand by terminalbench/fetch_terminalbench.py (229 task
-# dirs) and written by deploy_terminalbench.py (account-specific ARNs); not vendored into the repo.
-terminalbench/tasks/
-# Deploy build context: fetched standalone CPython + a copy of the vendored server (deploy re-copies it).
-terminalbench/acs_ctx/py/
-terminalbench/acs_ctx/sandbox_server_agent.py
-terminalbench/warmstart/logs/
-terminalbench/warmstart/runtime.env

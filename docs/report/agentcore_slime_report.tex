@@ -349,14 +349,16 @@ AWS}}
 
 This report is a \textbf{hands-on guide for AWS customers doing agentic
 RL}, built around one working demo: \textbf{RL on Terminal-Bench with
-slime and AgentCore Runtime}
-(\texttt{code/demos/demo\_cpu\_terminalbench}). The policy is Qwen3-4B,
-trained by slime with fully-async GRPO. The sandbox is an \textbf{image
-pool of 218 AgentCore arm64 microVM Runtimes in VPC mode, one per
-Terminal-Bench task}, with a fresh session per episode. The agent loop
-runs \textbf{inside that session}, and the reward is the task's own
-hidden pytest oracle. The claims are grounded in the \textbf{official
-AgentCore docs} {[}D1{]} and in this project's run logs.
+slime and AgentCore Runtime} (written for
+\texttt{code/demos/demo\_cpu\_terminalbench}, now
+\texttt{code/demos/demo\_terminalbench\_kernelbench}; see the update
+note above). The policy is Qwen3-4B, trained by slime with fully-async
+GRPO. The sandbox is an \textbf{image pool of 218 AgentCore arm64
+microVM Runtimes in VPC mode, one per Terminal-Bench task}, with a fresh
+session per episode. The agent loop runs \textbf{inside that session},
+and the reward is the task's own hidden pytest oracle. The claims are
+grounded in the \textbf{official AgentCore docs} {[}D1{]} and in this
+project's run logs.
 
 \textbf{After reading it, you will know:}
 
@@ -2881,9 +2883,9 @@ batch''). A mixed-family batch therefore consumes exactly the same
 Runtime / session / microVM / instance budget as a single-family batch
 of the same size --- the family mix changes what runs \emph{inside} each
 session, not how many sessions exist. Capability routing (a different
-image per family) changes that by one Runtime per extra image ---
-\texttt{demo\_cpu\_terminalbench} does exactly this at task scale (one
-Runtime per task, strict routing).
+image per family) changes that by one Runtime per extra image --- the
+Terminal-Bench demo does exactly this at task scale (one Runtime per
+task, strict routing).
 
 \textbf{Latency --- measure, don't assume.} The docs promise ``fast cold
 starts'' but publish no number {[}D2{]}; a GPU first-invoke can take
@@ -3038,7 +3040,7 @@ Runtime per image and write the image → ARN map:
 
 \begin{Shaded}
 \begin{Highlighting}[]
-\BuiltInTok{cd}\NormalTok{ code/demos/demo\_cpu\_terminalbench}
+\BuiltInTok{cd}\NormalTok{ code/demos/demo\_terminalbench\_kernelbench}
 \FunctionTok{bash}\NormalTok{ 2\_build\_image.sh      }\CommentTok{\# ECR create → buildx {-}{-}platform linux/arm64 → push, per task}
 \FunctionTok{bash}\NormalTok{ 4\_deploy\_runtime.sh   }\CommentTok{\# exec role → CreateAgentRuntime (VPC) per image → arn\_by\_image.json}
 \end{Highlighting}
@@ -3769,15 +3771,17 @@ results.
 \hypertarget{the-terminal-bench-demo}{%
 \section{The Terminal-Bench demo}\label{the-terminal-bench-demo}}
 
-The demo lives in \texttt{code/demos/demo\_cpu\_terminalbench/}. It is a
-self-contained recipe: a vendored library
-(\texttt{agentcore\_slime\_demo/}), the Terminal-Bench tooling
-(\texttt{terminalbench/}), the deploy helpers (\texttt{deploy/}) and six
-numbered step scripts. The policy is \textbf{Qwen3-4B}, trained by
-\textbf{slime} with fully-async GRPO. \textbf{AgentCore is the sandbox},
-and the \textbf{harness is the mini\_claude loop, running inside each
-episode's sandbox session}. It is \textbf{REMOTE-ONLY}:
-\texttt{SANDBOX=agentcore-runtime} is the only backend.
+The demo lives in \texttt{code/demos/demo\_terminalbench\_kernelbench/}
+(it was \texttt{code/demos/demo\_cpu\_terminalbench/}, the microVM-only
+version described here, until 2026-10-06). It is a self-contained
+recipe: a vendored library (\texttt{agentcore\_slime\_demo/}), the
+Terminal-Bench tooling (\texttt{terminalbench/}), the deploy helpers
+(\texttt{deploy/}) and six numbered step scripts. The policy is
+\textbf{Qwen3-4B}, trained by \textbf{slime} with fully-async GRPO.
+\textbf{AgentCore is the sandbox}, and the \textbf{harness is the
+mini\_claude loop, running inside each episode's sandbox session}. It is
+\textbf{REMOTE-ONLY}: \texttt{SANDBOX=agentcore-runtime} is the only
+backend.
 
 \hypertarget{which-sandbox-does-a-task-need-three-tiers}{%
 \subsection{Which sandbox does a task need? Three
@@ -4149,9 +4153,9 @@ loop (no \texttt{python3}, or the adapter unreachable) raises
 \subsection{Run it step by step}\label{run-it-step-by-step}}
 
 Run the numbered scripts from
-\texttt{code/demos/demo\_cpu\_terminalbench/} \textbf{on the host}; the
-container steps \texttt{docker\ exec} into \texttt{agentcore\_p4}
-themselves.
+\texttt{code/demos/demo\_terminalbench\_kernelbench/} \textbf{on the
+host}; the container steps \texttt{docker\ exec} into
+\texttt{agentcore\_p4} themselves.
 
 \begin{Shaded}
 \begin{Highlighting}[]
@@ -4441,8 +4445,8 @@ read by \texttt{run.sh}, so no redeploy is needed to change them.
 \subsection{Measured --- the 2026-09-23 smoke (first
 folder)}\label{measured-the-2026-09-23-smoke-first-folder}}
 
-This run used the first \texttt{demo\_cpu\_terminalbench} folder, before
-the 2026-09-28 merge
+This run used the first \texttt{demo\_cpu\_terminalbench} folder
+(removed 2026-10-06), before the 2026-09-28 merge
 (\texttt{\_smoke\_logs/lanes\_tb\_0923/terminalbench.log}). It ran 382
 episodes in \textasciitilde70 min, ended \texttt{Job\ succeeded} and had
 0 infrastructure errors.

@@ -1,6 +1,6 @@
 # Scaling the harness tier: `throughput = min(inference, sandbox, harness)`
 
-> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30 (and the microVM-only `demo_cpu_terminalbench` on 2026-10-06); the only live demo is [`code/demos/demo_terminalbench_kernelbench`](../code/demos/demo_terminalbench_kernelbench/README.md).
 
 ## The claim
 
@@ -149,12 +149,12 @@ not more dispatch workers.
 ## Files
 
 - `code/demos/<demo>/agentcore_slime_demo/harness_pool.py` (every demo lib; e.g.
-  [`demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/agentcore_slime_demo/harness_pool.py)): the pool
+  [`demo_terminalbench_kernelbench`](../code/demos/demo_terminalbench_kernelbench/agentcore_slime_demo/harness_pool.py)): the pool
   (queue, workers, least-loaded engine, opt-in pooled sessions, tier fields) + the model in its docstring.
 - `.../in_session_harness.py` + `session_runner.py`: the loop in the session.
 - `demo_cpu_tasks` (Terminal-Bench rows) / `demo_cpu_swebench` `terminalbench_pool.py`: `HarnessPool` subclass with
   the fresh-session, pre-open, strict-routing sandbox tier.
-- [`code/demos/demo_cpu_terminalbench/run.sh`](../code/demos/demo_cpu_terminalbench/run.sh): the `HARNESS_WORKERS` / `GPUS_PER_ENGINE` knobs.
+- [`code/demos/demo_terminalbench_kernelbench/run.sh`](../code/demos/demo_terminalbench_kernelbench/run.sh): the `HARNESS_WORKERS` / `GPUS_PER_ENGINE` knobs.
   The removed `demo_cpu_tasks/run.sh` had the `SCALE=1` block and the
   `HARNESS_WORKERS` / `SANDBOX_SESSIONS` / `SANDBOX_OPEN_RATE` / `GPUS_PER_ENGINE` knobs.
 - `code/demos/demo_cpu_tasks/harness_scaling_demo.py` (removed 2026-09-30, git history):

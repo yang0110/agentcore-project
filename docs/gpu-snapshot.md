@@ -1,6 +1,6 @@
 # Can we snapshot a GPU Runtime instance? (No — and what to do instead)
 
-> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30 (and the microVM-only `demo_cpu_terminalbench` on 2026-10-06); the only live demo is [`code/demos/demo_terminalbench_kernelbench`](../code/demos/demo_terminalbench_kernelbench/README.md).
 
 **Question.** An AgentCore GPU Runtime session runs on an EC2 instance under the hood, and EC2
 supports snapshots/AMIs — so can we snapshot the GPU Runtime instance to pause/resume state (e.g.

@@ -1,6 +1,6 @@
 # The three decouplings (quick reference)
 
-> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30; the only live demo is [`code/demos/demo_cpu_terminalbench`](../code/demos/demo_cpu_terminalbench/README.md).
+> **Historical (2026-09-30).** This doc was written for demos and code dirs that were removed on 2026-09-30 (and the microVM-only `demo_cpu_terminalbench` on 2026-10-06); the only live demo is [`code/demos/demo_terminalbench_kernelbench`](../code/demos/demo_terminalbench_kernelbench/README.md).
 
 A one-page map of the architecture, to refer back to when reviewing the codebase. This project
 *is* the Agent Lightning v1.0 design ("Towards Harnessed Agentic RL", arXiv 2608.17528): five
@@ -89,8 +89,8 @@ AL's three decouplings map 1:1 to ①/②/③ below.
   and put **only the sandbox on AgentCore** — as its own Runtime (GPU) or a Code Interpreter session
   (CPU).
 - **Where in code:** the harness = our own in-process `MiniClaudeHarness`
-  (`code/demos/demo_cpu_terminalbench/agentcore_slime_demo/mini_agent.py`). Sandboxes implement the `Sandbox` protocol
-  (`code/demos/demo_cpu_terminalbench/agentcore_slime_demo/sandbox.py`): `LocalSandbox`, `AgentCoreSandbox` (Code Interpreter),
+  (`code/demos/demo_terminalbench_kernelbench/agentcore_slime_demo/mini_agent.py`). Sandboxes implement the `Sandbox` protocol
+  (`code/demos/demo_terminalbench_kernelbench/agentcore_slime_demo/sandbox.py`): `LocalSandbox`, `AgentCoreSandbox` (Code Interpreter),
   `AgentCoreRuntimeSandbox` (the sandbox on its own AgentCore Runtime — the GPU rows).
 - **Why:** swap CPU ↔ GPU sandbox without touching the harness; isolate untrusted / CUDA tool exec
   off the trainer GPUs; scale harness (latency-bound) and sandbox (tool-exec-bound) separately.

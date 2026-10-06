@@ -1,12 +1,34 @@
 # Progress / Handoff: Terminal-Bench RL on AgentCore
 
-_Last updated: 2026-09-30. Branch: `master` (the only branch)._
+_Last updated: 2026-10-06. Branch: `master` (the only branch)._
 
 ## State
 
-The repo is one demo: **`code/demos/demo_cpu_terminalbench`**, agentic RL on Terminal-Bench with
-slime and Qwen3-4B (fully-async GRPO, RB=4 × NS=8 = 32 episodes per step, 4 train + 4 inference
-GPUs on the 8×L40S box).
+The repo is one demo: **`code/demos/demo_terminalbench_kernelbench`** (named `demo_hybrid_terminalbench`
+until 2026-10-06), agentic RL on all of Terminal-Bench plus KernelBench with slime and Qwen3-4B
+(fully-async GRPO, 4 train + 4 inference GPUs on the 8×L40S box). Each task is routed to one of three
+substrates:
+
+- **AgentCore microVMs:** `acs_tbh_<task>` arm64 VPC Runtimes, one fresh session per episode, built
+  from the shared `acs-tb-<task>` ECR images.
+- **m5 EC2:** compose, x86-only, > 2 GB and microVM-oracle-failing tasks, one m5 per session
+  (warm pool, reused after a verified reset). The builder `acs-tbh-m5` builds the images and pushes
+  them to ECR `acs-tbhdk-*`.
+- **g6 GPU Instances:** KernelBench, Runtime `acs_tbhgpu_kernelbench` on an AgentCore capacity
+  provider.
+
+Usable: 191 Terminal-Bench tasks (163 microVM + 28 m5) + KernelBench. The microVM-only
+`demo_cpu_terminalbench` was **removed on 2026-10-06** (folder, `convergence/20_cpu_terminalbench.sh`,
+its 218 `acs_tb_*` Runtimes and `acs_warmstart_cpu`); the `acs-tb-*` ECR repos stay because
+`acs_tbh_*` uses them.
+
+Latest runs: train48 run 2 (2026-10-05) finished 48/48 steps with healthy infra but almost no GRPO
+gradient. Partial-credit training reward and a history-based task filter (197 → 121 train rows)
+followed; smoke 8 passed (eval: KernelBench 0.5, microVM 2/62, m5 0/8). Open: m5 tasks have never
+been solved; g6 start wait (~18 min p50 in smoke 8) is the bottleneck. Details in the demo README and
+`docs/terminalbench-kernelbench-demo-plan.md`.
+
+### Before 2026-10-06 (microVM-only demo, removed)
 
 - **Pool:** 218 arm64 VPC microVM Runtimes (`acs_tb_<task>`), one per task, each built from the
   task's own Dockerfile plus the AgentCore server layer. Of 229 single-container tasks, 7 fail to
@@ -31,26 +53,27 @@ Their AWS resources are being deleted. Everything is still in git history.
 
 The docs were rewritten around Terminal-Bench under the title "Agentic RL on Terminal-Bench with
 slime and AgentCore Runtime": `README.md`, this file, the report (`docs/report/`) and the deck
-(`docs/slides/aws/terminalbench.tex`, the only deck). The design notes in `docs/*.md` that
+(`docs/slides/aws/terminalbench.tex`, then the only deck; on 2026-10-06 it was folded into
+`docs/slides/aws/terminalbench_kernelbench/deck.tex`, now the only deck). The design notes in `docs/*.md` that
 describe removed demos carry a dated "historical" banner. They were not rewritten.
 
 ## What's next
 
-1. **Terminal-Bench smoke: done (2026-09-30 re-run).** `bash 5_run.sh` ran 10 steps plus the final
-   eval in 22 min (`logs/smoke_tbonly-agentcore-runtime_20260930_153115.{log,csv,eval.csv,png}`):
-   449 episodes, 0 `infra_error`, 22/387 train solved, `eval/terminalbench` 0.016 (1/62). No train
-   episode waited for a boot; 4 of 49 GRPO groups had a gradient. It needed one fix: eval used to
-   hang after its last episode, because `get_tb_pool` was a process-wide singleton bound to the
-   fully-async worker's loop. It is now one pool per event loop (`terminalbench_pool.py`).
-2. **Convergence run 20.** Inside `agentcore_p4`:
-   `bash /work/code/demos/convergence/20_cpu_terminalbench.sh` (NR=201, eval every 20 steps, a
-   checkpoint every 100 steps at about 56 GB each). Never run two `run.sh` at once.
-3. Open items from the smokes: reward is sparse, so consider an easy-first curriculum or
-   partial-credit reward (`tests_passed / tests_total` is already logged). `TB_PREOPEN_BATCHES=1`
-   would reduce idle pre-opened microVM time.
+1. **Training run on the filtered task set** (`demo_terminalbench_kernelbench`, partial-credit reward,
+   121 train rows): check that GRPO groups now carry a gradient (`train/pg_loss` != 0).
+2. **m5 tasks score 0** in every run so far: tell apart "too hard for Qwen3-4B" from a setup bug.
+3. **g6 start wait:** a higher g6 cap or an S3-hosted torch wheel (cuts the ~90 s install at boot).
+4. The builder `acs-tbh-m5` is only needed for image builds; stop it between builds.
+
+Earlier (microVM-only demo, done): the 2026-09-30 smoke re-run passed (10 steps + eval, 22 min,
+0 `infra_error`, `eval/terminalbench` 1/62) after making `get_tb_pool` one pool per event loop; the
+200-step convergence run `conv200_t16` ran 2026-10-03.
 
 ## Brief history
 
+- **2026-10-06:** `demo_cpu_terminalbench` removed (AWS Runtimes too); `demo_hybrid_terminalbench`
+  renamed `demo_terminalbench_kernelbench`, now the only demo.
+- **2026-10-04/05:** hybrid demo built and run (microVM + m5 + g6 KernelBench), train48 48/48.
 - **2026-09-30:** trimmed to `demo_cpu_terminalbench` only (SWE-bench removed too).
   Terminal-Bench split back out of `demo_cpu_tasks`. Docs retitled. The Terminal-Bench smoke re-run passed
   (10 steps + eval, 22 min, 0 infra errors, eval 1/62) after the per-loop pool fix.
