@@ -52,8 +52,11 @@ MODELS_GIB = int(os.environ.get("MODELS_GIB", "40"))
 # stall (train step + weight sync + eval + checkpoint save): past it AgentCore reclaims the session and
 # the same runtimeSessionId silently comes back as an EMPTY sandbox. HEARTBEAT=1 (default on our own
 # Runtimes) bridges shorter gaps; this is the backstop. AgentCore range 60 s–8 h; a longer timeout
-# bills an abandoned session longer. Applies to NEW Runtimes only — FORCE_RECREATE=1 to change one.
-RUNTIME_IDLE_TIMEOUT = int(os.environ.get("RUNTIME_IDLE_TIMEOUT", "3600"))
+# bills an abandoned session longer: a session whose StopRuntimeSession was lost (trainer crash, failed
+# stop) keeps its g6 for this long. 900 s = AgentCore's own default; the pool's keeper pings at
+# WARM_PING_FRACTION x WARM_IDLE_TIMEOUT = 450 s and HEARTBEAT_IDLE x 0.5 = 300 s, both well inside it.
+# Applies on create and on any digest update (the GPU tier also fixes it in place, deploy_gpu_tasks.py).
+RUNTIME_IDLE_TIMEOUT = int(os.environ.get("RUNTIME_IDLE_TIMEOUT", "900"))
 MICROVM_MAX_LIFETIME = 28800    # managed microVM hard max (8 h)
 INSTANCE_MAX_LIFETIME = 86400   # capacity-provider Runtime sessions
 CP_IDLE_INSTANCE_TIMEOUT = 600  # an instance with NO session left is released after this (g6 is costly)

@@ -28,15 +28,22 @@ for task, arn in sorted(routes.items()):
     except Exception as e: d.err(f'{task}: {e}')
 PY
   python3 - <<'PY'
-import sys, time
+import re, sys, time
 sys.path.insert(0, 'deploy')
+import boto3
 import agentcore_deploy as d
-name = f"{d.PREFIX}_tbh_gpu_cp"
-for _ in range(30):                           # the CP can only go once its Runtimes are gone
-    try:
-        d.delete_capacity_provider(name); break
-    except Exception as e:  # noqa: BLE001
-        d.err(f"{name}: {e}; retrying"); time.sleep(20)
+# Every GPU-tier provider: <prefix>_tbh_gpu_cp, plus one per instance-type list (deploy_gpu_tasks.CP_NAME).
+mine = re.compile(rf"^{re.escape(d.PREFIX)}_tbh_gpu(_[a-z0-9]+)*_cp$")
+c = boto3.client("bedrock-agentcore-control", region_name=d.REGION)
+names = sorted(cp["name"] for cp in c.list_capacity_providers().get("capacityProviders", []) if mine.match(cp.get("name", "")))
+for name in names:
+    for _ in range(30):                       # a CP can only go once its Runtimes are gone
+        try:
+            d.delete_capacity_provider(name); break
+        except Exception as e:  # noqa: BLE001
+            d.err(f"{name}: {e}; retrying"); time.sleep(20)
+if not names:
+    d.err("no GPU capacity provider to delete")
 PY
 fi
 if [ -f "$M5_STATE" ]; then
@@ -47,6 +54,8 @@ if [ "${KEEP_M5:-0}" != 1 ] && [ -f "$M5_STATE" ]; then
   log "terminate the m5 Docker host (builder)"
   python3 deploy/m5_host.py down
 fi
-echo "kept: ECR repos ${NAME_PREFIX}-tb-* (microVM images) and ${NAME_PREFIX}-tbhdk-* (m5 images) — delete with: aws ecr delete-repository --force --repository-name <repo>"
+echo "kept: ECR repos ${NAME_PREFIX}-tb-* (microVM images), ${NAME_PREFIX}-tbhdk-* (m5 images) and ${NAME_PREFIX}-tbgpu-* (g6 images) — delete with: aws ecr delete-repository --force --repository-name <repo>"
+echo "kept: IAM roles ${NAME_PREFIX}-exec-role, ${NAME_PREFIX}-operator-role, ${NAME_PREFIX}-tbh-m5-builder, ${NAME_PREFIX}-tbh-m5-episode (+ instance profiles); CloudWatch log groups /aws/bedrock-agentcore/runtimes/* (no retention set)"
 echo "kept: the per-episode AMI (tag Name=${NAME_PREFIX}-tbh-m5-ep) — deregister with: aws ec2 deregister-image --image-id <ami>"
 echo "kept: data/, logs/, ckpt/ (checkpoints are ~56 GB each; remove ckpt/<run> from inside $CONTAINER)"
+du -sh "$HERE/ckpt" 2>/dev/null | awk '{print "      ckpt/ now holds " $1}' || true

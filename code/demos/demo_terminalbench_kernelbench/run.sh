@@ -169,7 +169,7 @@ fi
 # no idle timeout (the local farm). Watch the [demo] heartbeat_session=… lines (0 with HEARTBEAT=0).
 HEARTBEAT="${HEARTBEAT:-${HEARTBEAT_KEEP_WARM:-1}}"
 # HEARTBEAT_IDLE must be <= the Runtime's idleRuntimeSessionTimeout. 600 s is safe for every Runtime:
-# older ones were created with 600 s, new ones get RUNTIME_IDLE_TIMEOUT (3600 s, deploy/agentcore_deploy.py).
+# Runtimes get RUNTIME_IDLE_TIMEOUT (900 s by default, deploy/agentcore_deploy.py; older ones 600-3600 s).
 HEARTBEAT_IDLE="${HEARTBEAT_IDLE:-600}"
 HEARTBEAT_PING_FRACTION="${HEARTBEAT_PING_FRACTION:-0.5}"
 _HB=""; [ "$HEARTBEAT" = "0" ] && [ -z "${AGENTCORE_LOCAL_ENDPOINT:-}" ] && case "$SANDBOX" in agentcore-*) _HB="_noheartbeat" ;; esac
@@ -323,6 +323,28 @@ export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${SLIME_NUM_GPUS:-8}" \
    --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
+# Leave nothing running when this script ends, however it ends: stop Ray + SGLang and keep only the 3
+# newest /tmp/ray sessions (~36 GB had piled up). A Ctrl-C in this terminal first stops the job with
+# `ray job stop` (the driver gets SIGTERM; ray job submit itself only stops following the log). From the
+# host, 5_run.sh stops the job by its id (TB_JOB_ID) instead: bash runs a trap only after the foreground
+# `ray job submit` returns, which it does once the job is stopped. The next run's start-of-script
+# clean-up stays as a second line of defence.
+JOB_ID="${TB_JOB_ID:-tb-$(date +%Y%m%d_%H%M%S)-$$}"
+_teardown() {
+  set +e
+  ray stop --force >/dev/null 2>&1
+  pkill -9 sglang 2>/dev/null
+  ls -1dt /tmp/ray/session_2* 2>/dev/null | tail -n +4 | xargs -r rm -rf
+}
+_on_signal() {
+  trap - INT TERM
+  echo "!! run.sh interrupted: stopping ray job $JOB_ID" >&2
+  timeout 120 ray job stop --address="http://127.0.0.1:8265" "$JOB_ID" >/dev/null 2>&1
+  exit 130
+}
+trap _teardown EXIT
+trap _on_signal INT TERM
+
 # PYTORCH_CUDA_ALLOC_CONF is opt-in: with expandable_segments:True, CUDA IPC to Megatron's async-save worker
 # goes through pidfd_getfd, which agentcore_p4's default seccomp profile forbids (no CAP_SYS_PTRACE) — the
 # final checkpoint save then hangs with "pidfd_getfd: Operation not permitted" (2026-10-04 smoke).
@@ -373,7 +395,7 @@ RUNTIME_ENV_JSON="{
 cd "$SLIME"
 # ASYNC driver + DECOUPLED placement: train_async.py, NO --colocate. Use an ABSOLUTE path: the ray
 # job entrypoint's cwd is the ray-head cwd (/work here), not this script's `cd "$SLIME"`.
-ray job submit --address="http://127.0.0.1:8265" \
+ray job submit --address="http://127.0.0.1:8265" --submission-id "$JOB_ID" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 "$SLIME/train_async.py" \
    --actor-num-nodes 1 \

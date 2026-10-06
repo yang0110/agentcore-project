@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import gzip
 import json
 import os
@@ -62,6 +63,19 @@ def terminate_tagged(region: str, tag: str) -> int:
     return len(ids)
 
 
+# Every m5 this process launched (per-episode AND warm) and has not terminated yet. A launch still in
+# flight when its open is cancelled returns its id only to this set, and the exit hook terminates
+# whatever is left in it (warm instances too) — on top of 5_run.sh's gc-episodes and the dead-man switch.
+_LAUNCHED: set[str] = set()
+
+
+def _terminate_ids(region: str, ids) -> None:
+    ids = sorted(set(ids))
+    if ids:
+        _ec2(region).terminate_instances(InstanceIds=ids)
+    _LAUNCHED.difference_update(ids)
+
+
 class Ec2EpisodeSandbox(DockerComposeSandbox):
     """A fresh EC2 instance per episode, running the task's compose project; terminated on close."""
 
@@ -73,6 +87,7 @@ class Ec2EpisodeSandbox(DockerComposeSandbox):
         self._agent_port = int(self._cfg.get("agent_port", 18300))
         self._token = secrets.token_urlsafe(32)
         self._instance_id: str | None = None
+        self._abandoned = False   # closed before the launch returned: the launch terminates its instance
         self.sandbox_id = f"ec2ep-{self._episode}"
 
     def _label(self) -> str:
@@ -80,8 +95,15 @@ class Ec2EpisodeSandbox(DockerComposeSandbox):
 
     def _launch_sync(self) -> tuple[str, str]:
         c = self._cfg
+        # The dead-man switch is armed from the agent's FIRST start (a systemd drop-in), not by a trainer
+        # call once the agent answers: an instance whose trainer died during boot still terminates itself.
+        idle = int(float(os.environ.get("TB_M5_IDLE_SHUTDOWN_S", "1800")))
         script = ("#!/bin/bash\nset -e\nexec > /var/log/acs-episode.log 2>&1\numask 077\n"
-                  f"echo '{self._token}' > /srv/acs/token\nsystemctl restart acs-compose-agent\n")
+                  f"echo '{self._token}' > /srv/acs/token\n"
+                  "mkdir -p /etc/systemd/system/acs-compose-agent.service.d\n"
+                  f"printf '[Service]\\nEnvironment=ACS_IDLE_SHUTDOWN_S={idle}\\n' "
+                  "> /etc/systemd/system/acs-compose-agent.service.d/idle.conf\n"
+                  "systemctl daemon-reload\nsystemctl restart acs-compose-agent\n")
         inst = _ec2(self._region).run_instances(
             ImageId=c["ami"], InstanceType=c.get("instance_type", "m5.2xlarge"), MinCount=1, MaxCount=1,
             UserData=gzip.compress(script.encode()),
@@ -96,6 +118,11 @@ class Ec2EpisodeSandbox(DockerComposeSandbox):
                 {"Key": "Name", "Value": c.get("tag", "acs-tbh-m5-ep")},
                 {"Key": "acs-episode", "Value": self._session_id}, {"Key": "acs-task", "Value": self._task}]}],
         )["Instances"][0]
+        _LAUNCHED.add(inst["InstanceId"])
+        if self._abandoned:        # the open was cancelled while RunInstances ran: nobody will close it
+            with contextlib.suppress(Exception):
+                _terminate_ids(self._region, [inst["InstanceId"]])
+            raise RuntimeError(f"{inst['InstanceId']}: launched after its open was cancelled; terminated")
         return inst["InstanceId"], inst["PrivateIpAddress"]
 
     async def _wait_agent(self, deadline_s: float) -> None:
@@ -155,12 +182,13 @@ class Ec2EpisodeSandbox(DockerComposeSandbox):
         return self
 
     async def __aexit__(self, *exc) -> None:
+        self._abandoned = True
         iid, self._client_url = self._instance_id, None
         if not iid:
             return
         t0, status = time.perf_counter(), "ok"
         try:
-            await asyncio.to_thread(lambda: _ec2(self._region).terminate_instances(InstanceIds=[iid]))
+            await asyncio.to_thread(_terminate_ids, self._region, [iid])
             self._instance_id = None
         except Exception as e:  # noqa: BLE001 — teardown: gc-episodes / the next pool start is the fallback
             status = type(e).__name__
@@ -259,10 +287,10 @@ _WARM = WarmPool()
 def _terminate_warm_at_exit() -> None:
     """Best effort: a finished run leaves no warm instance behind (5_run.sh and the next pool start
     also terminate every tagged instance)."""
-    ids = [i.iid for i in _WARM._insts]
+    ids = [i.iid for i in _WARM._insts] + list(_LAUNCHED)
     if ids:
         try:
-            _ec2(os.environ.get("AWS_REGION", "us-west-2")).terminate_instances(InstanceIds=ids)
+            _terminate_ids(os.environ.get("AWS_REGION", "us-west-2"), ids)
         except Exception:  # noqa: BLE001
             pass
 
@@ -275,7 +303,7 @@ def reclaim_warm(loop, region: str) -> None:
     sys.stdout.write(f"[demo] warm_reclaim instances={len(ids)} reason=loop_superseded ids={','.join(ids)}\n")
     sys.stdout.flush()
     try:
-        _ec2(region).terminate_instances(InstanceIds=ids)
+        _terminate_ids(region, ids)
     except Exception as e:  # noqa: BLE001 — the dead-man switch and gc-episodes are the backstop
         sys.stdout.write(f"[demo] warm_reclaim terminate failed: {e}\n")
 
@@ -330,7 +358,7 @@ class Ec2WarmSandbox(Ec2EpisodeSandbox):
                     _WARM._drop(inst)
                     sys.stdout.write(f"[demo] warm_retire instance={inst.iid} reason=unhealthy_on_reuse "
                                      f"episodes={inst.episodes}\n")
-                    await asyncio.to_thread(lambda: _ec2(self._region).terminate_instances(InstanceIds=[inst.iid]))
+                    await asyncio.to_thread(_terminate_ids, self._region, [inst.iid])
                     continue
             if ok:
                 break
@@ -365,13 +393,14 @@ class Ec2WarmSandbox(Ec2EpisodeSandbox):
 
     async def _retire(self, why: str) -> None:
         inst, self._inst = self._inst, None
+        self._abandoned = True               # a launch still in flight terminates its own instance
         if inst is None:
             if self._instance_id:            # launched but never registered
-                await asyncio.to_thread(lambda: _ec2(self._region).terminate_instances(InstanceIds=[self._instance_id]))
+                await asyncio.to_thread(_terminate_ids, self._region, [self._instance_id])
             return
         _WARM._drop(inst)
         try:
-            await asyncio.to_thread(lambda: _ec2(self._region).terminate_instances(InstanceIds=[inst.iid]))
+            await asyncio.to_thread(_terminate_ids, self._region, [inst.iid])
         finally:
             sys.stdout.write(f"[demo] warm_retire instance={inst.iid} reason={why} episodes={inst.episodes}\n")
             sys.stdout.flush()

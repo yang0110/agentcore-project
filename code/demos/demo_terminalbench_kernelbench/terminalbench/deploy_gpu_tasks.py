@@ -50,6 +50,9 @@ import deploy_docker_tasks as dock  # noqa: E402  (x86_64 CPython + the wrapper'
 import deploy_terminalbench as tb  # noqa: E402  (_prepare: task Dockerfile + wrapper layer)
 
 GPU_PREFIX = "gpu:"
+# Hard cap on one g6 session (AgentCore stops it, and the instance goes 600 s later). An episode takes
+# minutes; the cap only bounds a session nobody stopped. 4 h (d.INSTANCE_MAX_LIFETIME is 24 h).
+GPU_SESSION_MAX_LIFETIME = int(os.environ.get("TB_GPU_MAX_LIFETIME", "14400"))
 INSTANCES = [s.strip() for s in os.environ.get("TB_GPU_INSTANCE", "g6.xlarge").split(",") if s.strip()]
 INSTANCE = ",".join(INSTANCES)
 # The original single-g6 provider keeps its name; any other type list gets its own.
@@ -119,18 +122,23 @@ def build_kernelbench(ctx: Path) -> str:
 
 
 def _point_at(arn: str, uri: str, xrole: str, cp_arn: str) -> None:
-    """Update an existing Runtime in place if it runs a different image digest or capacity provider; wait READY."""
+    """Update an existing Runtime in place if it runs a different image digest, capacity provider or session
+    lifecycle (RUNTIME_IDLE_TIMEOUT / TB_GPU_MAX_LIFETIME); wait READY."""
     control = boto3.client("bedrock-agentcore-control", region_name=d.REGION)
     rid = arn.rsplit("/", 1)[1]
     cur = control.get_agent_runtime(agentRuntimeId=rid)
+    want_lc = d.runtime_lifecycle(GPU_SESSION_MAX_LIFETIME)
+    have_lc = {k: (cur.get("lifecycleConfiguration") or {}).get(k) for k in want_lc}
     if (cur["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"] == uri
-            and (cur.get("capacityProviderConfiguration") or {}).get("capacityProviderArn") == cp_arn):
+            and (cur.get("capacityProviderConfiguration") or {}).get("capacityProviderArn") == cp_arn
+            and have_lc == want_lc):
         return
     control.update_agent_runtime(
         agentRuntimeId=rid, roleArn=xrole, agentRuntimeArtifact={"containerConfiguration": {"containerUri": uri}},
         protocolConfiguration={"serverProtocol": "HTTP"}, capacityProviderConfiguration={"capacityProviderArn": cp_arn},
-        lifecycleConfiguration=d.runtime_lifecycle(d.INSTANCE_MAX_LIFETIME), environmentVariables={"AWS_REGION": d.REGION})
-    d.err(f"[gpu] updated {rid} -> {uri.rsplit('@', 1)[-1][:19]} on {cp_arn.rsplit('/', 1)[-1]}")
+        lifecycleConfiguration=want_lc, environmentVariables={"AWS_REGION": d.REGION})
+    d.err(f"[gpu] updated {rid} -> {uri.rsplit('@', 1)[-1][:19]} on {cp_arn.rsplit('/', 1)[-1]} "
+          f"(idle {want_lc['idleRuntimeSessionTimeout']} s, max {want_lc['maxLifetime']} s)")
     d._wait_runtime(control, rid)
 
 
@@ -170,6 +178,7 @@ def main() -> int:
             try:
                 uri = build_one(task, ctx)
                 arn = d.runtime_on_cp(runtime_name(task), uri, xrole, cp_arn, {"AWS_REGION": d.REGION})
+                _point_at(arn, uri, xrole, cp_arn)
                 row.update(status="registered", arn=arn)
             except Exception as e:  # noqa: BLE001 — one bad task must not sink the rest
                 row.update(status="failed", error=f"{type(e).__name__}: {e}"[-300:])

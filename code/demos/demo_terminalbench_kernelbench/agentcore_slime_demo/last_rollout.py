@@ -17,8 +17,9 @@ its executor are still alive:
      booted ones (``TerminalBenchPool.aclose``), then cancel the in-flight episodes — each one closes
      its own session on the way out (StopRuntimeSession / compose down + reset);
   3. join the worker thread (bounded).
-Anything this misses is still covered by the existing backstops: idle reclaim (microVM / g6), the
-warm-pool atexit terminate + ``m5_host.py gc-episodes`` in 5_run.sh (m5).
+Anything this misses is still covered by the backstops: a late stop by any call that lands after its
+sandbox closed, the exit hooks (stop every live AgentCore session; terminate every launched m5),
+idle reclaim (RUNTIME_IDLE_TIMEOUT, 900 s), the m5 dead-man switch and ``m5_host.py gc-episodes``.
 
     --rollout-function-path agentcore_slime_demo.last_rollout.generate_rollout
 """
@@ -53,6 +54,16 @@ async def _close_on_worker_loop(pool) -> int:
     for t in eps:                       # cancelling a dispatch worker cancels the episode it awaits;
         t.cancel()                      # the episode closes its sandbox before the worker unwinds
     await asyncio.gather(*eps, return_exceptions=True)
+    # Then slime's group tasks on this loop: each awaits a pool job no worker will serve now, and the
+    # worker's _loop (left alone: running=False ends it) waits up to 30 s for them before its
+    # asyncio.run returns. That run's executor still waits for blocking calls in flight (a g6 open can
+    # take minutes); each of those stops its own session when it lands (AgentCoreRuntimeSandbox late
+    # stop), so the bounded join below may time out without leaking anything.
+    rest = [t for t in asyncio.all_tasks() if t is not me and not t.done()
+            and getattr(t.get_coro(), "__qualname__", "") != "AsyncRolloutWorker._loop"]
+    for t in rest:
+        t.cancel()
+    await asyncio.wait(rest, timeout=30) if rest else None
     return len(eps)
 
 

@@ -15,6 +15,15 @@ _SFX="-hybrid"
 if [ "${HEARTBEAT:-1}" = 0 ]; then _SFX+="-nohb"; fi
 TAG="${RUN_TAG:-run}${_SFX}_$(date +%Y%m%d_%H%M%S)"
 C_LOG="$C_DEMO_DIR/logs/$TAG.log"
+export TB_JOB_ID="tb-$TAG"     # the ray job's id: a Ctrl-C here stops it (docker exec forwards no signal)
+_interrupted() {
+  trap - INT TERM
+  echo "!! interrupted: stopping ray job $TB_JOB_ID in $CONTAINER (run.sh then stops ray + sglang)" >&2
+  in_container "timeout 120 ray job stop --address=http://127.0.0.1:8265 $TB_JOB_ID" || true
+  if [ -f "$M5_STATE" ]; then python3 "$HERE/deploy/m5_host.py" gc-episodes || true; fi
+  exit 130
+}
+trap _interrupted INT TERM
 mkdir -p "$HERE/logs" 2>/dev/null || true
 log "step 5/6: run.sh  NR=$NR EVAL_INTERVAL=$EVAL_INTERVAL -> logs/$TAG.log"
 in_container "mkdir -p $C_DEMO_DIR/logs && set -o pipefail && bash $C_DEMO_DIR/run.sh 2>&1 | tee $C_LOG" || RUN_RC=$?

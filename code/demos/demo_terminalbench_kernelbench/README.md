@@ -166,6 +166,15 @@ bash 6_cleanup.sh          # delete acs_tbh_* Runtimes + terminate the m5 (KEEP_
 validates the pipeline on a few tasks first. Manage the m5 directly with
 `python3 deploy/m5_host.py up|status|update|down` (`update` pushes a new `compose_agent.py`).
 
+**What is left after a run.** Every episode stops its own sandbox. At the end, or on an exception or
+SIGTERM, the rollout process stops every AgentCore session it still holds and terminates every m5 it
+launched; a call still in flight when its sandbox closed stops that session again when it lands.
+`run.sh` stops Ray + SGLang when it exits; a Ctrl-C on `5_run.sh` stops the ray job, then sweeps the m5s.
+After a `kill -9` (or a lost host) the backstops are AgentCore idle reclaim (`RUNTIME_IDLE_TIMEOUT`, g6
+instance 600 s later), the m5 dead-man switch and `gc-episodes`. Between runs, by design: the 218 + 1
+Runtimes and 3 capacity providers (no instance without a session), the builder m5, ECR images, the AMI.
+`6_cleanup.sh` removes the Runtimes, every GPU capacity provider and the m5s, and lists what it keeps.
+
 ## Knobs (env vars; defaults in `run.sh` / the deploy scripts)
 
 | Knob | Default | Meaning |
@@ -179,7 +188,8 @@ validates the pipeline on a few tasks first. Manage the m5 directly with
 | `TB_KERNELBENCH` / `TB_KB_TRAIN` / `TB_KB_EVAL` | 1 / 40 / 10 | the KernelBench g6 Runtime (step 4) / KernelBench rows in train / eval |
 | `TB_GPU_TASKS` / `TB_GPU_MAX_SESSIONS` / `TB_GPU_INSTANCE` | empty / 32 / g6.xlarge | Terminal-Bench tasks on the g6 tier / live g6 sessions at once, per pool (at 16 the gate was full 66 % of smoke 5 and 31/36 pre-opened sessions were still booting; ~4 KernelBench prompts × 8 are in the look-ahead window) / instance type |
 | `TB_KB_SPEEDUP_MIN` | 1.10 | KernelBench reward: 1 if correct and at least this much faster than the reference, 0.5 if only correct, 0 otherwise (0 = correctness only) |
-| `TB_M5_IDLE_SHUTDOWN_S` | 1800 | m5 dead-man switch: an episode instance with no trainer call for this long terminates itself (0 = off). Must exceed the longest normal silence of an idle warm instance (final checkpoint save, eval: ~10 min); shorter = idle warm instances get replaced mid-run, longer = orphans bill longer after a crash |
+| `TB_M5_IDLE_SHUTDOWN_S` | 1800 | m5 dead-man switch, armed from the instance's first boot (user-data systemd drop-in): an episode instance with no trainer call for this long terminates itself (0 = off). Must exceed the longest normal silence of an idle warm instance (final checkpoint save, eval: ~10 min); shorter = idle warm instances get replaced mid-run, longer = orphans bill longer after a crash |
+| `RUNTIME_IDLE_TIMEOUT` / `TB_GPU_MAX_LIFETIME` | 900 / 14400 | step 4: AgentCore session idle timeout (every Runtime) / hard cap on one g6 session. A session whose stop was lost bills until the idle timeout; step 4 re-applies both to the g6 Runtime in place, microVM Runtimes pick the idle timeout up on their next create or digest update |
 | `INVOKE_EXEC_MAX_RETRIES` | 1 | retries of a failed `exec` (not idempotent; 9 retries of a 4-min call stalled an eval) |
 | `HEARTBEAT` | 1 | keep idle microVM sessions alive across trainer stalls |
 | `EPISODE_MAX_TURNS` / `EPISODE_MAX_TOKENS` | 8 / 1024 | agent turns / tokens per turn |

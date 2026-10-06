@@ -206,6 +206,12 @@ def gc_episodes() -> int:
         for i in r["Instances"]]
     if ids:
         ec2.terminate_instances(InstanceIds=ids)
+        # Wait (bounded) so `down` can delete the SG right after: a still-terminating instance's ENI
+        # holds it (DependencyViolation).
+        try:
+            ec2.get_waiter("instance_terminated").wait(InstanceIds=ids, WaiterConfig={"Delay": 10, "MaxAttempts": 30})
+        except Exception as e:  # noqa: BLE001 — they are terminating; a later gc / down retries
+            print(f"# not all terminated after 300 s: {e}")
     print(f"# terminated {len(ids)} per-episode instance(s)")
     return 0
 
@@ -355,7 +361,14 @@ def down() -> int:
             if perms:
                 ec2.revoke_security_group_ingress(GroupId=tsg, IpPermissions=perms)
                 d.err(f"revoked {len(perms)} rule(s) on {tsg} from {sg}")
-        ec2.delete_security_group(GroupId=sg)
+        for attempt in range(12):           # an ENI of an instance still terminating holds the SG
+            try:
+                ec2.delete_security_group(GroupId=sg)
+                break
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "DependencyViolation" or attempt == 11:
+                    raise
+                time.sleep(10)
         d.err(f"deleted SG {sg}")
     STATE.unlink(missing_ok=True)
     print("# m5 host removed (the shared egress subnet is kept)")

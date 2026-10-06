@@ -26,10 +26,12 @@ of one Code Interpreter session per rollout).
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -192,6 +194,29 @@ def _timed_invoke(call, *, op: str, arn: str | None, session: str, what: str):
         sys.stdout.flush()
 
 
+# Every AgentCore session this process opened and has not stopped yet: session id -> (client, arn).
+# Added BEFORE the first invoke (an open still in flight counts), removed once a stop succeeds. At
+# process exit the leftovers are stopped, so a trainer that dies by exception / SIGTERM / normal exit
+# leaves no session to bill until its Runtime's idle timeout (kill -9 still does: idle reclaim).
+_LIVE_SESSIONS: dict[str, tuple] = {}
+_LIVE_LOCK = threading.Lock()
+
+
+def _stop_live_sessions_at_exit() -> None:
+    with _LIVE_LOCK:
+        live = dict(_LIVE_SESSIONS)
+    for sid, (client, arn) in live.items():
+        with contextlib.suppress(Exception):
+            client.stop_runtime_session(runtimeSessionId=sid, agentRuntimeArn=arn)
+        _LIVE_SESSIONS.pop(sid, None)
+    if live:
+        sys.stdout.write(f"[demo] exit_stop_sessions n={len(live)}\n")
+        sys.stdout.flush()
+
+
+atexit.register(_stop_live_sessions_at_exit)
+
+
 class AgentCoreRuntimeSandbox:
     """Sandbox backed by a remote AgentCore Runtime (the disaggregated target).
 
@@ -216,6 +241,8 @@ class AgentCoreRuntimeSandbox:
         self._read_timeout = read_timeout or int(os.environ.get("INVOKE_READ_TIMEOUT", "900"))
         self._local_url = _local_endpoint()  # local AgentCore runtime container, if any
         self._client = None
+        self._stop_client = None   # kept after __aexit__: a call still in flight then is stopped late
+        self._closed = False
 
     async def __aenter__(self) -> "AgentCoreRuntimeSandbox":
         if self._local_url:
@@ -238,6 +265,9 @@ class AgentCoreRuntimeSandbox:
         self._client = await asyncio.to_thread(
             boto3.client, "bedrock-agentcore", region_name=self._region, config=cfg
         )
+        self._stop_client = self._client
+        with _LIVE_LOCK:
+            _LIVE_SESSIONS[self._session_id] = (self._client, self._arn)
         # Best-effort workspace init + liveness check (also warms a cold GPU instance).
         # The client-side epochs around this first ping + the server's reply (a server that reports
         # boot timestamps, e.g. the Terminal-Bench images' acs_http_server) let callers decompose the
@@ -259,31 +289,13 @@ class AgentCoreRuntimeSandbox:
         # (idle reclaim is the fallback). Opt out with AGENTCORE_STOP_SESSION=0 for a fleet
         # that deliberately keeps GPU-instance sessions warm for the next episode.
         # (Instance teardown itself remains a fleet concern — gpu_deploy.py cleanup.)
-        client = self._client
         if (
-            client is not None
+            self._client is not None
             and self._arn
             and os.environ.get("AGENTCORE_STOP_SESSION", "1") not in ("0", "false", "no")
         ):
-            try:
-                await asyncio.to_thread(
-                    lambda: client.stop_runtime_session(
-                        runtimeSessionId=self._session_id,
-                        agentRuntimeArn=self._arn,
-                    )
-                )
-                sys.stdout.write(
-                    f"[sbx-op] ts={time.time():.3f} op=stop_session ms=0.0 "
-                    f"arn={_arn_tail(self._arn)} session={self._session_id} status=ok\n"
-                )
-                sys.stdout.flush()
-            except Exception as exc_stop:  # noqa: BLE001 — teardown: log + fall back to idle reclaim
-                sys.stdout.write(
-                    f"[sbx-op] ts={time.time():.3f} op=stop_session ms=0.0 "
-                    f"arn={_arn_tail(self._arn)} session={self._session_id} "
-                    f"status={type(exc_stop).__name__} (idle-reclaim fallback)\n"
-                )
-                sys.stdout.flush()
+            self._closed = True       # from here a call that lands late stops the session again
+            await asyncio.to_thread(self._stop_sync)
         self._client = None
 
     def _invoke_sync(self, payload: dict) -> dict:
@@ -314,8 +326,49 @@ class AgentCoreRuntimeSandbox:
             return {}
         return json.loads(raw.decode())
 
+    def _stop_sync(self, when: str = "") -> None:
+        """StopRuntimeSession, retried (3 tries, 1 s / 2 s backoff) unless the session doesn't exist.
+        Never raises: idle reclaim is the fallback. A stop that never succeeds stays in _LIVE_SESSIONS
+        for the exit hook."""
+        client, status = self._stop_client, "skipped"
+        if client is None or not self._arn:
+            return
+        for attempt in range(3):
+            try:
+                client.stop_runtime_session(runtimeSessionId=self._session_id, agentRuntimeArn=self._arn)
+                status = "ok"
+            except Exception as exc_stop:  # noqa: BLE001 — teardown: log + fall back to idle reclaim
+                code = str((getattr(exc_stop, "response", None) or {}).get("Error", {}).get("Code", ""))
+                status = code or type(exc_stop).__name__
+                if "NotFound" not in status and attempt < 2:
+                    time.sleep(2 ** attempt)
+                    continue
+            break
+        if status == "ok" or "NotFound" in status:
+            with _LIVE_LOCK:
+                _LIVE_SESSIONS.pop(self._session_id, None)
+        tail = "" if status == "ok" else " (idle-reclaim fallback)"
+        sys.stdout.write(
+            f"[sbx-op] ts={time.time():.3f} op=stop_session ms=0.0 "
+            f"arn={_arn_tail(self._arn)} session={self._session_id} status={status}{when}{tail}\n"
+        )
+        sys.stdout.flush()
+
+    def _invoke_then_late_stop(self, payload: dict) -> dict:
+        """_invoke_sync, then: if the sandbox was closed while this call was in flight (a cancelled
+        pre-open's first ping, an exec cut off by an abort), stop the session again. The early stop
+        found no session (ResourceNotFound) or ran before this call re-created it; without a second
+        stop it would hold its microVM / g6 until the Runtime's idle timeout."""
+        try:
+            return self._invoke_sync(payload)
+        finally:
+            if self._closed and self._stop_client is not None:
+                with _LIVE_LOCK:
+                    _LIVE_SESSIONS[self._session_id] = (self._stop_client, self._arn)
+                self._stop_sync(" late=1")
+
     async def _invoke(self, payload: dict) -> dict:
-        return await asyncio.to_thread(self._invoke_sync, payload)
+        return await asyncio.to_thread(self._invoke_then_late_stop, payload)
 
     def _abs(self, path: str) -> str:
         if os.path.isabs(path) or not self._workdir:
