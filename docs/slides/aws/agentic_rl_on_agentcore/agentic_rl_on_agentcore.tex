@@ -479,7 +479,7 @@ EC2 for 30 tasks) \textperiodcentered{} g5 for KernelBench (works, but g6 is che
 %====================================================================
 \begin{frame}{Architecture: what runs where}
 \flabel{fr:arch}
-\figcap{One trainer host drives three sandbox substrates; the agent loop runs inside each sandbox and calls back}
+\figcap{One trainer host drives three sandbox substrates; the agent loop runs inside each sandbox \emph{or} in a decoupled harness Runtime, and calls back each turn}
 \centering
 \begin{tikzpicture}[every node/.style={font=\tiny}, c/.style={box,align=left,inner sep=2.5pt}]
 % column A: trainer host
@@ -491,14 +491,15 @@ EC2 for 30 tasks) \textperiodcentered{} g5 for KernelBench (works, but g6 is che
   label={[font=\tiny\bfseries,text=inkmuted,align=center]above:Trainer host (g6e.48xlarge)}] (host) {};
 \end{scope}
 % column B: AgentCore + EC2
-\node[c,text width=37mm,draw=cat2] (mv) at (5.6,1.05) {\textbf{\textcolor{cat2}{microVM Runtimes}} (218)\\1 session = 1 fresh microVM};
-\node[c,text width=37mm,draw=cat3] (g6) at (5.6,0.15) {\textbf{\textcolor{cat3}{GPU capacity provider}}\\1 session = 1 g6.xlarge};
+\node[c,text width=37mm,draw=cat2] (mv) at (5.6,1.15) {\textbf{\textcolor{cat2}{microVM Runtimes}} (218)};
+\node[c,text width=37mm,draw=cat3] (g6) at (5.6,0.58) {\textbf{\textcolor{cat3}{GPU capacity provider}} (g6)};
+\node[c,text width=37mm,draw=awsteal] (harn) at (5.6,-0.18) {\textbf{\textcolor{awsteal}{harness Runtime}}: \tb{claude\_cli}/\tb{mini\_claude\_rt}\\warm pool, drives a sandbox (2 microVMs/ep)};
 \begin{scope}[on background layer]
-\node[draw=cat2,dashed,rounded corners=3pt,fit=(mv)(g6),inner sep=2mm,
+\node[draw=cat2,dashed,rounded corners=3pt,fit=(mv)(g6)(harn),inner sep=1.6mm,
   label={[font=\tiny\bfseries,text=inkmuted]above:AgentCore (it manages these)}] (ac) {};
 \end{scope}
-\node[c,text width=37mm,draw=cat1] (m5) at (5.6,-1.25) {\textbf{\textcolor{cat1}{m5 warm pool}} ($\le$ 24; \tb{m5.2xlarge} since 6 Oct)\\Docker + compose agent, from our AMI};
-\node[c,text width=37mm] (bld) at (5.6,-2.05) {m5 builder: images + oracle checks};
+\node[c,text width=37mm,draw=cat1] (m5) at (5.6,-1.05) {\textbf{\textcolor{cat1}{m5 warm pool}} ($\le$24, \tb{m5.2xlarge})};
+\node[c,text width=37mm] (bld) at (5.6,-1.62) {m5 builder: images + oracle checks};
 \begin{scope}[on background layer]
 \node[draw=cat1,dashed,rounded corners=3pt,fit=(m5)(bld),inner sep=2mm,
   label={[font=\tiny\bfseries,text=inkmuted]above:EC2 in our account (our code manages these)}] (ec2) {};
@@ -520,7 +521,7 @@ EC2 for 30 tasks) \textperiodcentered{} g5 for KernelBench (works, but g6 is che
 \column{0.32\textwidth}
 \scriptsize\textbf{Control path (solid):} our code, inside slime's rollout process, calls AgentCore for \smv{} and \sg{}, and EC2 for \sm.
 \column{0.32\textwidth}
-\scriptsize\textbf{Agent path (dashed):} the agent runs \emph{in} the sandbox and calls the adapter over the VPC for every turn (also from the m5s).
+\scriptsize\textbf{Agent path (dashed):} the agent loop --- \emph{in} the sandbox, or in a decoupled harness Runtime driving it --- calls the adapter over the VPC every turn (\sref{fr:hbuildroute}).
 \column{0.32\textwidth}
 \scriptsize\textbf{Nothing public:} VPC Runtimes, private subnets, SG-to-SG rules only (\sref{fr:sec}).
 \end{columns}
@@ -1506,6 +1507,32 @@ Strange errors after an edit & bash reads a running script as it goes & never ed
 \end{itemize}
 \end{columns}
 \src{Live: \tb{terminalbench\_pool.py} (\tb{HARNESS\_SET}, \tb{\_pick\_harness}), \tb{decoupled\_cli\_harness.py}, \tb{harness\_cli\_pool.py}, \tb{harness\_runtime\_agent.py}, \tb{deploy/Dockerfile.harness.cli} (step 4h). AWS-smoke-verified 7 Oct 2026: all three kinds run (harness\_where=session / harness\_runtime), tool calls + graded reward.}
+\end{frame}
+
+%====================================================================
+\begin{frame}[fragile]{The harness Runtime: how it's built, and how episodes are routed}
+\flabel{fr:hbuildroute}
+\begin{columns}[T]
+\column{0.5\textwidth}
+{\footnotesize\textbf{Build} --- one decoupled harness Runtime image}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \tb{deploy/Dockerfile.harness.cli} (arm64, \hl{$<$2\,GB}): python-slim $+$ \textbf{Node 22} $+$ \tb{npm i -g @anthropic-ai/claude-code} (the real CLI) $+$ pip \tb{mcp$<$2}, \tb{aiohttp}; root / zero-cap shims (\tb{IS\_SANDBOX=1}, no-op \tb{chown}).
+\item Entry = a \tb{BedrockAgentCoreApp} (\tb{harness\_runtime\_agent.py}); \tb{handle\_async} switches on \tb{harness\_kind}: \textbf{claude} (real CLI, built-ins off, only the \tb{mcp\_\_sandbox\_\_*} bridge), \textbf{mini} (the Python mimic), \textbf{noop} (warm ping).
+\item Deployed once by \textbf{step 4h} $\to$ one Runtime \tb{acs\_harness\_cli} (ARN in \tb{deploy/harness\_cli.json}); \tb{AGENTCORE\_STOP\_SESSION=0} so the trainer keeps the sandbox session.
+\item \textbf{Warm pool} of reused sessions (\tb{HARNESS\_CLI\_SESSIONS}), heartbeated --- no Node/CLI cold start per episode (the sandbox stays fresh).
+\end{itemize}
+\column{0.47\textwidth}
+{\footnotesize\textbf{Route} --- per episode, train $+$ eval}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \tb{HARNESS\_SET=kind[:frac],\dots}; \tb{\_pick\_harness(task)} = \tb{crc32(task\_id)\%100} into the cumulative buckets $\to$ \tb{mini\_claude} / \tb{mini\_claude\_rt} / \tb{claude\_cli}.
+\item \textbf{Per-prompt} by default: all \tb{NS} samples of a GRPO group share a harness (advantage isn't conflated with harness difficulty). \tb{HARNESS\_ASSIGN=episode} = per-episode random.
+\item \tb{\_run\_episode} dispatches on the harness's \tb{in\_session} flag: in-session writes the runner \emph{into} the sandbox; decoupled \textbf{borrows a warm harness session} and invokes it with \{prompt, adapter\_url, sandbox\_arn, sandbox\_session\}.
+\item Same \tb{Sample} contract $+$ hidden-test grading either way $\Rightarrow$ \textbf{harness-agnostic reward}; \tb{harness=} lands on \tb{[demo]}/\tb{[router]} for per-harness metrics.
+\end{itemize}
+\end{columns}
+\par\vspace{1mm}
+{\scriptsize\textbf{One episode:} dataset row $\to$ \tb{\_pick\_harness} $\to$ \{in-session loop \emph{in} the sandbox\} \emph{or} \{harness Runtime drives the sandbox over \tb{mcp\_\_sandbox\_\_*}\} $\to$ the loop dials the \textbf{AnthropicAdapter} each turn (tokens recorded) $\to$ hidden tests graded $\to$ reward.}
+\src{\tb{deploy/Dockerfile.harness.cli}, \tb{4\_deploy\_runtime.sh} (4h), \tb{agentcore\_slime\_demo/\{harness\_runtime\_agent,sandbox\_mcp,harness\_cli\_pool,decoupled\_cli\_harness,terminalbench\_pool\}.py}; 7 Oct 2026.}
 \end{frame}
 
 %====================================================================
