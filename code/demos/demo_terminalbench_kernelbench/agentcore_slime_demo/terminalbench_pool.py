@@ -495,7 +495,29 @@ class TerminalBenchPool(HarnessPool):
         arn = self._arn_for(task)
         pending = self._claim(arn)
         t0 = time.perf_counter()
-        sb = await (pending if pending is not None else self._open_session(arn))
+        try:
+            sb = await (pending if pending is not None else self._open_session(arn))
+        except Exception as exc:  # noqa: BLE001 — NOT BaseException: a cancellation must still propagate.
+            # A sandbox session-open failure (classically a transient "Insufficient EC2 capacity"
+            # for the g6/KernelBench tier) must NOT take down the whole job during EVAL — eval is a
+            # metric, not a gradient. Skip this eval episode: score it 0, flag it, and let training
+            # continue. (A training rollout still raises: the fully-async driver tolerates a dropped
+            # training sample, but an eval that silently vanished would break slime's as_completed
+            # gather in eval_rollout_single_dataset.) _open_session releases its substrate gate on
+            # the way out, so nothing leaks here.
+            if not evaluation:
+                raise
+            logger.warning("[terminalbench_pool] eval session-open failed for %s on %s; skipping this "
+                           "eval episode (reward 0): %s", task.task_id, _arn_tail(arn), exc)
+            print(f"[demo] episode_end task={task.task_id} family={getattr(task, 'family', '?')} "
+                  f"solved=0 infra_error={type(exc).__name__} eval_skipped=open_failed reward=0.0",
+                  flush=True)
+            base_sample.reward = 0.0
+            base_sample.status = base_sample.Status.COMPLETED   # not TRUNCATED: a clean skip, not a cutoff
+            md = dict(getattr(base_sample, "metadata", None) or {})
+            md["eval_skipped"] = "open_failed"
+            base_sample.metadata = md
+            return base_sample
         wait_ms = (time.perf_counter() - t0) * 1000.0
         # How long the booted microVM sat idle before this worker claimed it (0 if it was still
         # booting at pickup). This is the gap the SessionKeeper must bridge (< idle timeout).
