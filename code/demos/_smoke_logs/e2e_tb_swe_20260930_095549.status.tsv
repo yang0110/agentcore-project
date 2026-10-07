@@ -1,0 +1,5 @@
+demo_cpu_terminalbench	2_build_image.sh	1	6840s
+demo_cpu_swebench	1_prepare_data.sh	0	18s
+demo_cpu_swebench	2_build_image.sh	0	243s
+demo_cpu_swebench	3_push_ecr.sh	0	0s
+demo_cpu_swebench	4_deploy_runtime.sh	1	235s

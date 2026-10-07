@@ -1,0 +1,3 @@
+demo_cpu_terminalbench	3_push_ecr.sh	141	0s
+demo_cpu_swebench	4_deploy_runtime.sh	0	160s
+demo_cpu_swebench	5_run.sh	0	976s
