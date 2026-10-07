@@ -31,7 +31,9 @@ RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code \
 # --- python deps: the Runtime framework + the MCP bridge server + the sandbox invoke client -----
 # Pin mcp<2: sandbox_mcp.py uses the v1 FastMCP API (mcp.server.fastmcp.FastMCP); mcp 2.x renamed it
 # to MCPServer and broke that import (ModuleNotFoundError at runtime).
-RUN pip install --no-cache-dir bedrock-agentcore 'mcp<2' uvicorn boto3
+# aiohttp: MiniClaudeHarness.run (the "mini" harness_kind = mini_claude_rt) imports it for its HTTP
+# loop to the adapter.
+RUN pip install --no-cache-dir bedrock-agentcore 'mcp<2' uvicorn boto3 aiohttp
 
 # --- root/zero-cap microVM shims (AgentCore runs the container as uid 0 with an EMPTY cap set) ----
 # No CAP_SETUID/CHOWN, so `claude` must run as root with --permission-mode bypassPermissions, which
@@ -54,6 +56,9 @@ COPY agentcore_slime_demo/harness_runtime_agent.py   /app/agentcore_slime_demo/h
 COPY agentcore_slime_demo/sandbox_mcp.py             /app/agentcore_slime_demo/sandbox_mcp.py
 COPY agentcore_slime_demo/agentcore_runtime_sandbox.py /app/agentcore_slime_demo/agentcore_runtime_sandbox.py
 COPY agentcore_slime_demo/sandbox.py                 /app/agentcore_slime_demo/sandbox.py
+# mini_agent.py: the MiniClaudeHarness used by the "mini" harness_kind (mini_claude_rt — the mimic
+# hosted in this harness Runtime instead of in-session). stdlib-only at import, no extra deps.
+COPY agentcore_slime_demo/mini_agent.py              /app/agentcore_slime_demo/mini_agent.py
 
 ENV SANDBOX_WORKDIR=/workspace
 ENV IS_SANDBOX=1

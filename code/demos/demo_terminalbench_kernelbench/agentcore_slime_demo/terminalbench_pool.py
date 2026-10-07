@@ -350,28 +350,41 @@ class TerminalBenchPool(HarnessPool):
             self._harness.exec_timeout_sec = int(os.environ.get("TB_EXEC_TIMEOUT", "180"))
             self._harnesses["mini_claude"] = self._harness
 
-            # If any episode is routed to the decoupled CLI harness, stand up its warm Runtime pool
-            # (reused sessions, no cold Node/CLI start per episode) + the trainer-side client. Assign
-            # self._decoupled BEFORE awaiting pool.start(): a racing episode then borrows (and waits
-            # on the pool's queue) instead of hitting a None harness.
-            if any(kind == "claude_cli" for kind, _ in self._harness_set):
+            # Decoupled harnesses (their own harness Runtime microVM, driving the sandbox over the
+            # bridge): claude_cli = the real Claude Code CLI; mini_claude_rt = the mini mimic hosted
+            # in the harness Runtime instead of in-session. Both share ONE warm Runtime pool. Assign
+            # the harness objects BEFORE awaiting pool.start(): a racing episode then borrows (and
+            # waits on the pool's queue) instead of hitting a None harness.
+            _DECOUPLED_KINDS = {"claude_cli": "claude", "mini_claude_rt": "mini"}
+            decoupled = [k for k, _ in self._harness_set if k in _DECOUPLED_KINDS]
+            if decoupled:
                 if not self._harness_cli_arn:
-                    raise RuntimeError("HARNESS_SET selects claude_cli but AGENTCORE_HARNESS_CLI_RUNTIME_ARN "
+                    raise RuntimeError(f"HARNESS_SET selects {decoupled} but AGENTCORE_HARNESS_CLI_RUNTIME_ARN "
                                        "is unset — deploy the harness Runtime (4_deploy_runtime.sh step 4h).")
                 from .decoupled_cli_harness import DecoupledCliHarness
                 from .harness_cli_pool import HarnessCliRuntimePool
 
-                frac = next((c for k, c in self._harness_set if k == "claude_cli"), 100.0) / 100.0
+                # Fraction of episodes going to the decoupled pool = sum of its kinds' per-kind
+                # fractions (the set stores CUMULATIVE %, so diff consecutive buckets).
+                prev = 0.0
+                frac = 0.0
+                for k, cum in self._harness_set:
+                    if k in _DECOUPLED_KINDS:
+                        frac += (cum - prev) / 100.0
+                    prev = cum
                 n_sess = int(os.environ.get("HARNESS_CLI_SESSIONS", "") or
-                             max(1, round(self.num_workers * frac)))
+                             max(1, round(self.num_workers * max(frac, 0.1))))
                 read_timeout = max(int(os.environ.get("INVOKE_READ_TIMEOUT", "900")),
                                    int(os.environ.get("AGENT_TIME_BUDGET_SEC", "900")) + 60)
                 self._harness_cli_pool = HarnessCliRuntimePool(
                     arn=self._harness_cli_arn, region=self.region, n_sessions=n_sess,
                     keeper=self._keeper, idle_timeout=self.idle_timeout, read_timeout=read_timeout)
-                self._decoupled = DecoupledCliHarness(
-                    self._harness_cli_pool, exec_timeout_sec=self._harness.exec_timeout_sec)
-                self._harnesses["claude_cli"] = self._decoupled
+                for k in decoupled:
+                    h = DecoupledCliHarness(self._harness_cli_pool, kind=_DECOUPLED_KINDS[k],
+                                            exec_timeout_sec=self._harness.exec_timeout_sec)
+                    h.system_prompt = TerminalBenchTask.SYSTEM     # TB persona for the mini variant
+                    self._harnesses[k] = h
+                self._decoupled = self._harnesses.get("claude_cli")
                 await self._harness_cli_pool.start()
 
             self._init_done = True
@@ -670,24 +683,25 @@ class TerminalBenchPool(HarnessPool):
             # Runtime and drives sb over the network. Both capture the trajectory proxy-side and both
             # return a MiniAgentResult, so grading + sample finish below are shared.
             ta = time.perf_counter()
-            if harness_kind == "claude_cli":
-                res = await self._decoupled.run(
-                    sb,
-                    session_id=sid,
-                    adapter_url=session_url,       # the proxy URL the CLI dials (ANTHROPIC_BASE_URL)
-                    prompt=self._problem_text(task),
-                    arn=arn,                       # the per-episode sandbox Runtime the harness drives
-                    max_turns=self.max_turns,
-                    max_tokens=self.max_tokens,
-                )
-            else:
-                res = await self._harness.run(
+            harness = self._harnesses.get(harness_kind, self._harness)
+            if getattr(harness, "in_session", True):
+                res = await harness.run(
                     sb,
                     session_id=sid,
                     adapter_url=session_url,       # the URL the in-session loop dials back
                     prompt=self._problem_text(task),
                     max_tokens=self.max_tokens,
                     http=worker.http,
+                )
+            else:                                  # decoupled: runs in its own harness Runtime, drives sb
+                res = await harness.run(
+                    sb,
+                    session_id=sid,
+                    adapter_url=session_url,       # the proxy URL the loop dials (ANTHROPIC_BASE_URL)
+                    prompt=self._problem_text(task),
+                    arn=arn,                       # the per-episode sandbox Runtime the harness drives
+                    max_turns=self.max_turns,
+                    max_tokens=self.max_tokens,
                 )
             ep.update(agent_ms=round((time.perf_counter() - ta) * 1000.0, 1), turns=res.turns,
                       tool_calls=res.tool_calls, stop=res.stop_reason,

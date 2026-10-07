@@ -21,8 +21,8 @@ if [ "${TB_KERNELBENCH:-1}" = 1 ] || [ -n "${TB_GPU_TASKS:-}" ]; then
   log "step 4g: the GPU tier (g6 capacity provider): KernelBench${TB_GPU_TASKS:+ + $TB_GPU_TASKS}"
   python3 terminalbench/deploy_gpu_tasks.py
 fi
-if [[ ",${HARNESS_SET:-mini_claude}," == *claude_cli* ]]; then
-  log "step 4h: build + deploy the DECOUPLED Claude Code CLI harness Runtime (its own microVM)"
+if [[ ",${HARNESS_SET:-mini_claude}," == *claude_cli* ]] || [[ ",${HARNESS_SET:-mini_claude}," == *mini_claude_rt* ]]; then
+  log "step 4h: build + deploy the DECOUPLED harness Runtime (its own microVM; serves claude_cli + mini_claude_rt)"
   HARNESS_REPO="${NAME_PREFIX}-harness-cli"
   HARNESS_URI="$(python3 deploy/agentcore_deploy.py ecr-uri --repo "$HARNESS_REPO")"
   PYTHONPATH=deploy python3 -c "import agentcore_deploy as d; d._ensure_buildx()"

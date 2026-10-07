@@ -66,7 +66,11 @@ async def _run_mini(request: dict) -> dict:
     max_tokens = int(request.get("max_tokens") or os.environ.get("MINI_AGENT_MAX_TOKENS", "1024"))
     max_turns = int(request.get("max_turns") or os.environ.get("MINI_AGENT_MAX_TURNS", "8"))
     async with sandbox as sb:   # __aexit__ is a no-op here (AGENTCORE_STOP_SESSION=0) — trainer owns sb
-        harness = MiniClaudeHarness(max_turns=max_turns)
+        harness = MiniClaudeHarness(
+            max_turns=max_turns,
+            exec_timeout_sec=int(os.environ.get("TB_EXEC_TIMEOUT", "180")),
+            system_prompt=request.get("system_prompt"),   # the TB persona, passed from the trainer
+        )
         result = await harness.run(
             sb, session_id=session_id, adapter_url=adapter_url, prompt=prompt, max_tokens=max_tokens,
         )

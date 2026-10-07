@@ -148,7 +148,8 @@ fi
 # lives in deploy/harness_cli.json; resolve it here unless the env already set it.
 HARNESS_SET="${HARNESS_SET:-mini_claude}"
 HARNESS_CLI_STATE="$DEMO_DIR/deploy/harness_cli.json"
-if [[ ",$HARNESS_SET," == *claude_cli* ]] && [ -z "${AGENTCORE_HARNESS_CLI_RUNTIME_ARN:-}" ]; then
+# Both claude_cli and mini_claude_rt run on the decoupled harness Runtime, so either needs its ARN.
+if { [[ ",$HARNESS_SET," == *claude_cli* ]] || [[ ",$HARNESS_SET," == *mini_claude_rt* ]]; } && [ -z "${AGENTCORE_HARNESS_CLI_RUNTIME_ARN:-}" ]; then
   [ -f "$HARNESS_CLI_STATE" ] || { echo "HARNESS_SET routes claude_cli but $HARNESS_CLI_STATE is missing (run 4_deploy_runtime.sh step 4h, or set AGENTCORE_HARNESS_CLI_RUNTIME_ARN)" >&2; exit 2; }
   AGENTCORE_HARNESS_CLI_RUNTIME_ARN="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['arn'])" "$HARNESS_CLI_STATE")"
 fi

@@ -16,15 +16,23 @@ from .mini_agent import MiniAgentResult
 
 
 class DecoupledCliHarness:
-    name = "claude_cli"
+    """Runs an agent loop in the harness Runtime (its own microVM) against the per-episode sandbox.
+
+    `kind` selects the harness Runtime flavor: "claude" = the real Claude Code CLI; "mini" = our
+    MiniClaudeHarness Python loop (same mimic as the in-session path, but hosted in the harness
+    Runtime instead of inside the sandbox). Both drive the SAME sandbox over the MCP/invoke bridge
+    and capture the trajectory proxy-side."""
+
     in_session = False
 
-    def __init__(self, pool, *, exec_timeout_sec: int = 180, request_timeout_sec: int = 300,
-                 system_prompt: str | None = None) -> None:
+    def __init__(self, pool, *, kind: str = "claude", exec_timeout_sec: int = 180,
+                 request_timeout_sec: int = 300, system_prompt: str | None = None) -> None:
         self._pool = pool
+        self._kind = kind                        # payload harness_kind: "claude" | "mini"
+        self.name = "claude_cli" if kind == "claude" else "mini_claude_rt"
         self.exec_timeout_sec = exec_timeout_sec
         self.request_timeout_sec = request_timeout_sec
-        self.system_prompt = system_prompt      # kept for interface parity; the CLI has its own prompt
+        self.system_prompt = system_prompt       # applied by the mini path; the CLI has its own prompt
 
     async def run(self, sb, *, session_id: str, adapter_url: str, prompt: str, arn: str,
                   max_turns: int = 8, max_tokens: int = 1024, model_label: str = "slime-actor",
@@ -34,15 +42,17 @@ class DecoupledCliHarness:
         budget = min(int(os.environ.get("AGENT_TIME_BUDGET_SEC", "900")),
                      max(60, self._pool._read_timeout - 60))
         payload = {
-            "harness_kind": "claude",
+            "harness_kind": self._kind,                 # "claude" (real CLI) | "mini" (Python mimic)
             "prompt": prompt,
-            "adapter_url": adapter_url,                 # the PROXY the CLI dials (ANTHROPIC_BASE_URL)
+            "adapter_url": adapter_url,                 # the PROXY the loop dials (ANTHROPIC_BASE_URL)
             "session_id": session_id,                   # adapter Bearer key == trajectory id
             "sandbox_runtime_arn": arn,                 # the per-episode sandbox Runtime to drive
             "sandbox_session_id": sb._session_id,       # the SAME session the trainer opened + grades
             "workdir": getattr(sb, "_workdir", "/workspace"),
             "max_turns": int(max_turns),
+            "max_tokens": int(max_tokens),
             "model": model_label,
+            "system_prompt": self.system_prompt,        # applied by the mini path (TB persona)
             "time_budget_sec": budget,
         }
         async with self._pool.borrow() as harness_sess:
