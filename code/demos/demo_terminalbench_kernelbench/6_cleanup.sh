@@ -46,6 +46,22 @@ if not names:
     d.err("no GPU capacity provider to delete")
 PY
 fi
+if [ -f "$HERE/deploy/harness_cli.json" ]; then
+  log "delete the decoupled Claude Code CLI harness Runtime"
+  python3 - "$HERE/deploy/harness_cli.json" <<'PY'
+import json, sys
+sys.path.insert(0, 'deploy')
+import boto3
+import agentcore_deploy as d
+arn = json.load(open(sys.argv[1])).get('arn', '')
+rid = arn.rsplit('/', 1)[-1]
+if rid:
+    c = boto3.client('bedrock-agentcore-control', region_name=d.REGION)
+    try: c.delete_agent_runtime(agentRuntimeId=rid); d.err(f'deleted harness-cli {rid}')
+    except Exception as e: d.err(f'harness-cli {rid}: {e}')
+PY
+  rm -f "$HERE/deploy/harness_cli.json"
+fi
 if [ -f "$M5_STATE" ]; then
   log "terminate any per-episode m5 instances"
   python3 deploy/m5_host.py gc-episodes

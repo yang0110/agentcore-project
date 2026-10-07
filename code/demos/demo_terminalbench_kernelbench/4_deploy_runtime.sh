@@ -21,6 +21,22 @@ if [ "${TB_KERNELBENCH:-1}" = 1 ] || [ -n "${TB_GPU_TASKS:-}" ]; then
   log "step 4g: the GPU tier (g6 capacity provider): KernelBench${TB_GPU_TASKS:+ + $TB_GPU_TASKS}"
   python3 terminalbench/deploy_gpu_tasks.py
 fi
+if [[ ",${HARNESS_SET:-mini_claude}," == *claude_cli* ]]; then
+  log "step 4h: build + deploy the DECOUPLED Claude Code CLI harness Runtime (its own microVM)"
+  HARNESS_REPO="${NAME_PREFIX}-harness-cli"
+  HARNESS_URI="$(python3 deploy/agentcore_deploy.py ecr-uri --repo "$HARNESS_REPO")"
+  PYTHONPATH=deploy python3 -c "import agentcore_deploy as d; d._ensure_buildx()"
+  # Build context is the demo dir so agentcore_slime_demo/ is COPY-able; arm64 (serverless fleet).
+  docker buildx build --builder "$BUILDX_BUILDER" --platform linux/arm64 \
+     -f deploy/Dockerfile.harness.cli -t "${HARNESS_URI}:latest" --push "$HERE"
+  SZ="$(docker buildx imagetools inspect "${HARNESS_URI}:latest" 2>/dev/null | awk '/Total Size|Size:/{print; exit}')"
+  log "harness-cli image pushed${SZ:+ ($SZ)} — must be < 2 GB (microVM cap)"
+  HARNESS_ARN="$(python3 deploy/agentcore_deploy.py runtime --name "${NAME_PREFIX}_harness_cli" \
+     --image "${HARNESS_URI}:latest" --network VPC --egress nat \
+     --env AGENTCORE_STOP_SESSION=0 --env SANDBOX_WORKDIR=/workspace | tail -n1)"
+  python3 -c "import json,sys; json.dump({'arn': sys.argv[1]}, open('deploy/harness_cli.json','w'))" "$HARNESS_ARN"
+  log "harness CLI Runtime: $HARNESS_ARN -> deploy/harness_cli.json"
+fi
 if [ "${TB_VALIDATE:-1}" = 1 ]; then
   log "step 4b: validate every task's oracle on its substrate"
   AGENTCORE_REGION="$AWS_REGION" python3 terminalbench/validate_oracle.py

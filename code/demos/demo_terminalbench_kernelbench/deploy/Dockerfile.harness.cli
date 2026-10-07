@@ -1,0 +1,62 @@
+# The decoupled HARNESS Runtime for demo_terminalbench_kernelbench — its OWN AgentCore Runtime
+# microVM that runs the real Claude Code CLI (`claude -p`) and drives a SEPARATE sandbox Runtime
+# over invoke_agent_runtime via an MCP bridge (sandbox_mcp.py). 2 microVMs per episode: this
+# harness + the task's sandbox.
+#
+# Entry point is the BedrockAgentCoreApp in harness_runtime_agent.py (NOT sandbox_server_agent — this
+# image is the harness, not a sandbox). The CLI's ANTHROPIC_BASE_URL is set per-invoke to the
+# trainer's AnthropicAdapter (SG->SG), so the trajectory is captured proxy-side.
+#
+# Build context MUST be the demo dir (so agentcore_slime_demo/ is COPY-able), linux/arm64 (the
+# managed serverless fleet is arm64), under the 2 GB microVM image cap:
+#   docker buildx build --platform linux/arm64 -f deploy/Dockerfile.harness.cli -t <ecr>/acs-harness-cli:latest --push .
+FROM public.ecr.aws/docker/library/python:3.12-slim
+
+# --- system deps + node 22 (NodeSource) ------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- the Claude Code CLI, baked to /usr/local/bin/claude -------------------------------------
+# `npm install -g` creates a working `claude` launcher on PATH (current versions ship bin/claude.exe,
+# NOT the old cli.js — so do NOT hand-symlink cli.js). Guard the self-symlink case where npm's global
+# prefix already IS /usr/local. --no-audit/--no-fund + pruning the npm cache keeps the image small.
+RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code \
+    && CB="$(command -v claude)" \
+    && if [ "$CB" != "/usr/local/bin/claude" ]; then ln -sf "$CB" /usr/local/bin/claude; fi \
+    && /usr/local/bin/claude --version \
+    && npm cache clean --force && rm -rf /root/.npm
+
+# --- python deps: the Runtime framework + the MCP bridge server + the sandbox invoke client -----
+RUN pip install --no-cache-dir bedrock-agentcore mcp uvicorn boto3
+
+# --- root/zero-cap microVM shims (AgentCore runs the container as uid 0 with an EMPTY cap set) ----
+# No CAP_SETUID/CHOWN, so `claude` must run as root with --permission-mode bypassPermissions, which
+# it only allows when IS_SANDBOX=1 and onboarding is pre-acked.
+RUN mkdir -p /root/.claude \
+    && printf '%s' '{"hasCompletedOnboarding": true, "bypassPermissionsModeAccepted": true}' \
+       | tee /root/.claude.json /root/.claude/settings.json >/dev/null
+# A no-op `chown` shim ahead of /bin on PATH (ownership is irrelevant when all is root; zero caps
+# would make a real chown fail).
+RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/chown && chmod +x /usr/local/bin/chown
+# git's system config -> a root-owned path (/etc is unwritable to zero-cap root).
+RUN GIT_CONFIG_SYSTEM=/root/gitconfig-system git config --system --add safe.directory '*'
+
+# --- the harness package (minimal: only the modules the entrypoint imports) ------------------
+# A MINIMAL __init__.py (NOT the repo's heavy one, which pulls torch/slime) so
+# `python -m agentcore_slime_demo.harness_runtime_agent` loads with only these stdlib+boto3 modules.
+WORKDIR /app
+RUN mkdir -p /app/agentcore_slime_demo && : > /app/agentcore_slime_demo/__init__.py
+COPY agentcore_slime_demo/harness_runtime_agent.py   /app/agentcore_slime_demo/harness_runtime_agent.py
+COPY agentcore_slime_demo/sandbox_mcp.py             /app/agentcore_slime_demo/sandbox_mcp.py
+COPY agentcore_slime_demo/agentcore_runtime_sandbox.py /app/agentcore_slime_demo/agentcore_runtime_sandbox.py
+COPY agentcore_slime_demo/sandbox.py                 /app/agentcore_slime_demo/sandbox.py
+
+ENV SANDBOX_WORKDIR=/workspace
+ENV IS_SANDBOX=1
+ENV GIT_CONFIG_SYSTEM=/root/gitconfig-system
+# The harness must NEVER stop the sandbox session (the trainer owns its lifecycle + grading).
+ENV AGENTCORE_STOP_SESSION=0
+EXPOSE 8080
+CMD ["python", "-m", "agentcore_slime_demo.harness_runtime_agent"]

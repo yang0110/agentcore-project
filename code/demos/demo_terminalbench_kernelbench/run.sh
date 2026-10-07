@@ -142,6 +142,17 @@ if [ "$TB_M5_MODE" != shared ] && [ -z "$TB_M5_EPISODE" ] && grep -q 'docker://'
   TB_M5_EPISODE="$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get('episode') or ''))" "$M5_STATE")"
   [ "$TB_M5_EPISODE" != '""' ] || { echo "TB_M5_MODE=per_episode but no baked AMI: python3 deploy/m5_host.py roles && python3 deploy/m5_host.py bake-ami (or TB_M5_MODE=shared)" >&2; exit 2; }
 fi
+# Multi-harness routing: HARNESS_SET defaults to mini_claude (the in-session path only, no change).
+# A mix like "mini_claude:0.5,claude_cli:0.5" routes a fraction of episodes to the DECOUPLED real
+# Claude Code CLI harness Runtime (its own microVM, deployed by 4_deploy_runtime.sh step 4h). Its ARN
+# lives in deploy/harness_cli.json; resolve it here unless the env already set it.
+HARNESS_SET="${HARNESS_SET:-mini_claude}"
+HARNESS_CLI_STATE="$DEMO_DIR/deploy/harness_cli.json"
+if [[ ",$HARNESS_SET," == *claude_cli* ]] && [ -z "${AGENTCORE_HARNESS_CLI_RUNTIME_ARN:-}" ]; then
+  [ -f "$HARNESS_CLI_STATE" ] || { echo "HARNESS_SET routes claude_cli but $HARNESS_CLI_STATE is missing (run 4_deploy_runtime.sh step 4h, or set AGENTCORE_HARNESS_CLI_RUNTIME_ARN)" >&2; exit 2; }
+  AGENTCORE_HARNESS_CLI_RUNTIME_ARN="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['arn'])" "$HARNESS_CLI_STATE")"
+fi
+export HARNESS_SET AGENTCORE_HARNESS_CLI_RUNTIME_ARN
 # Each task changes the whole OS, so it runs in the isolated per-task pool (terminalbench_pool.py): a
 # FRESH session per episode opened ahead of time — the look-ahead data source (tb_lookahead_source.py)
 # boots the next TB_PREOPEN_BATCHES rollouts' sessions (2 = 2 x RB x NS = 64) — a SessionKeeper heartbeat
@@ -379,6 +390,11 @@ RUNTIME_ENV_JSON="{
     \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARNS\": \"${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}\",
+    \"HARNESS_SET\": \"${HARNESS_SET:-mini_claude}\",
+    \"HARNESS_ASSIGN\": \"${HARNESS_ASSIGN:-prompt}\",
+    \"HARNESS_CLI_SESSIONS\": \"${HARNESS_CLI_SESSIONS:-}\",
+    \"AGENTCORE_HARNESS_CLI_RUNTIME_ARN\": \"${AGENTCORE_HARNESS_CLI_RUNTIME_ARN:-}\",
+    \"AGENT_TIME_BUDGET_SEC\": \"${AGENT_TIME_BUDGET_SEC:-900}\",
     \"AWS_REGION\": \"${AWS_REGION:-us-west-2}\",
     \"AWS_BEARER_TOKEN_BEDROCK\": \"${AWS_BEARER_TOKEN_BEDROCK:-}\",
     \"EPISODE_MAX_TURNS\": \"${EPISODE_MAX_TURNS:-4}\",

@@ -61,6 +61,7 @@ import secrets
 import sys
 import threading
 import time
+import zlib
 
 from .docker_compose_sandbox import DockerComposeSandbox, gc_hosts, is_docker_route
 from .harness_pool import HarnessPool, adapter_for, one_sample
@@ -210,6 +211,38 @@ async def grade_episode(sb, task_id: str, tasks_dir: str, test_timeout_s: float 
             "grade_tail": (out + err)[-600:]}
 
 
+def _parse_harness_set(spec: str) -> list[tuple[str, float]]:
+    """Parse HARNESS_SET into [(kind, cumulative_percent)] for crc32 assignment.
+
+    "mini_claude"                       -> [("mini_claude", 100.0)]  (default; current behavior)
+    "mini_claude:0.5,claude_cli:0.5"    -> [("mini_claude", 50.0), ("claude_cli", 100.0)]
+    "mini_claude,claude_cli"            -> equal split among kinds with no explicit fraction.
+    """
+    items: list[tuple[str, float | None]] = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            k, f = part.split(":", 1)
+            items.append((k.strip(), float(f)))
+        else:
+            items.append((part, None))
+    if not items:
+        items = [("mini_claude", None)]
+    rem = max(0.0, 1.0 - sum(f for _, f in items if f is not None))
+    missing = [i for i, (_, f) in enumerate(items) if f is None]
+    each = rem / len(missing) if missing else 0.0
+    fracs = [each if f is None else f for _, f in items]
+    tot = sum(fracs) or 1.0
+    out, cum = [], 0.0
+    for (k, _), fr in zip(items, fracs):
+        cum += 100.0 * fr / tot
+        out.append((k, cum))
+    out[-1] = (out[-1][0], 100.0)      # guard float drift: last bucket catches everything
+    return out
+
+
 class TerminalBenchPool(HarnessPool):
     """HarnessPool whose sandbox tier is a fresh, pre-opened session per episode + a heartbeat."""
 
@@ -225,6 +258,15 @@ class TerminalBenchPool(HarnessPool):
         self.max_turns = int(os.environ.get("EPISODE_MAX_TURNS", "4"))
         self.max_tokens = int(os.environ.get("EPISODE_MAX_TOKENS", "1024"))
         self._harness = None
+        # Multi-harness routing (default "mini_claude" => the current in-session path only, no change).
+        # A mix like "mini_claude:0.5,claude_cli:0.5" routes a fraction of episodes to the DECOUPLED
+        # real-Claude-Code-CLI harness Runtime (its own microVM) — see decoupled_cli_harness.py.
+        self._harness_set = _parse_harness_set(os.environ.get("HARNESS_SET", "mini_claude"))
+        self._harness_assign = os.environ.get("HARNESS_ASSIGN", "prompt").strip().lower()  # prompt|episode
+        self._harness_cli_arn = os.environ.get("AGENTCORE_HARNESS_CLI_RUNTIME_ARN", "").strip()
+        self._harnesses: dict[str, object] = {}
+        self._harness_cli_pool = None
+        self._decoupled = None
         # "" = use the image's own WORKDIR (the server reports it); TB_WORKDIR forces one for all tasks.
         self.workdir = os.environ.get("TB_WORKDIR", "")
         # The hidden oracles live on the TRAINER (fetched tasks/ dir), never in the images.
@@ -298,8 +340,33 @@ class TerminalBenchPool(HarnessPool):
 
             self._harness.system_prompt = TerminalBenchTask.SYSTEM
             self._harness.exec_timeout_sec = int(os.environ.get("TB_EXEC_TIMEOUT", "180"))
-            logger.info("[terminalbench_pool] SessionKeeper started (idle_timeout=%.0fs, preopen_max=%d)",
-                        self.idle_timeout, self.preopen_max)
+            self._harnesses["mini_claude"] = self._harness
+
+            # If any episode is routed to the decoupled CLI harness, stand up its warm Runtime pool
+            # (reused sessions, no cold Node/CLI start per episode) + the trainer-side client.
+            if any(kind == "claude_cli" for kind, _ in self._harness_set):
+                if not self._harness_cli_arn:
+                    raise RuntimeError("HARNESS_SET selects claude_cli but AGENTCORE_HARNESS_CLI_RUNTIME_ARN "
+                                       "is unset — deploy the harness Runtime (4_deploy_runtime.sh step 4h).")
+                from .decoupled_cli_harness import DecoupledCliHarness
+                from .harness_cli_pool import HarnessCliRuntimePool
+
+                frac = next((c for k, c in self._harness_set if k == "claude_cli"), 100.0) / 100.0
+                n_sess = int(os.environ.get("HARNESS_CLI_SESSIONS", "") or
+                             max(1, round(self.num_workers * frac)))
+                read_timeout = max(int(os.environ.get("INVOKE_READ_TIMEOUT", "900")),
+                                   int(os.environ.get("AGENT_TIME_BUDGET_SEC", "900")) + 60)
+                self._harness_cli_pool = await HarnessCliRuntimePool(
+                    arn=self._harness_cli_arn, region=self.region, n_sessions=n_sess,
+                    keeper=self._keeper, idle_timeout=self.idle_timeout, read_timeout=read_timeout,
+                ).start()
+                self._decoupled = DecoupledCliHarness(
+                    self._harness_cli_pool, exec_timeout_sec=self._harness.exec_timeout_sec)
+                self._harnesses["claude_cli"] = self._decoupled
+
+            logger.info("[terminalbench_pool] SessionKeeper started (idle_timeout=%.0fs, preopen_max=%d, "
+                        "harness_set=%s)", self.idle_timeout, self.preopen_max,
+                        ",".join(f"{k}:{c:.0f}" for k, c in self._harness_set))
 
     def routes(self, task) -> bool:
         """True if this pool runs `task`: every Terminal-Bench row, and any other row whose image has a
@@ -324,6 +391,21 @@ class TerminalBenchPool(HarnessPool):
                 "drop it from the dataset. Refusing to run it on another task's Runtime."
             )
         return arn
+
+    def _pick_harness(self, task) -> str:
+        """Which harness runs this episode. Default set => always "mini_claude" (no change).
+
+        Assignment is PER-PROMPT by default (crc32 of task_id): all n_samples_per_prompt rollouts of a
+        prompt share a harness, so GRPO's within-group advantage isn't conflated with harness
+        difficulty. HARNESS_ASSIGN=episode routes each episode independently (maximal mixing)."""
+        if len(self._harness_set) == 1:
+            return self._harness_set[0][0]
+        key = secrets.token_hex(8) if self._harness_assign == "episode" else str(task.task_id)
+        r = (zlib.crc32(key.encode()) % 10000) / 100.0      # 0..100, stable across train+eval
+        for kind, cum in self._harness_set:
+            if r < cum:
+                return kind
+        return self._harness_set[-1][0]
 
     async def _open_session(self, arn: str):
         """Open one BRAND-NEW session (its own microVM, or its own compose project on the m5) on the
@@ -537,8 +619,12 @@ class TerminalBenchPool(HarnessPool):
             self.release_engine(e)
             await self._close_session(sb)
             raise
+        harness_kind = self._pick_harness(task)
         ep = {"task": task.task_id, "substrate": sb._tb_substrate, "difficulty": spec.get("difficulty", "?"),
-              "category": spec.get("category", "?"), "solved": 0, "infra_error": "none"}
+              "category": spec.get("category", "?"), "harness": harness_kind, "solved": 0,
+              "infra_error": "none"}
+        if evaluation:
+            ep["eval"] = 1          # lets metrics.py split solve-rate per harness at eval time
         try:
             router_trace.emit(
                 task_id=task.task_id,
@@ -552,6 +638,7 @@ class TerminalBenchPool(HarnessPool):
                 runtime_arn=_arn_tail(arn),
                 sandbox_image=task.image,
                 family=task.family,
+                harness=harness_kind,
             )
             # DEMO-SPECIFIC metric ([demo] channel): every episode is on its OWN fresh session;
             # `preopened` says whether its cold start was started at submit, and `open_wait_ms` is
@@ -567,16 +654,30 @@ class TerminalBenchPool(HarnessPool):
                   + f" arn={_arn_tail(arn)}", flush=True)
 
             # The task's environment is baked into its image; the instruction goes straight into
-            # the prompt (nothing is written into the task's workdir — some tests inspect it).
+            # the prompt (nothing is written into the task's workdir — some tests inspect it). The
+            # mini_claude loop runs INSIDE sb; the decoupled claude_cli harness runs in its own
+            # Runtime and drives sb over the network. Both capture the trajectory proxy-side and both
+            # return a MiniAgentResult, so grading + sample finish below are shared.
             ta = time.perf_counter()
-            res = await self._harness.run(
-                sb,
-                session_id=sid,
-                adapter_url=session_url,   # the URL the in-session loop dials back
-                prompt=self._problem_text(task),
-                max_tokens=self.max_tokens,
-                http=worker.http,
-            )
+            if harness_kind == "claude_cli":
+                res = await self._decoupled.run(
+                    sb,
+                    session_id=sid,
+                    adapter_url=session_url,       # the proxy URL the CLI dials (ANTHROPIC_BASE_URL)
+                    prompt=self._problem_text(task),
+                    arn=arn,                       # the per-episode sandbox Runtime the harness drives
+                    max_turns=self.max_turns,
+                    max_tokens=self.max_tokens,
+                )
+            else:
+                res = await self._harness.run(
+                    sb,
+                    session_id=sid,
+                    adapter_url=session_url,       # the URL the in-session loop dials back
+                    prompt=self._problem_text(task),
+                    max_tokens=self.max_tokens,
+                    http=worker.http,
+                )
             ep.update(agent_ms=round((time.perf_counter() - ta) * 1000.0, 1), turns=res.turns,
                       tool_calls=res.tool_calls, stop=res.stop_reason,
                       harness_where=res.where)

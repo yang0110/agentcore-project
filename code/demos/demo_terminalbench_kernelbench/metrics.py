@@ -705,6 +705,24 @@ def summarize_demo(demo_records: list[dict]) -> None:
             print(f"        {sub:<8} episodes={episodes:<5} infra_error={infra:<3} cancelled={cancelled:<3} "
                   + "  ".join(parts))
 
+    # Multi-harness (HARNESS_SET): EVAL solve-rate split per harness, so transfer across harness
+    # interfaces is visible (mini_claude vs the decoupled claude_cli). tool_calls=0 on claude_cli is
+    # the known-risk diagnostic (a weak policy emitting no valid mcp__sandbox__* call). Eval episodes
+    # carry eval=1; train reward per harness is already covered by `reward by harness:` above.
+    harnesses = sorted({str(r["harness"]) for r in demo_records if "harness" in r})
+    if len(harnesses) > 1:
+        print("    by harness (eval solve-rate):")
+        for h in harnesses:
+            rs = [r for r in demo_records
+                  if r.get("harness") == h and str(r.get("eval", "")) in ("1", "1.0") and "solved" in r]
+            if not rs:
+                continue
+            solved = [float(r["solved"]) for r in rs if str(r.get("solved", "")) != ""]
+            tc = sorted(float(r["tool_calls"]) for r in rs if str(r.get("tool_calls", "")) != "")
+            sr = f"solve_rate={sum(solved)/len(solved):.4f}" if solved else "solve_rate=n/a"
+            tcs = f"tool_calls=p50 {_pct(tc,0.5):.0f} zero_tool_calls={sum(1 for v in tc if v==0)}" if tc else ""
+            print(f"        {h:<12} eval_episodes={len(rs):<5} {sr}  {tcs}")
+
 
 def summarize_mix(rows: dict[int, dict]) -> None:
     """Task mix of each trained batch (mix/* from agentcore_slime_demo.batch_mix_log), if recorded."""
