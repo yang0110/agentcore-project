@@ -65,3 +65,12 @@ code/demos/*/deploy/images*.env
 code/demos/demo_terminalbench_kernelbench/deploy/harness_cli.json
 code/demos/demo_terminalbench_kernelbench/data/smoke_*.jsonl
 code/demos/demo_terminalbench_kernelbench/data/empty.jsonl
+# ad-hoc microVM dataset subsets + run artifacts from multi-harness smokes (regenerated on demand)
+code/demos/demo_terminalbench_kernelbench/data/e2e_*.jsonl
+code/demos/demo_terminalbench_kernelbench/data/gen20_*.jsonl
+code/demos/demo_terminalbench_kernelbench/data/smoke10_*.jsonl
+code/demos/demo_terminalbench_kernelbench/logs/e2e3way_*
+code/demos/demo_terminalbench_kernelbench/logs/smokecli_*
+code/demos/demo_terminalbench_kernelbench/logs/smokefix_*
+code/demos/demo_terminalbench_kernelbench/logs/smokemini_*
+code/demos/demo_terminalbench_kernelbench/logs/gen20_*
