@@ -35,6 +35,7 @@
 3. Is the sandbox off the critical path? & \hl{Mostly} & opens take 0.7\,s (\smv), 33\,s (\sm) and 133\,s (\sg) p50; pre-open cuts the median start wait to 0 / 29 / 28\,s & \sref{fr:preopen}, \sref{fr:evspeed}\\
 4. Does the policy learn? & \textbf{Not yet} & no gradient in 32 of 48 steps; 143 of 156 \smv{} and 30 of 30 \sm{} tasks never solved; a run with partial credit is in progress & \srefs{fr:evreward}{fr:curves}\\
 5. What does it cost? & \$294 & one 48-step run (2{,}510 episodes, 3\,h); the g6 tier is the largest sandbox item & \sref{fr:usd}\\
+6. Can it mix harnesses? & \hl{Yes} & harness is a routed per-episode axis --- \tb{mini\_claude} (in-session) $+$ decoupled \tb{claude\_cli} (real Claude Code CLI) $+$ \tb{mini\_claude\_rt}, all graded the same; transfer not yet demonstrated & \srefs{fr:multiharness}{fr:hresults}\\
 \bottomrule
 \end{tabularx}
 \par\vspace{2mm}
@@ -1533,6 +1534,40 @@ Strange errors after an edit & bash reads a running script as it goes & never ed
 \par\vspace{1mm}
 {\scriptsize\textbf{One episode:} dataset row $\to$ \tb{\_pick\_harness} $\to$ \{in-session loop \emph{in} the sandbox\} \emph{or} \{harness Runtime drives the sandbox over \tb{mcp\_\_sandbox\_\_*}\} $\to$ the loop dials the \textbf{AnthropicAdapter} each turn (tokens recorded) $\to$ hidden tests graded $\to$ reward.}
 \src{\tb{deploy/Dockerfile.harness.cli}, \tb{4\_deploy\_runtime.sh} (4h), \tb{agentcore\_slime\_demo/\{harness\_runtime\_agent,sandbox\_mcp,harness\_cli\_pool,decoupled\_cli\_harness,terminalbench\_pool\}.py}; 7 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Multi-harness: what we measured, and what's still open}
+\flabel{fr:hresults}
+\begin{columns}[T]
+\column{0.52\textwidth}
+{\footnotesize\textbf{Measured} (88-episode AWS run, all 3 kinds)}
+\tabcap{Per-harness, one mixed run}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.26\linewidth}P{0.12\linewidth}P{0.17\linewidth}Y@{}}
+\toprule
+\textbf{harness} & \textbf{mean reward} & \textbf{tool calls/ep} & \textbf{where / cost}\\
+\midrule
+\tb{mini\_claude} (in-session) & \hl{0.14} & $\sim$8 & in the sandbox; \textbf{1 microVM}, seconds/ep\\
+\tb{claude\_cli} (real CLI) & 0.08 & \hl{5--97} & harness Runtime; \textbf{2 microVMs}, 40--110\,s/ep\\
+\tb{mini\_claude\_rt} (mimic, decoupled) & 0.04 & few (truncates) & harness Runtime; \textbf{2 microVMs}\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1mm}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item Every kind makes tool calls (\tb{zero\_tool\_calls=0}) and is graded; partial-credit reward $\Rightarrow$ GRPO has signal. The real CLI is a far more active agent (up to 97 calls).
+\item Adapter runs \textbf{clean}: the CLI's \tb{/v1/messages?beta=true} stragglers now get a benign \tb{end\_turn} --- \hl{0$\times$503} (was 64).
+\end{itemize}
+\column{0.45\textwidth}
+{\footnotesize\textbf{Still open}}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
+\item \textbf{Transfer not yet shown.} The goal --- a policy robust \emph{across} harness interfaces --- needs a long run on filtered tasks $+$ held-out-harness eval. At smoke scale (3--10 steps, 4B policy, hard tasks) \tb{solve\_rate=0}; the signal so far is partial-credit reward, not solves.
+\item \textbf{Decoupling costs 2$\times$ microVMs} for \tb{claude\_cli}/\tb{mini\_claude\_rt}, and the real CLI dominates wall-clock (a mixed step is harness-bound, not sandbox-bound). Size \tb{HARNESS\_CLI\_SESSIONS} + the fraction against the session quota.
+\item \textbf{Per-harness budgets.} The real CLI is far more verbose; the shared turn/token caps (\sref{fr:budgets}) may need to be set per harness.
+\item \tb{claude\_cli} exits non-zero at \tb{--max-turns} (logged \tb{stop=error}; reward unaffected) --- cosmetic.
+\end{itemize}
+\end{columns}
+\src{\tb{logs/*e2e3way*.demo.csv} (\tb{reward by harness}, \tb{tool\_calls}, \tb{harness\_where}); the adapter fix in slime's \tb{AnthropicAdapter.\_closed\_session\_response}; 7 Oct 2026.}
 \end{frame}
 
 %====================================================================
