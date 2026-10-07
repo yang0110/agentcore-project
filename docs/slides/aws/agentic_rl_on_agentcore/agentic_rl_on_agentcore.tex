@@ -954,7 +954,7 @@ context budget \tb{MAX\_TOKENS\_PER\_GPU} & 16{,}384 & holds a whole trajectory:
 \bottomrule
 \end{tabularx}
 \par\vspace{1mm}
-{\scriptsize\textbf{How episodes end:} \hl{end\_turn} 2{,}548 (agent stops itself), \textbf{budget} 2{,}499 (hit 8 turns), \textbf{max\_tokens} 1{,}229 (a turn ran out of tokens). Raising either cap costs sandbox and GPU time per episode.}
+{\scriptsize\textbf{How episodes end:} \hl{end\_turn} 2{,}548 (agent stops itself), \textbf{budget} 2{,}499 (hit 8 turns), \textbf{max\_tokens} 1{,}229 (a turn ran out of tokens). Raising either cap costs sandbox and GPU time per episode. \textit{These are the in-session \tb{mini\_claude} defaults; the real \tb{claude\_cli} is far more verbose (5--97 tool calls), so caps can be set per harness (\sref{fr:hresults}).}}
 \end{columns}
 \src{\tb{run.sh} (\tb{EPISODE\_MAX\_TURNS}, \tb{EPISODE\_MAX\_TOKENS}, \tb{MINI\_AGENT\_MAX\_TOOL\_CHARS}, \tb{MAX\_TOKENS\_PER\_GPU}, \tb{--rollout-max-response-len}), \tb{terminalbench\_pool.py}; \tb{logs/*.demo.csv} (\tb{turns}, \tb{stop}), all 9 runs; checked 7 Oct 2026.}
 \end{frame}
@@ -1202,8 +1202,8 @@ Network interfaces (5{,}000 / Region) & -- & VPC sessions and m5s use ENIs; not 
 \column{0.5\textwidth}
 {\footnotesize\textbf{Three independent axes}}
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
-\item Each live episode binds one of each, yet the totals differ by \hl{$\sim$6$\times$} and \hl{$\sim$100$\times$}: \textbf{197} sandboxes $\gg$ \textbf{32} workers $\gg$ \textbf{2} engines.
-\item Harness is in-session today (1:1 with its sandbox), but the dispatch tier (\tb{W}) and pre-open already float sandbox count free of running episodes.
+\item Each live episode binds one of each, yet the totals differ by \hl{$\sim$6$\times$} and \hl{$\sim$100$\times$}: \textbf{197} sandboxes $\gg$ \textbf{32} workers $\gg$ \textbf{2} engines (in-session: 1 microVM/ep).
+\item A \textbf{decoupled} harness adds a 2nd microVM/ep; the real CLI then sets episode latency (40--110\,s), so a mixed step is \textbf{harness-bound} (\sref{fr:hresults}).
 \item \textbf{Now live:} each decoupled harness (\tb{claude\_cli}, \tb{mini\_claude\_rt}) runs as its own Runtime microVM, so harness and sandbox scale on independent axes (\sref{fr:multiharness}).
 \end{itemize}
 \column{0.47\textwidth}
