@@ -267,6 +267,7 @@ class TerminalBenchPool(HarnessPool):
         self._harnesses: dict[str, object] = {}
         self._harness_cli_pool = None
         self._decoupled = None
+        self._init_done = False     # guards the harness/keeper/pool init (see _ensure_started)
         # "" = use the image's own WORKDIR (the server reports it); TB_WORKDIR forces one for all tasks.
         self.workdir = os.environ.get("TB_WORKDIR", "")
         # The hidden oracles live on the TRAINER (fetched tasks/ dir), never in the images.
@@ -308,9 +309,16 @@ class TerminalBenchPool(HarnessPool):
 
     # ---- lifecycle: also stand up the heartbeat keeper -----------------------
     async def _ensure_started(self) -> None:
-        first = not self._started
         await super()._ensure_started()
-        if first:
+        if self._init_done:
+            return
+        # Serialize the harness/keeper/pool init under the base's start lock (free once super()
+        # returns): submit() awaits this fully before enqueuing, so a worker never picks up an
+        # episode while self._decoupled / self._keeper is still half-built (the 'NoneType has no
+        # attribute run' race, seen when the slower claude_cli pool widened the window).
+        async with self._start_lock:
+            if self._init_done:
+                return
             global _DOCKER_GC_DONE
             if not _DOCKER_GC_DONE and any(is_docker_route(r) for r in self._arn_by_image.values()):
                 _DOCKER_GC_DONE = True
@@ -343,7 +351,9 @@ class TerminalBenchPool(HarnessPool):
             self._harnesses["mini_claude"] = self._harness
 
             # If any episode is routed to the decoupled CLI harness, stand up its warm Runtime pool
-            # (reused sessions, no cold Node/CLI start per episode) + the trainer-side client.
+            # (reused sessions, no cold Node/CLI start per episode) + the trainer-side client. Assign
+            # self._decoupled BEFORE awaiting pool.start(): a racing episode then borrows (and waits
+            # on the pool's queue) instead of hitting a None harness.
             if any(kind == "claude_cli" for kind, _ in self._harness_set):
                 if not self._harness_cli_arn:
                     raise RuntimeError("HARNESS_SET selects claude_cli but AGENTCORE_HARNESS_CLI_RUNTIME_ARN "
@@ -356,14 +366,15 @@ class TerminalBenchPool(HarnessPool):
                              max(1, round(self.num_workers * frac)))
                 read_timeout = max(int(os.environ.get("INVOKE_READ_TIMEOUT", "900")),
                                    int(os.environ.get("AGENT_TIME_BUDGET_SEC", "900")) + 60)
-                self._harness_cli_pool = await HarnessCliRuntimePool(
+                self._harness_cli_pool = HarnessCliRuntimePool(
                     arn=self._harness_cli_arn, region=self.region, n_sessions=n_sess,
-                    keeper=self._keeper, idle_timeout=self.idle_timeout, read_timeout=read_timeout,
-                ).start()
+                    keeper=self._keeper, idle_timeout=self.idle_timeout, read_timeout=read_timeout)
                 self._decoupled = DecoupledCliHarness(
                     self._harness_cli_pool, exec_timeout_sec=self._harness.exec_timeout_sec)
                 self._harnesses["claude_cli"] = self._decoupled
+                await self._harness_cli_pool.start()
 
+            self._init_done = True
             logger.info("[terminalbench_pool] SessionKeeper started (idle_timeout=%.0fs, preopen_max=%d, "
                         "harness_set=%s)", self.idle_timeout, self.preopen_max,
                         ",".join(f"{k}:{c:.0f}" for k, c in self._harness_set))

@@ -29,7 +29,9 @@ RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code \
     && npm cache clean --force && rm -rf /root/.npm
 
 # --- python deps: the Runtime framework + the MCP bridge server + the sandbox invoke client -----
-RUN pip install --no-cache-dir bedrock-agentcore mcp uvicorn boto3
+# Pin mcp<2: sandbox_mcp.py uses the v1 FastMCP API (mcp.server.fastmcp.FastMCP); mcp 2.x renamed it
+# to MCPServer and broke that import (ModuleNotFoundError at runtime).
+RUN pip install --no-cache-dir bedrock-agentcore 'mcp<2' uvicorn boto3
 
 # --- root/zero-cap microVM shims (AgentCore runs the container as uid 0 with an EMPTY cap set) ----
 # No CAP_SETUID/CHOWN, so `claude` must run as root with --permission-mode bypassPermissions, which

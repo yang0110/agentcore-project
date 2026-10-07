@@ -26,6 +26,8 @@ if [[ ",${HARNESS_SET:-mini_claude}," == *claude_cli* ]]; then
   HARNESS_REPO="${NAME_PREFIX}-harness-cli"
   HARNESS_URI="$(python3 deploy/agentcore_deploy.py ecr-uri --repo "$HARNESS_REPO")"
   PYTHONPATH=deploy python3 -c "import agentcore_deploy as d; d._ensure_buildx()"
+  # buildx pushes to ECR, so authenticate first (the token expires ~12h; refresh every run).
+  aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${HARNESS_URI%%/*}"
   # Build context is the demo dir so agentcore_slime_demo/ is COPY-able; arm64 (serverless fleet).
   docker buildx build --builder "$BUILDX_BUILDER" --platform linux/arm64 \
      -f deploy/Dockerfile.harness.cli -t "${HARNESS_URI}:latest" --push "$HERE"
