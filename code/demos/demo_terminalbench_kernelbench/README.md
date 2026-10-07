@@ -193,6 +193,9 @@ Runtimes and 3 capacity providers (no instance without a session), the builder m
 | `INVOKE_EXEC_MAX_RETRIES` | 1 | retries of a failed `exec` (not idempotent; 9 retries of a 4-min call stalled an eval) |
 | `HEARTBEAT` | 1 | keep idle microVM sessions alive across trainer stalls |
 | `EPISODE_MAX_TURNS` / `EPISODE_MAX_TOKENS` | 8 / 1024 | agent turns / tokens per turn |
+| `HARNESS_SET` | `mini_claude` | per-episode harness routing (comma list of `kind[:fraction]`). Kinds: `mini_claude` (Python mimic, in-session — the cheap baseline), `mini_claude_rt` (same mimic, decoupled on its own harness Runtime), `claude_cli` (the **real Claude Code CLI**, decoupled). Recommended multi-harness demo: `mini_claude_rt:0.5,claude_cli:0.5` (both decoupled). Any decoupled kind needs the harness Runtime from step 4h (`HARNESS_SET=claude_cli bash 4_deploy_runtime.sh` → `deploy/harness_cli.json`) |
+| `HARNESS_ASSIGN` | prompt | `prompt` = all `NS` samples of a prompt share a harness (clean GRPO within-group advantage); `episode` = per-episode random |
+| `HARNESS_CLI_SESSIONS` | ≈ `HARNESS_WORKERS`×frac | warm reused sessions on the decoupled harness Runtime |
 | `TB_EXEC_TIMEOUT` | 180 | per bash-tool command, seconds |
 | `M5_INSTANCE_TYPE` / `M5_DISK_GB` | m5.8xlarge / 500 | the Docker host |
 | `M5_CLIENT_MEM` / `M5_CLIENT_CPUS` | 8g / 4 | limits on each episode's client container |

@@ -1202,7 +1202,7 @@ Network interfaces (5{,}000 / Region) & -- & VPC sessions and m5s use ENIs; not 
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
 \item Each live episode binds one of each, yet the totals differ by \hl{$\sim$6$\times$} and \hl{$\sim$100$\times$}: \textbf{197} sandboxes $\gg$ \textbf{32} workers $\gg$ \textbf{2} engines.
 \item Harness is in-session today (1:1 with its sandbox), but the dispatch tier (\tb{W}) and pre-open already float sandbox count free of running episodes.
-\item \textbf{Chosen next step:} run each harness as its own Runtime microVM, so harness and sandbox scale on independent axes (\sref{fr:multiharness}).
+\item \textbf{Now live:} each decoupled harness (\tb{claude\_cli}, \tb{mini\_claude\_rt}) runs as its own Runtime microVM, so harness and sandbox scale on independent axes (\sref{fr:multiharness}).
 \end{itemize}
 \column{0.47\textwidth}
 {\footnotesize\textbf{Scale together --- the ratio}}
@@ -1478,14 +1478,14 @@ Strange errors after an edit & bash reads a running script as it goes & never ed
 \end{frame}
 
 %====================================================================
-\begin{frame}{Many harnesses, one policy: random-route to generalize (design)}
+\begin{frame}{Many harnesses, one policy: random-route to generalize (live)}
 \flabel{fr:multiharness}
 \begin{columns}[T]
 \column{0.5\textwidth}
-{\footnotesize\textbf{The idea}}
+{\footnotesize\textbf{The idea}} (\tb{HARNESS\_SET}, now live)
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
-\item Today one mini-harness drives every episode (\sref{fr:harness}). Swap it for a \textbf{pool} of real agent harnesses --- \textbf{Claude Code}, \textbf{Codex CLI}, a \textbf{DeepSeek} agent --- each with its own system prompt, tool schema and loop convention.
-\item At \textbf{train and eval} time, \hl{route each prompt to a harness at random}. A GRPO group can stay on one harness (clean within-group advantage) or be mixed across them.
+\item Harness is a \textbf{routed per-episode dimension}, 3 kinds: \tb{mini\_claude} (mimic, in-session --- cheap \hl{baseline}), \tb{mini\_claude\_rt} (same mimic, decoupled), \tb{claude\_cli} (\textbf{real Claude Code CLI}, decoupled). Codex / DeepSeek slot in the same way.
+\item Recommended: \hl{\tb{mini\_claude\_rt:0.5,claude\_cli:0.5}} (both decoupled), routed at \textbf{train+eval}. Per-prompt by default (a GRPO group stays on one harness); \tb{HARNESS\_ASSIGN=episode} for pure random.
 \end{itemize}
 {\footnotesize\textbf{Why}}
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
@@ -1503,10 +1503,9 @@ Strange errors after an edit & bash reads a running script as it goes & never ed
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
 \item Each harness Runtime image faces the microVM \hl{2\,GB cap} (\sref{fr:build}): fits Claude Code / Codex / the mimic, but \textbf{excludes OpenHands} (multi-GB).
 \item Harnesses differ in tokens and turns per task --- the budgets (\sref{fr:budgets}) must bound the most verbose one, or be set per harness.
-\item A broken harness looks like an unsolvable task; keep a per-harness oracle run before training on it.
 \end{itemize}
 \end{columns}
-\src{Design proposal; builds on \tb{in\_session\_harness.py} (\tb{make\_harness}) and the image-route map in \tb{terminalbench\_pool.py}; not yet implemented. 7 Oct 2026.}
+\src{Live: \tb{terminalbench\_pool.py} (\tb{HARNESS\_SET}, \tb{\_pick\_harness}), \tb{decoupled\_cli\_harness.py}, \tb{harness\_cli\_pool.py}, \tb{harness\_runtime\_agent.py}, \tb{deploy/Dockerfile.harness.cli} (step 4h). AWS-smoke-verified 7 Oct 2026: all three kinds run (harness\_where=session / harness\_runtime), tool calls + graded reward.}
 \end{frame}
 
 %====================================================================
