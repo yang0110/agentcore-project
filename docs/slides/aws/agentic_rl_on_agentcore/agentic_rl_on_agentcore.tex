@@ -630,6 +630,44 @@ await self._close_session(sb)       # stop / reset / terminate
 \end{frame}
 
 %====================================================================
+\begin{frame}{The harness: one agent loop per episode, inside the sandbox}
+\flabel{fr:harness}
+\begin{columns}[T]
+\column{0.5\textwidth}
+\tabcap{Where it lives, and the 1:1:1 mapping}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.26\linewidth}Y@{}}
+\toprule
+\textbf{What} & \textbf{Here}\\
+\midrule
+code & \tb{agentcore\_slime\_demo/in\_session\_harness.py} (\tb{make\_harness}) wraps the \tb{mini\_agent} loop; driven by \tb{terminalbench\_pool.py} \tb{\_run\_episode}\\
+mapping & 1 episode $\leftrightarrow$ 1 sandbox $\leftrightarrow$ 1 harness $\leftrightarrow$ 1 \tb{runtimeSessionId}\\
+where it runs & \hl{inside} the sandbox session, foreground: \tb{harness\_where = session} for all \hl{6{,}277} episodes --- never in the trainer\\
+tool exec & each \tb{bash} / \tb{write\_file} / \tb{read\_file} runs locally on the machine --- no API call per step\\
+only the policy is remote & the loop dials back to SGLang once per turn for the next action\\
+\bottomrule
+\end{tabularx}
+\column{0.47\textwidth}
+{\footnotesize\textbf{One episode's loop}}
+\begin{enumerate}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \tb{open\_session}: the adapter starts recording tokens, logprobs and the loss mask.
+\item up to \tb{EPISODE\_MAX\_TURNS}=8 turns: the model emits a tool call ($\le$\,1{,}024 tokens) $\to$ the harness runs it in the sandbox $\to$ appends the (clipped) result $\to$ repeat.
+\item stop on \tb{end\_turn}, the turn budget, or the per-turn token cap (\sref{fr:budgets}).
+\item \tb{grade}: hidden tests injected and run; \tb{finish\_session} seals the \tb{Sample} with its reward.
+\end{enumerate}
+\vspace{1mm}
+{\footnotesize\textbf{Why in-session, not in the trainer}}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.5mm}
+\item AgentCore drops all Linux capabilities, so per-episode uids can't be chowned; the harness runs where the task's tools already have a home.
+\item keeps tool latency off the trainer host and off the network --- only one small request per turn crosses the wire.
+\end{itemize}
+\end{columns}
+\par\vspace{0.5mm}
+{\scriptsize\textbf{Size:} the harness is in-session Python, $\sim$KB; the sandbox image is the only container --- sizes on \sref{fr:build}.}
+\src{\tb{agentcore\_slime\_demo/in\_session\_harness.py}, \tb{mini\_agent.py} (loop, \tb{turns}/\tb{stop}), \tb{terminalbench\_pool.py} (\tb{\_run\_episode}); \tb{logs/*.demo.csv} (\tb{harness\_where}); checked 7 Oct 2026.}
+\end{frame}
+
+%====================================================================
 \begin{frame}{Routing: four questions, answered from data}
 \flabel{fr:route}
 \figcap{The routing decision, with the number of Terminal-Bench tasks on each branch}
@@ -882,6 +920,44 @@ Trajectories, checkpoints & the trainer host (\tb{logs/}, \tb{ckpt/}) & the host
 \end{frame}
 
 %====================================================================
+\begin{frame}{Turns and tokens per episode: the budgets, and where they bind}
+\flabel{fr:budgets}
+\begin{columns}[T]
+\column{0.46\textwidth}
+\figcap{Turns taken per episode, all 9 runs (6{,}277 valid episodes)}
+\tiny
+\begin{tabular}{@{}r@{\;}l@{}}
+1 turn & \textcolor{cat2}{\rule{6.6mm}{1.6mm}}\,8.7\%\\[0.5mm]
+2 & \textcolor{cat2}{\rule{12.0mm}{1.6mm}}\,15.8\%\\[0.5mm]
+3 & \textcolor{cat2}{\rule{9.3mm}{1.6mm}}\,12.2\%\\[0.5mm]
+4 & \textcolor{cat2}{\rule{6.3mm}{1.6mm}}\,8.3\%\\[0.5mm]
+5 & \textcolor{cat2}{\rule{4.3mm}{1.6mm}}\,5.7\%\\[0.5mm]
+6 & \textcolor{cat2}{\rule{2.7mm}{1.6mm}}\,3.5\%\\[0.5mm]
+7 & \textcolor{cat2}{\rule{2.7mm}{1.6mm}}\,3.5\%\\[0.5mm]
+8 (cap) & \textcolor{cat1}{\rule{32.0mm}{1.6mm}}\,\hl{42.2\%}\\
+\end{tabular}
+\par\vspace{1.5mm}
+{\tiny mean 5.2, median 5. By substrate: \sg{} 2.4 turns (never hits 8), \smv{} 5.5 (46\,\% hit 8), \sm{} median 8 (65\,\% hit): services need more turns (\sref{fr:stop}).}
+\column{0.5\textwidth}
+\tabcap{The three caps, and why these values}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.33\linewidth}P{0.09\linewidth}Y@{}}
+\toprule
+\textbf{Cap} & \textbf{Def.} & \textbf{Why}\\
+\midrule
+\tb{EPISODE\_MAX\_TURNS} & 8 & enough for most shell tasks; longer episodes mean larger micro-batches. m5 service tasks bind here.\\
+\tb{EPISODE\_MAX\_TOKENS} (response/turn) & 1{,}024 & one shell command plus short reasoning; also \tb{--rollout-max-response-len}. Small keeps generation fast and loss masks tight.\\
+\tb{MINI\_AGENT\_MAX\_TOOL\_CHARS} (content/turn) & 2{,}000 & head+tail clip on each tool result so a chatty command can't blow up the context (and the trajectory).\\
+context budget \tb{MAX\_TOKENS\_PER\_GPU} & 16{,}384 & holds a whole trajectory: 8\,$\times$\,(1{,}024 generated + $\sim$600 tool) + prompt, so a full episode fits one GPU without OOM.\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1mm}
+{\scriptsize\textbf{How episodes end:} \hl{end\_turn} 2{,}548 (agent stops itself), \textbf{budget} 2{,}499 (hit 8 turns), \textbf{max\_tokens} 1{,}229 (a turn ran out of tokens). Raising either cap costs sandbox and GPU time per episode.}
+\end{columns}
+\src{\tb{run.sh} (\tb{EPISODE\_MAX\_TURNS}, \tb{EPISODE\_MAX\_TOKENS}, \tb{MINI\_AGENT\_MAX\_TOOL\_CHARS}, \tb{MAX\_TOKENS\_PER\_GPU}, \tb{--rollout-max-response-len}), \tb{terminalbench\_pool.py}; \tb{logs/*.demo.csv} (\tb{turns}, \tb{stop}), all 9 runs; checked 7 Oct 2026.}
+\end{frame}
+
+%====================================================================
 \begin{frame}{Evidence: operating it (15--16)}
 \flabel{fr:evops}
 \figcap{\tb{train48} run 2 instance lifetimes (CloudTrail), and infra errors by cause over all 9 runs}
@@ -1100,6 +1176,45 @@ Network interfaces (5{,}000 / Region) & -- & VPC sessions and m5s use ENIs; not 
 \scriptsize\textbf{Order to scale:} inference engines $\rightarrow$ \tb{RB}$\times$\tb{NS} (workers) $\rightarrow$ caps (\tb{TB\_M5\_MAX\_INSTANCES}, \tb{TB\_GPU\_MAX\_SESSIONS}) $\rightarrow$ quotas (\sref{fr:quotas}).
 \end{columns}
 \src{\tb{logs/train48-hybrid\_20261005\_005629.*} (episodes, \tb{sessions.csv} lifetimes); quotas on \sref{fr:quotas}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Scaling: sandboxes, harnesses, inference --- the ratio}
+\flabel{fr:ratio}
+\figcap{Three resources a running episode binds, and the fleet totals in \tb{train48} run 2}
+\centering
+\begin{tikzpicture}[every node/.style={font=\scriptsize}]
+\node[box,draw=awsteal,text width=90mm,minimum height=6mm,align=left] (h) at (0,0)
+  {\textbf{Harness} --- one agent loop per episode (\tb{mini\_claude}, in-session). \hl{W = RB$\times$NS = 32}. \textcolor{inkmuted}{asyncio dispatch, $\sim$free.}};
+\node[box,draw=cat2,text width=90mm,minimum height=6mm,align=left] (s) at (0,-1.0)
+  {\textbf{Sandbox} --- the environment (microVM / m5 / g6). \hl{197 live peak} \textcolor{inkmuted}{(32 running + $\sim$165 pre-opened). cheap, elastic.}};
+\node[box,draw=cat1,text width=90mm,minimum height=6mm,align=left] (i) at (0,-2.0)
+  {\textbf{Inference} --- the policy (SGLang). \hl{2 engines / 4 GPUs}. \textcolor{inkmuted}{scarce $=$ the ceiling.}};
+\draw[awsteal,dashed,line width=0.9pt] (-4.9,0.4) -- (-4.9,-2.4);
+\node[rotate=90,text=awsteal,font=\tiny\bfseries] at (-5.25,-1.0) {one episode = 1 : 1 : slice};
+\draw[decorate,decoration={brace,amplitude=5pt},awsteal] (4.75,-2.4) -- (4.75,0.4);
+\node[text=awsteal,font=\tiny\bfseries,align=left,right] at (4.95,-1.0) {scale\\up\\together};
+\end{tikzpicture}
+\par\vspace{0.5mm}\raggedright
+\begin{columns}[T]
+\column{0.5\textwidth}
+{\footnotesize\textbf{Three independent axes}}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item Each live episode binds one of each, yet the totals differ by \hl{$\sim$6$\times$} and \hl{$\sim$100$\times$}: \textbf{197} sandboxes $\gg$ \textbf{32} workers $\gg$ \textbf{2} engines.
+\item Harness is in-session today (1:1 with its sandbox), but the dispatch tier (\tb{W}) and pre-open already float sandbox count free of running episodes.
+\item \textbf{Chosen next step:} run each harness as its own Runtime microVM, so harness and sandbox scale on independent axes (\sref{fr:multiharness}).
+\end{itemize}
+\column{0.47\textwidth}
+{\footnotesize\textbf{Scale together --- the ratio}}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item running episodes $=$ \tb{W} $=$ \tb{RB}$\times$\tb{NS}
+\item sandboxes $=$ \tb{W} $\times$ (1 $+$ pre-open depth), per substrate, within caps (\sref{fr:preopen})
+\item engines until tokens/s $\ge$ \tb{W} $\times$ 1{,}024 / turn-latency \quad$\leftarrow$ \hl{the first wall}
+\end{itemize}
+\vspace{0.5mm}
+{\scriptsize\textbf{Order to scale:} engines $\rightarrow$ \tb{W} $\rightarrow$ caps $\rightarrow$ quotas (\sref{fr:scale}). Sandboxes are the cheap elastic axis; GPUs are the one to add first.}
+\end{columns}
+\src{\tb{logs/train48-hybrid\_20261005\_005629.sessions.csv} (peak concurrent $=$ 197), \tb{harness\_pool.py} (\tb{W = RB$\times$NS}), \tb{run.sh}; checked 7 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -1360,6 +1475,38 @@ Strange errors after an edit & bash reads a running script as it goes & never ed
 {\tiny Re-running \tb{fetch\_terminalbench.py} recreates \tb{tasks/}: keep your tasks elsewhere and copy them in.}
 \end{columns}
 \src{\tb{terminalbench/fetch\_terminalbench.py}, \tb{deploy\_terminalbench.py}, \tb{validate\_oracle.py}, \tb{kernelbench/}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Many harnesses, one policy: random-route to generalize (design)}
+\flabel{fr:multiharness}
+\begin{columns}[T]
+\column{0.5\textwidth}
+{\footnotesize\textbf{The idea}}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item Today one mini-harness drives every episode (\sref{fr:harness}). Swap it for a \textbf{pool} of real agent harnesses --- \textbf{Claude Code}, \textbf{Codex CLI}, a \textbf{DeepSeek} agent --- each with its own system prompt, tool schema and loop convention.
+\item At \textbf{train and eval} time, \hl{route each prompt to a harness at random}. A GRPO group can stay on one harness (clean within-group advantage) or be mixed across them.
+\end{itemize}
+{\footnotesize\textbf{Why}}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item The policy then learns the \hl{task}, not one harness's quirks --- it generalizes across harness interfaces as well as across tasks.
+\item Held-out harnesses at eval measure true transfer.
+\end{itemize}
+\column{0.47\textwidth}
+{\footnotesize\textbf{How it plugs in} (chosen: decoupled)}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item Each harness runs as its \textbf{own AgentCore Runtime} microVM, dialing a separate sandbox microVM over the SG$\to$SG adapter port: \hl{2 microVMs/episode}, vs.\ the in-session 1-microVM path (\sref{fr:harness}).
+\item \textbf{Decoupled on purpose:} harness and sandbox then scale on independent axes (\sref{fr:ratio}); swap or add a harness without rebaking the sandbox image or touching its caps. Cost: 2$\times$ sessions and a network hop per turn.
+\item Same \tb{Sample} contract --- reward is the hidden tests, so \textbf{harness-agnostic}; \tb{route(sample)} picks the harness Runtime like substrates (\sref{fr:route}).
+\end{itemize}
+{\footnotesize\textbf{Watch out}}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item Each harness Runtime image faces the microVM \hl{2\,GB cap} (\sref{fr:build}): fits Claude Code / Codex / the mimic, but \textbf{excludes OpenHands} (multi-GB).
+\item Harnesses differ in tokens and turns per task --- the budgets (\sref{fr:budgets}) must bound the most verbose one, or be set per harness.
+\item A broken harness looks like an unsolvable task; keep a per-harness oracle run before training on it.
+\end{itemize}
+\end{columns}
+\src{Design proposal; builds on \tb{in\_session\_harness.py} (\tb{make\_harness}) and the image-route map in \tb{terminalbench\_pool.py}; not yet implemented. 7 Oct 2026.}
 \end{frame}
 
 %====================================================================
