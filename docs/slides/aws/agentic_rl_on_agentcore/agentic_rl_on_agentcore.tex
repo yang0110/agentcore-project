@@ -1506,7 +1506,7 @@ Strange errors after an edit & bash reads a running script as it goes & never ed
 \item Harnesses differ in tokens and turns per task --- the budgets (\sref{fr:budgets}) must bound the most verbose one, or be set per harness.
 \end{itemize}
 \end{columns}
-\src{Live: \tb{terminalbench\_pool.py} (\tb{HARNESS\_SET}, \tb{\_pick\_harness}), \tb{decoupled\_cli\_harness.py}, \tb{harness\_cli\_pool.py}, \tb{harness\_runtime\_agent.py}, \tb{deploy/Dockerfile.harness.cli} (step 4h). AWS-smoke-verified 7 Oct 2026: all three kinds run (harness\_where=session / harness\_runtime), tool calls + graded reward.}
+\src{Live (see \sref{fr:hbuildroute} for the files). \textbf{AWS-verified} 7 Oct 2026 (88-episode run, all 3 kinds, \tb{zero\_tool\_calls=0}): mean reward by harness \tb{mini\_claude} 0.14 / \tb{claude\_cli} 0.08 / \tb{mini\_claude\_rt} 0.04 (partial credit --- GRPO has signal).}
 \end{frame}
 
 %====================================================================
