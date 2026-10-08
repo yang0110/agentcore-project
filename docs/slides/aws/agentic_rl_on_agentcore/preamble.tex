@@ -48,9 +48,18 @@
 \setbeamerfont{itemize/enumerate subbody}{size=\scriptsize}
 \setbeamersize{text margin left=8mm,text margin right=8mm}
 
-% section tag shown above each frame title (no divider slides)
+% section tag shown above each frame title; \sect also emits a title-only divider slide
 \gdef\secname{}
-\newcommand{\sect}[1]{\section{#1}\gdef\secname{#1}}
+\newcommand{\sectdivider}[1]{%
+  {\begin{frame}[plain]
+    \centering\vfill
+    {\fontsize{8}{9}\selectfont\bfseries\color{sectag}\MakeUppercase{Section}}\par\vskip3mm
+    {\fontsize{28}{32}\selectfont\bfseries\color{white}#1}\par\vskip2.5mm
+    {\color{awsteal}\rule{45mm}{1.2pt}}%
+    \vfill
+  \end{frame}}%
+}
+\newcommand{\sect}[1]{\section{#1}\gdef\secname{#1}\sectdivider{#1}}
 \setbeamertemplate{frametitle}{%
   \nointerlineskip\vskip3.2mm
   \ifx\secname\empty\else{\fontsize{6.5}{7}\selectfont\bfseries\color{sectag}\MakeUppercase{\secname}}\par\vskip0.9mm\fi
