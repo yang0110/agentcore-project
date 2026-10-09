@@ -184,7 +184,7 @@ multi-container compose (client + sidecars) & 12\\
 \begin{itemize}\footnotesize\setlength{\itemsep}{1.2mm}
 \item \textbf{The task:} given a reference PyTorch \tb{Model}, write \tb{ModelNew} in \tb{solution.py}: same
   outputs (atol/rtol $10^{-2}$), on CUDA, ideally faster (custom kernels, fusion, better ops).
-\item \textbf{Rows:} 40 level-1 tasks (single ops) for training, 10 level-2 tasks (fused ops) held out.
+\item \textbf{Rows:} all 100 level-1 tasks (single ops) for training, all 20 level-2 tasks (fused ops) held out.
   They are \textbf{mixed into the same batch} as Terminal-Bench rows.
 \item \textbf{The sandbox} needs an NVIDIA GPU: no Terminal-Bench task does, so this is the workload that
   adds a third substrate.
@@ -238,7 +238,53 @@ $4096^2$ \tb{torch.matmul} is already cuBLAS: beating it needs a hand-tuned kern
 \src{\tb{terminalbench/tasks/<task>/}; \tb{kernelbench/}; outcomes from \tb{data/task\_filter.csv} and \tb{logs/*.demo.csv} (smoke 5--8, \tb{train48}); checked 6 Oct 2026.}
 \end{frame}
 
-
+%====================================================================
+\begin{frame}{Coverage: what trains, and why the other 55 tasks are dropped}
+\flabel{fr:coverage}
+\begin{columns}[T]
+\column{0.36\textwidth}
+\tabcap{241 $\rightarrow$ 186 usable; KernelBench in full}
+\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}l r@{}}
+\toprule
+\textbf{Stage} & \textbf{n}\\
+\midrule
+Terminal-Bench tasks & 241\\
+an image builds and is routed & 239\\
+\textbf{oracle-clean (usable)} & \hl{186}\\
+\quad\smv{} / \sm{} & 162 / 24\\
+\quad train / held-out eval & 151 / 35\\
+\midrule
+KernelBench L1 train (\sg{}) & \hl{100} of 100\\
+KernelBench L2 eval (\sg{}) & \hl{20} of 20\\
+\midrule
+\textbf{train rows per epoch} & \hl{251}\\
+\bottomrule
+\end{tabular}
+\par\vspace{1.5mm}
+{\scriptsize\textbf{The rule:} train a task only where its \textbf{reference solution passes} and the \textbf{untouched env fails}, on its own substrate --- else reward is always 0 (or 1 for nothing).}
+\column{0.64\textwidth}
+\tabcap{The 55 dropped Terminal-Bench tasks, by measured cause}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}r P{0.30\linewidth} Y@{}}
+\toprule
+\textbf{n} & \textbf{Cause} & \textbf{What it means / examples}\\
+\midrule
+\hl{34} & reference solution fails on \textbf{both} \smv{} and \sm{} & broken as shipped (likely dependency/URL drift), not a sandbox limit; 17 pass 0 of their tests\\
+9 & fails on \sm{}, its only host & 5 multi-container (\tb{find-restaurant} 0/6), 4 too big for microVMs\\
+2 & fails on \smv{} & \tb{port-compressor} (needs rustc 1.97), \tb{triton-interpret} (x86 wheel)\\
+2 & no image builds & \tb{fix-git} (GitHub repo gone), \tb{leelachess0-\ldots} (download fails)\\
+1 & solution $>$ 900\,s limit & \tb{movie-helper}\\
+\midrule
+\textcolor{awsmagenta}{\textbf{7}} & \textbf{our bug:} m5 agent HTTP 500 in the oracle & \tb{caffe-cifar-10}, \tb{kv-store-grpc}, \ldots{} --- the only drops ours to fix (open)\\
+\bottomrule
+\end{tabularx}
+\par\vspace{0.8mm}
+{\scriptsize\textbf{Recovered 8 Oct (+5):} 3 image fixes (\tb{qemu-*}: pinned \tb{snapshot.debian.org}; \tb{reverse-engineering}: ship its build inputs, never the grader) + 2 infra flakes re-run.}
+\end{columns}
+\plainen{48 of 55 drops are tasks whose own reference solution fails (mostly on both CPU architectures): training on them adds only zero-reward episodes. 7 are our open bug. KernelBench: all of it.}
+\src{\tb{terminalbench/tasks/\{images,images\_docker,oracle\}.csv}, \tb{route\_by\_image.json}, \tb{data/*.jsonl}; \tb{deploy\_docker\_tasks.py} (\tb{PATCHES}, \tb{BUILD\_INPUTS}); counted 9 Oct 2026.}
+\end{frame}
 
 %====================================================================
 \begin{frame}{16 challenges every agentic-RL sandbox must solve}
@@ -264,7 +310,7 @@ $4096^2$ \tb{torch.matmul} is already cuBLAS: beating it needs a hand-tuned kern
 \grp{5}{Correct rewards: the score must mean what it says}\\
 11 & \textbf{Isolation between episodes} & TB & the agent rewrites the OS; any reuse risks leaking state into the next score & \sref{fr:reuse}\\
 12 & \textbf{Reward integrity} & TB, KB & tests must stay hidden; copying \tb{Model} onto CUDA ``passed'' KernelBench & \sref{fr:evreward}\\
-13 & \textbf{Untrustworthy tasks} & TB & deleted repos, 404 downloads, oracles that fail on a substrate: 241 $\rightarrow$ 193 usable & \sref{fr:route}\\
+13 & \textbf{Untrustworthy tasks} & TB & deleted repos, 404 downloads, oracles that fail on a substrate: 241 $\rightarrow$ 186 usable & \sref{fr:coverage}\\
 14 & \textbf{Sparse reward, no gradient} & TB, KB & all-or-nothing scores: no GRPO gradient in 32 of 48 \tb{train48} steps & \sref{fr:evreward}\\
 \grp{5}{Operating it: safe, visible, and cheap}\\
 15 & \textbf{Network and security} & all & the agent loop runs in the sandbox and must reach the trainer, with no public ports & \sref{fr:sec}\\
@@ -367,7 +413,7 @@ reward & copy the hidden tests in after the agent stops, run them & 4--9\,s; 0/1
 \toprule
 \textbf{Use case covered} & Agentic RL on benchmarks whose environments \textbf{do not all fit one sandbox product}:
 small single containers, multi-container compose projects, x86-only or multi-GB images, root-level tasks, and GPU kernels.\\
-\textbf{Why this demo} & Trains on \hl{the whole usable corpus} (193 Terminal-Bench + 50 KernelBench), not the 165
+\textbf{Why this demo} & Trains on \hl{the whole usable corpus} (186 Terminal-Bench + 120 KernelBench), not the 162
 tasks microVMs alone validate, and shows the sandbox tier can be \textbf{heterogeneous without touching the RL side}.
 \tb{eval/terminalbench} stays the earlier demo's held-out microVM set.\\
 \textbf{Design considerations} &
@@ -423,7 +469,7 @@ Needs an NVIDIA GPU (KernelBench) & 50 & \sg\\
 \flabel{fr:subst}
 \begin{columns}[T]
 \column{0.32\textwidth}
-\textbf{\footnotesize\textcolor{cat2}{AgentCore microVM}} {\tiny 163 tasks}
+\textbf{\footnotesize\textcolor{cat2}{AgentCore microVM}} {\tiny 162 tasks}
 \begin{itemize}\tiny\setlength{\itemsep}{0.5mm}
 \item[+] Fully managed: nothing to launch or clean up.
 \item[+] Own kernel per session; $<$ 1\,s to open when warm.
@@ -660,12 +706,12 @@ await self._close_session(sb)       # stop / reset / terminate
 \node[q] (q2) at (1,0) {One container only?};
 \node[q] (q3) at (2,0) {Builds for arm64 and $\le$ 2\,GB?};
 \node[q] (q4) at (3,0) {Reference solution passes on a microVM?};
-\node[o,draw=cat2] (mv) at (4,0) {\textcolor{cat2}{\textbf{microVM}}\\163 usable};
-\node[o,draw=cat3] (g6) at (0,-1.3) {\textcolor{cat3}{\textbf{g6}}\\KernelBench (50)};
+\node[o,draw=cat2] (mv) at (4,0) {\textcolor{cat2}{\textbf{microVM}}\\162 usable};
+\node[o,draw=cat3] (g6) at (0,-1.3) {\textcolor{cat3}{\textbf{g6}}\\KernelBench (120)};
 \node[o,draw=cat1] (c) at (1,-1.3) {\textcolor{cat1}{\textbf{m5}}: compose (12)};
 \node[o,draw=cat1] (b) at (2,-1.3) {\textcolor{cat1}{\textbf{m5}}: x86 or big (11)};
-\node[o,draw=cat1] (rt) at (3,-1.3) {\textcolor{cat1}{\textbf{m5}} retry (53)};
-\node[box,draw=cat1,text width=62mm] (m5) at (2,-2.45) {every m5 candidate is built on the m5 builder (71 of 78 build) and must pass its oracle there: \textcolor{cat1}{\textbf{30 usable}}};
+\node[o,draw=cat1] (rt) at (3,-1.3) {\textcolor{cat1}{\textbf{m5}} retry (56)};
+\node[box,draw=cat1,text width=62mm] (m5) at (2,-2.45) {every m5 candidate is built on the m5 builder (75 of 79 build) and must pass its oracle there: \textcolor{cat1}{\textbf{24 usable}}};
 \draw[arr] (q1) -- node[above]{no} (q2); \draw[arr] (q2) -- node[above]{yes} (q3);
 \draw[arr] (q3) -- node[above]{yes} (q4); \draw[arr] (q4) -- node[above]{yes} (mv);
 \draw[arr] (q1) -- node[right]{yes} (g6); \draw[arr] (q2) -- node[right]{no} (c);
@@ -674,10 +720,10 @@ await self._close_session(sb)       # stop / reset / terminate
 \end{tikzpicture}
 \par\vspace{1mm}\raggedright
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.4mm}
-\item \textbf{193 of 241 Terminal-Bench tasks are usable} (163 + 30) vs 165 with microVMs alone. Every answer is measured: \tb{manifest.json} (containers), \tb{images.csv} (build, size), \tb{oracle.csv} (oracle). \tb{image\_routing.py} refuses a task with no route.
-\item \textbf{Not usable (48):} 5 build nowhere (e.g.\ \tb{fix-git}: its GitHub repo was deleted); the rest fail their oracle on every substrate, incl.\ the 4 big \tb{mteb-*}/\tb{png-generation} images.
+\item \textbf{186 of 241 Terminal-Bench tasks are usable} (162 + 24) vs 162 with microVMs alone. Every answer is measured: \tb{manifest.json} (containers), \tb{images.csv} (build, size), \tb{oracle.csv} (oracle). \tb{image\_routing.py} refuses a task with no route.
+\item \textbf{Not usable (55), each with a measured cause} (\sref{fr:coverage}): 2 build nowhere (e.g.\ \tb{fix-git}: its GitHub repo was deleted); 46 fail their own reference solution wherever they can run, incl.\ the 4 big \tb{mteb-*}/\tb{png-generation} images; 7 hit an open m5-agent bug.
 \end{itemize}
-\src{\tb{terminalbench/tasks/\{manifest.json, images.csv, images\_docker.csv, oracle.csv, route\_by\_image.json\}}; checked 5 Oct 2026.}
+\src{\tb{terminalbench/tasks/\{manifest.json, images.csv, images\_docker.csv, oracle.csv, route\_by\_image.json\}}; checked 9 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -882,7 +928,7 @@ Trajectories, checkpoints & the trainer host (\tb{logs/}, \tb{ckpt/}) & the host
 \column{0.32\textwidth}
 \tiny\textbf{14. \ldots{} but a signal exists:} \hl{2{,}156 of 4{,}711} unsolved episodes (46\,\%) passed at least one hidden test. That is what partial credit uses (training only).
 \column{0.32\textwidth}
-\tiny\textbf{12. Reward integrity:} with correctness only (smoke 4), copying \tb{Model} onto CUDA scored 1 in 64\,\% of episodes. With the gate, only \hl{50 of 526 (9.5\,\%)} correct kernels beat 1.10$\times$; median 1.00$\times$. \textbf{11, 13:} 0 dirty resets; 193 of 241 tasks pass their oracle (\sref{fr:route}).
+\tiny\textbf{12. Reward integrity:} with correctness only (smoke 4), copying \tb{Model} onto CUDA scored 1 in 64\,\% of episodes. With the gate, only \hl{50 of 526 (9.5\,\%)} correct kernels beat 1.10$\times$; median 1.00$\times$. \textbf{11, 13:} 0 dirty resets; 186 of 241 tasks pass their oracle (\sref{fr:coverage}).
 \end{columns}
 \src{\tb{logs/*.demo.csv} (\tb{solved}, \tb{tests\_passed}, \tb{tests\_total}, \tb{speedup}; infra errors excluded); \tb{make\_figures.py}; checked 6 Oct 2026.}
 \end{frame}
@@ -1466,7 +1512,7 @@ gp3 storage, TiB (L-7A658B76) & 257 & $\sim$1.5 & 24 $\times$ 40\,GB + 500\,GB b
 \toprule
 & \textbf{Conclusion} & \textbf{Evidence} & \textbf{Slides}\\
 \midrule
-1 & \textbf{A hybrid tier covers the corpus} & 193 usable Terminal-Bench tasks vs 165 on microVMs alone, plus KernelBench on g6 & \srefs{fr:why}{fr:route}\\
+1 & \textbf{A hybrid tier covers the corpus} & 186 usable Terminal-Bench tasks vs 162 on microVMs alone (every drop has a measured cause), plus all 120 KernelBench rows on g6 & \srefs{fr:why}{fr:route}\\
 2 & \textbf{The RL side does not change} & one agent loop, grader, pre-open and metrics path for microVM, m5 and g6 & \srefs{fr:arch}{fr:code}\\
 3 & \textbf{Pre-open depth must match boot time} & g6 start wait p50 240\,s $\rightarrow$ 28\,s with cap 32 and 5 batches ahead & \sref{fr:preopen}\\
 4 & \textbf{The reward, not the sandbox, limits learning} & reliability, cost and learning evidence in Results & \srefs{fr:evspeed}{fr:curves}\\

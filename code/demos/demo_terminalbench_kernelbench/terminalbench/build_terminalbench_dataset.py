@@ -149,12 +149,14 @@ def main() -> int:
     _write(out / "terminalbench_eval_docker.jsonl", [_row(t, max_turns) for t in eval_tasks["docker"]])
     _write(out / "terminalbench_eval_gpu.jsonl", [_row(t, max_turns) for t in eval_tasks["gpu"]])
     # KernelBench on the g6 tier (route `kernelbench-gpu`, deploy_gpu_tasks.py): mixed into train, own eval
-    # set. TB_KB_TRAIN / TB_KB_EVAL rows (level_1 train, level_2 held-out); 0 = leave it out.
+    # set. Default = the FULL in-tree set (all level_1 train, all level_2 held-out); TB_KB_TRAIN / TB_KB_EVAL
+    # cap the rows (0 = leave it out).
     kb_dir = DEMO_DIR / "kernelbench"
     kb_train, kb_eval = [], []
+    kb_cap = lambda var: int(os.environ[var]) if os.environ.get(var, "") != "" else None  # noqa: E731
     if "kernelbench-gpu" in pool and (kb_dir / "kernelbench_train.jsonl").exists():
-        kb_train = [json.loads(l) for l in open(kb_dir / "kernelbench_train.jsonl")][: int(os.environ.get("TB_KB_TRAIN", "40"))]
-        kb_eval = [json.loads(l) for l in open(kb_dir / "kernelbench_eval.jsonl")][: int(os.environ.get("TB_KB_EVAL", "10"))]
+        kb_train = [json.loads(l) for l in open(kb_dir / "kernelbench_train.jsonl")][: kb_cap("TB_KB_TRAIN")]
+        kb_eval = [json.loads(l) for l in open(kb_dir / "kernelbench_eval.jsonl")][: kb_cap("TB_KB_EVAL")]
     train += kb_train
     _write(out / "terminalbench_train.jsonl", train)
     _write(out / "kernelbench_eval.jsonl", kb_eval)

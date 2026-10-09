@@ -7,7 +7,7 @@ substrates, and gets a fresh sandbox per episode on each:
 |---|---|---|
 | **AgentCore microVM** (`acs_tbh_<task>` Runtimes, arm64, ≤ 2 GB) | single-container tasks whose image builds for arm64, fits, and whose oracle passes there | one fresh microVM session |
 | **m5 EC2** (plain EC2, not AgentCore-managed; Amazon Linux 2023, x86_64, Docker + compose) | everything else: the 12 multi-container compose tasks, x86-only and > 2 GB images, and microVM tasks whose reference solution fails on a capability-less microVM | **one `m5.2xlarge` (40 GB) per session** running the task's whole compose project (client + sidecars). `TB_M5_MODE=warm` (default): kept after the episode and reused after a *verified* reset; `per_episode`: terminated after grading; `shared`: one compose project each on one shared m5 |
-| **g6 GPU tier** (AgentCore capacity provider `acs_tbh_gpu_cp`, g6.xlarge / NVIDIA L4; one session = one instance) | **KernelBench** (40 level-1 train + 10 level-2 eval rows, mixed into the batch; no Terminal-Bench task needs a GPU, opt in with `TB_GPU_TASKS=a,b`) | one fresh g6 Instance session |
+| **g6 GPU tier** (AgentCore capacity provider `acs_tbh_gpu_cp`, g6.xlarge / NVIDIA L4; one session = one instance) | **KernelBench** (all 100 level-1 train + 20 level-2 eval rows, mixed into the batch; no Terminal-Bench task needs a GPU, opt in with `TB_GPU_TASKS=a,b`) | one fresh g6 Instance session |
 
 The policy is Qwen3-4B trained by slime (fully-async GRPO). The agent is the mini_claude tool-calling loop
 (`bash` / `write_file` / `read_file`) and it runs **inside the episode's sandbox** on both substrates,
@@ -158,7 +158,7 @@ bash 2_build_image.sh      # fetch all 241 tasks; arm64 images -> ECR (reused); 
 bash 3_push_ecr.sh         # report only: images.csv (microVM) + images_docker.csv (m5)
 bash 4_deploy_runtime.sh   # register acs_tbh_* Runtimes; validate every oracle; retry microVM failures on the m5
 bash 1_prepare_data.sh     # rows for every routed + validated task (train mixes both; two eval files)
-bash 5_run.sh              # 10-step smoke -> logs/<tag>.{log,csv,eval.csv,png}
+bash 5_run.sh              # full-epoch smoke (rows/RB steps) -> logs/<tag>.{log,csv,eval.csv,png}
 bash 6_cleanup.sh          # delete acs_tbh_* Runtimes + terminate the m5 (KEEP_M5=1 keeps it)
 ```
 
@@ -179,13 +179,13 @@ Runtimes and 3 capacity providers (no instance without a session), the builder m
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `NR` / `EVAL_INTERVAL` | 11 / 10 (5_run.sh) | rollouts (NR-1 train steps) / eval cadence |
+| `NR` / `EVAL_INTERVAL` | `epoch` / 10 (5_run.sh) | rollouts (NR-1 train steps; `epoch` = train rows/RB + 1, one full pass) / eval cadence |
 | `TB_PREOPEN_BATCHES` | 2 | batches of sandboxes booted ahead, both substrates (0 = open on demand) |
 | `TB_M5_MODE` | warm | `warm` = one m5 per session, reused after a verified reset; `per_episode` = terminated after each episode; `shared` = one compose project each on the builder |
 | `TB_M5_MAX_INSTANCES` | 24 | warm / per_episode: live m5 instances at once (~87 % of moments need ≤ 24) |
 | `TB_PREOPEN_BATCHES_SLOW` | 5 | batches ahead for m5 VMs and g6 Instances (microVMs: `TB_PREOPEN_BATCHES`); a g6 needs ~2.5 min (boot + torch install) |
 | `TB_DOCKER_MAX_PROJECTS` | 16 | shared mode: m5 episode projects at once (trainer-side gate; the host's `M5_MAX_PROJECTS` is the backstop) |
-| `TB_KERNELBENCH` / `TB_KB_TRAIN` / `TB_KB_EVAL` | 1 / 40 / 10 | the KernelBench g6 Runtime (step 4) / KernelBench rows in train / eval |
+| `TB_KERNELBENCH` / `TB_KB_TRAIN` / `TB_KB_EVAL` | 1 / all (100) / all (20) | the KernelBench g6 Runtime (step 4) / KernelBench rows in train / eval (caps; 0 = leave out) |
 | `TB_GPU_TASKS` / `TB_GPU_MAX_SESSIONS` / `TB_GPU_INSTANCE` | empty / 32 / g6.xlarge | Terminal-Bench tasks on the g6 tier / live g6 sessions at once, per pool (at 16 the gate was full 66 % of smoke 5 and 31/36 pre-opened sessions were still booting; ~4 KernelBench prompts × 8 are in the look-ahead window) / instance type |
 | `TB_KB_SPEEDUP_MIN` | 1.10 | KernelBench reward: 1 if correct and at least this much faster than the reference, 0.5 if only correct, 0 otherwise (0 = correctness only) |
 | `TB_M5_IDLE_SHUTDOWN_S` | 1800 | m5 dead-man switch, armed from the instance's first boot (user-data systemd drop-in): an episode instance with no trainer call for this long terminates itself (0 = off). Must exceed the longest normal silence of an idle warm instance (final checkpoint save, eval: ~10 min); shorter = idle warm instances get replaced mid-run, longer = orphans bill longer after a crash |

@@ -1,8 +1,9 @@
 #!/bin/bash
 # Step 5/6 — run RL (slime trainer inside agentcore_p4) against both substrates from steps 2-4, tee the full
 # log to logs/<tag>.log, then parse it to <tag>.csv / .eval.csv / .png with metrics.py.
-# Defaults = the 10-step smoke (NR=11: 10 train steps + 1 eval + final ckpt). Override any knob, e.g.
-#     NR=3 TB_PREOPEN_BATCHES=1 bash 5_run.sh
+# Defaults = the full-epoch smoke (NR=epoch: one pass over the train split, rows/RB steps, eval every
+# EVAL_INTERVAL + final ckpt). Override any knob, e.g. the old 10-step smoke:
+#     NR=11 bash 5_run.sh          or a quick one:  NR=3 TB_PREOPEN_BATCHES=1 bash 5_run.sh
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$HERE/deploy/steps_common.sh"
@@ -10,7 +11,7 @@ source "$HERE/deploy/steps_common.sh"
 if grep -q '"docker://' "$POOL_MAP" && [ ! -f "$M5_STATE" ]; then
   die "the route map has m5 tasks but $M5_STATE is missing — run: python3 deploy/m5_host.py up"
 fi
-export NR="${NR:-11}" EVAL_INTERVAL="${EVAL_INTERVAL:-10}" EVAL_NS="${EVAL_NS:-2}"
+export NR="${NR:-epoch}" EVAL_INTERVAL="${EVAL_INTERVAL:-10}" EVAL_NS="${EVAL_NS:-2}"
 _SFX="-hybrid"
 if [ "${HEARTBEAT:-1}" = 0 ]; then _SFX+="-nohb"; fi
 TAG="${RUN_TAG:-run}${_SFX}_$(date +%Y%m%d_%H%M%S)"

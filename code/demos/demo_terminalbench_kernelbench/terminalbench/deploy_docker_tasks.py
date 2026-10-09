@@ -62,10 +62,29 @@ HIDDEN = {"tests", "run-tests.sh", "run_tests.sh", "solution.sh", "solution.yaml
 # Minimal, verified bit-rot fixes (task -> [(file, old, new)]); applied to the upload, tasks/ stays
 # pristine. Not fixable, so left to fail and be reported: fix-git (its GitHub repo is gone) and
 # leelachess0-pytorch-conversion (the lczero network file now 404s).
+# Debian bullseye's security index lists packages its mirror has since pruned (apt 404 -> exit 100):
+# install from the base image's own pinned snapshot.debian.org lines instead.
+_BULLSEYE_SNAPSHOT = (
+    "FROM debian:bullseye-slim \n",
+    "FROM debian:bullseye-slim \n"
+    "RUN sed -i -e '/^deb http:\\/\\/deb.debian.org/d' "
+    "-e 's|^# deb http://snapshot|deb [check-valid-until=no] http://snapshot|' /etc/apt/sources.list\n",
+)
 PATCHES = {
     "word2vec-from-scratch": [
         ("Dockerfile", "load_dataset('wikitext','wikitext-2-v1')", "load_dataset('Salesforce/wikitext','wikitext-2-v1')"),
     ],
+    "qemu-startup": [("Dockerfile", *_BULLSEYE_SNAPSHOT)],
+    "qemu-alpine-ssh": [("Dockerfile", *_BULLSEYE_SNAPSHOT)],
+    "reverse-engineering": [
+        ("Dockerfile", "COPY tests/main.c /app/\nCOPY tests/validate.s /app/",
+         "COPY _build/main.c /app/\nCOPY _build/validate.s /app/"),
+    ],
+}
+# Hidden files a Dockerfile COPYs at BUILD time (task -> [hidden rel path]): uploaded under _build/ (never
+# the grader itself); the task's own Dockerfile deletes them from the image after use.
+BUILD_INPUTS = {
+    "reverse-engineering": ["tests/main.c", "tests/validate.s"],
 }
 
 
@@ -139,6 +158,12 @@ def _task_tar(task: str) -> tuple[bytes, str, int]:
             h.update(str(rel).encode() + b"\0" + data)
             ti = tarfile.TarInfo(str(rel))
             ti.size, ti.mode, ti.mtime = len(data), p.stat().st_mode & 0o777, 0
+            tf.addfile(ti, io.BytesIO(data))
+        for rel in BUILD_INPUTS.get(task, []):
+            data, arc = (tdir / rel).read_bytes(), "_build/" + Path(rel).name
+            h.update(arc.encode() + b"\0" + data)
+            ti = tarfile.TarInfo(arc)
+            ti.size, ti.mode = len(data), 0o644
             tf.addfile(ti, io.BytesIO(data))
     return buf.getvalue(), h.hexdigest()[:10], applied
 

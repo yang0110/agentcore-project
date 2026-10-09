@@ -75,7 +75,8 @@ case "$SANDBOX" in agentcore-runtime|runtime) ;;
 # AGENTCORE_SANDBOX_RUNTIME_ARN_BY_IMAGE (IMAGE ROUTING below; terminalbench_pool refuses any other).
 RB="${RB:-4}"          # prompts per rollout step
 NS="${NS:-8}"          # GRPO group size (samples per prompt)
-NR="${NR:-11}"        # num-rollout; real training steps = NR-1 (see NOTE) => 10 train + 1 eval (SMOKE; no more needed).
+NR="${NR:-epoch}"     # num-rollout; real training steps = NR-1 (see NOTE). epoch => one full pass over DATA
+                      # (resolved below to rows/RB + 1); a number pins it (NR=11 => the old 10-step smoke).
 TEMP="${TEMP:-1.0}"    # rollout sampling temperature (higher => more intra-group diversity)
 GBS=$(( RB * NS ))     # global batch = all samples, 1 optimizer step per rollout
 # Held-out eval every N steps (0 => off). Held-out solve-rate is a KEY metric, so eval stays ON
@@ -118,6 +119,10 @@ EVAL_GPU_DATA="${EVAL_GPU_DATA:-$DEMO_DIR/data/terminalbench_eval_gpu.jsonl}"   
 EVAL_KB_DATA="${EVAL_KB_DATA:-$DEMO_DIR/data/kernelbench_eval.jsonl}"                   # KernelBench on g6
 EVAL_NAME="${EVAL_NAME:-terminalbench}"
 [ -f "$DATA" ] || { echo "no $DATA — run 1_prepare_data.sh (after steps 2-4)" >&2; exit 2; }
+if [ "$NR" = epoch ]; then   # every train row seen once: rows/RB steps (+1, see NOTE step count)
+  NR=$(( $(grep -c . "$DATA") / RB + 1 ))
+  echo ">>> NR=epoch: $(grep -c . "$DATA") train rows / RB=$RB => $(( NR - 1 )) train steps (NR=$NR)"
+fi
 SHUFFLE_ARGS=(--rollout-shuffle)
 # IMAGE ROUTING: task image -> its route (terminalbench/tasks/route_by_image.json, via image_routing.py).
 # A row whose image has no route is an error here, before any GPU work.
