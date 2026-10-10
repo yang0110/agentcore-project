@@ -74,3 +74,5 @@ code/demos/demo_terminalbench_kernelbench/logs/smokecli_*
 code/demos/demo_terminalbench_kernelbench/logs/smokefix_*
 code/demos/demo_terminalbench_kernelbench/logs/smokemini_*
 code/demos/demo_terminalbench_kernelbench/logs/gen20_*
+# local backups of the regenerated data/ dir
+code/demos/demo_terminalbench_kernelbench/data_bak_*/
