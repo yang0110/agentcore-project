@@ -13,13 +13,14 @@ Two kinds of GPU sandbox:
 
 For each named task: the task's own Dockerfile + the same wrapper layer as every other image (here the
 x86_64 standalone CPython), built for linux/amd64 and pushed to ECR <prefix>-tbgpu-<task>; one Runtime
-<prefix>_tbhgpu_<task> on the capacity provider <prefix>_tbh_gpu_cp (TB_GPU_INSTANCE, default g6.xlarge,
+<prefix>_tbhgpu_<task> on the capacity provider <prefix>_tbh_gpu_<types>_<azs>_cp (TB_GPU_INSTANCE, default g6.xlarge;
+TB_GPU_AZS, default every AZ with a default subnet;
 NAT-egress subnets so run-tests.sh can install pytest). TB_GPU_INSTANCE may list several types,
 but AgentCore did NOT fall back between them: on 5 Oct 2026 (no g6.xlarge in any us-west-2 AZ for
 hours) a g6.xlarge,g5.xlarge,g6e.xlarge provider only ever retried g6, while g5.xlarge,g6e.xlarge got
 a g5.xlarge (A10G; torch 2.5.1/cu124 runs as is) in 227 s. So list the type that has capacity FIRST.
-A capacity provider's types can't be changed after creation, so each type list gets its own provider
-(<prefix>_tbh_gpu_<g5_g6e>_cp) and the Runtimes are re-pointed to it. AgentCore maps one runtimeSessionId to one whole
+A capacity provider's types and subnets can't be changed after creation, so each (type list, AZ set) gets its own
+provider (e.g. <prefix>_tbh_gpu_g5_g6e_abcd_cp) and the Runtimes are re-pointed to it. AgentCore maps one runtimeSessionId to one whole
 instance, so every episode gets its own g6 (cold boot ~60-80 s + image pull; pre-open hides it, and
 TB_GPU_MAX_SESSIONS caps how many run at once). The route is `gpu:<runtime arn>`; the pool opens it with
 the same AgentCoreRuntimeSandbox as a microVM and heartbeats it the same way.
@@ -55,25 +56,46 @@ GPU_PREFIX = "gpu:"
 GPU_SESSION_MAX_LIFETIME = int(os.environ.get("TB_GPU_MAX_LIFETIME", "14400"))
 INSTANCES = [s.strip() for s in os.environ.get("TB_GPU_INSTANCE", "g6.xlarge").split(",") if s.strip()]
 INSTANCE = ",".join(INSTANCES)
-# The original single-g6 provider keeps its name; any other type list gets its own.
-CP_NAME = (f"{d.PREFIX}_tbh_gpu_cp" if INSTANCES == ["g6.xlarge"]
-           else f"{d.PREFIX}_tbh_gpu_{'_'.join(i.split('.')[0] for i in INSTANCES)}_cp")
+# AZs the provider may launch in. Default: every AZ with a default subnet, NOT just the AZs the
+# bedrock-agentcore PrivateLink endpoint serves (us-west-2: a/b/c, no d): an instance in another AZ still
+# reaches that endpoint across AZs inside the VPC. On 9 Oct 2026 a 63-step run spent ~9 min per GPU
+# session open on g6.xlarge CAPACITY retries in a/b/c while EC2 kept pointing at us-west-2d.
+GPU_AZS = [s.strip() for s in os.environ.get("TB_GPU_AZS", "").split(",") if s.strip()]
+
+
+def gpu_azs() -> list[str]:
+    if GPU_AZS:
+        return GPU_AZS
+    vpc_id, _, _ = d.default_vpc()
+    ec2 = boto3.client("ec2", region_name=d.REGION)
+    return sorted({sn["AvailabilityZone"] for sn in ec2.describe_subnets(Filters=[
+        {"Name": "vpc-id", "Values": [vpc_id]}, {"Name": "default-for-az", "Values": ["true"]}])["Subnets"]})
+
+
+def cp_name(azs: list[str]) -> str:
+    """A capacity provider's types and subnets can't change after creation, so each (type list, AZ set)
+    gets its own provider, e.g. acs_tbh_gpu_g6_abcd_cp."""
+    types = "_".join(i.split(".")[0] for i in INSTANCES)
+    return f"{d.PREFIX}_tbh_gpu_{types}_{''.join(az[-1] for az in azs)}_cp"
 
 
 def runtime_name(task: str) -> str:
     return tb._runtime_name(task).replace(f"{d.PREFIX}_{tb.RUNTIME_TAG}_", f"{d.PREFIX}_{tb.RUNTIME_TAG}gpu_", 1)
 
 
-def ensure_cp() -> str:
-    """The g6 capacity provider, in the NAT-egress subnets of every AZ the VPC endpoints serve."""
+def ensure_cp() -> tuple[str, str]:
+    """(name, arn) of the GPU capacity provider, in the NAT-egress subnets of every AZ in gpu_azs()."""
     control = boto3.client("bedrock-agentcore-control", region_name=d.REGION)
+    azs = gpu_azs()
+    name = cp_name(azs)
     for cp in control.list_capacity_providers().get("capacityProviders", []):
-        if cp.get("name") == CP_NAME:
-            return cp["capacityProviderArn"]
+        if cp.get("name") == name:
+            return name, cp["capacityProviderArn"]
     net = d.vpc_network("nat")["networkModeConfig"]
+    net["subnets"] = d.ensure_egress_subnets(d.default_vpc()[0], azs)
     d.open_dialback(net["securityGroups"][0])
     resp = control.create_capacity_provider(
-        name=CP_NAME, description=f"demo_terminalbench_kernelbench GPU tier ({INSTANCE})",
+        name=name, description=f"demo_terminalbench_kernelbench GPU tier ({INSTANCE})",
         permissionsConfiguration={"capacityProviderOperatorRoleArn": d.operator_role(f"{d.PREFIX}-operator-role")},
         computeConfiguration={"ec2Configuration": {
             "launchTemplateSource": {"launchParameters": {
@@ -84,10 +106,10 @@ def ensure_cp() -> str:
                                        "maxLifetime": d.INSTANCE_MAX_LIFETIME}}})
     while (st := control.get_capacity_provider(capacityProviderId=resp["capacityProviderId"]))["status"] != "READY":
         if "FAILED" in st["status"]:
-            d.die(f"{CP_NAME} {st['status']}: {st.get('statusReason')}")
+            d.die(f"{name} {st['status']}: {st.get('statusReason')}")
         time.sleep(5)
-    d.err(f"capacity provider {CP_NAME} READY ({INSTANCE}; launches no instance until a session opens)")
-    return resp["capacityProviderArn"]
+    d.err(f"capacity provider {name} READY ({INSTANCE} in {azs}; launches no instance until a session opens)")
+    return name, resp["capacityProviderArn"]
 
 
 def build_one(task: str, ctx: Path) -> str:
@@ -153,7 +175,7 @@ def main() -> int:
         d.die(f"unknown task(s): {missing}")
     dock._ensure_standalone_python()
     d._ensure_buildx()
-    cp_arn = ensure_cp()
+    cp, cp_arn = ensure_cp()
     xrole = d.exec_role(f"{d.PREFIX}-exec-role")
     rows, pool_path = [], TASKS_DIR / "route_by_image.json"
     with tempfile.TemporaryDirectory(prefix="acs-gpu-ctx-") as tmp:
@@ -193,7 +215,7 @@ def main() -> int:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
-    print(f"# GPU tier: {sum(r['status'] == 'registered' for r in rows)}/{len(rows)} task(s) on {CP_NAME} -> {pool_path}")
+    print(f"# GPU tier: {sum(r['status'] == 'registered' for r in rows)}/{len(rows)} task(s) on {cp} -> {pool_path}")
     return 0 if all(r["arn"] for r in rows) else 1
 
 

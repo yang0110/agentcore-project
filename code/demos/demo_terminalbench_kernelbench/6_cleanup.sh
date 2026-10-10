@@ -32,7 +32,7 @@ import re, sys, time
 sys.path.insert(0, 'deploy')
 import boto3
 import agentcore_deploy as d
-# Every GPU-tier provider: <prefix>_tbh_gpu_cp, plus one per instance-type list (deploy_gpu_tasks.CP_NAME).
+# Every GPU-tier provider: <prefix>_tbh_gpu_cp, plus one per instance-type list (deploy_gpu_tasks.cp_name).
 mine = re.compile(rf"^{re.escape(d.PREFIX)}_tbh_gpu(_[a-z0-9]+)*_cp$")
 c = boto3.client("bedrock-agentcore-control", region_name=d.REGION)
 names = sorted(cp["name"] for cp in c.list_capacity_providers().get("capacityProviders", []) if mine.match(cp.get("name", "")))
