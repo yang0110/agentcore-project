@@ -1,0 +1,555 @@
+{
+ "corpus": {
+  "total": 241,
+  "single": 229,
+  "multi": 12,
+  "microvm_status": {
+   "registered": 218,
+   "build_failed": 7,
+   "too_large": 4
+  },
+  "m5_status": {
+   "built": 75,
+   "build_failed": 4
+  },
+  "m5_reason_built": {
+   "microvm_build_failed": 5,
+   "routed_m5": 53,
+   "multi_container": 12,
+   "microvm_oracle_fail": 1,
+   "microvm_too_large": 4
+  },
+  "m5_failed": [
+   "fix-git",
+   "leelachess0-pytorch-conversion",
+   "port-compressor",
+   "triton-interpret"
+  ],
+  "routes": {
+   "microvm": 164,
+   "docker": 75
+  },
+  "usable": {
+   "microvm": 162,
+   "docker": 24
+  },
+  "usable_total": 186,
+  "m5_rescued_oracle": 0
+ },
+ "sizes": {
+  "arm_n": 222,
+  "arm_p50": 127.0,
+  "arm_p95": 620.2,
+  "arm_max_fit": 2002.7,
+  "too_large": [
+   [
+    "mteb-eval",
+    6671.9
+   ],
+   [
+    "mteb-leaderboard",
+    6658.1
+   ],
+   [
+    "mteb-retrieve",
+    6671.9
+   ],
+   [
+    "png-generation",
+    6524.8
+   ]
+  ],
+  "m5_n": 75,
+  "m5_p50": 564.9,
+  "m5_max": 9804.5,
+  "kb_image_mb": 145,
+  "kb_torch_mb": 2700
+ },
+ "runs": {
+  "smoke2": {
+   "per": {
+    "microvm": {
+     "n": 401,
+     "solved": 17,
+     "infra": 1
+    },
+    "docker": {
+     "n": 88,
+     "solved": 0,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/terminalbench": 0.0323,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {},
+   "succeeded": false,
+   "cancelled": 0,
+   "grade_errors": {
+    "jq-data-processing": 1
+   },
+   "speedup_max": 0
+  },
+  "smoke3": {
+   "per": {
+    "microvm": {
+     "n": 382,
+     "solved": 16,
+     "infra": 0
+    },
+    "docker": {
+     "n": 88,
+     "solved": 0,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/terminalbench": 0.0645,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {},
+   "succeeded": true,
+   "cancelled": 0,
+   "grade_errors": {},
+   "speedup_max": 0
+  },
+  "smoke4mix": {
+   "per": {
+    "microvm": {
+     "n": 322,
+     "solved": 13,
+     "infra": 1
+    },
+    "docker": {
+     "n": 58,
+     "solved": 0,
+     "infra": 1
+    },
+    "gpu": {
+     "n": 75,
+     "solved": 48,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/kernelbench": 0.8,
+    "eval/terminalbench": 0.0323,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {
+    "0.0": 27,
+    "1.0": 48
+   },
+   "succeeded": true,
+   "cancelled": 0,
+   "grade_errors": {
+    "build-initramfs-qemu": 1,
+    "query-optimize": 1
+   },
+   "speedup_max": 1.29
+  },
+  "smoke5": {
+   "per": {
+    "microvm": {
+     "n": 157,
+     "solved": 6,
+     "infra": 0
+    },
+    "docker": {
+     "n": 34,
+     "solved": 0,
+     "infra": 0
+    },
+    "gpu": {
+     "n": 36,
+     "solved": 26,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/kernelbench": 0.475,
+    "eval/terminalbench": 0.0645,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {
+    "0.0": 10,
+    "0.5": 26
+   },
+   "succeeded": true,
+   "cancelled": 0,
+   "grade_errors": {},
+   "speedup_max": 1.02
+  },
+  "smoke6": {
+   "per": {
+    "microvm": {
+     "n": 177,
+     "solved": 4,
+     "infra": 1
+    },
+    "docker": {
+     "n": 34,
+     "solved": 0,
+     "infra": 0
+    },
+    "gpu": {
+     "n": 52,
+     "solved": 42,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/kernelbench": 0.45,
+    "eval/terminalbench": 0.0161,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {
+    "0.0": 10,
+    "0.5": 34,
+    "1.0": 8
+   },
+   "succeeded": true,
+   "cancelled": 0,
+   "grade_errors": {
+    "recover-obfuscated-files": 1
+   },
+   "speedup_max": 1.38
+  },
+  "train48_run1": {
+   "per": {
+    "microvm": {
+     "n": 700,
+     "solved": 14,
+     "infra": 1
+    },
+    "docker": {
+     "n": 76,
+     "solved": 0,
+     "infra": 0
+    },
+    "gpu": {
+     "n": 160,
+     "solved": 94,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/kernelbench": 0.425,
+    "eval/terminalbench": 0.0161,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {
+    "0.0": 66,
+    "0.5": 86,
+    "1.0": 8
+   },
+   "succeeded": false,
+   "cancelled": 0,
+   "grade_errors": {},
+   "speedup_max": 1.3
+  },
+  "train48_run2": {
+   "per": {
+    "microvm": {
+     "n": 1795,
+     "solved": 42,
+     "infra": 5
+    },
+    "docker": {
+     "n": 293,
+     "solved": 0,
+     "infra": 2
+    },
+    "gpu": {
+     "n": 404,
+     "solved": 230,
+     "infra": 0
+    }
+   },
+   "eval": {
+    "eval/kernelbench": 0.425,
+    "eval/terminalbench": 0.0484,
+    "eval/terminalbench_docker": 0.0
+   },
+   "kb_rewards": {
+    "0.0": 174,
+    "0.5": 214,
+    "1.0": 16
+   },
+   "succeeded": true,
+   "cancelled": 25,
+   "grade_errors": {
+    "hf-lora-adapter": 1,
+    "solve-maze-challenge": 4,
+    "build-initramfs-qemu": 2
+   },
+   "speedup_max": 1.35
+  }
+ },
+ "preopen_smoke6": {
+  "microvm": {
+   "n": 177,
+   "with_p50": 0.0,
+   "with_p90": 5.6116,
+   "without_p50": 2.0789,
+   "without_p90": 3.0528000000000004,
+   "zero": 121,
+   "saved_s": 223.5311
+  },
+  "docker": {
+   "n": 34,
+   "with_p50": 28.9312,
+   "with_p90": 60.985699999999994,
+   "without_p50": 67.854,
+   "without_p90": 100.0398,
+   "zero": 16,
+   "saved_s": 1350.8647
+  },
+  "gpu": {
+   "n": 52,
+   "with_p50": 27.6095,
+   "with_p90": 99.9466,
+   "without_p50": 135.278,
+   "without_p90": 144.4667,
+   "zero": 22,
+   "saved_s": 4818.1286
+  }
+ },
+ "g6_cap": {
+  "smoke4mix": {
+   "cap": 8,
+   "n": 76,
+   "p50": 240.2851,
+   "zero": 0
+  },
+  "smoke5": {
+   "cap": 16,
+   "n": 36,
+   "p50": 81.57130000000001,
+   "zero": 5
+  },
+  "smoke6": {
+   "cap": 32,
+   "n": 52,
+   "p50": 27.6095,
+   "zero": 22
+  }
+ },
+ "warm_smoke6": {
+  "reused": 10,
+  "launched": 24,
+  "pool_max": 24,
+  "dirty": 0,
+  "retired": 0
+ },
+ "instances_train48": {
+  "microvm": {
+   "total": 2020,
+   "peak": 129,
+   "mean_training": 57.35406218655968
+  },
+  "docker": {
+   "total": 129,
+   "peak": 24,
+   "mean_training": 14.245737211634905
+  },
+  "gpu": {
+   "total": 546,
+   "peak": 124,
+   "mean_training": 46.06519558676028,
+   "after_run_min": 43.79746666749318,
+   "session_p50_min": 3.1828166666666666,
+   "instance_p50_min": 15.15
+  }
+ },
+ "learning_train48": {
+  "steps": 48,
+  "no_grad_steps": 32,
+  "flat_groups": 176.0,
+  "groups": 192,
+  "reward_first10": 0.1078125,
+  "reward_last10": 0.0375,
+  "eval": {
+   "9": {
+    "eval/kernelbench": "0.4",
+    "eval/terminalbench": "0.0",
+    "eval/terminalbench_docker": "0.0"
+   },
+   "19": {
+    "eval/kernelbench": "0.45",
+    "eval/terminalbench": "0.04838709677419355",
+    "eval/terminalbench_docker": "0.0"
+   },
+   "29": {
+    "eval/kernelbench": "0.5",
+    "eval/terminalbench": "0.016129032258064516",
+    "eval/terminalbench_docker": "0.0"
+   },
+   "39": {
+    "eval/kernelbench": "0.425",
+    "eval/terminalbench": "0.04838709677419355",
+    "eval/terminalbench_docker": "0.0"
+   }
+  }
+ },
+ "evidence": {
+  "build": {
+   "microvm": {
+    "registered": 218,
+    "build_failed": 7,
+    "too_large": 4
+   },
+   "docker": {
+    "built": 75,
+    "build_failed": 4
+   },
+   "mv_size_p50": 128.4,
+   "mv_size_max": 6671.9,
+   "dk_size_p50": 564.9,
+   "dk_size_max": 9804.5,
+   "dk_build_p50_min": 0.6716666666666666,
+   "dk_build_max_min": 6.8100000000000005,
+   "dk_build_total_h": 1.5163333333333333,
+   "ecr_repos_m5": 89
+  },
+  "speed": {
+   "microvm": {
+    "open_p50_s": 0.6726,
+    "open_p95_s": 2.9028,
+    "n_open": 2020,
+    "agent_p50_s": 16.1336,
+    "agent_p95_s": 66.44919999999999,
+    "n_agent": 1723,
+    "idle_p50_min": 1.4507433333333335,
+    "idle_max_min": 4.006173333333333,
+    "idle_over_7_5": 0,
+    "idle_over_15": 0
+   },
+   "docker": {
+    "open_p50_s": 33.3867,
+    "open_p95_s": 92.42689999999999,
+    "n_open": 407,
+    "agent_p50_s": 16.0976,
+    "agent_p95_s": 101.57239999999999,
+    "n_agent": 291,
+    "idle_p50_min": 2.4420683333333333,
+    "idle_max_min": 5.5733516666666665,
+    "idle_over_7_5": 0,
+    "idle_over_15": 0
+   },
+   "gpu": {
+    "open_p50_s": 133.26979999999998,
+    "open_p95_s": 184.0504,
+    "n_open": 537,
+    "agent_p50_s": NaN,
+    "agent_p95_s": NaN,
+    "n_agent": 0,
+    "idle_p50_min": 0.0,
+    "idle_max_min": 4.681495,
+    "idle_over_7_5": 0,
+    "idle_over_15": 0
+   }
+  },
+  "reward": {
+   "microvm_tasks": 156,
+   "microvm_never_solved": 143,
+   "microvm_always_solved": 1,
+   "docker_tasks": 30,
+   "docker_never_solved": 30,
+   "docker_always_solved": 0,
+   "unsolved_eps": 4711,
+   "unsolved_partial": 2156,
+   "kb_correct": 526,
+   "kb_over_gate": 50,
+   "kb_speedup_p50": 1.0,
+   "runs": [
+    "smoke2-hybrid_20261004_102158",
+    "smoke3-hybrid_20261004_113716",
+    "smoke4mix-hybrid_20261004_135153",
+    "smoke5-hybrid_20261004_143743",
+    "smoke6-hybrid_20261004_150535",
+    "smoke7-hybrid_20261005_135355",
+    "smoke8-hybrid_20261005_153845",
+    "train48-hybrid_20261004_152433",
+    "train48-hybrid_20261005_005629"
+   ]
+  },
+  "ops": {
+   "g6_session_p50_min": 3.1828166666666666,
+   "g6_instance_p50_min": 15.15,
+   "g6_instance_p90_min": 21.716666666666665,
+   "m5_instance_p50_min": 11.7,
+   "m5_instances": 129,
+   "g6_instances": 546,
+   "infra": {
+    "grade": 24,
+    "URLError": 13,
+    "ValueError": 1,
+    "RuntimeError": 25
+   },
+   "episodes_all_runs": 6074
+  }
+ },
+ "stop_reasons": {
+  "by_substrate": {
+   "microvm": {
+    "end_turn": 1642,
+    "budget": 1768,
+    "max_tokens": 879
+   },
+   "docker": {
+    "end_turn": 229,
+    "budget": 488,
+    "max_tokens": 67
+   },
+   "gpu": {
+    "end_turn": 571,
+    "max_tokens": 221,
+    "budget": 1
+   }
+  },
+  "tb_solved_by_stop": {
+   "end_turn": [
+    86,
+    1871
+   ],
+   "budget": [
+    38,
+    2256
+   ],
+   "max_tokens": [
+    3,
+    946
+   ]
+  }
+ },
+ "cost_train48": {
+  "usd": {
+   "trainer (g6e.48xlarge)": 89.48907000000001,
+   "g6 Instances": 129.44269008611107,
+   "microVM sessions (upper bound)": 66.6079358275556,
+   "m5 warm pool": 8.279786666666666
+  },
+  "total": 293.81948258033333,
+  "per_1000_eps": {
+   "microVM": 37.04557053812881,
+   "m5": 27.146841530054644,
+   "g6": 318.0410075825825
+  },
+  "session_h": {
+   "docker": 62.06324361111112,
+   "microvm": 170.61458972222232,
+   "gpu": 32.53848388888888
+  },
+  "instance_h": {
+   "m5.xlarge": 43.123888888888885,
+   "g6.xlarge": 149.16361111111107
+  },
+  "episodes": {
+   "microvm": 1798,
+   "docker": 305,
+   "gpu": 407
+  }
+ }
+}
