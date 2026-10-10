@@ -13,7 +13,7 @@
 # box's adapter back SG->SG); the session is stopped when the episode ends.
 # ASYNC (decoupled) mode. This dir owns its data/ + ckpt/, but imports the SHARED agentcore_slime_demo
 # library from its own vendored copy in this dir (on PYTHONPATH). Runs INSIDE the persistent
-# container agentcore_p4 (slimerl/slime).
+# container slime_trainer (slimerl/slime).
 #
 # Harness/sandbox placement (DSec §6.2: one agent loop per sandbox, sharing its lifetime): each episode
 # gets ONE fresh AgentCore session; mini_claude_episode.py writes the stdlib agent loop into it
@@ -363,7 +363,7 @@ trap _teardown EXIT
 trap _on_signal INT TERM
 
 # PYTORCH_CUDA_ALLOC_CONF is opt-in: with expandable_segments:True, CUDA IPC to Megatron's async-save worker
-# goes through pidfd_getfd, which agentcore_p4's default seccomp profile forbids (no CAP_SYS_PTRACE) — the
+# goes through pidfd_getfd, which slime_trainer's default seccomp profile forbids (no CAP_SYS_PTRACE) — the
 # final checkpoint save then hangs with "pidfd_getfd: Operation not permitted" (2026-10-04 smoke).
 RUNTIME_ENV_JSON="{
   \"env_vars\": {

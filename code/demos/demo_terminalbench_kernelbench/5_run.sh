@@ -1,5 +1,5 @@
 #!/bin/bash
-# Step 5/6 — run RL (slime trainer inside agentcore_p4) against both substrates from steps 2-4, tee the full
+# Step 5/6 — run RL (slime trainer inside slime_trainer) against both substrates from steps 2-4, tee the full
 # log to logs/<tag>.log, then parse it to <tag>.csv / .eval.csv / .png with metrics.py.
 # Defaults = the full-epoch smoke (NR=epoch: one pass over the train split, rows/RB steps, eval every
 # EVAL_INTERVAL + final ckpt). Override any knob, e.g. the old 10-step smoke:

@@ -5,14 +5,14 @@
 #
 # Where things run:
 #   * HOST (this box): docker build / ECR push / AgentCore deploy (needs docker, aws, boto3).
-#   * agentcore_p4 CONTAINER: data prep + the slime trainer (repo mounted at /work; no docker socket).
+#   * slime_trainer CONTAINER: data prep + the slime trainer (repo mounted at /work; no docker socket).
 #     Steps that belong in the container are wrapped in `in_container`, which `docker exec`s from the
 #     host — or runs directly if you are already inside the container.
 set -euo pipefail
 
 DEMO="$(basename "$HERE")"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
-CONTAINER="${AGENTCORE_CONTAINER:-agentcore_p4}"
+CONTAINER="${AGENTCORE_CONTAINER:-slime_trainer}"
 CONTAINER_REPO="${CONTAINER_REPO:-/work}"                  # repo root as mounted inside the container
 C_DEMO_DIR="$CONTAINER_REPO/code/demos/$DEMO"             # this demo dir, as seen in the container
 export AWS_REGION="${AWS_REGION:-us-west-2}"
@@ -31,7 +31,7 @@ PASS_RE='^(NR|RB|NS|CONC|TEMP|HARNESS_WORKERS|HARNESS_[A-Z0-9_]+|AGENT_TIME_BUDG
 
 inside_container() { [ -d "$C_DEMO_DIR" ] && ! command -v docker >/dev/null 2>&1; }
 
-# in_container "<bash command>"  — run from $CONTAINER_REPO inside agentcore_p4.
+# in_container "<bash command>"  — run from $CONTAINER_REPO inside slime_trainer.
 in_container() {
   if inside_container; then (cd "$CONTAINER_REPO" && bash -lc "$1"); return; fi
   local args=() v

@@ -1,7 +1,7 @@
 #!/bin/bash
 # HOST-side GPU smoke driver (companion to run_smoke_plan.sh, which only drives CPU trainers from
-# inside agentcore_p4). GPU demos need the two-step: a LOCAL farm container on host GPUs 6,7
-# (run_local_gpu_runtime.sh) + the trainer inside agentcore_p4 on GPUs 0-5. Runs each serially,
+# inside slime_trainer). GPU demos need the two-step: a LOCAL farm container on host GPUs 6,7
+# (run_local_gpu_runtime.sh) + the trainer inside slime_trainer on GPUs 0-5. Runs each serially,
 # NR=11 (10 train + 1 eval + one final ckpt), tees logs, verifies + parses, records PASS/FAIL,
 # deletes each ckpt. Continues past failures. Ordered to minimize farm restarts.
 set -uo pipefail
@@ -45,19 +45,19 @@ run(){ # $1=demo[:label]  $2=farm-mode  $3..=extra KEY=VAL env for the trainer
   # the host `ubuntu` user — creates/overwrites the log; fixes the Permission-denied false FAIL).
   local hlog="$LOGDIR/$d.log" clog="/work/code/demos/_smoke_logs/$d.log" t0=$SECONDS
   docker exec $(for kv in "$@" NR="$NR" NS="$NS" EVAL_INTERVAL="$EVAL_INTERVAL" EVAL_NS="$EVAL_NS"; do printf -- '-e %s ' "$kv"; done) \
-    agentcore_p4 bash -lc "cd /work && timeout $TRAIN_TIMEOUT bash code/demos/$dir/run.sh > $clog 2>&1"
+    slime_trainer bash -lc "cd /work && timeout $TRAIN_TIMEOUT bash code/demos/$dir/run.sh > $clog 2>&1"
   local rc=$?
   local save; save=$(grep -aoE -- "--save /[^ ]+" "$hlog" | head -1 | awk '{print $2}')
   local has_final=0
-  [ -n "$save" ] && docker exec agentcore_p4 test -f "$save/latest_checkpointed_iteration.txt" && has_final=1
+  [ -n "$save" ] && docker exec slime_trainer test -f "$save/latest_checkpointed_iteration.txt" && has_final=1
   # metrics.py + its outputs all use container (/work) paths and append inside the container (root).
   # NOTE: must `cd /work` first — `bash -lc` starts in HOME (/root), so a repo-relative
   # `code/demos/...` path would resolve to /root/code/... and fail ("can't open file").
-  docker exec agentcore_p4 bash -lc \
+  docker exec slime_trainer bash -lc \
       "cd /work && python3 code/demos/$dir/metrics.py $clog --csv /work/code/demos/_smoke_logs/$d.csv --eval-csv /work/code/demos/_smoke_logs/$d.eval.csv --plot /work/code/demos/_smoke_logs/$d.png >> $clog 2>&1" \
       || echo "[gpu] metrics.py non-zero for $d"
   if grep -q "succeeded" "$hlog" && ! grep -qE "No space|CheckpointException|unexpected pos" "$hlog" && [ "$has_final" = 1 ]; then
-    row "$d" PASS $((SECONDS-t0)) "succeeded; final ckpt $(docker exec agentcore_p4 cat "$save/latest_checkpointed_iteration.txt" 2>/dev/null)"
+    row "$d" PASS $((SECONDS-t0)) "succeeded; final ckpt $(docker exec slime_trainer cat "$save/latest_checkpointed_iteration.txt" 2>/dev/null)"
   elif [ "$rc" = 124 ]; then row "$d" TIMEOUT $((SECONDS-t0)) "exceeded ${TRAIN_TIMEOUT}s"
   else
     local r="rc=$rc"; grep -qE "No space" "$hlog" && r="$r ENOSPC"
@@ -65,7 +65,7 @@ run(){ # $1=demo[:label]  $2=farm-mode  $3..=extra KEY=VAL env for the trainer
     [ "$has_final" = 0 ] && r="$r no-final-ckpt"; grep -q succeeded "$hlog" || r="$r no-success-marker"
     row "$d" FAIL $((SECONDS-t0)) "$r (see _smoke_logs/$d.log)"
   fi
-  [ -n "$save" ] && docker exec agentcore_p4 rm -rf "$save" 2>/dev/null
+  [ -n "$save" ] && docker exec slime_trainer rm -rf "$save" 2>/dev/null
 }
 
 echo "[gpu] start $(date -u +%FT%TZ) NR=$NR"

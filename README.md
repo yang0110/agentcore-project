@@ -35,7 +35,7 @@ Full facts, knobs and layout: [`code/demos/demo_terminalbench_kernelbench/README
 ## Run it
 
 Run the numbered steps **on the host**, from the demo folder. The steps that need the
-`agentcore_p4` slime container `docker exec` into it themselves (start the container once with
+`slime_trainer` slime container `docker exec` into it themselves (start the container once with
 `code/p4_slime_train/00_start_container.sh`).
 
 ```bash
@@ -65,7 +65,7 @@ start kills the first job.
 
 ```
 code/demos/demo_terminalbench_kernelbench/   the demo (self-contained: vendored lib, deploy/, steps 1-6)
-code/p4_slime_train/                         agentcore_p4 container start script + base checkpoint
+code/p4_slime_train/                         slime_trainer container start script + base checkpoint
 docs/report/                                 the project report (md + tex + pdf)
 docs/slides/aws/agentic_rl_on_agentcore/     the deck: agentic_rl_on_agentcore.tex (build: ./build.sh)
 docs/*.md                                    design notes; most describe removed demos and are marked historical

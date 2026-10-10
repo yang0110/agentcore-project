@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build demo_terminalbench_kernelbench's train/eval rows into data/ (INSIDE agentcore_p4; 1_prepare_data.sh execs it).
+# Build demo_terminalbench_kernelbench's train/eval rows into data/ (INSIDE slime_trainer; 1_prepare_data.sh execs it).
 # ONE row per Terminal-Bench task (laude-institute/terminal-bench), each naming its OWN image; built from
 # terminalbench/tasks/manifest.json (fetched once, needs network). Rows are kept only for tasks whose
 # route is deployed + oracle-verified (microVM or m5), so re-run this AFTER steps 2-4.

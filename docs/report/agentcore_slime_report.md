@@ -1265,7 +1265,7 @@ Rollout throughput is `min(inference, sandbox, harness)` (§"Scaling the loop").
 
 ### Run it step by step
 
-Run the numbered scripts from `code/demos/demo_terminalbench_kernelbench/` **on the host**; the container steps `docker exec` into `agentcore_p4` themselves.
+Run the numbered scripts from `code/demos/demo_terminalbench_kernelbench/` **on the host**; the container steps `docker exec` into `slime_trainer` themselves.
 
 ```bash
 bash 2_build_image.sh      # fetch the corpus (once) + build/push one arm64 image per task (resumable, ~2 h cold)
@@ -1276,7 +1276,7 @@ bash 5_run.sh              # 10-step smoke -> logs/<tag>.{log,csv,eval.csv,png}
 bash 6_cleanup.sh          # delete every acs_tb_* Runtime (ECR images kept)
 ```
 
-Setting `TB_LIMIT=2` (or `TB_TASKS=a,b`) on steps 2 and 4 validates the pipeline on a couple of tasks first, and `validate_oracle.py` checks each task's oracle on its Runtime. The long run is `convergence/20_cpu_terminalbench.sh` (under `code/demos/`). Run it **inside `agentcore_p4`**, after steps 2-4 and 1. It sets `NR=201` (200 train steps), `EVAL_INTERVAL=20`, `EVAL_NS=4` and `SAVE_INTERVAL=100` (about 56 GB per saved checkpoint). Never run two `run.sh` at once: the second one's Ray start kills the first one's job. Training starts from the base Megatron checkpoint `Qwen3-4B_torch_dist` in `code/p4_slime_train/ckpt/` (override with `CKPT_BASE`).
+Setting `TB_LIMIT=2` (or `TB_TASKS=a,b`) on steps 2 and 4 validates the pipeline on a couple of tasks first, and `validate_oracle.py` checks each task's oracle on its Runtime. The long run is `convergence/20_cpu_terminalbench.sh` (under `code/demos/`). Run it **inside `slime_trainer`**, after steps 2-4 and 1. It sets `NR=201` (200 train steps), `EVAL_INTERVAL=20`, `EVAL_NS=4` and `SAVE_INTERVAL=100` (about 56 GB per saved checkpoint). Never run two `run.sh` at once: the second one's Ray start kills the first one's job. Training starts from the base Megatron checkpoint `Qwen3-4B_torch_dist` in `code/p4_slime_train/ckpt/` (override with `CKPT_BASE`).
 
 | Knob | Default | Meaning |
 |:---|:---|:---|

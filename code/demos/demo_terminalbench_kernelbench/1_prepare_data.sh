@@ -1,5 +1,5 @@
 #!/bin/bash
-# Step 1/6 — build the train/eval rows into data/ (INSIDE agentcore_p4, docker exec'd from the host
+# Step 1/6 — build the train/eval rows into data/ (INSIDE slime_trainer, docker exec'd from the host
 # automatically). Keeps only tasks whose Runtime is deployed + oracle-verified, so re-run after step 4.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091

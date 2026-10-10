@@ -113,15 +113,15 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests -q
 ```
 
 **Full slime training (async, decoupled) — the canonical run path**, inside the
-`slimerl/slime` container (`agentcore_p4`):
+`slimerl/slime` container (`slime_trainer`):
 
 ```bash
 # Demo A — MBPP, 4 train + 4 infer + 0 env GPUs
-docker exec agentcore_p4 bash -lc \
+docker exec slime_trainer bash -lc \
   'cd /work && DEMO=a SANDBOX=local bash code/p4_slime_train/run_async.sh'
 
 # Demo B — KernelBench, 4 train + 4 infer + 0 env GPUs (checker GPU on the remote sandbox Runtime)
-docker exec agentcore_p4 bash -lc \
+docker exec slime_trainer bash -lc \
   'cd /work && DEMO=b SANDBOX=agentcore-runtime \
      AGENTCORE_SANDBOX_RUNTIME_ARN=arn:aws:bedrock-agentcore:...:runtime/acs_sandbox_gpu-... \
      bash code/p4_slime_train/run_async.sh'

@@ -1,8 +1,8 @@
 #!/bin/bash
 # Standalone TRAIN-TO-CONVERGENCE wrapper for this demo. A thin, documented layer over ./run.sh that
 # exposes only the knobs a client tunes for a real (non-smoke) run, then delegates everything else.
-# Run it exactly like run.sh — INSIDE the agentcore_p4 container, with the repo at /work:
-#     docker exec agentcore_p4 bash -lc 'cd /work && bash code/demos/<this-demo>/train.sh'
+# Run it exactly like run.sh — INSIDE the slime_trainer container, with the repo at /work:
+#     docker exec slime_trainer bash -lc 'cd /work && bash code/demos/<this-demo>/train.sh'
 #
 # TOP-LEVEL KNOBS (env vars):
 #   STEPS             training steps = real GRPO updates.        -> run.sh NR = STEPS+1

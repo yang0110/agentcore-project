@@ -37,7 +37,7 @@ the demo runs those on m5 EC2 Docker hosts instead.
 ## Run the demo step by step
 
 Run the numbered scripts from the demo's folder **on the host** (details in its README). The container
-steps `docker exec` into `agentcore_p4` themselves.
+steps `docker exec` into `slime_trainer` themselves.
 
 ```bash
 bash 2_build_image.sh      # arm64 images -> ECR; launch the m5 builder; build the m5 tasks there
