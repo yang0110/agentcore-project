@@ -102,8 +102,35 @@ SAVE_INTERVAL="${SAVE_INTERVAL:-1000000}"
 SLIME=/root/slime
 
 DEMO_DIR=/work/code/demos/demo_terminalbench_kernelbench
-CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/Qwen3-4B_torch_dist}"  # SHARED base Megatron ckpt
-HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
+# MODEL: the policy. qwen3-4B (default) or qwen3.5-9B. 9B training state (~160 GB of bf16 weights + fp32
+# grads + Adam) does not fit 4x48 GB at TP=2, so the Adam state goes to host RAM (OPT_OFFLOAD=1, slime's
+# own Qwen3.5 recipe). Qwen3.5 emits XML tool calls (qwen3_coder parser, not qwen25) and ignores /no_think,
+# so its HF dir is a copy whose chat template defaults enable_thinking to false (prepare_qwen35.sh).
+MODEL="${MODEL:-qwen3-4B}"
+case "$MODEL" in
+  qwen3-4B)
+    MODEL_TAG=Qwen3-4B
+    HF=/root/.cache/huggingface/hub/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c
+    TOOL_PARSER=qwen25
+    ATTN_BACKEND=flash
+    TRAIN_TP=2
+    OPT_OFFLOAD="${OPT_OFFLOAD:-0}" ;;
+  qwen3.5-9B)
+    MODEL_TAG=Qwen3.5-9B
+    HF=/work/code/p4_slime_train/hf/Qwen3.5-9B-nothink
+    TOOL_PARSER=qwen3_coder
+    # Its full-attention layers have head_dim 256: on L40S (sm89) neither FlashAttention-2 (no hdim-256
+    # backward below sm80/sm90) nor cuDNN fused attention takes it, only TE's unfused path, whose memory is
+    # quadratic in sequence length (3.4 GB at 8k, 35 GB at 16k tokens), hence the smaller packing budget.
+    ATTN_BACKEND=unfused
+    MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-8192}"
+    # TP=4 over the 4 trainer GPUs (DP=1): at TP=2 bf16 weights + fp32 main grads alone are ~27 GB/GPU and
+    # the 8 heads/GPU fp32 softmax of a ~12k-token sequence (4.2 GB) OOMs the 44 GB L40S.
+    TRAIN_TP=4
+    OPT_OFFLOAD="${OPT_OFFLOAD:-1}" ;;
+  *) echo "MODEL=$MODEL is not supported (qwen3-4B | qwen3.5-9B)" >&2; exit 1 ;;
+esac
+CKPT="${CKPT_BASE:-/work/code/p4_slime_train/ckpt/${MODEL_TAG}_torch_dist}"  # SHARED base Megatron ckpt
 
 # ---- Demo A config (baked in) --------------------------------------------------------------
 ACTOR_GPUS="${ACTOR_GPUS:-4}"
@@ -190,7 +217,7 @@ HEARTBEAT="${HEARTBEAT:-${HEARTBEAT_KEEP_WARM:-1}}"
 HEARTBEAT_IDLE="${HEARTBEAT_IDLE:-600}"
 HEARTBEAT_PING_FRACTION="${HEARTBEAT_PING_FRACTION:-0.5}"
 _HB=""; [ "$HEARTBEAT" = "0" ] && [ -z "${AGENTCORE_LOCAL_ENDPOINT:-}" ] && case "$SANDBOX" in agentcore-*) _HB="_noheartbeat" ;; esac
-SAVE="${SAVE:-$DEMO_DIR/ckpt/Qwen3-4B_terminalbench${_HB}_async}"
+SAVE="${SAVE:-$DEMO_DIR/ckpt/${MODEL_TAG}_terminalbench${_HB}_async}"
 
 # clean any prior ray/sglang from a previous run
 pkill -9 sglang 2>/dev/null || true; ray stop --force 2>/dev/null || true
@@ -198,7 +225,7 @@ pkill -9 ray 2>/dev/null || true; sleep 2
 
 set -ex
 export PYTHONUNBUFFERED=1
-source "$SLIME/scripts/models/qwen3-4B.sh"
+source "$SLIME/scripts/models/$MODEL.sh"
 
 CKPT_ARGS=(
    --hf-checkpoint "$HF"
@@ -273,7 +300,7 @@ ROLLOUT_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 2
+   --tensor-model-parallel-size "$TRAIN_TP"
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
@@ -302,6 +329,7 @@ OPTIMIZER_ARGS=(
    --adam-beta1 0.9
    --adam-beta2 0.98
 )
+[ "$OPT_OFFLOAD" = 1 ] && OPTIMIZER_ARGS+=(--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer)
 
 SGLANG_ARGS=(
    --rollout-num-gpus "$ROLLOUT_GPUS"
@@ -323,14 +351,19 @@ SGLANG_ARGS=(
 export HARNESS="${HARNESS:-mini_claude}"
 [ "$HARNESS" = mini_claude ] || { echo "HARNESS=$HARNESS is not supported (mini_claude only)" >&2; exit 1; }
 case "${HARNESS_WHERE:-session}" in session) ;; *) echo "HARNESS_WHERE=$HARNESS_WHERE is not supported: the agent loop always runs in the sandbox session" >&2; exit 1 ;; esac
-SGLANG_ARGS+=(--sglang-tool-call-parser qwen25 --sglang-reasoning-parser qwen3)
+SGLANG_ARGS+=(--sglang-tool-call-parser "$TOOL_PARSER" --sglang-reasoning-parser qwen3)
+# Qwen3.5's linear-attention layers keep per-request state; extra_buffer lets SGLang prefix-cache across turns.
+# SGLang loads Qwen3.5's (vision) processor from the tokenizer path; slime's --hf-checkpoint has none, so
+# slime treats the model as text-only (prepare_qwen35.sh).
+[ "$MODEL" = qwen3.5-9B ] && SGLANG_ARGS+=(--sglang-mamba-radix-cache-strategy extra_buffer
+                                          --sglang-tokenizer-path "$HF-sglang")
 
 MISC_ARGS=(
    --attention-dropout 0.0
    --hidden-dropout 0.0
    --accumulate-allreduce-grads-in-fp32
    --attention-softmax-in-fp32
-   --attention-backend flash
+   --attention-backend "$ATTN_BACKEND"
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
