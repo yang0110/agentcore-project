@@ -335,6 +335,57 @@ if os.path.exists(base + ".csv"):
                                 "eval": {r["eval/step"]: {k: r.get(k) for k in ("eval/kernelbench", "eval/terminalbench",
                                                                                "eval/terminalbench_docker")} for r in ev}}
 
+# ------------------------------------------------------------------ Qwen3.5-9B: one full epoch (lr 1e-6) vs lr 3e-6
+RUN9 = [("epoch-9b-hybrid_20261011_070427", "9B, lr 1e-6 (full epoch)", C["microvm"]),
+        (sorted(glob.glob(os.path.join(LOGS, "lr3e-6-9b-hybrid_*[0-9].csv")))[-1:] or [""])[0][len(LOGS) + 1:-len(".csv")],
+        ]
+RUN9 = [RUN9[0]] + ([(RUN9[1], "9B, lr 3e-6 (20 steps)", C["docker"])] if RUN9[1] else [])
+REF4 = "smoke10-hybrid_20261010_150109"                     # Qwen3-4B, same pipeline, 10 steps
+if os.path.exists(os.path.join(LOGS, RUN9[0][0] + ".csv")):
+    f = lambda r, k: float(r[k]) if r.get(k) not in (None, "") else 0.0  # noqa: E731
+    fig, axs = plt.subplots(1, 3, figsize=(11.5, 3.3))
+    data["learning_9b"] = {}
+    for tag, lab, col in RUN9:
+        steps = list(csv.DictReader(open(os.path.join(LOGS, tag + ".csv"))))
+        ev = list(csv.DictReader(open(os.path.join(LOGS, tag + ".eval.csv"))))
+        x = list(range(1, len(steps) + 1))
+        rew = [f(r, "rollout/raw_reward") for r in steps]
+        zs = [k for k in steps[0] if k.startswith("rollout/zero_std/count_")]
+        flat = [sum(f(r, k) for k in zs) for r in steps]      # groups whose 8 rewards are all equal (RB = 4)
+        k = 5
+        axs[0].plot(x, rew, color=col, lw=0.8, alpha=0.35)
+        axs[0].plot(x[k - 1:], [sum(rew[i - k + 1:i + 1]) / k for i in range(k - 1, len(rew))], color=col, lw=2,
+                    label=f"{lab}, {k}-step mean")
+        axs[1].plot(x[k - 1:], [4 - sum(flat[i - k + 1:i + 1]) / k for i in range(k - 1, len(flat))], color=col, lw=2,
+                    label=f"{lab}, {k}-step mean")
+        es = [int(float(r["eval/step"])) + 1 for r in ev]
+        for key, mk in (("eval/terminalbench", "o"), ("eval/kernelbench", "s")):
+            axs[2].plot(es, [f(r, key) for r in ev], marker=mk, ms=4, lw=1.6, color=col,
+                        ls="-" if key == "eval/terminalbench" else "--")
+        data["learning_9b"][tag] = {
+            "steps": len(x), "flat_groups": sum(flat), "groups": 4 * len(x),
+            "no_grad_steps": sum(f(r, "train/grad_norm") == 0 for r in steps),
+            "reward_first10": sum(rew[:10]) / 10, "reward_last10": sum(rew[-10:]) / 10,
+            "eval": {e: {key: f(r, key) for key in ("eval/terminalbench", "eval/terminalbench_docker", "eval/kernelbench")}
+                     for e, r in zip(es, ev)}}
+    r4 = list(csv.DictReader(open(os.path.join(LOGS, REF4 + ".eval.csv"))))[-1]
+    for key, mk in (("eval/terminalbench", "o"), ("eval/kernelbench", "s")):
+        axs[2].scatter([10], [f(r4, key)], marker=mk, s=40, facecolors="none", edgecolors=MUTED, zorder=5)
+    axs[0].set_title("Training reward (mean of 32 episodes)", fontsize=10, color=INK, loc="left")
+    axs[0].set_xlabel("training step"); axs[0].set_ylim(0, 0.6); axs[0].legend(frameon=False, fontsize=7.5)
+    axs[1].set_title("GRPO groups with a gradient (of 4)", fontsize=10, color=INK, loc="left")
+    axs[1].set_xlabel("training step"); axs[1].set_ylim(0, 4); axs[1].legend(frameon=False, fontsize=7.5, loc="lower right")
+    axs[2].set_title("Held-out eval", fontsize=10, color=INK, loc="left")
+    axs[2].set_xlabel("training step"); axs[2].set_ylim(0, 0.6)
+    from matplotlib.lines import Line2D  # noqa: E402
+    axs[2].legend(handles=[Line2D([], [], color=INK, marker="s", ls="--", label="KernelBench (20 tasks x 2)"),
+                           Line2D([], [], color=INK, marker="o", ls="-", label="Terminal-Bench microVM (31 x 2)"),
+                           Line2D([], [], color=MUTED, marker="o", ls="", mfc="none", label="Qwen3-4B at step 10")],
+                  frameon=False, fontsize=7.5, loc="upper right")
+    fig.tight_layout()
+    fig.savefig(os.path.join(HERE, "fig_learning_9b.png"), dpi=200)
+    plt.close(fig)
+
 # ------------------------------------------------------------------ evidence figures (one per challenge group)
 import statistics as stx  # noqa: E402
 

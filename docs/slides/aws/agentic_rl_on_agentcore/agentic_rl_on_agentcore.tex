@@ -167,7 +167,7 @@ Quotas & 5{,}000 live sessions, 25 new/s, 1{,}000 Runtimes\\
   \texttt{docker-compose.yaml}, and \textbf{hidden pytest tests} plus a reference solution.
 \item \textbf{The reward} (RLVR, no LLM judge): after the agent stops, the tests are copied in and run;
   reward 1 if they all pass; in training, partial credit $0.5 \times$ tests passed / total (eval stays 0/1).
-\item \textbf{The agent:} Qwen3-4B with \texttt{bash}, \texttt{write\_file} and \texttt{read\_file}, up to 8
+\item \textbf{The agent:} Qwen3-4B (or Qwen3.5-9B) with \texttt{bash}, \texttt{write\_file} and \texttt{read\_file}, up to 8
   turns, running \hl{inside} the task's sandbox and calling the trainer for each turn.
 \end{itemize}
 \column{0.44\textwidth}
@@ -1088,6 +1088,39 @@ steps with \tb{grad\_norm} $= 0$ & -- & \hl{32 of 48} & pending\\
 \end{frame}
 
 %====================================================================
+\begin{frame}{Learning at 9B: Terminal-Bench off zero, but no gain from training yet}
+\flabel{fr:curves9b}
+\figcap{Qwen3.5-9B, \tb{epoch-9b} (62 steps, lr 1e-6) vs \tb{lr3e-6-9b} (20 steps): reward, GRPO signal, held-out eval}
+\centering\includegraphics[width=0.88\linewidth]{fig_learning_9b.png}\par
+\vspace{0.5mm}\raggedright
+\begin{columns}[T]
+\column{0.44\textwidth}
+\tabcap{Same pipeline and GPUs, two policies}
+\tiny\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}Yrrr@{}}
+\toprule
+& \textbf{4B} & \textbf{9B, 1e-6} & \textbf{9B, 3e-6}\\
+\midrule
+steps & 10 & \hl{62} & 20\\
+step time & 1.5\,min & 2.5--3\,min & 2.6\,min\\
+groups with no gradient & 21/40 & 137/248 & 52/80\\
+eval \smv{} (31\,$\times$\,2) & 0 & \hl{0.10--0.15} & 0.13, 0.10\\
+eval \sg{} (20\,$\times$\,2) & 0.43 & 0.21--0.35 & 0.35, 0.39\\
+\bottomrule
+\end{tabularx}
+\column{0.52\textwidth}
+\begin{itemize}\tiny\setlength{\itemsep}{0.5mm}
+\item \textbf{The bigger policy moves Terminal-Bench off zero:} 5 of 31 held-out tasks at step 10, none at 4B; m5 stays 0.
+\item \textbf{No learning within the epoch:} reward 0.27 $\rightarrow$ 0.29 (first vs last 10 steps); eval flat within noise (1 episode $=$ 0.016).
+\item \hl{3e-6 does not help:} reward 0.28 $\rightarrow$ 0.20; KL 4--8$\times$ the 1e-6 run's, 0.38 at step 20.
+\item \textbf{Five changes for 9B on L40S} (\tb{MODEL=qwen3.5-9B}): no-think template, \tb{qwen3\_coder} parser, SGLang-only processor, unfused attention $+$ 4k packing, TP\,=\,4 $+$ CPU Adam.
+\item \textbf{Clean infra:} 13 \tb{infra\_error} in 3{,}636 episodes; a 200\,GB checkpoint takes 25\,min on EBS.
+\end{itemize}
+\end{columns}
+\src{\tb{logs/\{epoch-9b-hybrid\_20261011\_070427,smoke10-hybrid\_20261010\_150109,lr3e-6-9b-hybrid\_20261011\_140649\}.\{csv,eval.csv\}}; \tb{make\_figures.py}; 11 Oct 2026.}
+\end{frame}
+
+%====================================================================
 \begin{frame}{Multi-harness: what we measured, and what's still open}
 \flabel{fr:hresults}
 \begin{columns}[T]
@@ -1220,7 +1253,7 @@ Network interfaces (5{,}000 / Region) & -- & VPC sessions and m5s use ENIs; not 
 \midrule
 Account and Region & us-west-2 (AgentCore Runtime + capacity providers); tested only here & \tb{aws sts get-caller-identity}\\
 Trainer host & g6e.48xlarge (8 $\times$ L40S); disk for 53\,GB per checkpoint & \tb{nvidia-smi}; \tb{df -h}\\
-Trainer container & \tb{agentcore\_p4} (slime, Qwen3-4B), repo at \tb{/work} & \tb{docker exec agentcore\_p4 nvidia-smi}\\
+Trainer container & \tb{slime\_trainer} (slime, Qwen3-4B), repo at \tb{/work} & \tb{docker exec slime\_trainer nvidia-smi}\\
 Image builds & Docker buildx with arm64 emulation (microVM images are arm64) & \tb{docker buildx ls}\\
 Network & default VPC; an existing NAT gateway (none is created) & \tb{aws ec2 describe-nat-gateways}\\
 IAM + quotas & trainer role; $\ge$ 220 Runtimes, $\ge$ 100 vCPU, ENIs (\sref{fr:quotas}) & \tb{aws service-quotas \ldots}\\
@@ -1293,7 +1326,7 @@ bash 4_deploy_runtime.sh
 \end{tabularx}
 \par\vspace{2mm}
 \begin{itemize}\tiny\setlength{\itemsep}{0.6mm}
-\item \textbf{Prerequisites:} the \tb{agentcore\_p4} container with slime + Qwen3-4B, Docker buildx (arm64), AWS
+\item \textbf{Prerequisites:} the \tb{slime\_trainer} container with slime + Qwen3-4B (or Qwen3.5-9B via \tb{prepare\_qwen35.sh}), Docker buildx (arm64), AWS
   credentials with the trainer role's permissions (\sref{fr:iam}), quotas (\sref{fr:quotas}).
 \item \textbf{Idempotent and resumable:} images already in ECR are reused, Runtimes are updated, not duplicated.
 \item \tb{TB\_SUBSTRATES=microvm} or \tb{=docker} runs one half.
@@ -1342,7 +1375,7 @@ bash 6_cleanup.sh                # KEEP_M5=1
 \begin{itemize}\tiny\setlength{\itemsep}{0.6mm}
 \item \textbf{Evaluation runs inside training} on the held-out sets: 31 microVM tasks, the m5 eval tasks and
   10 KernelBench level-2 tasks, 2 samples each.
-\item \tb{5\_run.sh} runs the trainer \textbf{inside} \tb{agentcore\_p4} (\tb{docker exec}), then sweeps m5s.
+\item \tb{5\_run.sh} runs the trainer \textbf{inside} \tb{slime\_trainer} (\tb{docker exec}), then sweeps m5s.
 \item \textbf{Timing:} smoke 6 (3 steps + eval) 18\,min; \tb{train48} 2\,h\,58\,min.
 \item \textbf{Never edit} \tb{run.sh} or a step script while it runs: bash reads them as it goes.
 \end{itemize}
@@ -1397,7 +1430,7 @@ End & \tb{Job '\ldots' succeeded}; checkpoint in \tb{ckpt/}; m5s swept & EC2 con
 \textbf{Symptom} & \textbf{Likely cause} & \textbf{What to do}\\
 \midrule
 Runtime \tb{CREATE\_FAILED}, no reason, empty log group & VPC session cannot reach a private endpoint & check endpoints are \tb{available}, the S3 gateway route, and that the subnet's AZ has every endpoint\\
-\tb{No CUDA GPUs are available} in the container & a Docker daemon reload dropped the GPU cgroup & \tb{sudo docker restart agentcore\_p4}\\
+\tb{No CUDA GPUs are available} in the container & a Docker daemon reload dropped the GPU cgroup & \tb{sudo docker restart slime\_trainer}\\
 \tb{run.sh}: \tb{/root/slime \ldots{} Permission denied} & launched on the host & use \tb{bash 5\_run.sh} (it runs inside the container)\\
 Episodes wait long at start & pre-open too shallow or a cap too low & raise \tb{TB\_PREOPEN\_BATCHES\_SLOW} or the cap\\
 Log silent, GPUs at 0\,\% & a wedged eval (the step-20 deadlock, now fixed) & \tb{py-spy dump --pid <RolloutManager>} in the container; look for \tb{warm\_reclaim}\\

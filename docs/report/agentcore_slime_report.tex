@@ -4155,7 +4155,7 @@ loop (no \texttt{python3}, or the adapter unreachable) raises
 Run the numbered scripts from
 \texttt{code/demos/demo\_terminalbench\_kernelbench/} \textbf{on the
 host}; the container steps \texttt{docker\ exec} into
-\texttt{agentcore\_p4} themselves.
+\texttt{slime\_trainer} themselves.
 
 \begin{Shaded}
 \begin{Highlighting}[]
@@ -4171,15 +4171,17 @@ host}; the container steps \texttt{docker\ exec} into
 Setting \texttt{TB\_LIMIT=2} (or \texttt{TB\_TASKS=a,b}) on steps 2 and
 4 validates the pipeline on a couple of tasks first, and
 \texttt{validate\_oracle.py} checks each task's oracle on its Runtime.
-The long run is \texttt{convergence/20\_cpu\_terminalbench.sh} (under
-\texttt{code/demos/}). Run it \textbf{inside \texttt{agentcore\_p4}},
-after steps 2-4 and 1. It sets \texttt{NR=201} (200 train steps),
-\texttt{EVAL\_INTERVAL=20}, \texttt{EVAL\_NS=4} and
-\texttt{SAVE\_INTERVAL=100} (about 56 GB per saved checkpoint). Never
+The long run is step 5 itself: \texttt{bash\ 5\_run.sh} defaults to
+\texttt{NR=epoch}, one pass over the training split (251 rows /
+\texttt{RB=4} = 62 train steps), with eval every
+\texttt{EVAL\_INTERVAL=10} steps and one final checkpoint. It drives the
+trainer \textbf{inside \texttt{slime\_trainer}}, after steps 1-4. Never
 run two \texttt{run.sh} at once: the second one's Ray start kills the
-first one's job. Training starts from the base Megatron checkpoint
-\texttt{Qwen3-4B\_torch\_dist} in \texttt{code/p4\_slime\_train/ckpt/}
-(override with \texttt{CKPT\_BASE}).
+first one's job. Training starts from a base Megatron checkpoint in
+\texttt{code/p4\_slime\_train/ckpt/}: \texttt{Qwen3-4B\_torch\_dist} by
+default, \texttt{Qwen3.5-9B\_torch\_dist} with \texttt{MODEL=qwen3.5-9B}
+(build it once with \texttt{prepare\_qwen35.sh}; override either with
+\texttt{CKPT\_BASE}).
 
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
@@ -4521,6 +4523,119 @@ process-wide singleton bound to the fully-async worker's event loop, so
 eval's futures were resolved from the wrong thread. It is now one pool
 per event loop.
 
+\hypertarget{measured-qwen3.5-9b-one-full-epoch-2026-10-11}{%
+\subsection{Measured --- Qwen3.5-9B, one full epoch
+(2026-10-11)}\label{measured-qwen3.5-9b-one-full-epoch-2026-10-11}}
+
+\texttt{MODEL=qwen3.5-9B\ bash\ 5\_run.sh}
+(\texttt{logs/epoch-9b-hybrid\_20261011\_070427.\{csv,eval.csv,png\}})
+trained \textbf{all 62 steps of one epoch} in 4 h (07:04-11:04 UTC,
+including a 25 min final save) at \texttt{lr} 1e-6, on the same 4 train
++ 4 inference L40S GPUs as Qwen3-4B. Of 3,636 episodes, 13 had an
+\texttt{infra\_error} (8 grading time-outs, 3 AgentCore 502s, 2 empty
+episodes); all were dropped without stopping the run.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Qwen3-4B (10-step smoke)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Qwen3.5-9B (epoch, lr 1e-6)
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Step time & \textasciitilde1.5 min & \textasciitilde2.5-3 min \\
+Training reward, first / last 10 steps & 0.20 (10 steps) & 0.27 /
+0.29 \\
+GRPO groups with all-equal rewards (no gradient) & 21 of 40 & 137 of 248
+(55 \%); 7 steps with \texttt{grad\_norm} = 0 \\
+Eval, Terminal-Bench microVM (31 tasks x 2) & 0.0 & 0.10-0.15 at steps
+10-60 \\
+Eval, KernelBench (20 x 2) & 0.425 & 0.21-0.35 \\
+Eval, Terminal-Bench m5 (4 x 2) & 0.0 & 0.0 \\
+\end{longtable}
+
+\textbf{A higher learning rate does not help.}
+\texttt{MODEL=qwen3.5-9B\ LR=3e-6\ NR=21\ bash\ 5\_run.sh}
+(\texttt{logs/lr3e-6-9b-hybrid\_20261011\_140649.*}) trained 20 steps
+from the same base checkpoint (1 h 38 min, 2 \texttt{infra\_error} in
+1,267 episodes). Eval at steps 10 / 20 was 0.13 / 0.10 on Terminal-Bench
+microVM and 0.35 / 0.39 on KernelBench, the same as at 1e-6 within
+noise: both runs always solve the same four tasks
+(\texttt{fix-pandas-version}, \texttt{jq-data-processing},
+\texttt{swe-bench-langcodes}, \texttt{vertex-solver}) and differ only in
+a fifth. Training reward fell from 0.28 (first 10 steps) to 0.20 (last
+10), and \texttt{train/kl\_loss} ran 4-8x the 1e-6 run's at the same
+step, ending at 0.38 at step 20 (the KL loss coefficient is 0, so
+nothing holds the policy near the reference). 52 of 80 GRPO groups had
+all-equal rewards. So the limit is the reward signal, not the step size:
+keep 1e-6 (or add a KL coefficient before going higher) and work on the
+share of groups with a gradient.
+
+\textbf{What it shows.} The larger policy is what moves Terminal-Bench
+off zero: 5 of 31 held-out tasks solved at step 10, against none for 4B.
+It does not show learning within the epoch: training reward rises only
+from 0.27 to 0.29, and eval is flat within its noise (one episode =
+0.016 on the microVM eval, 31 tasks x 2). At 1e-6 and 32 episodes per
+step the policy barely moves; raising the learning rate is the obvious
+next lever, and it did not help (next paragraph). The eval sets are
+small, so read eval changes of a few hundredths as noise.
+
+\textbf{What 9B needed on L40S.} Each of these failed a run before it
+was fixed, and each is now set by \texttt{MODEL=qwen3.5-9B} in
+\texttt{run.sh}:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Thinking off by default.} slime's \texttt{AnthropicAdapter}
+  renders the chat template without \texttt{enable\_thinking}, and
+  Qwen3.5 ignores the \texttt{/no\_think} switch, so a
+  \texttt{\textless{}think\textgreater{}} trace eats the 1,024-token
+  turn. \texttt{prepare\_qwen35.sh} makes a copy of the HF directory
+  whose template defaults thinking off.
+\item
+  \textbf{The \texttt{qwen3\_coder} tool parser.} Qwen3.5 writes tool
+  calls as XML
+  (\texttt{\textless{}function=...\textgreater{}\textless{}parameter=...\textgreater{}}),
+  not Qwen3's JSON (\texttt{qwen25}).
+\item
+  \textbf{Two HF directories.} With the vision
+  \texttt{preprocessor\_config.json} present, slime loads Qwen3.5's
+  image processor and rejects text prompts; without it, SGLang cannot
+  start the model. slime's \texttt{-\/-hf-checkpoint} has no processor
+  files and \texttt{-\/-sglang-tokenizer-path} points at a sibling that
+  has them.
+\item
+  \textbf{Unfused attention.} The full-attention layers have head\_dim
+  256: FlashAttention-2 has no backward pass for it below sm80/sm90 and
+  cuDNN fused attention refuses it on the L40S (sm89), leaving
+  Transformer Engine's unfused path. Its memory is quadratic and it pads
+  every sequence of a packed micro-batch to the longest one (one 6k
+  sequence: 1 GB; the same packed with three 2k sequences: 3.9 GB).
+  \texttt{MAX\_TOKENS\_PER\_GPU=8192} ran out of memory at step 46 of
+  the first epoch attempt; 4096 gives every sequence over 4k a
+  micro-batch of its own.
+\item
+  \textbf{TP=4 and Adam on the CPU.} At TP=2 the bf16 weights plus fp32
+  gradients alone are about 27 GB per GPU; TP=4 over the 4 trainer GPUs
+  with \texttt{-\/-optimizer-cpu-offload} leaves about 19 of 44 GB in
+  use.
+\end{itemize}
+
+\textbf{Checkpoints are large.} A 9B checkpoint with optimizer state is
+about 200 GB, and the root EBS volume writes at its 125 MB/s gp3
+baseline, so the final save takes about 25 min, with the writer
+processes in \texttt{D} state (it looks hung but is not). The instance's
+local NVMe (\texttt{/opt/dlami/nvme}, 6.9 TB) would be faster but is not
+mounted in \texttt{slime\_trainer}.
+
 \hypertarget{experiment-plan-training-to-convergence}{%
 \subsection{Experiment plan --- training to
 convergence}\label{experiment-plan-training-to-convergence}}
@@ -4551,21 +4666,22 @@ not a smoke run. The convergence bar is:
   >{\raggedright\arraybackslash}p{(\columnwidth - 2\tabcolsep) * \real{0.5000}}@{}}
 \toprule\noalign{}
 \begin{minipage}[b]{\linewidth}\raggedright
-Run \texttt{convergence/20\_cpu\_terminalbench.sh}
+Run \texttt{MODEL=qwen3.5-9B\ bash\ 5\_run.sh}
 \end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
 \end{minipage} \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-Steps / eval & \texttt{NR=201} (200 train steps), eval every 20
-(\texttt{EVAL\_NS=4}) \\
-Held-out start → target & \texttt{eval/terminalbench} 0.0 → any non-zero
-plateau \\
-Measured bottleneck & session open (hidden by pre-open) + sparse
-reward \\
-What to scale & pre-open depth vs idle cost; more
-\texttt{HARNESS\_WORKERS} + engines \\
+Steps / eval & \texttt{NR=epoch} (62 train steps per epoch), eval every
+10 (\texttt{EVAL\_NS=2}) \\
+Held-out start → target & \texttt{eval/terminalbench} 0.13 (9B, step 10)
+→ a rise beyond the eval's noise \\
+Measured bottleneck & sparse reward (55 \% of GRPO groups flat at 9B) +
+a small learning rate \\
+What to scale & not \texttt{LR} (3e-6 drifted without gain); first the
+reward signal (curriculum / partial credit), then epochs; more
+\texttt{HARNESS\_WORKERS} + engines once it learns \\
 \end{longtable}
 
 Two levers matter most before scale:
@@ -4573,10 +4689,11 @@ Two levers matter most before scale:
 \begin{itemize}
 \tightlist
 \item
-  \textbf{Reward signal first.} At 4B the oracle reward is sparse. An
-  easy-first curriculum (by the task's \texttt{difficulty} field) or a
-  partial-credit reward from \texttt{tests\_passed\ /\ tests\_total}
-  would give GRPO non-zero advantages on more groups.
+  \textbf{Reward signal first.} The oracle reward is sparse (55 \% of
+  GRPO groups flat even at 9B). An easy-first curriculum (by the task's
+  \texttt{difficulty} field) or a partial-credit reward from
+  \texttt{tests\_passed\ /\ tests\_total} would give GRPO non-zero
+  advantages on more groups.
 \item
   \textbf{Pre-open cost.} \texttt{TB\_PREOPEN\_BATCHES=1} halves the
   booted-ahead sessions. The 2026-09-23 smoke shows how much idle time

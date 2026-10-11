@@ -553,5 +553,67 @@
    "docker": 305,
    "gpu": 407
   }
+ },
+ "learning_9b": {
+  "epoch-9b-hybrid_20261011_070427": {
+   "steps": 62,
+   "flat_groups": 137.0,
+   "groups": 248,
+   "no_grad_steps": 7,
+   "reward_first10": 0.27478869533183464,
+   "reward_last10": 0.2888045634920635,
+   "eval": {
+    "10": {
+     "eval/terminalbench": 0.12903225806451613,
+     "eval/terminalbench_docker": 0.0,
+     "eval/kernelbench": 0.35
+    },
+    "20": {
+     "eval/terminalbench": 0.14516129032258066,
+     "eval/terminalbench_docker": 0.0,
+     "eval/kernelbench": 0.2125
+    },
+    "30": {
+     "eval/terminalbench": 0.12903225806451613,
+     "eval/terminalbench_docker": 0.0,
+     "eval/kernelbench": 0.2625
+    },
+    "40": {
+     "eval/terminalbench": 0.12903225806451613,
+     "eval/terminalbench_docker": 0.0,
+     "eval/kernelbench": 0.3125
+    },
+    "50": {
+     "eval/terminalbench": 0.12903225806451613,
+     "eval/terminalbench_docker": 0.0,
+     "eval/kernelbench": 0.3
+    },
+    "60": {
+     "eval/terminalbench": 0.0967741935483871,
+     "eval/terminalbench_docker": 0.0,
+     "eval/kernelbench": 0.25
+    }
+   }
+  },
+  "lr3e-6-9b-hybrid_20261011_140649": {
+   "steps": 20,
+   "flat_groups": 52.0,
+   "groups": 80,
+   "no_grad_steps": 3,
+   "reward_first10": 0.28007515366516794,
+   "reward_last10": 0.1977976493992119,
+   "eval": {
+    "10": {
+     "eval/terminalbench": 0.12903225806451613,
+     "eval/terminalbench_docker": 0.0,
+     "eval/kernelbench": 0.35
+    },
+    "20": {
+     "eval/terminalbench": 0.0967741935483871,
+     "eval/terminalbench_docker": 0.0,
+     "eval/kernelbench": 0.3875
+    }
+   }
+  }
  }
 }

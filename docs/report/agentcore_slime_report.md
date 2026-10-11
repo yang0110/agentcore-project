@@ -1276,7 +1276,7 @@ bash 5_run.sh              # 10-step smoke -> logs/<tag>.{log,csv,eval.csv,png}
 bash 6_cleanup.sh          # delete every acs_tb_* Runtime (ECR images kept)
 ```
 
-Setting `TB_LIMIT=2` (or `TB_TASKS=a,b`) on steps 2 and 4 validates the pipeline on a couple of tasks first, and `validate_oracle.py` checks each task's oracle on its Runtime. The long run is `convergence/20_cpu_terminalbench.sh` (under `code/demos/`). Run it **inside `slime_trainer`**, after steps 2-4 and 1. It sets `NR=201` (200 train steps), `EVAL_INTERVAL=20`, `EVAL_NS=4` and `SAVE_INTERVAL=100` (about 56 GB per saved checkpoint). Never run two `run.sh` at once: the second one's Ray start kills the first one's job. Training starts from the base Megatron checkpoint `Qwen3-4B_torch_dist` in `code/p4_slime_train/ckpt/` (override with `CKPT_BASE`).
+Setting `TB_LIMIT=2` (or `TB_TASKS=a,b`) on steps 2 and 4 validates the pipeline on a couple of tasks first, and `validate_oracle.py` checks each task's oracle on its Runtime. The long run is step 5 itself: `bash 5_run.sh` defaults to `NR=epoch`, one pass over the training split (251 rows / `RB=4` = 62 train steps), with eval every `EVAL_INTERVAL=10` steps and one final checkpoint. It drives the trainer **inside `slime_trainer`**, after steps 1-4. Never run two `run.sh` at once: the second one's Ray start kills the first one's job. Training starts from a base Megatron checkpoint in `code/p4_slime_train/ckpt/`: `Qwen3-4B_torch_dist` by default, `Qwen3.5-9B_torch_dist` with `MODEL=qwen3.5-9B` (build it once with `prepare_qwen35.sh`; override either with `CKPT_BASE`).
 
 | Knob | Default | Meaning |
 |:---|:---|:---|
@@ -1403,6 +1403,33 @@ The 10-step smoke `bash 5_run.sh` started at 13:48 UTC on 2026-09-30 (`logs/run-
 
 `bash 5_run.sh` re-run at 15:31 UTC (`logs/smoke_tbonly-agentcore-runtime_20260930_153115.{log,csv,eval.csv,png}`) completed 10 train steps and the final eval in **22 min** (the 2026-09-23 smoke took about 70 min). There were 449 episodes (387 train including the fully-async over-draw, 62 eval) with **0 `infra_error`**. 22 of 387 train episodes and **1 of 62 eval** episodes were solved (`eval/terminalbench` = 0.016). Per-step `rollout/raw_reward` was 0, 0.09, 0.09, 0, 0.25, 0, 0, 0.09, 0, 0.16. `perf/step_time` p50 was 40 s. No train episode waited for a boot (pre-open), and one heartbeat ping was needed (pre-open idle max 194 s). Train episode p50/p90: agent loop 12.1/36.2 s, grading 8.9/20.6 s, whole episode 24.9/71.7 s. Only 4 of 49 GRPO groups had a nonzero-variance reward. One bug was fixed to get here: eval hung after its last episode because `get_tb_pool` was a process-wide singleton bound to the fully-async worker's event loop, so eval's futures were resolved from the wrong thread. It is now one pool per event loop.
 
+### Measured — Qwen3.5-9B, one full epoch (2026-10-11)
+
+`MODEL=qwen3.5-9B bash 5_run.sh` (`logs/epoch-9b-hybrid_20261011_070427.{csv,eval.csv,png}`) trained **all 62 steps of one epoch** in 4 h (07:04-11:04 UTC, including a 25 min final save) at `lr` 1e-6, on the same 4 train + 4 inference L40S GPUs as Qwen3-4B. Of 3,636 episodes, 13 had an `infra_error` (8 grading time-outs, 3 AgentCore 502s, 2 empty episodes); all were dropped without stopping the run.
+
+| | Qwen3-4B (10-step smoke) | Qwen3.5-9B (epoch, lr 1e-6) |
+|:---|:---|:---|
+| Step time | ~1.5 min | ~2.5-3 min |
+| Training reward, first / last 10 steps | 0.20 (10 steps) | 0.27 / 0.29 |
+| GRPO groups with all-equal rewards (no gradient) | 21 of 40 | 137 of 248 (55 %); 7 steps with `grad_norm` = 0 |
+| Eval, Terminal-Bench microVM (31 tasks x 2) | 0.0 | 0.10-0.15 at steps 10-60 |
+| Eval, KernelBench (20 x 2) | 0.425 | 0.21-0.35 |
+| Eval, Terminal-Bench m5 (4 x 2) | 0.0 | 0.0 |
+
+**A higher learning rate does not help.** `MODEL=qwen3.5-9B LR=3e-6 NR=21 bash 5_run.sh` (`logs/lr3e-6-9b-hybrid_20261011_140649.*`) trained 20 steps from the same base checkpoint (1 h 38 min, 2 `infra_error` in 1,267 episodes). Eval at steps 10 / 20 was 0.13 / 0.10 on Terminal-Bench microVM and 0.35 / 0.39 on KernelBench, the same as at 1e-6 within noise: both runs always solve the same four tasks (`fix-pandas-version`, `jq-data-processing`, `swe-bench-langcodes`, `vertex-solver`) and differ only in a fifth. Training reward fell from 0.28 (first 10 steps) to 0.20 (last 10), and `train/kl_loss` ran 4-8x the 1e-6 run's at the same step, ending at 0.38 at step 20 (the KL loss coefficient is 0, so nothing holds the policy near the reference). 52 of 80 GRPO groups had all-equal rewards. So the limit is the reward signal, not the step size: keep 1e-6 (or add a KL coefficient before going higher) and work on the share of groups with a gradient.
+
+**What it shows.** The larger policy is what moves Terminal-Bench off zero: 5 of 31 held-out tasks solved at step 10, against none for 4B. It does not show learning within the epoch: training reward rises only from 0.27 to 0.29, and eval is flat within its noise (one episode = 0.016 on the microVM eval, 31 tasks x 2). At 1e-6 and 32 episodes per step the policy barely moves; raising the learning rate is the obvious next lever, and it did not help (next paragraph). The eval sets are small, so read eval changes of a few hundredths as noise.
+
+**What 9B needed on L40S.** Each of these failed a run before it was fixed, and each is now set by `MODEL=qwen3.5-9B` in `run.sh`:
+
+- **Thinking off by default.** slime's `AnthropicAdapter` renders the chat template without `enable_thinking`, and Qwen3.5 ignores the `/no_think` switch, so a `<think>` trace eats the 1,024-token turn. `prepare_qwen35.sh` makes a copy of the HF directory whose template defaults thinking off.
+- **The `qwen3_coder` tool parser.** Qwen3.5 writes tool calls as XML (`<function=...><parameter=...>`), not Qwen3's JSON (`qwen25`).
+- **Two HF directories.** With the vision `preprocessor_config.json` present, slime loads Qwen3.5's image processor and rejects text prompts; without it, SGLang cannot start the model. slime's `--hf-checkpoint` has no processor files and `--sglang-tokenizer-path` points at a sibling that has them.
+- **Unfused attention.** The full-attention layers have head_dim 256: FlashAttention-2 has no backward pass for it below sm80/sm90 and cuDNN fused attention refuses it on the L40S (sm89), leaving Transformer Engine's unfused path. Its memory is quadratic and it pads every sequence of a packed micro-batch to the longest one (one 6k sequence: 1 GB; the same packed with three 2k sequences: 3.9 GB). `MAX_TOKENS_PER_GPU=8192` ran out of memory at step 46 of the first epoch attempt; 4096 gives every sequence over 4k a micro-batch of its own.
+- **TP=4 and Adam on the CPU.** At TP=2 the bf16 weights plus fp32 gradients alone are about 27 GB per GPU; TP=4 over the 4 trainer GPUs with `--optimizer-cpu-offload` leaves about 19 of 44 GB in use.
+
+**Checkpoints are large.** A 9B checkpoint with optimizer state is about 200 GB, and the root EBS volume writes at its 125 MB/s gp3 baseline, so the final save takes about 25 min, with the writer processes in `D` state (it looks hung but is not). The instance's local NVMe (`/opt/dlami/nvme`, 6.9 TB) would be faster but is not mounted in `slime_trainer`.
+
 ### Experiment plan — training to convergence
 
 A demo is "done" only when it shows **learning to convergence**, not a smoke run. The convergence bar is:
@@ -1412,16 +1439,16 @@ A demo is "done" only when it shows **learning to convergence**, not a smoke run
 3. `train/grad_norm` and `train/kl_loss` stay sane: the policy moves without diverging.
 4. Only then apply §"Scaling the loop": scale the *measured* bottleneck and show the `perf/step_time` gain.
 
-| Run `convergence/20_cpu_terminalbench.sh` | |
+| Run `MODEL=qwen3.5-9B bash 5_run.sh` | |
 |:---|:---|
-| Steps / eval | `NR=201` (200 train steps), eval every 20 (`EVAL_NS=4`) |
-| Held-out start → target | `eval/terminalbench` 0.0 → any non-zero plateau |
-| Measured bottleneck | session open (hidden by pre-open) + sparse reward |
-| What to scale | pre-open depth vs idle cost; more `HARNESS_WORKERS` + engines |
+| Steps / eval | `NR=epoch` (62 train steps per epoch), eval every 10 (`EVAL_NS=2`) |
+| Held-out start → target | `eval/terminalbench` 0.13 (9B, step 10) → a rise beyond the eval's noise |
+| Measured bottleneck | sparse reward (55 % of GRPO groups flat at 9B) + a small learning rate |
+| What to scale | not `LR` (3e-6 drifted without gain); first the reward signal (curriculum / partial credit), then epochs; more `HARNESS_WORKERS` + engines once it learns |
 
 Two levers matter most before scale:
 
-- **Reward signal first.** At 4B the oracle reward is sparse. An easy-first curriculum (by the task's `difficulty` field) or a partial-credit reward from `tests_passed / tests_total` would give GRPO non-zero advantages on more groups.
+- **Reward signal first.** The oracle reward is sparse (55 % of GRPO groups flat even at 9B). An easy-first curriculum (by the task's `difficulty` field) or a partial-credit reward from `tests_passed / tests_total` would give GRPO non-zero advantages on more groups.
 - **Pre-open cost.** `TB_PREOPEN_BATCHES=1` halves the booted-ahead sessions. The 2026-09-23 smoke shows how much idle time the default of 2 buys.
 
 ## History: removed demos (2026-09-30)
