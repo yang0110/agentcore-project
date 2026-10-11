@@ -121,9 +121,11 @@ case "$MODEL" in
     TOOL_PARSER=qwen3_coder
     # Its full-attention layers have head_dim 256: on L40S (sm89) neither FlashAttention-2 (no hdim-256
     # backward below sm80/sm90) nor cuDNN fused attention takes it, only TE's unfused path, whose memory is
-    # quadratic in sequence length (3.4 GB at 8k, 35 GB at 16k tokens), hence the smaller packing budget.
+    # quadratic in sequence length (3.4 GB at 8k, 35 GB at 16k tokens) AND it pads every sequence of a packed
+    # micro-batch to the longest one (memory ~ n_seqs x max_len^2). 8192 OOMed at step 46 of the 2026-10-11
+    # epoch (7.5 GiB softmax); 4096 puts every >4k sequence in a micro-batch of its own.
     ATTN_BACKEND=unfused
-    MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-8192}"
+    MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-4096}"
     # TP=4 over the 4 trainer GPUs (DP=1): at TP=2 bf16 weights + fp32 main grads alone are ~27 GB/GPU and
     # the 8 heads/GPU fp32 softmax of a ~12k-token sequence (4.2 GB) OOMs the 44 GB L40S.
     TRAIN_TP=4
