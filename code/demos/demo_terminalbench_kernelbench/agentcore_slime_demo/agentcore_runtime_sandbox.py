@@ -164,8 +164,14 @@ def _http_invoke_sync(url: str, session_id: str, payload: dict, read_timeout: fl
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=read_timeout) as resp:
-        raw = resp.read()
+    import urllib.error
+    try:
+        with urllib.request.urlopen(req, timeout=read_timeout) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        # Keep the server's error body (acs_http_server sends {"error": ...}); still an HTTPError for _is_transient.
+        body = e.read().decode(errors="replace")[-600:]
+        raise urllib.error.HTTPError(e.url, e.code, f"{e.reason}: {body}", e.headers, None) from None
     return json.loads(raw.decode()) if raw else {}
 
 

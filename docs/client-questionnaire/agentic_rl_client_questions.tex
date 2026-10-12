@@ -1,0 +1,110 @@
+\input{preamble}
+\renewcommand{\deckfooter}{Pre-read for the agentic RL deep-dive. Answers can be short; ``don't know yet'' is a useful answer.}
+
+\tikzset{wf/.style={box,font=\fontsize{7}{8.4}\selectfont,minimum height=10mm,text width=21mm,inner sep=2pt},
+         wfa/.style={-{Stealth[length=1.8mm]},thick,awsblue},
+         lab/.style={font=\fontsize{5.6}{6.6}\selectfont,text=inkmuted},
+         num/.style={circle,fill=awsmagenta,text=white,font=\fontsize{5.5}{6}\selectfont\bfseries,inner sep=0.6pt,minimum size=3.2mm}}
+
+\begin{document}
+
+% =====================================================================
+\sect{Agentic RL engagement}
+\begin{frame}
+\frametitle{The agentic RL workflow}
+\vspace{-1mm}
+{\small\color{inkmuted}A model learns a multi-step job by trying it in a real environment many times and keeping what scores well.\par}
+\vspace{3mm}
+\centering
+\begin{tikzpicture}[node distance=6mm]
+  \node[wf] (task) {\textbf{Task + env}\\instruction, files};
+  \node[wf,right=of task] (har) {\textbf{Harness}\\agent loop};
+  \node[wf,right=of har] (pol) {\textbf{Policy model}\\served by inference};
+  \node[wf,right=of pol] (sbx) {\textbf{Tools / sandbox}\\run the actions};
+  \node[wf,right=of sbx,draw=awsteal] (rew) {\textbf{Reward}\\verifier scores it};
+  \node[wf,below=11mm of sbx,draw=awspurple] (tr) {\textbf{Trainer}\\RL update};
+  \node[wf,below=11mm of rew,draw=awsmagenta] (ev) {\textbf{Evaluation}\\held-out tasks};
+  \draw[wfa] (task) -- (har);
+  \draw[wfa,<->] (har) -- (pol);
+  \draw[wfa,<->] (pol) -- (sbx);
+  \draw[wfa] (sbx) -- (rew);
+  \draw[wfa] (rew.south) -- ++(0,-4mm) -| node[pos=0.25,below,lab]{trajectory + reward} ([xshift=4mm]tr.north);
+  \draw[wfa] (tr.west) -| node[pos=0.25,below,lab]{new weights} (pol.south);
+  \draw[wfa,dashed,awsmagenta] (tr.east) -- node[below,lab]{checkpoint} (ev.west);
+  \node[num] at (task.north west) {1};
+  \node[num] at (har.north west) {2};
+  \node[num] at (sbx.north west) {3};
+  \node[num] at (rew.north west) {4};
+  \node[num] at (tr.north west) {5};
+  \node[num] at (ev.north west) {6};
+\end{tikzpicture}
+
+\vspace{5mm}
+\raggedright
+\begin{columns}[T,onlytextwidth]
+\begin{column}{0.49\textwidth}\footnotesize
+\begin{enumerate}\setlength{\itemsep}{0.6mm}
+\item \hl{Pick a task} and start a fresh environment for it.
+\item The \hl{harness} runs the agent loop: ask the model, parse its tool call, return the result, repeat.
+\item \hl{Tools} act in an isolated \hl{sandbox} (shell, files, APIs, a GPU), so mistakes stay contained.
+\end{enumerate}
+\end{column}
+\begin{column}{0.49\textwidth}\footnotesize
+\begin{enumerate}\setcounter{enumi}{3}\setlength{\itemsep}{0.6mm}
+\item When the agent stops, a \hl{verifier} checks the end state and gives a reward (e.g.\ hidden tests pass).
+\item The \hl{trainer} compares several attempts at the same task and makes the better ones more likely (e.g.\ GRPO).
+\item \hl{Evaluation} on held-out tasks shows whether the gain is real, not memorized.
+\end{enumerate}
+\end{column}
+\end{columns}
+\end{frame}
+
+% =====================================================================
+\begin{frame}
+\frametitle{The components, and what each one does}
+\vspace{-1mm}
+{\small\color{inkmuted}Each row is something you own or we build together. Examples are from our Terminal-Bench + KernelBench demo on AgentCore.\par}
+\vspace{2mm}
+\fontsize{7}{8.6}\selectfont
+\renewcommand{\arraystretch}{1.26}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textcolor{awsteal}{\textbf{Component}} & \textcolor{awsteal}{\textbf{Role}} & \textcolor{awsteal}{\textbf{Example}}\\
+\midrule
+\textbf{Policy model} & the model being trained; it chooses every action & Qwen3-4B / Qwen3.5-9B, open weights\\
+\textbf{Tasks + training data} & what the agent practises on, with a train/eval split & $\sim$200 Terminal-Bench shell tasks and 100 KernelBench GPU problems, plus held-out eval sets\\
+\textbf{Task definition + reward} & what ``done'' means, scored automatically for each task type & hidden pytest oracle (1 / partial / 0); KernelBench: correct = 0.5, correct and $\geq$1.1$\times$ faster = 1\\
+\textbf{Harness} & the agent loop: prompt, tool-call parsing, turn and token budgets & a mini Claude Code loop (8 turns); the real Claude Code CLI as an option\\
+\textbf{Tools + skills} & the actions the agent may take, and how-to guides it can read on demand & \texttt{bash}, \texttt{write\_file}, \texttt{read\_file}; skills such as ``self-check your kernel''\\
+\textbf{Sandbox environment} & an isolated, fresh machine per attempt, where the tools run & AgentCore microVM; EC2 for multi-container tasks; g6 GPU instance\\
+\textbf{Trainer + inference} & generate attempts fast, then update the weights & slime (Megatron + SGLang), fully-async GRPO on 8$\times$L40S\\
+\textbf{Evaluation} & measures the gain on tasks the model never trained on & held-out solve rate every 10 steps, plus cost and latency per task\\
+\bottomrule
+\end{tabularx}
+\end{frame}
+
+% =====================================================================
+\begin{frame}
+\frametitle{Questions to answer before our deep-dive}
+\vspace{-1mm}
+\fontsize{6.2}{7.3}\selectfont
+\renewcommand{\arraystretch}{1.12}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{44mm}@{}}
+\toprule
+\textcolor{awsteal}{\textbf{Area}} & \textcolor{awsteal}{\textbf{Key questions}} & \textcolor{awsteal}{\textbf{Why we ask}}\\
+\midrule
+\textbf{1\; Goal and success} & What should the agent do better than today? Which KPI does it move, and what number counts as success? What fails with today's approach (prompting, SFT, an API model)? & RL optimizes exactly what we measure, so we must agree on it first.\\
+\textbf{2\; Model} & Base model and size? Open weights or API-only? Licence limits on fine-tuning? Starting checkpoint? Serving target (latency, cost, hardware)? & RL needs the weights; model size sets GPU count and step time.\\
+\textbf{3\; Tasks and data} & Which task types? How many tasks of each type, and where do they come from (logs, a benchmark, synthetic)? Train/eval split? PII or contamination risk? Past trajectories? & Too few or too-easy tasks give no learning signal; the split decides what eval proves.\\
+\textbf{4\; Task + reward per type} & For each task type: input, expected output, verifier (tests, exact match, a checker, an LLM judge), reward (binary or partial)? Does it run automatically, in seconds? How could it be gamed? & The reward is the whole training signal. If it can be gamed, it will be.\\
+\textbf{5\; Harness, tools, skills} & Which harness (Claude Code, Codex, LangGraph, your own)? Tool APIs with their schemas: read-only or side-effecting, rate limits? Existing skills or playbooks? Turn and token budget? & Train in the same loop the model will be deployed in, or the gains don't transfer.\\
+\textbf{6\; Sandbox environment} & What does one episode need: OS/arch, image size, CPU or GPU, network, multi-container, secrets? Episode length? How many in parallel? Must state reset between episodes? & This decides the sandbox type (microVM, EC2, GPU) and the cost per episode.\\
+\textbf{7\; Evaluation} & Metrics (solve rate, pass@k, cost and latency per task, safety)? Held-out set or public benchmark? Baseline to beat? Human or LLM-judge spot checks? & Without a fixed eval and a baseline, a better training curve proves nothing.\\
+\textbf{8\; Constraints} & Compute budget, AWS region/account? Data residency, security and legal reviews? Timeline? Owners for data, environment, reward and eval? & This sets the scope, and who unblocks each piece.\\
+\bottomrule
+\end{tabularx}
+\vspace{1.5mm}
+\colorbox{awsblue!35!panel}{\parbox{\dimexpr\textwidth-2\fboxsep-1pt}{\fontsize{7}{8.4}\selectfont\color{white}%
+\textbf{Please bring:} 5 example tasks, each with its expected output and how you grade it today.}}
+\end{frame}
+\end{document}

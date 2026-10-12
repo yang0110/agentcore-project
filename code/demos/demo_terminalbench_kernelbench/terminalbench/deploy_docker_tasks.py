@@ -80,11 +80,19 @@ PATCHES = {
         ("Dockerfile", "COPY tests/main.c /app/\nCOPY tests/validate.s /app/",
          "COPY _build/main.c /app/\nCOPY _build/validate.s /app/"),
     ],
+    "port-compressor": [
+        ("Dockerfile", "COPY tests/c/ /app/c/\nCOPY tests/rs/ /app/rs/", "COPY _build/c/ /app/c/\nCOPY _build/rs/ /app/rs/"),
+    ],
+    "triton-interpret": [("Dockerfile", "COPY tests/torch_implementation.py ./", "COPY _build/torch_implementation.py ./")],
 }
-# Hidden files a Dockerfile COPYs at BUILD time (task -> [hidden rel path]): uploaded under _build/ (never
-# the grader itself); the task's own Dockerfile deletes them from the image after use.
+# Hidden files or dirs a Dockerfile COPYs at BUILD time (task -> [hidden rel path]): uploaded under _build/
+# (tests/<x> -> _build/<x>; never the grader itself). They are task inputs upstream bakes into the image too
+# (reverse-engineering deletes them after use; port-compressor's C source and triton-interpret's torch
+# reference stay in /app, as upstream).
 BUILD_INPUTS = {
     "reverse-engineering": ["tests/main.c", "tests/validate.s"],
+    "port-compressor": ["tests/c", "tests/rs"],
+    "triton-interpret": ["tests/torch_implementation.py"],
 }
 
 
@@ -160,11 +168,16 @@ def _task_tar(task: str) -> tuple[bytes, str, int]:
             ti.size, ti.mode, ti.mtime = len(data), p.stat().st_mode & 0o777, 0
             tf.addfile(ti, io.BytesIO(data))
         for rel in BUILD_INPUTS.get(task, []):
-            data, arc = (tdir / rel).read_bytes(), "_build/" + Path(rel).name
-            h.update(arc.encode() + b"\0" + data)
-            ti = tarfile.TarInfo(arc)
-            ti.size, ti.mode = len(data), 0o644
-            tf.addfile(ti, io.BytesIO(data))
+            src = tdir / rel
+            for f in sorted(src.rglob("*")) if src.is_dir() else [src]:
+                if not f.is_file():
+                    continue
+                data = f.read_bytes()
+                arc = "_build/" + str(f.relative_to(tdir / Path(rel).parts[0]))
+                h.update(arc.encode() + b"\0" + data)
+                ti = tarfile.TarInfo(arc)
+                ti.size, ti.mode = len(data), 0o644
+                tf.addfile(ti, io.BytesIO(data))
     return buf.getvalue(), h.hexdigest()[:10], applied
 
 
