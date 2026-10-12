@@ -1,0 +1,12 @@
+# Only deploy/Dockerfile.harness.cli builds with this demo dir as its context, and it needs just
+# agentcore_slime_demo/*.py. Keep the heavy, irrelevant trees out of the build context so the
+# arm64 harness-cli image build stays fast (and never ships checkpoints to the builder).
+ckpt/
+logs/
+data/
+terminalbench/
+kernelbench/
+m5_agent/
+**/__pycache__/
+*.log
+*.png

@@ -1,0 +1,20 @@
+# The cluster's trainer image: the committed snapshot (in-place slime edits; never rebuilt from :latest) plus
+# the EFA userspace — libfabric with the efa provider, rdma-core, and the aws-ofi-nccl plugin NCCL loads to
+# talk EFA. --skip-kmod: the EFA kernel driver comes from the HyperPod node; the container only needs the
+# libraries + the /dev/infiniband devices (enroot passes /dev through, ENROOT_RESTRICT_DEV=no).
+# Same recipe as aws-samples/awsome-distributed-training examples/training/slime/slime.Dockerfile.
+#     python3 deploy/hyperpod/hyperpod.py image      # builds this (HP_EFA=1, default) and pushes it to ECR
+ARG BASE=slimerl/slime:agentcore_p4-20261006
+FROM ${BASE}
+ARG EFA_INSTALLER_VERSION=1.48.0
+RUN apt-get update -y \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && cd /tmp \
+ && curl -fsSLO "https://efa-installer.amazonaws.com/aws-efa-installer-${EFA_INSTALLER_VERSION}.tar.gz" \
+ && tar -xf "aws-efa-installer-${EFA_INSTALLER_VERSION}.tar.gz" \
+ && cd aws-efa-installer \
+ && ./efa_installer.sh -y --skip-kmod --skip-limit-conf --no-verify \
+ && cd / && rm -rf /tmp/aws-efa-installer* /var/lib/apt/lists/*
+# The stock installer puts the plugin in /opt/amazon/ofi-nccl (older ones: aws-ofi-nccl).
+ENV LD_LIBRARY_PATH=/opt/amazon/efa/lib:/opt/amazon/ofi-nccl/lib:/opt/amazon/aws-ofi-nccl/lib:${LD_LIBRARY_PATH}
+ENV PATH=/opt/amazon/efa/bin:${PATH}

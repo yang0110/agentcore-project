@@ -1,11 +1,12 @@
 # Demos: Terminal-Bench + KernelBench on AgentCore
 
-One demo, **agentic RL on Terminal-Bench + KernelBench with slime (Qwen3-4B, fully-async GRPO)**, as a
-self-contained recipe (vendored lib, `deploy/`, numbered step scripts):
+Two demos, **agentic RL on Terminal-Bench + KernelBench with slime (fully-async GRPO)**, each a
+self-contained recipe (vendored lib, `deploy/`, numbered step scripts). The second is the first plus HyperPod:
 
 | Demo | Dataset | Sandboxes | Reward |
 |---|---|---|---|
 | [`demo_terminalbench_kernelbench`](demo_terminalbench_kernelbench/README.md) | Terminal-Bench (all 241 tasks) + KernelBench | `acs_tbh_*` AgentCore microVM Runtimes + m5 EC2 Docker hosts + a g6 GPU Runtime, routed per task | Terminal-Bench: the task's hidden pytest oracle; KernelBench: correct and ≥ 1.10× faster |
+| [`demo_hyperpod_terminalbench_kernelbench`](demo_hyperpod_terminalbench_kernelbench/README.md) | the same, Qwen3.5-9B | the same sandbox tiers; slime on a SageMaker HyperPod Slurm cluster (2 x ml.g6e.48xlarge: one trains, one serves inference; FSx checkpoints). Code only, not run yet | the same |
 
 The machinery, vendored in `demo_terminalbench_kernelbench/agentcore_slime_demo/`:
 - **Fresh sandbox per episode** (`TerminalBenchPool`): full isolation, because the agent changes the OS.
