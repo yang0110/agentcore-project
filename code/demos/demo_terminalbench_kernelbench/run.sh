@@ -188,6 +188,13 @@ if { [[ ",$HARNESS_SET," == *claude_cli* ]] || [[ ",$HARNESS_SET," == *mini_clau
   AGENTCORE_HARNESS_CLI_RUNTIME_ARN="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['arn'])" "$HARNESS_CLI_STATE")"
 fi
 export HARNESS_SET AGENTCORE_HARNESS_CLI_RUNTIME_ARN
+# Agent skills (docs/skills-in-agentic-rl.md): SKILLS=listed installs skills/<name>/ for the episode's
+# family (terminalbench / kernelbench) outside the workdir and lists them in the system prompt; the
+# agent reads one with bash. Removed before grading. SKILLS_EVAL=off evaluates without them.
+SKILLS="${SKILLS:-off}"
+SKILLS_SET="${SKILLS_SET:-all}"
+SKILLS_EVAL="${SKILLS_EVAL:-same}"
+case "$SKILLS" in off|listed) ;; *) echo "SKILLS=$SKILLS: expected off|listed" >&2; exit 2;; esac
 # Each task changes the whole OS, so it runs in the isolated per-task pool (terminalbench_pool.py): a
 # FRESH session per episode opened ahead of time — the look-ahead data source (tb_lookahead_source.py)
 # boots the next TB_PREOPEN_BATCHES rollouts' sessions (2 = 2 x RB x NS = 64) — a SessionKeeper heartbeat
@@ -432,6 +439,10 @@ RUNTIME_ENV_JSON="{
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARNS\": \"${AGENTCORE_SANDBOX_RUNTIME_ARNS:-}\",
     \"HARNESS_SET\": \"${HARNESS_SET:-mini_claude}\",
+    \"SKILLS\": \"${SKILLS}\",
+    \"SKILLS_SET\": \"${SKILLS_SET}\",
+    \"SKILLS_EVAL\": \"${SKILLS_EVAL}\",
+    \"SKILLS_DIR\": \"${SKILLS_DIR:-}\",
     \"HARNESS_ASSIGN\": \"${HARNESS_ASSIGN:-prompt}\",
     \"HARNESS_CLI_SESSIONS\": \"${HARNESS_CLI_SESSIONS:-}\",
     \"AGENTCORE_HARNESS_CLI_RUNTIME_ARN\": \"${AGENTCORE_HARNESS_CLI_RUNTIME_ARN:-}\",

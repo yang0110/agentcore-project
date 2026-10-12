@@ -63,6 +63,7 @@ import threading
 import time
 import zlib
 
+from . import skills
 from .docker_compose_sandbox import DockerComposeSandbox, gc_hosts, is_docker_route
 from .harness_pool import HarnessPool, adapter_for, one_sample
 
@@ -631,7 +632,7 @@ class TerminalBenchPool(HarnessPool):
         cold = self._cold_start(sb)
         if getattr(task, "family", "") != "terminalbench":    # KernelBench (g6 tier): the coding episode
             return await self._run_coding_episode(worker, task, sampling_params, base_sample, sb, arn,
-                                                  pending is not None, wait_ms, idle_ms, cold)
+                                                  pending is not None, wait_ms, idle_ms, cold, evaluation)
         spec = task.spec or {}
 
         # Inference AFTER the sandbox: the least-loaded engine, sticky for all of this episode's turns.
@@ -684,7 +685,11 @@ class TerminalBenchPool(HarnessPool):
             # return a MiniAgentResult, so grading + sample finish below are shared.
             ta = time.perf_counter()
             harness = self._harnesses.get(harness_kind, self._harness)
+            skills_inst = None
             if getattr(harness, "in_session", True):
+                # SKILLS=listed: install the family's skills outside the workdir and list them in this
+                # episode's system prompt (in-session mini_claude only; removed again before _grade).
+                skills_inst = await skills.install(sb, "terminalbench", evaluation=evaluation)
                 res = await harness.run(
                     sb,
                     session_id=sid,
@@ -692,7 +697,9 @@ class TerminalBenchPool(HarnessPool):
                     prompt=self._problem_text(task),
                     max_tokens=self.max_tokens,
                     http=worker.http,
+                    system_prompt=(harness.system_prompt + skills_inst.listing) if skills_inst else None,
                 )
+                await skills.uninstall(sb, skills_inst)
             else:                                  # decoupled: runs in its own harness Runtime, drives sb
                 res = await harness.run(
                     sb,
@@ -706,6 +713,7 @@ class TerminalBenchPool(HarnessPool):
             ep.update(agent_ms=round((time.perf_counter() - ta) * 1000.0, 1), turns=res.turns,
                       tool_calls=res.tool_calls, stop=res.stop_reason,
                       harness_where=res.where)
+            ep.update(skills.demo_fields(res.transcript, skills_inst))
 
             # RLVR reward: the task's OWN hidden pytest oracle, injected + run after the agent.
             tg = time.perf_counter()
@@ -727,7 +735,8 @@ class TerminalBenchPool(HarnessPool):
             samples = await adapter.finish_session(
                 sid, base_sample=base_sample, reward=float(reward),
                 extra_metadata={"task_id": task.task_id, "solved": bool(g["solved"]),
-                                "harness_worker": wid, "sandbox_session": sb._session_id},
+                                "harness_worker": wid, "sandbox_session": sb._session_id,
+                                "skills_version": skills_inst.version if skills_inst else "off"},
             )
             out, ep["fan_out"] = one_sample(samples, float(reward))
             return out
@@ -747,7 +756,7 @@ class TerminalBenchPool(HarnessPool):
             await self._close_session(sb)
 
     async def _run_coding_episode(self, worker, task, sampling_params, base_sample, sb, arn, preopened,
-                                  wait_ms, idle_ms, cold):
+                                  wait_ms, idle_ms, cold, evaluation: bool = False):
         """A routed non-Terminal-Bench row (KernelBench on the g6 tier). Same fresh, pre-opened, gated
         session as a Terminal-Bench episode, but the CODING episode runs in it: the agent writes
         solution.py, then the hidden checker (dropped in under a random name, nonce'd PASSED line)
@@ -769,7 +778,8 @@ class TerminalBenchPool(HarnessPool):
                   f"open_wait_ms={wait_ms:.1f} preopen_idle_ms={idle_ms:.1f} open_attempts={sb._tb_open_attempts} "
                   + " ".join(f"{k}={v}" for k, v in cold.items()) + f" arn={_arn_tail(arn)}", flush=True)
             return await mini_claude_episode.run(self.args, base_sample, task, sampling_params, sb, engine,
-                                                 fields={"substrate": sb._tb_substrate, "infra_error": "none"})
+                                                 fields={"substrate": sb._tb_substrate, "infra_error": "none"},
+                                                 evaluation=evaluation)
         except BaseException as exc:
             reason = _cancel_reason(exc)
             tag = f"infra_error=none cancelled={reason}" if reason else f"infra_error={type(exc).__name__}"

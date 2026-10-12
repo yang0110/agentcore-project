@@ -202,6 +202,24 @@ Runtimes and 3 capacity providers (no instance without a session), the builder m
 | `TB_DOCKER_ORACLE_FALLBACK` | 1 | retry microVM oracle failures on the m5 (step 4) |
 | `TB_RUNTIME_TAG` | tbh | microVM Runtime names `acs_<tag>_<task>` |
 | `TB_VALIDATE` | 1 | step 4 validates every oracle (0 = skip; then step 1 trains on unvalidated tasks) |
+| `SKILLS` / `SKILLS_SET` / `SKILLS_EVAL` | off / all / same | agent skills (see **Agent skills** below): `listed` installs the family's `skills/` in the sandbox and lists them in the system prompt / which skill names / `off` = evaluate without them |
+
+## Agent skills (`SKILLS=listed`, default off)
+
+Short how-to guides in `skills/<name>/SKILL.md` (+ scripts and templates), 5 for Terminal-Bench and 4 for
+KernelBench. Design and evidence: [`docs/skills-in-agentic-rl.md`](../../../docs/skills-in-agentic-rl.md).
+- **Use case:** give a weak policy family-level know-how (no nvcc → Triton; copy `Model.__init__`
+  verbatim; start servers detached; verify each requirement before stopping) so more GRPO groups
+  contain a success, i.e. a gradient.
+- **How:** `agentcore_slime_demo/skills.py` writes the family's skills to `/opt/acs_skills` (outside the
+  workdir) in one exec at episode start and appends a one-line-per-skill listing to that episode's
+  system prompt. The agent reads a skill with its bash tool, so the text arrives as a loss-masked tool
+  result. The folder is removed before grading. KernelBench's `kb-self-check` gets the prompt's
+  reference `Model` as `reference.py`, so `python3 /opt/acs_skills/kb-self-check/check.py solution.py`
+  runs the grader's checks and timing.
+- **Metrics:** `[demo]` adds `skills_listed`, `skill_reads`, `skills_read=a+b` and `skills_version` (a content
+  hash, also in each sample's metadata). Only the in-session `mini_claude` harness gets skills; the
+  decoupled CLI kinds don't yet.
 
 ## Metrics
 

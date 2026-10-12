@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import secrets
 
+from . import skills
 from .harness_pool import adapter_for, one_sample
 from .in_session_harness import make_harness
 
@@ -82,10 +83,12 @@ async def _hidden_grade(sb, task) -> tuple[int, str]:
     return code, (out or "").replace(nonce + " ", "")
 
 
-async def run(args, sample, task, sampling_params, sb, engine: str, fields: dict | None = None):
+async def run(args, sample, task, sampling_params, sb, engine: str, fields: dict | None = None,
+              evaluation: bool = False):
     """Run one mini_claude episode in the already-open sandbox ``sb``; return a bare Sample.
 
-    ``fields``: extra per-episode keys for the [demo] record (the harness pool's tier fields)."""
+    ``fields``: extra per-episode keys for the [demo] record (the harness pool's tier fields).
+    ``evaluation``: only selects the skills condition (SKILLS_EVAL)."""
     from .harness import _checker_token
     adapter, _local_url, session_url = adapter_for(args, engine)
     artifact = getattr(task, "artifact_filename", "solution.py")
@@ -99,11 +102,16 @@ async def run(args, sample, task, sampling_params, sb, engine: str, fields: dict
     for name, content in getattr(task, "setup_files", lambda: {})().items():
         await sb.write_file(name, content)
 
+    # KernelBench rows carry the generic "coding" family; their image says what they are.
+    is_kb = str(getattr(task, "image", "")).startswith("kernelbench")
+    skills_inst = await skills.install(sb, "kernelbench" if is_kb else str(getattr(task, "family", "")),
+                                       prompt=task.initial_user_prompt(), evaluation=evaluation)
     harness = make_harness(
         max_turns=int(os.environ.get("MINI_AGENT_MAX_TURNS", str(max(4, 2 * task.max_turns)))),
         exec_timeout_sec=int(os.environ.get("MINI_AGENT_EXEC_TIMEOUT", "120")),
         system_prompt=("You are an agent working in a sandbox. Solve the task using ONLY the "
-                       "provided tools; keep replies terse and prefer acting over explaining."),
+                       "provided tools; keep replies terse and prefer acting over explaining."
+                       + (skills_inst.listing if skills_inst else "")),
     )
     adapter.open_session(sid, sampling_defaults=sampling_params)
     try:
@@ -120,6 +128,7 @@ async def run(args, sample, task, sampling_params, sb, engine: str, fields: dict
             sub = task.extract_submission(_final_text(res.transcript))
             if sub is not None:
                 await sb.write_file(artifact, sub)
+        await skills.uninstall(sb, skills_inst)
         exit_code, stdout = await _hidden_grade(sb, task)
         solved = exit_code == 0
         reward = float(task.reward(0 if solved else 1))
@@ -127,7 +136,7 @@ async def run(args, sample, task, sampling_params, sb, engine: str, fields: dict
         # CUDA passes), so full reward needs a REAL speedup; a correct but not-faster kernel gets half.
         # The margin covers timing noise (copies measured 1.00-1.03x). TB_KB_SPEEDUP_MIN=0 = correctness only.
         kb_min = float(os.environ.get("TB_KB_SPEEDUP_MIN", "1.10"))
-        if solved and kb_min > 0 and str(getattr(task, "image", "")).startswith("kernelbench"):
+        if solved and kb_min > 0 and is_kb:
             import re as _re
             m = _re.search(r"SPEEDUP vs reference:\s*([0-9.]+)x", stdout or "")
             reward = 1.0 if (m and float(m.group(1)) >= kb_min) else 0.5
@@ -135,7 +144,8 @@ async def run(args, sample, task, sampling_params, sb, engine: str, fields: dict
         samples = await adapter.finish_session(
             sid, base_sample=sample, reward=reward,
             extra_metadata={"task_id": task.task_id, "solved": solved, "num_turns": res.turns,
-                            "tool_calls": res.tool_calls, "sandbox_id": getattr(sb, "sandbox_id", "?")},
+                            "tool_calls": res.tool_calls, "sandbox_id": getattr(sb, "sandbox_id", "?"),
+                            "skills_version": skills_inst.version if skills_inst else "off"},
         )
     finally:
         await adapter.drop_session(sid, wait_timeout=30)
@@ -170,6 +180,7 @@ async def run(args, sample, task, sampling_params, sb, engine: str, fields: dict
     if img:
         fields["image"] = str(img).replace(" ", "_")
     fields.update(extras)
+    fields.update(skills.demo_fields(res.transcript, skills_inst))
     fields.update({k: str(v).replace(" ", "_") for k, v in fields_in.items()})
     print("[demo] " + " ".join(f"{k}={v}" for k, v in fields.items()), flush=True)
     return out

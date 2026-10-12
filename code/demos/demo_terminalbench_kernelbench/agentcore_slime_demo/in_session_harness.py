@@ -100,16 +100,19 @@ class InSessionHarness:
         self.system_prompt = system_prompt
 
     async def run(self, sb, *, session_id: str, adapter_url: str, prompt: str, max_tokens: int = 1024,
-                  model_label: str = "slime-actor", http=None) -> MiniAgentResult:
+                  model_label: str = "slime-actor", http=None, system_prompt: str | None = None) -> MiniAgentResult:
         """``adapter_url`` = the URL the SESSION dials (adapter_urls()[1]). ``http`` is unused (the
-        runner makes its own requests); kept so the signature matches MiniClaudeHarness.run."""
+        runner makes its own requests); kept so the signature matches MiniClaudeHarness.run.
+        ``system_prompt`` overrides self.system_prompt for this episode only (the harness object is
+        shared by concurrent episodes, so per-episode text such as a skills listing must come here)."""
         return await self._run_in_session(sb, session_id=session_id, adapter_url=adapter_url,
-                                          prompt=prompt, max_tokens=max_tokens, model_label=model_label)
+                                          prompt=prompt, max_tokens=max_tokens, model_label=model_label,
+                                          system_prompt=system_prompt or self.system_prompt)
 
-    async def _run_in_session(self, sb, *, session_id, adapter_url, prompt, max_tokens, model_label):
+    async def _run_in_session(self, sb, *, session_id, adapter_url, prompt, max_tokens, model_label, system_prompt):
         cfg = {
             "adapter_url": adapter_url, "session_id": session_id, "prompt": prompt, "model": model_label,
-            "max_tokens": int(max_tokens), "system": _system_prompt(self.system_prompt), "tools": TOOLS,
+            "max_tokens": int(max_tokens), "system": _system_prompt(system_prompt), "tools": TOOLS,
             "max_turns": self.max_turns, "exec_timeout": self.exec_timeout_sec,
             "request_timeout": self.request_timeout_sec, "max_tool_chars": _MAX_TOOL_OUTPUT_CHARS,
             "connect_timeout": int(os.environ.get("MINI_SESSION_CONNECT_SEC", "5")),
