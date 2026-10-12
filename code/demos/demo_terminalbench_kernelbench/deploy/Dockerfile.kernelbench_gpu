@@ -15,4 +15,4 @@ COPY acs_http_server.py acs_http_server_chunked.py sandbox_server_agent.py /opt/
 # AgentCore injects the NVIDIA driver (libcuda.so.1) into /usr/lib64 at runtime; the loader needs it at start.
 ENV LD_LIBRARY_PATH=/usr/lib64 SANDBOX_WORKDIR=/workspace PYTHONDONTWRITEBYTECODE=1
 EXPOSE 8080
-CMD ["sh", "-c", "pip install --no-cache-dir -q torch==2.5.1 numpy --index-url https://download.pytorch.org/whl/cu124 --extra-index-url https://pypi.org/simple && exec python3 /opt/acs/acs_http_server_chunked.py"]
+CMD ["sh", "-c", "pip install --no-cache-dir -q torch==2.5.1 numpy einops==0.8.0 --index-url https://download.pytorch.org/whl/cu124 --extra-index-url https://pypi.org/simple && exec python3 /opt/acs/acs_http_server_chunked.py"]

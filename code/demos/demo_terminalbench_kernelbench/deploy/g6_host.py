@@ -52,7 +52,10 @@ import m5_host as m5  # noqa: E402
 
 STATE = HERE / "g6_host.json"                       # gitignored
 NAME = f"{d.PREFIX}-tbh-g6ec2"                      # SG name + instance tag
-TASK = "kernelbench-gpu"                            # = the KernelBench rows' image (route gpuec2:kernelbench-gpu)
+TASK = "kernelbench-gpu"                            # the image's task name (ECR repo, compose project)
+# Every KernelBench row image the EC2 pool may serve (one per level, kernelbench/build_kernelbench.py): the same
+# container, so `image` writes the same task dir + record under each name (routes gpuec2:<image>).
+KB_IMAGES = ["kernelbench-gpu", "kernelbench-gpu-l2", "kernelbench-gpu-l3", "kernelbench-gpu-l4"]
 REPO = f"{m5.ECR_PREFIX}-{TASK}-client"             # matches the episode role's <prefix>-tbhdk-* pull grant
 DOCKERFILE = HERE / "Dockerfile.kernelbench_ec2"
 RECORDS = DEMO_DIR / "terminalbench" / "tasks" / "docker_records"
@@ -98,10 +101,11 @@ def image() -> int:
         ti.size, ti.mode = len(COMPOSE), 0o644
         tf.addfile(ti, io.BytesIO(COMPOSE.encode()))
     RECORDS.mkdir(parents=True, exist_ok=True)
-    (RECORDS / f"{TASK}.tar.gz").write_bytes(buf.getvalue())
     rec = {"task": TASK, "tag": tag, "status": "built", "images": {}, "client": "client",
            "size_mb": round(det["imageSizeInBytes"] / 2**20, 1), "ecr": {"client": f"{uri}:{tag}"}}
-    (RECORDS / f"{TASK}.json").write_text(json.dumps(rec, indent=1))
+    for name in KB_IMAGES:
+        (RECORDS / f"{name}.tar.gz").write_bytes(buf.getvalue())
+        (RECORDS / f"{name}.json").write_text(json.dumps(rec | {"task": name}, indent=1))
     if STATE.exists():                       # a newer image than the AMI's: episodes pull it once per instance
         st = json.loads(STATE.read_text())
         if st.get("image") != rec["ecr"]["client"]:

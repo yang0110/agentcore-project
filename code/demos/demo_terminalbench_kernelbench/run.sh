@@ -155,9 +155,10 @@ fi
 SHUFFLE_ARGS=(--rollout-shuffle)
 # IMAGE ROUTING: task image -> its route (terminalbench/tasks/route_by_image.json, via image_routing.py).
 # A row whose image has no route is an error here, before any GPU work.
-# KernelBench substrate: agentcore (default) = the AgentCore g6 Runtime, one managed instance per episode;
-# ec2 = OPT-IN warm plain-EC2 g6 pool (deploy/g6_host.py image + bake-ami), one episode per GPU slot.
-export TB_KB_SUBSTRATE="${TB_KB_SUBSTRATE:-agentcore}"
+# KernelBench substrate per LEVEL (image_routing.apply_kb_substrate): split (default) = level 1 on the AgentCore g6
+# Runtime, levels TB_KB_EC2_LEVELS (default 2,3,4) on the warm plain-EC2 GPU pool; agentcore = all on AgentCore
+# (no level 4); ec2 = all on the EC2 pool (deploy/g6_host.py image + bake-ami).
+export TB_KB_SUBSTRATE="${TB_KB_SUBSTRATE:-split}"
 TB_ROUTE_BY_IMAGE="$(python3 "$DEMO_DIR/image_routing.py" "$DATA" "$EVAL_DATA" "$EVAL_DOCKER_DATA" "$EVAL_GPU_DATA" "$EVAL_KB_DATA")"
 export TB_ROUTE_BY_IMAGE
 # The m5 compose agent's shared secret (deploy/m5_host.json from `deploy/m5_host.py up`), for docker:// routes.
@@ -448,6 +449,7 @@ RUNTIME_ENV_JSON="{
     \"TB_M5_IDLE_SHUTDOWN_S\": \"${TB_M5_IDLE_SHUTDOWN_S}\",
     \"TB_M5_EPISODE\": \"$(printf '%s' "${TB_M5_EPISODE}" | sed 's/\\/\\\\/g; s/\"/\\\"/g')\",
     \"TB_KB_SUBSTRATE\": \"${TB_KB_SUBSTRATE}\",
+    \"TB_KB_EC2_LEVELS\": \"${TB_KB_EC2_LEVELS:-2,3,4}\",
     \"TB_G6_EC2\": \"$(printf '%s' "${TB_G6_EC2}" | sed 's/\\/\\\\/g; s/\"/\\\"/g')\",
     \"TB_G6_MAX_INSTANCES\": \"${TB_G6_MAX_INSTANCES}\",
     \"TB_G6_IDLE_RETIRE_S\": \"${TB_G6_IDLE_RETIRE_S}\",

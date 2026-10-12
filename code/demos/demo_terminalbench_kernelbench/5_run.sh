@@ -11,8 +11,8 @@ source "$HERE/deploy/steps_common.sh"
 if grep -q '"docker://' "$POOL_MAP" && [ ! -f "$M5_STATE" ]; then
   die "the route map has m5 tasks but $M5_STATE is missing — run: python3 deploy/m5_host.py up"
 fi
-if [ "${TB_KB_SUBSTRATE:-agentcore}" = ec2 ] && [ ! -f "$HERE/deploy/g6_host.json" ]; then
-  die "TB_KB_SUBSTRATE=ec2 but deploy/g6_host.json is missing — run: python3 deploy/g6_host.py image && python3 deploy/g6_host.py bake-ami"
+if [ "${TB_KB_SUBSTRATE:-split}" != agentcore ] && [ ! -f "$HERE/deploy/g6_host.json" ]; then
+  die "TB_KB_SUBSTRATE=${TB_KB_SUBSTRATE:-split} puts KernelBench levels on the EC2 GPU pool but deploy/g6_host.json is missing — run: python3 deploy/g6_host.py image && python3 deploy/g6_host.py bake-ami (or TB_KB_SUBSTRATE=agentcore)"
 fi
 export NR="${NR:-epoch}" EVAL_INTERVAL="${EVAL_INTERVAL:-10}" EVAL_NS="${EVAL_NS:-2}"
 _SFX="-hybrid"

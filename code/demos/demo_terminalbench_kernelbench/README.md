@@ -7,7 +7,7 @@ substrates, and gets a fresh sandbox per episode on each:
 |---|---|---|
 | **AgentCore microVM** (`acs_tbh_<task>` Runtimes, arm64, ≤ 2 GB) | single-container tasks whose image builds for arm64, fits, and whose oracle passes there | one fresh microVM session |
 | **m5 EC2** (plain EC2, not AgentCore-managed; Amazon Linux 2023, x86_64, Docker + compose) | everything else: the 12 multi-container compose tasks, x86-only and > 2 GB images, and microVM tasks whose reference solution fails on a capability-less microVM | **one `m5.2xlarge` (40 GB) per session** running the task's whole compose project (client + sidecars). `TB_M5_MODE=warm` (default): kept after the episode and reused after a *verified* reset; `per_episode`: terminated after grading; `shared`: one compose project each on one shared m5 |
-| **g6 GPU tier** (AgentCore capacity provider `acs_tbh_gpu_cp`, g6.xlarge / NVIDIA L4; one session = one instance) | **KernelBench** (all 100 level-1 train + 20 level-2 eval rows, mixed into the batch; no Terminal-Bench task needs a GPU, opt in with `TB_GPU_TASKS=a,b`) | one fresh g6 Instance session |
+| **g6 GPU tier** (AgentCore capacity provider `acs_tbh_gpu_cp`, g6.xlarge / NVIDIA L4; one session = one instance) | **KernelBench level 1** (default split; all 4 levels with `TB_KB_SUBSTRATE=agentcore`, except level 4; no Terminal-Bench task needs a GPU, opt in with `TB_GPU_TASKS=a,b`) | one fresh g6 Instance session |
 
 The policy is Qwen3-4B trained by slime (fully-async GRPO). The agent is the mini_claude tool-calling loop
 (`bash` / `write_file` / `read_file`) and it runs **inside the episode's sandbox** on both substrates,
@@ -86,10 +86,37 @@ the EC2 API with boto3, using the g6e's role. See [`docs/m5-per-episode-isolatio
 - **Leftovers** (tag `acs-tbh-m5-ep`) are terminated at the next pool start, by `6_cleanup.sh`, or by
   `deploy/m5_host.py gc-episodes`.
 
+## KernelBench: all 270 problems, routed per level
+
+`kernelbench/build_kernelbench.py` (run in slime_trainer; needs `datasets`) builds the rows from
+`ScalingIntelligence/KernelBench`, all four levels: 100 single ops (L1), 100 fusions (L2), 50 architectures
+(L3), 20 HF models (L4). It is the old `agentcore_slime_demo.kernelbench` generator, and it reproduces the
+120 rows earlier runs used byte for byte.
+- **Held-out eval, 27 rows:** the same 20 L2 problems as before (so eval/kernelbench stays comparable),
+  plus L3 ids 10/20/30/40/50 and L4 ids 10/20. **Train:** the other 243.
+- **One image key per level**, so `image_routing.py` can route levels separately:
+  `kernelbench-gpu` (L1), `kernelbench-gpu-l2`, `-l3`, `-l4`. `TB_KB_SUBSTRATE`:
+
+| `TB_KB_SUBSTRATE` | L1 | L2, L3 | L4 |
+|---|---|---|---|
+| `split` (default) | AgentCore g6 Instance | EC2 GPU pool (`TB_KB_EC2_LEVELS`, default 2,3,4) | EC2 GPU pool |
+| `agentcore` | AgentCore g6 Instance | AgentCore g6 Instance | not routable: build without it (`TB_KB_LEVELS=1,2,3`) |
+| `ec2` | EC2 GPU pool | EC2 GPU pool | EC2 GPU pool |
+
+- **L4 runs only on the EC2 pool.** Each problem calls `AutoModelForCausalLM.from_pretrained`: 7 distinct HF
+  models, ~16 GB, the largest gpt-neo-2.7B at 10.7 GB. They are baked into the EC2 image
+  (`HF_HUB_OFFLINE=1`; the image is 17 GB compressed), which AgentCore's 2 GB image cap rules out.
+  Grading must not download them per episode.
+- **L3** needs `einops` (in both images; the AgentCore one installs it at start, so redeploy step 4g for
+  `agentcore` mode).
+- **Oracle check:** `kernelbench/validate_kernelbench.py` submits each problem's reference as `ModelNew`
+  through the real hidden grader on the EC2 pool and writes `kernelbench/oracle.csv`. `build_kernelbench.py`
+  then drops the rows whose oracle failed (`fail` / `timeout`, never `infra`) and prints each with its reason.
+
 ## KernelBench on the g6 tier
 
-KernelBench rows (`kernelbench/`, restored from `demo_gpu_single`) name the image `kernelbench-gpu`, which
-routes to `gpu:<acs_tbhgpu_kernelbench ARN>`. `TerminalBenchPool` runs them with the same fresh, pre-opened,
+The level-1 rows (and every level in `agentcore` mode) name the image `kernelbench-gpu`, which routes to
+`gpu:<acs_tbhgpu_kernelbench ARN>`. `TerminalBenchPool` runs them with the same fresh, pre-opened,
 gated session as Terminal-Bench rows, but grades them with the coding episode (`mini_claude_episode`):
 - the agent writes `solution.py` with `ModelNew`;
 - the hidden checker (random name, nonce'd PASSED line) builds it next to the reference `Model` on the
@@ -115,11 +142,10 @@ To see them: CloudWatch log group `/aws/bedrock-agentcore/runtimes/<acs_tbhgpu_k
 has one log stream per session (= per g6 instance), named by the session id; the run log has each
 session's `[sbx-op]` open (first `ping`) and `stop_session` lines.
 
-## KernelBench on plain EC2 g6 (opt-in, `TB_KB_SUBSTRATE=ec2`)
+## KernelBench on the plain-EC2 GPU pool (levels 2-4 by default)
 
-The default stays the AgentCore g6 Runtime above. `TB_KB_SUBSTRATE=ec2` routes KernelBench
-(`gpuec2:kernelbench-gpu`) to a **warm pool of plain EC2 GPU instances in this account** instead — the warm
-m5 pool carried over to GPUs (`agentcore_slime_demo/ec2_gpu_sandbox.py`, `deploy/g6_host.py`):
+KernelBench levels in `TB_KB_EC2_LEVELS` (`gpuec2:<image>` routes) run on a **warm pool of plain EC2 GPU
+instances in this account**: the warm m5 pool carried over to GPUs (`agentcore_slime_demo/ec2_gpu_sandbox.py`, `deploy/g6_host.py`):
 
 - **AMI** (`g6_host.py bake-ami`): Deep Learning Base OSS Nvidia AMI (AL2023: driver, Docker, NVIDIA container
   toolkit) + the m5 bootstrap and compose agent + the KernelBench image pre-pulled. The image
@@ -143,7 +169,7 @@ m5 pool carried over to GPUs (`agentcore_slime_demo/ec2_gpu_sandbox.py`, `deploy
 
     python3 deploy/g6_host.py image && python3 deploy/g6_host.py bake-ami   # once (~25 min)
     python3 deploy/g6_host.py probe                                          # optional: cold vs warm open
-    TB_KB_SUBSTRATE=ec2 bash 5_run.sh
+    bash 5_run.sh                       # split (default); TB_KB_SUBSTRATE=ec2 puts every level on the pool
 
 **Measured (2026-10-12, `logs/kb-g6ec2-10step_20261012_091850`, KernelBench-only, qwen3-4B, RB=4 x NS=8,
 `TB_G6_MAX_INSTANCES=16`):** 10/10 steps + eval in 26 min; 381 episodes, **0 infra errors**; open p50
@@ -224,7 +250,8 @@ Runtimes and 3 capacity providers (no instance without a session), the builder m
 | `TB_DOCKER_MAX_PROJECTS` | 16 | shared mode: m5 episode projects at once (trainer-side gate; the host's `M5_MAX_PROJECTS` is the backstop) |
 | `TB_KERNELBENCH` / `TB_KB_TRAIN` / `TB_KB_EVAL` | 1 / all (100) / all (20) | the KernelBench g6 Runtime (step 4) / KernelBench rows in train / eval (caps; 0 = leave out) |
 | `TB_GPU_TASKS` / `TB_GPU_MAX_SESSIONS` / `TB_GPU_INSTANCE` | empty / 32 / g6.xlarge | Terminal-Bench tasks on the g6 tier / live g6 sessions at once, per pool (at 16 the gate was full 66 % of smoke 5 and 31/36 pre-opened sessions were still booting; ~4 KernelBench prompts × 8 are in the look-ahead window) / instance type |
-| `TB_KB_SUBSTRATE` | agentcore | KernelBench substrate: `agentcore` = the g6 Runtime (one managed instance per episode); `ec2` = the warm plain-EC2 GPU pool (`deploy/g6_host.json` from `g6_host.py bake-ami`) |
+| `TB_KB_SUBSTRATE` / `TB_KB_EC2_LEVELS` | split / 2,3,4 | KernelBench substrate per level (table in "KernelBench: all 270 problems"): `split` = L1 on the AgentCore g6 Runtime, these levels on the EC2 GPU pool (`deploy/g6_host.json`); `agentcore` = all on AgentCore (no L4); `ec2` = all on the pool |
+| `TB_KB_LEVELS` | 1,2,3,4 | `kernelbench/build_kernelbench.py`: levels written to `kernelbench/*.jsonl` (then step 1) |
 | `TB_G6_MAX_INSTANCES` / `TB_G6_IDLE_RETIRE_S` / `TB_G6_LAUNCH_WAIT_S` / `TB_G6_LAUNCH_CONC` | 16 / 900 / 900 / 2 | `ec2` substrate: live instances (x GPUs = episode slots) / terminate an instance idle this long / keep re-sweeping starved candidates this long / RunInstances in flight (more got the account throttled) |
 | `TB_G6_CAPACITY_RESERVATION_ID` / `TB_G6_CAPACITY_BLOCK` | empty / 0 | `ec2` substrate: launch into this ODCR (or Capacity Block, =1) — pins type + AZ |
 | `TB_KB_SPEEDUP_MIN` | 1.10 | KernelBench reward: 1 if correct and at least this much faster than the reference, 0.5 if only correct, 0 otherwise (0 = correctness only) |

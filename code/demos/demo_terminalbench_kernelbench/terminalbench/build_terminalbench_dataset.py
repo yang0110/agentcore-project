@@ -149,7 +149,7 @@ def main() -> int:
     _write(out / "terminalbench_eval_docker.jsonl", [_row(t, max_turns) for t in eval_tasks["docker"]])
     _write(out / "terminalbench_eval_gpu.jsonl", [_row(t, max_turns) for t in eval_tasks["gpu"]])
     # KernelBench on the g6 tier (route `kernelbench-gpu`, deploy_gpu_tasks.py): mixed into train, own eval
-    # set. Default = the FULL in-tree set (all level_1 train, all level_2 held-out); TB_KB_TRAIN / TB_KB_EVAL
+    # set. Default = the FULL in-tree set (kernelbench/build_kernelbench.py: 243 train + 27 held-out over all 4 levels); TB_KB_TRAIN / TB_KB_EVAL
     # cap the rows (0 = leave it out).
     kb_dir = DEMO_DIR / "kernelbench"
     kb_train, kb_eval = [], []
