@@ -69,6 +69,21 @@ def terminate_tagged(region: str, tag: str) -> int:
 _LAUNCHED: set[str] = set()
 
 
+def episode_user_data(token: str, env: dict | None = None) -> bytes:
+    """User-data of a launched episode instance (m5 or g6): install its agent secret, then restart the
+    agent with the dead-man switch (+ `env`) as a systemd drop-in. The switch is armed from the agent's
+    FIRST start, not by a trainer call once the agent answers: an instance whose trainer died during
+    boot still terminates itself."""
+    env = {"ACS_IDLE_SHUTDOWN_S": int(float(os.environ.get("TB_M5_IDLE_SHUTDOWN_S", "1800"))), **(env or {})}
+    lines = "".join(f"Environment={k}={v}\\n" for k, v in env.items())
+    script = ("#!/bin/bash\nset -e\nexec > /var/log/acs-episode.log 2>&1\numask 077\n"
+              f"echo '{token}' > /srv/acs/token\n"
+              "mkdir -p /etc/systemd/system/acs-compose-agent.service.d\n"
+              f"printf '[Service]\\n{lines}' > /etc/systemd/system/acs-compose-agent.service.d/idle.conf\n"
+              "systemctl daemon-reload\nsystemctl restart acs-compose-agent\n")
+    return gzip.compress(script.encode())
+
+
 def _terminate_ids(region: str, ids) -> None:
     ids = sorted(set(ids))
     if ids:
@@ -80,10 +95,10 @@ class Ec2EpisodeSandbox(DockerComposeSandbox):
     """A fresh EC2 instance per episode, running the task's compose project; terminated on close."""
 
     def __init__(self, route: str, *, region: str, workdir: str = "", session_id: str | None = None,
-                 read_timeout: int | None = None) -> None:
+                 read_timeout: int | None = None, cfg: dict | None = None) -> None:
         super().__init__(route, workdir=workdir, session_id=session_id, read_timeout=read_timeout)
         self._region = region
-        self._cfg = episode_config()
+        self._cfg = cfg or episode_config()
         self._agent_port = int(self._cfg.get("agent_port", 18300))
         self._token = secrets.token_urlsafe(32)
         self._instance_id: str | None = None
@@ -95,18 +110,9 @@ class Ec2EpisodeSandbox(DockerComposeSandbox):
 
     def _launch_sync(self) -> tuple[str, str]:
         c = self._cfg
-        # The dead-man switch is armed from the agent's FIRST start (a systemd drop-in), not by a trainer
-        # call once the agent answers: an instance whose trainer died during boot still terminates itself.
-        idle = int(float(os.environ.get("TB_M5_IDLE_SHUTDOWN_S", "1800")))
-        script = ("#!/bin/bash\nset -e\nexec > /var/log/acs-episode.log 2>&1\numask 077\n"
-                  f"echo '{self._token}' > /srv/acs/token\n"
-                  "mkdir -p /etc/systemd/system/acs-compose-agent.service.d\n"
-                  f"printf '[Service]\\nEnvironment=ACS_IDLE_SHUTDOWN_S={idle}\\n' "
-                  "> /etc/systemd/system/acs-compose-agent.service.d/idle.conf\n"
-                  "systemctl daemon-reload\nsystemctl restart acs-compose-agent\n")
         inst = _ec2(self._region).run_instances(
             ImageId=c["ami"], InstanceType=c.get("instance_type", "m5.2xlarge"), MinCount=1, MaxCount=1,
-            UserData=gzip.compress(script.encode()),
+            UserData=episode_user_data(self._token),
             IamInstanceProfile={"Name": c["profile"]},
             NetworkInterfaces=[{"DeviceIndex": 0, "SubnetId": c["subnet"], "Groups": [c["sg"]],
                                 "AssociatePublicIpAddress": False}],

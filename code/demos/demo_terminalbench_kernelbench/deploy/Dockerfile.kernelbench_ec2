@@ -1,0 +1,20 @@
+# KernelBench sandbox for the OPT-IN plain-EC2 g6 tier (TB_KB_SUBSTRATE=ec2; deploy/g6_host.py): the same
+# sandbox as Dockerfile.kernelbench_gpu, but run by the compose agent on a warm g6 instance, one container
+# per episode pinned to ONE GPU. Built + pushed by `deploy/g6_host.py image` (ECR <prefix>-tbhdk-kernelbench-gpu-client),
+# pre-pulled into the g6 AMI by `bake-ami`.
+#
+# No 2 GB AgentCore image cap here, so CUDA torch is BAKED IN (the AgentCore image installs it at container
+# start, ~90 s of every cold open). The plain acs_http_server.py (the trainer sends Content-Length bodies
+# straight to the container), at the path the compose agent starts: /opt/acs/py/bin/python3.
+FROM public.ecr.aws/docker/library/python:3.12-slim
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir -q torch==2.5.1 numpy --index-url https://download.pytorch.org/whl/cu124 \
+    --extra-index-url https://pypi.org/simple
+WORKDIR /workspace
+COPY acs_http_server.py sandbox_server_agent.py /opt/acs/
+RUN mkdir -p /opt/acs/py/bin && ln -s /usr/local/bin/python3 /opt/acs/py/bin/python3
+# The NVIDIA container toolkit mounts the host driver (libcuda.so.1) into the container at start.
+ENV SANDBOX_WORKDIR=/workspace PYTHONDONTWRITEBYTECODE=1
+EXPOSE 8080
+CMD ["/opt/acs/py/bin/python3", "/opt/acs/acs_http_server.py"]

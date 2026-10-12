@@ -225,12 +225,14 @@ def _trainer_az() -> str:
     return eni[0]["AvailabilityZone"] if eni else f"{d.REGION}b"
 
 
-def _ensure_sg(vpc_id: str) -> str:
+def _ensure_sg(vpc_id: str, name: str = NAME, desc: str = "demo_terminalbench_kernelbench m5 Docker host") -> str:
+    """The host SG `name` (also the g6 tier's, deploy/g6_host.py): trainer -> agent + client ports,
+    host -> trainer adapter dial-back."""
     ec2 = _ec2()
     got = ec2.describe_security_groups(Filters=[{"Name": "vpc-id", "Values": [vpc_id]},
-                                                {"Name": "group-name", "Values": [NAME]}])["SecurityGroups"]
+                                                {"Name": "group-name", "Values": [name]}])["SecurityGroups"]
     sg = got[0]["GroupId"] if got else ec2.create_security_group(
-        GroupName=NAME, VpcId=vpc_id, Description="demo_terminalbench_kernelbench m5 Docker host")["GroupId"]
+        GroupName=name, VpcId=vpc_id, Description=desc)["GroupId"]
     trainer_ip = d.trainer_private_ip()
     for tsg in d.trainer_sgs(trainer_ip):
         for lo, hi, what in ((AGENT_PORT, AGENT_PORT, "compose agent"), (*EPHEMERAL, "episode client servers")):
@@ -249,12 +251,17 @@ def _ensure_sg(vpc_id: str) -> str:
 
 def _user_data(token: str) -> bytes:
     text = BOOTSTRAP.read_text()
-    for k, v in {"__TOKEN__": token, "__AGENT_B64__": base64.b64encode(AGENT.read_bytes()).decode(),
+    for k, v in {"__TOKEN__": token,
                  "__AGENT_PORT__": str(AGENT_PORT), "__MAX_PROJECTS__": os.environ.get("M5_MAX_PROJECTS", "16"),
                  "__CLIENT_MEM__": os.environ.get("M5_CLIENT_MEM", "8g"),
                  "__CLIENT_CPUS__": os.environ.get("M5_CLIENT_CPUS", "4"),
                  "__COMPOSE_VERSION__": COMPOSE_VERSION, "__BUILDX_VERSION__": BUILDX_VERSION}.items():
         text = text.replace(k, v)
+    # The agent goes in LAST and verbatim (a quoted heredoc: gzip compresses source ~4x, base64 barely).
+    src = AGENT.read_text()
+    if "\nACS_AGENT_SRC_EOF\n" in src:
+        d.die("compose_agent.py contains the heredoc delimiter line")
+    text = text.replace("__AGENT_SRC__", src.rstrip("\n"))
     raw = gzip.compress(text.encode())
     if len(raw) > 16384:
         d.die(f"user-data is {len(raw)} bytes gzipped (EC2 cap 16384)")
@@ -346,9 +353,18 @@ def down() -> int:
         ec2.terminate_instances(InstanceIds=[inst["InstanceId"]])
         d.err(f"terminating {inst['InstanceId']}")
         ec2.get_waiter("instance_terminated").wait(InstanceIds=[inst["InstanceId"]])
+    _delete_sg(NAME)
+    STATE.unlink(missing_ok=True)
+    print("# m5 host removed (the shared egress subnet is kept)")
+    return 0
+
+
+def _delete_sg(name: str) -> None:
+    """Drop the trainer-side rules that reference the SG `name`, then the SG itself."""
+    ec2 = _ec2()
     vpc_id, _s, _g = d.default_vpc()
     got = ec2.describe_security_groups(Filters=[{"Name": "vpc-id", "Values": [vpc_id]},
-                                                {"Name": "group-name", "Values": [NAME]}])["SecurityGroups"]
+                                                {"Name": "group-name", "Values": [name]}])["SecurityGroups"]
     if got:
         sg = got[0]["GroupId"]
         for tsg in d.trainer_sgs(d.trainer_private_ip()):      # the dial-back rule references our SG
@@ -370,9 +386,6 @@ def down() -> int:
                     raise
                 time.sleep(10)
         d.err(f"deleted SG {sg}")
-    STATE.unlink(missing_ok=True)
-    print("# m5 host removed (the shared egress subnet is kept)")
-    return 0
 
 
 if __name__ == "__main__":

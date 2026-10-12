@@ -155,6 +155,9 @@ fi
 SHUFFLE_ARGS=(--rollout-shuffle)
 # IMAGE ROUTING: task image -> its route (terminalbench/tasks/route_by_image.json, via image_routing.py).
 # A row whose image has no route is an error here, before any GPU work.
+# KernelBench substrate: agentcore (default) = the AgentCore g6 Runtime, one managed instance per episode;
+# ec2 = OPT-IN warm plain-EC2 g6 pool (deploy/g6_host.py image + bake-ami), one episode per GPU slot.
+export TB_KB_SUBSTRATE="${TB_KB_SUBSTRATE:-agentcore}"
 TB_ROUTE_BY_IMAGE="$(python3 "$DEMO_DIR/image_routing.py" "$DATA" "$EVAL_DATA" "$EVAL_DOCKER_DATA" "$EVAL_GPU_DATA" "$EVAL_KB_DATA")"
 export TB_ROUTE_BY_IMAGE
 # The m5 compose agent's shared secret (deploy/m5_host.json from `deploy/m5_host.py up`), for docker:// routes.
@@ -172,6 +175,16 @@ TB_M5_MAX_INSTANCES="${TB_M5_MAX_INSTANCES:-24}"          # warm/per_episode: li
 TB_M5_IDLE_SHUTDOWN_S="${TB_M5_IDLE_SHUTDOWN_S:-1800}"   # m5 dead-man switch: no trainer call this long -> instance terminates itself (0 = off)
 TB_PREOPEN_BATCHES_SLOW="${TB_PREOPEN_BATCHES_SLOW:-5}"   # m5 VMs / g6 Instances open this many batches ahead (microVMs: TB_PREOPEN_BATCHES); a g6 needs ~2.5 min
 TB_M5_EPISODE="${TB_M5_EPISODE:-}"
+# Plain-EC2 g6 tier (gpuec2: routes): the AMI + network from deploy/g6_host.json; at most TB_G6_MAX_INSTANCES
+# warm instances (x their GPUs = episode slots); an instance idle TB_G6_IDLE_RETIRE_S is terminated.
+G6_STATE="$DEMO_DIR/deploy/g6_host.json"
+TB_G6_EC2="${TB_G6_EC2:-}"
+if [ -z "$TB_G6_EC2" ] && grep -q '"gpuec2:' <<<"$TB_ROUTE_BY_IMAGE"; then
+  [ -f "$G6_STATE" ] || { echo "TB_KB_SUBSTRATE=ec2 but $G6_STATE is missing: python3 deploy/g6_host.py image && python3 deploy/g6_host.py bake-ami (on the host)" >&2; exit 2; }
+  TB_G6_EC2="$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))))" "$G6_STATE")"
+fi
+TB_G6_MAX_INSTANCES="${TB_G6_MAX_INSTANCES:-16}"
+TB_G6_IDLE_RETIRE_S="${TB_G6_IDLE_RETIRE_S:-900}"
 if [ "$TB_M5_MODE" != shared ] && [ -z "$TB_M5_EPISODE" ] && grep -q 'docker://' <<<"$TB_ROUTE_BY_IMAGE"; then
   TB_M5_EPISODE="$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get('episode') or ''))" "$M5_STATE")"
   [ "$TB_M5_EPISODE" != '""' ] || { echo "TB_M5_MODE=per_episode but no baked AMI: python3 deploy/m5_host.py roles && python3 deploy/m5_host.py bake-ami (or TB_M5_MODE=shared)" >&2; exit 2; }
@@ -434,6 +447,14 @@ RUNTIME_ENV_JSON="{
     \"TB_M5_MAX_INSTANCES\": \"${TB_M5_MAX_INSTANCES}\",
     \"TB_M5_IDLE_SHUTDOWN_S\": \"${TB_M5_IDLE_SHUTDOWN_S}\",
     \"TB_M5_EPISODE\": \"$(printf '%s' "${TB_M5_EPISODE}" | sed 's/\\/\\\\/g; s/\"/\\\"/g')\",
+    \"TB_KB_SUBSTRATE\": \"${TB_KB_SUBSTRATE}\",
+    \"TB_G6_EC2\": \"$(printf '%s' "${TB_G6_EC2}" | sed 's/\\/\\\\/g; s/\"/\\\"/g')\",
+    \"TB_G6_MAX_INSTANCES\": \"${TB_G6_MAX_INSTANCES}\",
+    \"TB_G6_IDLE_RETIRE_S\": \"${TB_G6_IDLE_RETIRE_S}\",
+    \"TB_G6_LAUNCH_WAIT_S\": \"${TB_G6_LAUNCH_WAIT_S:-900}\",
+    \"TB_G6_LAUNCH_CONC\": \"${TB_G6_LAUNCH_CONC:-2}\",
+    \"TB_G6_CAPACITY_RESERVATION_ID\": \"${TB_G6_CAPACITY_RESERVATION_ID:-}\",
+    \"TB_G6_CAPACITY_BLOCK\": \"${TB_G6_CAPACITY_BLOCK:-0}\",
     \"HEARTBEAT_IDLE\": \"${HEARTBEAT_IDLE}\",
     \"HEARTBEAT_PING_FRACTION\": \"${HEARTBEAT_PING_FRACTION}\",
     \"AGENTCORE_SANDBOX_RUNTIME_ARN\": \"${AGENTCORE_SANDBOX_RUNTIME_ARN:-}\",

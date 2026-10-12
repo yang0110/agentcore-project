@@ -6,6 +6,8 @@ sends it to one of two substrates:
     "arn:aws:bedrock-agentcore:..."   its own AgentCore microVM Runtime (step 4)
     "docker://<m5 ip>:<port>/<task>"  the m5 Docker host, which built its compose project (step 2)
     "gpu:arn:aws:bedrock-agentcore:…" its own Runtime on the g6 capacity provider (TB_GPU_TASKS, step 4)
+    "gpuec2:kernelbench-gpu"          OPT-IN, TB_KB_SUBSTRATE=ec2: KernelBench on the warm plain-EC2 g6 pool
+                                      (deploy/g6_host.py) instead of the AgentCore g6 Runtime (the default)
 
 Any image the dataset needs that has no route is an error: an unmapped row would otherwise run on
 another image, where its oracle fails and the run trains on a silent 0 reward.
@@ -23,6 +25,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 TB_POOL_MAP = os.path.join(HERE, "terminalbench", "tasks", "route_by_image.json")
+KB_IMAGE = "kernelbench-gpu"
+
+
+def apply_kb_substrate(mapping: dict) -> dict:
+    """TB_KB_SUBSTRATE=agentcore (default): KernelBench keeps its gpu:<AgentCore g6 Runtime> route.
+    =ec2: it goes to the plain-EC2 g6 warm pool instead (gpuec2:<image>, needs deploy/g6_host.json)."""
+    sub = os.environ.get("TB_KB_SUBSTRATE", "agentcore").strip().lower()
+    if sub not in ("agentcore", "ec2"):
+        raise SystemExit(f"TB_KB_SUBSTRATE={sub!r}: agentcore | ec2")
+    if sub == "ec2":
+        mapping = {**mapping, KB_IMAGE: f"gpuec2:{KB_IMAGE}"}
+    return mapping
 
 
 def rows_tasks(paths: list[str]):
@@ -48,7 +62,7 @@ def main(argv: list[str]) -> int:
         print(f"!! the pool map {pool} is missing — deploy the per-task Runtimes first: "
               "bash 2_build_image.sh && bash 4_deploy_runtime.sh", file=sys.stderr)
         return 2
-    mapping = json.load(open(pool))
+    mapping = apply_kb_substrate(json.load(open(pool)))
     missing = sorted(i or "<no image>" for i in need if not mapping.get(i))
     if missing:
         head = ", ".join(missing[:8]) + (f" … (+{len(missing) - 8})" if len(missing) > 8 else "")
@@ -58,8 +72,10 @@ def main(argv: list[str]) -> int:
         return 2
     docker = sum(1 for i in need if str(mapping[i]).startswith("docker://"))
     gpu = sum(1 for i in need if str(mapping[i]).startswith("gpu:"))
-    print(f"[image_routing] {len(tasks)} rows -> {len(need)} image(s): {len(need) - docker - gpu} AgentCore microVM "
-          f"Runtime(s) + {docker} m5 docker task(s) + {gpu} g6 GPU Runtime(s)", file=sys.stderr)
+    g6ec2 = sum(1 for i in need if str(mapping[i]).startswith("gpuec2:"))
+    print(f"[image_routing] {len(tasks)} rows -> {len(need)} image(s): {len(need) - docker - gpu - g6ec2} AgentCore "
+          f"microVM Runtime(s) + {docker} m5 docker task(s) + {gpu} g6 GPU Runtime(s) + {g6ec2} plain-EC2 g6 task(s)",
+          file=sys.stderr)
     print(json.dumps(mapping))
     return 0
 

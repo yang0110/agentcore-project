@@ -7,3 +7,4 @@ terminalbench/acs_ctx/py-x86_64/
 terminalbench/acs_ctx/sandbox_server_agent.py
 # m5 host state: instance id, private IP and the agent's shared secret.
 deploy/m5_host.json
+deploy/g6_host.json

@@ -6,7 +6,8 @@
 set -euxo pipefail
 exec > >(tee -a /var/log/acs-bootstrap.log) 2>&1
 
-dnf install -y docker iptables-nft python3
+command -v docker >/dev/null 2>&1 || dnf install -y docker   # the g6 GPU AMI already has Docker
+dnf install -y iptables-nft python3
 ARCH=x86_64
 mkdir -p /usr/local/lib/docker/cli-plugins
 curl -fsSL "https://github.com/docker/compose/releases/download/__COMPOSE_VERSION__/docker-compose-linux-$ARCH" \
@@ -22,6 +23,13 @@ cat > /etc/docker/daemon.json <<'JSON'
  "default-address-pools": [{"base": "10.200.0.0/16", "size": 24}]}
 JSON
 systemctl enable --now docker
+# The g6 GPU AMI (deploy/g6_host.py, from the Deep Learning Base OSS Nvidia AMI) ships Docker already
+# running + the NVIDIA container toolkit: re-register its runtime in the daemon.json just written and
+# restart so both apply (no-op on the m5).
+if command -v nvidia-ctk >/dev/null 2>&1; then
+  nvidia-ctk runtime configure --runtime=docker
+  systemctl restart docker
+fi
 
 # ---- isolation rules (re-applied by the agent unit on every start: docker rebuilds its chains) ----
 cat > /usr/local/sbin/acs-firewall <<'FW'
@@ -47,9 +55,9 @@ chmod +x /usr/local/sbin/acs-firewall
 install -d -m 700 /srv/acs
 umask 077
 echo '__TOKEN__' > /srv/acs/token
-base64 -d > /srv/acs/compose_agent.py <<'B64'
-__AGENT_B64__
-B64
+cat > /srv/acs/compose_agent.py <<'ACS_AGENT_SRC_EOF'
+__AGENT_SRC__
+ACS_AGENT_SRC_EOF
 cat > /etc/systemd/system/acs-compose-agent.service <<'UNIT'
 [Unit]
 Description=demo_terminalbench_kernelbench compose agent

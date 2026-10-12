@@ -22,9 +22,14 @@ hidden-oracle grader, reward) is the code the microVM pool already uses.
     push {task, repo_prefix}        (builder) push every image of a built task — built AND sidecar — to
                                     ECR <repo_prefix>-<task>-<service>, record the URIs (per-episode mode)
     set_record {task, rec}          (episode instance) install a build record whose images live in ECR
+    up {task, episode, gpu, cpus, mem, shm}
+                                    (g6 GPU instance) as `up`, with the client pinned to ONE host GPU
+                                    (compose device reservation, device_ids=[gpu]) and per-slot limits
     reset_check                     (warm instance) after `down`: verify NOTHING of the episode is left —
                                     no containers, no volumes, no non-default networks, empty episode dir —
                                     evicting cached images if free disk < ACS_MIN_FREE_GB -> {clean, problems}
+    reset_check {episode, gpu}      (g6 GPU instance, other slots still busy) the same check SCOPED to one
+                                    project (compose labels) + no process left on that GPU
     logs {episode, tail}            `docker compose logs` of one episode (debugging)
     self_update {b64}               replace this file and exit (systemd restarts it)
 
@@ -71,7 +76,7 @@ CTX, TASKS, BUILT, EPS = (os.path.join(ROOT, d) for d in ("ctx", "tasks", "built
 SERVER_PORT = 8080
 SERVER_CMD = "exec /opt/acs/py/bin/python3 /opt/acs/acs_http_server.py"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,80}$")
-AGENT_VERSION = "2026-10-04.3"      # health reports it; the trainer self_updates an older agent (baked AMI)
+AGENT_VERSION = "2026-10-12.1"      # health reports it; the trainer self_updates an older agent (baked AMI)
 MIN_FREE_GB = float(os.environ.get("ACS_MIN_FREE_GB", "8"))
 # Dead-man switch for episode instances (0 = off, the builder): no authenticated trainer call for this
 # long -> `shutdown -h now`, and the instance (launched with InstanceInitiatedShutdownBehavior=terminate)
@@ -196,8 +201,9 @@ def _ecr_login(uri: str) -> None:
         raise RuntimeError(f"ecr login {registry}: {(p.stdout + p.stderr)[-300:]}")
 
 
-def _rewrite(model: dict, task: str, project: str, rec: dict, ep_dir: str) -> tuple:
-    """(model, client service): unique names, no sidecar ports, our server in the client, prebuilt images."""
+def _rewrite(model: dict, task: str, project: str, rec: dict, ep_dir: str, slot: dict | None = None) -> tuple:
+    """(model, client service): unique names, no sidecar ports, our server in the client, prebuilt images.
+    `slot` (g6 GPU instance): {gpu, cpus, mem, shm} — the client gets that ONE GPU and those limits."""
     svcs = model.get("services") or {}
     ecr = rec.get("ecr") or {}          # per-episode instance: EVERY image comes from ECR
     client = _client_service(model, project)
@@ -225,6 +231,16 @@ def _rewrite(model: dict, task: str, project: str, rec: dict, ep_dir: str) -> tu
             s.setdefault("mem_limit", CLIENT_MEM)
             s.setdefault("cpus", float(CLIENT_CPUS))
             s.setdefault("pids_limit", 8192)
+            if slot:
+                if slot.get("cpus"):
+                    s["cpus"] = float(slot["cpus"])
+                if slot.get("mem"):
+                    s["mem_limit"] = str(slot["mem"])
+                if slot.get("shm"):
+                    s["shm_size"] = str(slot["shm"])
+                if slot.get("gpu") is not None:
+                    s.setdefault("deploy", {}).setdefault("resources", {}).setdefault("reservations", {})["devices"] = [
+                        {"driver": "nvidia", "device_ids": [str(int(slot["gpu"]))], "capabilities": ["gpu"]}]
         else:
             s.pop("ports", None)
     if "default" not in (model.get("networks") or {}) and any("default" in (s.get("networks") or {}) for s in svcs.values()):
@@ -305,7 +321,7 @@ def _wait_server(port: int, deadline_s: float) -> None:
         time.sleep(0.5)
 
 
-def _up(task: str, episode: str) -> dict:
+def _up(task: str, episode: str, slot: dict | None = None) -> dict:
     project = _project(episode)
     rec = _record(task)
     if rec.get("status") != "built":
@@ -327,7 +343,7 @@ def _up(task: str, episode: str) -> dict:
         if code != 0:
             raise RuntimeError(f"copy task dir: {err[-300:]}")
         env = _env(project, task, ep_dir)
-        model, client = _rewrite(_resolved(os.path.join(ep_dir, "task"), project, env), task, project, rec, ep_dir)
+        model, client = _rewrite(_resolved(os.path.join(ep_dir, "task"), project, env), task, project, rec, ep_dir, slot)
         cf = os.path.join(ep_dir, "compose.json")
         with open(cf, "w") as f:
             json.dump(model, f)
@@ -372,24 +388,52 @@ def _down(episode: str) -> dict:
     return {"ok": code == 0, "project": project, **({"error": (out + err)[-300:]} if code else {})}
 
 
-def _reset_check() -> dict:
+_GPUS: list = []
+
+
+def _gpu_count() -> int:
+    """Host GPUs (nvidia-smi -L), counted once; 0 on the m5."""
+    if not _GPUS:
+        n = 0
+        if shutil.which("nvidia-smi"):
+            code, out, _ = _sh(["nvidia-smi", "-L"], timeout=60)
+            n = sum(ln.startswith("GPU ") for ln in out.splitlines()) if code == 0 else 0
+        _GPUS.append(n)
+    return _GPUS[0]
+
+
+def _reset_check(episode: str | None = None, gpu=None) -> dict:
     """A warm instance's post-episode reset, VERIFIED: the episode only ever touched its own compose
-    project (containers can't reach the host), so after `down -v` nothing of it may remain."""
+    project (containers can't reach the host), so after `down -v` nothing of it may remain.
+
+    With `episode` (a g6 instance whose other GPU slots may still be running episodes) the check is
+    SCOPED to that project — its compose-labelled containers / volumes / networks and its episode dir —
+    plus, with `gpu`, no compute process left on that GPU."""
     problems = []
+    scope = ["--filter", f"label=com.docker.compose.project={_project(episode)}"] if episode else []
     with _lock:
-        if _live:
-            problems.append(f"live projects {sorted(_live)}")
-    for args, what in ((["docker", "ps", "-aq"], "containers"), (["docker", "volume", "ls", "-q"], "volumes")):
+        live = [p for p in _live if not episode or p == _project(episode)]
+    if live:
+        problems.append(f"live projects {sorted(live)}")
+    for args, what in ((["docker", "ps", "-aq"] + scope, "containers"),
+                       (["docker", "volume", "ls", "-q"] + scope, "volumes")):
         code, out, _ = _sh(args, timeout=60)
         if code != 0 or out.strip():
             problems.append(f"{what} left: {out.split()[:5]}")
-    code, out, _ = _sh(["docker", "network", "ls", "--format", "{{.Name}}"], timeout=60)
+    code, out, _ = _sh(["docker", "network", "ls", "--format", "{{.Name}}"] + scope, timeout=60)
     extra = sorted(set(out.split()) - {"bridge", "host", "none"})
     if code != 0 or extra:
         problems.append(f"networks left: {extra[:5]}")
     left = os.listdir(EPS) if os.path.isdir(EPS) else []
+    if episode:
+        left = [d for d in left if d == _project(episode)]
     if left:
         problems.append(f"episode dirs left: {left[:5]}")
+    if gpu is not None:
+        code, out, _ = _sh(["nvidia-smi", "-i", str(int(gpu)), "--query-compute-apps=pid",
+                            "--format=csv,noheader"], timeout=60)
+        if code != 0 or out.strip():
+            problems.append(f"gpu {gpu} processes left: {out.split()[:5] if code == 0 else 'nvidia-smi failed'}")
     st = os.statvfs(ROOT)
     free = st.f_bavail * st.f_frsize / 2**30
     if free < MIN_FREE_GB:              # image cache, not episode state: evict it and re-measure
@@ -486,6 +530,7 @@ def _health() -> dict:
     with _lock:
         live = {p: dict(v) for p, v in _live.items()}
     return {"ok": code == 0, "version": AGENT_VERSION, "docker": out.strip(), "live": len(live), "projects": live,
+            "gpus": _gpu_count(),
             "max_projects": MAX_PROJECTS, "disk_free_gb": round(st.f_bavail * st.f_frsize / 2**30, 1),
             "built": built, "ctx": os.path.exists(os.path.join(CTX, "py", "bin", "python3")),
             "ctx_tag": open(os.path.join(CTX, "TAG")).read().strip() if os.path.exists(os.path.join(CTX, "TAG")) else ""}
@@ -517,7 +562,8 @@ def handle(req: dict) -> dict:
     if op == "build_status":
         return _record(_name(req["task"], "task")) or {"status": "unknown"}
     if op == "up":
-        return _up(_name(req["task"], "task"), req["episode"])
+        slot = {k: req[k] for k in ("gpu", "cpus", "mem", "shm") if req.get(k) is not None} or None
+        return _up(_name(req["task"], "task"), req["episode"], slot)
     if op == "push":
         return _push(_name(req["task"], "task"), req["repo_prefix"])
     if op == "set_record":
@@ -529,7 +575,7 @@ def handle(req: dict) -> dict:
     if op == "down":
         return _down(req["episode"])
     if op == "reset_check":
-        return _reset_check()
+        return _reset_check(req.get("episode"), req.get("gpu"))
     if op == "list":
         with _lock:
             return {"ok": True, "live": sorted(_live), "docker": _docker_projects()}

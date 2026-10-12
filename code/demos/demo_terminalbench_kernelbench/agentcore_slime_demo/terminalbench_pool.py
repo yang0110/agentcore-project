@@ -8,6 +8,8 @@ demo_terminalbench_kernelbench routes every task to one of three substrates (the
                                            shared m5 (DockerComposeSandbox)
   * "gpu:arn:aws:bedrock-agentcore:..." -> a fresh AgentCore session on a g6 capacity provider = its own
                                            GPU instance (AgentCoreRuntimeSandbox; empty unless TB_GPU_TASKS)
+  * "gpuec2:<task>"                     -> OPT-IN (TB_KB_SUBSTRATE=ec2): one GPU slot of a warm plain-EC2 g6
+                                           instance, a fresh container per episode (Ec2GpuSandbox)
 All speak the same ops to the same in-image server, so everything below is substrate-agnostic except
 three things: the heartbeat (docker projects have no idle reclaim, so they are not registered), an
 open gate per bounded substrate (TB_DOCKER_MAX_PROJECTS m5 projects, TB_GPU_MAX_SESSIONS g6 instances,
@@ -72,6 +74,7 @@ logger = logging.getLogger(__name__)
 _TB_POOL: "TerminalBenchPool | None" = None
 _TB_LOCK = threading.Lock()
 _DOCKER_GC_DONE = False        # m5 stale-project gc: once per process (a later pool must not kill live ones)
+_G6_GC_DONE = False            # same for the plain-EC2 g6 instances
 
 
 GPU_PREFIX = "gpu:"
@@ -98,9 +101,14 @@ def _cancel_reason(exc: BaseException) -> str | None:
     return "abort" if isinstance(exc, asyncio.CancelledError) else None
 
 
+G6EC2_PREFIX = "gpuec2:"
+
+
 def substrate_of(route: str) -> str:
     if is_docker_route(route):
         return "docker"
+    if str(route).startswith(G6EC2_PREFIX):
+        return "gpu_ec2"
     return "gpu" if str(route).startswith(GPU_PREFIX) else "microvm"
 
 
@@ -112,8 +120,15 @@ def m5_mode() -> str:
 
 
 def new_sandbox(route: str, *, region: str, workdir: str, session_id: str | None = None):
-    """An UNOPENED sandbox for `route` (a microVM Runtime ARN, a docker:// m5 route, or gpu:<g6 Runtime ARN)."""
+    """An UNOPENED sandbox for `route` (a microVM Runtime ARN, a docker:// m5 route, gpu:<g6 Runtime ARN>
+    or gpuec2:<task> on the plain-EC2 g6 pool)."""
     from .agentcore_runtime_sandbox import AgentCoreRuntimeSandbox
+
+    if str(route).startswith(G6EC2_PREFIX):
+        from .ec2_gpu_sandbox import Ec2GpuSandbox
+
+        return Ec2GpuSandbox(route, region=region, workdir=workdir, session_id=session_id,
+                             read_timeout=int(os.environ.get("TB_GPU_READ_TIMEOUT", "900")))
 
     if is_docker_route(route):
         if m5_mode() == "warm":
@@ -155,6 +170,10 @@ def get_tb_pool(args) -> "TerminalBenchPool":
                 from .ec2_episode_sandbox import reclaim_warm
                 with contextlib.suppress(Exception):
                     reclaim_warm(old.loop, old.region)
+            if old is not None and any(substrate_of(r) == "gpu_ec2" for r in old._arn_by_image.values()):
+                from .ec2_gpu_sandbox import reclaim_g6   # same, for the plain-EC2 g6 slots it holds
+                with contextlib.suppress(Exception):
+                    reclaim_g6(old.loop, old.region)
     return _TB_POOL
 
 
@@ -297,7 +316,9 @@ class TerminalBenchPool(HarnessPool):
         m5_cap = (os.environ.get("TB_M5_MAX_INSTANCES", "24") if m5_mode() in ("warm", "per_episode")
                   else os.environ.get("TB_DOCKER_MAX_PROJECTS", "16"))
         self._gates = {"docker": asyncio.Semaphore(int(m5_cap)),
-                       "gpu": asyncio.Semaphore(int(os.environ.get("TB_GPU_MAX_SESSIONS", "32")))}
+                       "gpu": asyncio.Semaphore(int(os.environ.get("TB_GPU_MAX_SESSIONS", "32"))),
+                       # plain-EC2 g6: the slot pool itself waits for a free GPU (TB_G6_MAX_INSTANCES)
+                       "gpu_ec2": asyncio.Semaphore(int(os.environ.get("TB_GPU_MAX_SESSIONS", "32")))}
         self._keeper = None
         # Upcoming episodes, in the order they will run, as their task's Runtime ARN:
         #   _demand — drawn by slime (or submitted without a look-ahead reservation), not yet claimed;
@@ -330,6 +351,14 @@ class TerminalBenchPool(HarnessPool):
                     logger.info("[terminalbench_pool] terminated %d stale per-episode m5 instance(s)", n)
                 else:
                     await asyncio.to_thread(gc_hosts, list(self._arn_by_image.values()))
+            global _G6_GC_DONE
+            if not _G6_GC_DONE and any(substrate_of(r) == "gpu_ec2" for r in self._arn_by_image.values()):
+                _G6_GC_DONE = True
+                from .ec2_episode_sandbox import terminate_tagged
+                from .ec2_gpu_sandbox import g6_config
+
+                n = await asyncio.to_thread(terminate_tagged, self.region, g6_config().get("tag", "acs-tbh-g6ec2"))
+                logger.info("[terminalbench_pool] terminated %d stale plain-EC2 g6 instance(s)", n)
             from .in_session_harness import make_harness
             from .session_keeper import SessionKeeper
 
@@ -440,7 +469,7 @@ class TerminalBenchPool(HarnessPool):
         episode); the workdir is the image's own WORKDIR, reported by the server's first ping.
         """
         sub = substrate_of(arn)
-        docker = sub == "docker"
+        docker = sub in ("docker", "gpu_ec2")     # our own EC2: no AgentCore idle reclaim to heartbeat
         gate = self._gates.get(sub)
         if gate is not None:
             await gate.acquire()                   # released by _close_session (or below on failure)
@@ -473,7 +502,7 @@ class TerminalBenchPool(HarnessPool):
             sb._workdir = boot["workdir"]           # the task's own WORKDIR (/app, /app/astropy, ...)
 
         if docker:
-            return sb                               # no idle reclaim on the m5: nothing to heartbeat
+            return sb                               # no idle reclaim on the m5 / own g6: nothing to heartbeat
 
         async def _ping(s=sb) -> None:
             # A raw no-op invoke on the session resets AgentCore's idle clock.
@@ -495,7 +524,8 @@ class TerminalBenchPool(HarnessPool):
         sent, recv = getattr(sb, "open_sent_epoch", None), getattr(sb, "open_recv_epoch", None)
         out = {"open_ms": round((recv - sent) * 1000.0, 1) if sent and recv else -1.0}
         # warm m5 pool: was this instance reused, how many episodes it has served, pool size at open
-        out.update({k: boot[k] for k in ("warm_reused", "instance_episodes", "warm_instances") if k in boot})
+        out.update({k: boot[k] for k in ("warm_reused", "instance_episodes", "warm_instances", "instance_type",
+                                         "gpu_slot", "g6_instances", "g6_slots_busy") if k in boot})
         srv, first = boot.get("server_start_epoch"), boot.get("first_invoke_epoch")
         if sent and srv:
             out["pull_boot_ms"] = round(max(0.0, srv - sent) * 1000.0, 1)
@@ -529,7 +559,7 @@ class TerminalBenchPool(HarnessPool):
             return
         window = (self._demand + self._future)[: self.preopen_max_slow]
         need = collections.Counter(a for i, a in enumerate(window)
-                                   if i < (self.preopen_max_slow if substrate_of(a) in ("docker", "gpu")
+                                   if i < (self.preopen_max_slow if substrate_of(a) in ("docker", "gpu", "gpu_ec2")
                                            else self.preopen_max))
         for arn in set(need) | set(self._ready):
             q = self._ready[arn]

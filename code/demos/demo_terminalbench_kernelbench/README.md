@@ -115,6 +115,43 @@ To see them: CloudWatch log group `/aws/bedrock-agentcore/runtimes/<acs_tbhgpu_k
 has one log stream per session (= per g6 instance), named by the session id; the run log has each
 session's `[sbx-op]` open (first `ping`) and `stop_session` lines.
 
+## KernelBench on plain EC2 g6 (opt-in, `TB_KB_SUBSTRATE=ec2`)
+
+The default stays the AgentCore g6 Runtime above. `TB_KB_SUBSTRATE=ec2` routes KernelBench
+(`gpuec2:kernelbench-gpu`) to a **warm pool of plain EC2 GPU instances in this account** instead — the warm
+m5 pool carried over to GPUs (`agentcore_slime_demo/ec2_gpu_sandbox.py`, `deploy/g6_host.py`):
+
+- **AMI** (`g6_host.py bake-ami`): Deep Learning Base OSS Nvidia AMI (AL2023: driver, Docker, NVIDIA container
+  toolkit) + the m5 bootstrap and compose agent + the KernelBench image pre-pulled. The image
+  (`deploy/Dockerfile.kernelbench_ec2`, ECR `acs-tbhdk-kernelbench-gpu-client`) has CUDA torch **baked in**:
+  no 2 GB cap here, so no ~90 s torch install per open.
+- **Slots**: one episode per GPU (an L4 has no MIG), a fresh container per episode pinned to that GPU
+  (compose device reservation) with a 1/GPUs share of vCPUs and memory. g6.xlarge = 1 slot (default);
+  a g6.12xlarge would give 4 (but costs more per GPU: ~$4.60/h vs 4 x ~$0.80/h).
+- **Reuse**: after an episode, `down -v` + a reset check scoped to its project + "no process left on that
+  GPU"; clean -> the slot is reused (open ~1.3 s), dirty / dead agent -> the instance is terminated. An
+  instance idle `TB_G6_IDLE_RETIRE_S` is terminated; the m5 dead-man switch, the exit hook and
+  `5_run.sh` / `6_cleanup.sh` (`g6_host.py gc` / `down`) are the backstops.
+- **Capacity**: each launch sweeps `instance_types` x AZ subnets (`g6.xlarge, g5.xlarge, g6e.xlarge, g6.2xlarge,
+  g5.2xlarge, g6.4xlarge` x 4 AZs), skips a type/AZ that just said InsufficientInstanceCapacity for 60 s
+  (process-wide), keeps at most `TB_G6_LAUNCH_CONC` RunInstances in flight, and re-sweeps for
+  `TB_G6_LAUNCH_WAIT_S`. `TB_G6_CAPACITY_RESERVATION_ID` (+ `TB_G6_CAPACITY_BLOCK=1`) targets an ODCR / Capacity Block.
+  The shortage itself is NOT fixed: on 2026-10-12 every g6/g6e size was starved in all 4 AZs and the pool ran on g5.
+- **Isolation is weaker** than AgentCore's one-instance-per-session: episodes on a reused instance share its
+  kernel and driver (own container, own GPU, no host or metadata access). Fine for KernelBench.
+- The instances are in **your EC2 console** (tag `Name=acs-tbh-g6ec2`; `python3 deploy/g6_host.py status`).
+
+    python3 deploy/g6_host.py image && python3 deploy/g6_host.py bake-ami   # once (~25 min)
+    python3 deploy/g6_host.py probe                                          # optional: cold vs warm open
+    TB_KB_SUBSTRATE=ec2 bash 5_run.sh
+
+**Measured (2026-10-12, `logs/kb-g6ec2-10step_20261012_091850`, KernelBench-only, qwen3-4B, RB=4 x NS=8,
+`TB_G6_MAX_INSTANCES=16`):** 10/10 steps + eval in 26 min; 381 episodes, **0 infra errors**; open p50
+**1.35 s** / p95 52 s (AgentCore g6, 9B epoch run 2026-10-11: p50 133 s, start wait p50 50 s); 95 % of opens
+reused a warm instance (up to 28 episodes per instance); 18 launches, all g5.xlarge (g6 starved),
+RunInstances incl. capacity sweeps p50 92 s; step time 34-72 s after the first (367 s, the fleet
+launching); 9/10 steps with a gradient; eval/kernelbench 0.425. ~18 g5.xlarge x ~0.4 h ≈ $8.
+
 ## Warm m5 pool (how instances are reused and when they are terminated)
 
 `WarmPool` (`agentcore_slime_demo/ec2_episode_sandbox.py`) serves one session per instance at a time:
@@ -187,6 +224,9 @@ Runtimes and 3 capacity providers (no instance without a session), the builder m
 | `TB_DOCKER_MAX_PROJECTS` | 16 | shared mode: m5 episode projects at once (trainer-side gate; the host's `M5_MAX_PROJECTS` is the backstop) |
 | `TB_KERNELBENCH` / `TB_KB_TRAIN` / `TB_KB_EVAL` | 1 / all (100) / all (20) | the KernelBench g6 Runtime (step 4) / KernelBench rows in train / eval (caps; 0 = leave out) |
 | `TB_GPU_TASKS` / `TB_GPU_MAX_SESSIONS` / `TB_GPU_INSTANCE` | empty / 32 / g6.xlarge | Terminal-Bench tasks on the g6 tier / live g6 sessions at once, per pool (at 16 the gate was full 66 % of smoke 5 and 31/36 pre-opened sessions were still booting; ~4 KernelBench prompts × 8 are in the look-ahead window) / instance type |
+| `TB_KB_SUBSTRATE` | agentcore | KernelBench substrate: `agentcore` = the g6 Runtime (one managed instance per episode); `ec2` = the warm plain-EC2 GPU pool (`deploy/g6_host.json` from `g6_host.py bake-ami`) |
+| `TB_G6_MAX_INSTANCES` / `TB_G6_IDLE_RETIRE_S` / `TB_G6_LAUNCH_WAIT_S` / `TB_G6_LAUNCH_CONC` | 16 / 900 / 900 / 2 | `ec2` substrate: live instances (x GPUs = episode slots) / terminate an instance idle this long / keep re-sweeping starved candidates this long / RunInstances in flight (more got the account throttled) |
+| `TB_G6_CAPACITY_RESERVATION_ID` / `TB_G6_CAPACITY_BLOCK` | empty / 0 | `ec2` substrate: launch into this ODCR (or Capacity Block, =1) — pins type + AZ |
 | `TB_KB_SPEEDUP_MIN` | 1.10 | KernelBench reward: 1 if correct and at least this much faster than the reference, 0.5 if only correct, 0 otherwise (0 = correctness only) |
 | `TB_M5_IDLE_SHUTDOWN_S` | 1800 | m5 dead-man switch, armed from the instance's first boot (user-data systemd drop-in): an episode instance with no trainer call for this long terminates itself (0 = off). Must exceed the longest normal silence of an idle warm instance (final checkpoint save, eval: ~10 min); shorter = idle warm instances get replaced mid-run, longer = orphans bill longer after a crash |
 | `RUNTIME_IDLE_TIMEOUT` / `TB_GPU_MAX_LIFETIME` | 900 / 14400 | step 4: AgentCore session idle timeout (every Runtime) / hard cap on one g6 session. A session whose stop was lost bills until the idle timeout; step 4 re-applies both to the g6 Runtime in place, microVM Runtimes pick the idle timeout up on their next create or digest update |

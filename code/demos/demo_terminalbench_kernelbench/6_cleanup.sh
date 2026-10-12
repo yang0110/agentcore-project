@@ -66,12 +66,17 @@ if [ -f "$M5_STATE" ]; then
   log "terminate any per-episode m5 instances"
   python3 deploy/m5_host.py gc-episodes
 fi
+if [ -f "$HERE/deploy/g6_host.json" ]; then
+  log "terminate the plain-EC2 g6 instances + drop their SG (TB_KB_SUBSTRATE=ec2 tier)"
+  python3 deploy/g6_host.py down
+fi
 if [ "${KEEP_M5:-0}" != 1 ] && [ -f "$M5_STATE" ]; then
   log "terminate the m5 Docker host (builder)"
   python3 deploy/m5_host.py down
 fi
 echo "kept: ECR repos ${NAME_PREFIX}-tb-* (microVM images), ${NAME_PREFIX}-tbhdk-* (m5 images) and ${NAME_PREFIX}-tbgpu-* (g6 images) — delete with: aws ecr delete-repository --force --repository-name <repo>"
 echo "kept: IAM roles ${NAME_PREFIX}-exec-role, ${NAME_PREFIX}-operator-role, ${NAME_PREFIX}-tbh-m5-builder, ${NAME_PREFIX}-tbh-m5-episode (+ instance profiles); CloudWatch log groups /aws/bedrock-agentcore/runtimes/* (no retention set)"
+echo "kept: the plain-EC2 g6 AMI (tag Name=${NAME_PREFIX}-tbh-g6ec2) and its image ECR ${NAME_PREFIX}-tbhdk-kernelbench-gpu-client"
 echo "kept: the per-episode AMI (tag Name=${NAME_PREFIX}-tbh-m5-ep) — deregister with: aws ec2 deregister-image --image-id <ami>"
 echo "kept: data/, logs/, ckpt/ (checkpoints are ~56 GB each; remove ckpt/<run> from inside $CONTAINER)"
 du -sh "$HERE/ckpt" 2>/dev/null | awk '{print "      ckpt/ now holds " $1}' || true

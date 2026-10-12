@@ -86,6 +86,7 @@ class DockerComposeSandbox(AgentCoreRuntimeSandbox):
         self._token: str | None = None          # None = the shared host's secret (TB_DOCKER_TOKEN)
         self.sandbox_id = f"dc-{self._episode}"
         self.up_reply: dict = {}
+        self._up_extra: dict = {}               # extra `up` fields (a g6 GPU slot: gpu / cpus / mem / shm)
 
     def _label(self) -> str:
         return f"docker:{self._task}"
@@ -97,7 +98,8 @@ class DockerComposeSandbox(AgentCoreRuntimeSandbox):
         t0 = getattr(self, "_open_t0", None) or time.perf_counter()   # a per-episode VM's open starts at launch
         while True:
             rep = await asyncio.to_thread(lambda: agent_call(self._agent_host, self._agent_port,
-                                                             {"op": "up", "task": self._task, "episode": self._episode},
+                                                             {"op": "up", "task": self._task, "episode": self._episode,
+                                                              **self._up_extra},
                                                              token=self._token))
             if not rep.get("busy"):
                 break
