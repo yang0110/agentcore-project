@@ -222,6 +222,7 @@ class GpuSlotPool:
             return [i.iid for i in self._insts]
 
 
+_HI_WAITING = [0]       # opens a pool worker is blocked on, waiting for a slot (see __aenter__)
 _POOL = GpuSlotPool()
 
 
@@ -373,28 +374,47 @@ class Ec2GpuSandbox(Ec2WarmSandbox):
         idle_retire = float(os.environ.get("TB_G6_IDLE_RETIRE_S", "900"))
         t0, sent = time.perf_counter(), time.time()
         self._open_t0 = t0
-        while True:
-            got, may_launch, stale = _POOL.take(cap, idle_retire)
-            for i in stale:
-                _emit(g6ec2_retire=i.iid, instance_type=i.itype, reason="idle", episodes=i.episodes,
-                      alive_s=round(time.time() - i.launched, 1))
-                await asyncio.to_thread(_terminate_ids, self._region, [i.iid])
-            if got is not None:
-                inst, gpu = got
-                try:   # an idle instance may have shut itself down (dead-man switch) or died
-                    await asyncio.to_thread(lambda: agent_call(inst.ip, self._agent_port, {"op": "health"},
-                                                               timeout=10, token=inst.token))
-                    break
-                except Exception:  # noqa: BLE001
-                    _POOL.drop(inst)
-                    _emit(g6ec2_retire=inst.iid, instance_type=inst.itype, reason="unhealthy_on_reuse",
-                          episodes=inst.episodes, alive_s=round(time.time() - inst.launched, 1))
-                    await asyncio.to_thread(_terminate_ids, self._region, [inst.iid])
+        # Slots go to opens a worker is WAITING on first (`_tb_prio["hi"]`, set by the pool's claim; a
+        # sandbox opened outside the pool counts as high): a look-ahead pre-open yields while one waits.
+        # A high wait has a deadline, so a full pool fails the open instead of hanging the run forever.
+        slot_wait = float(os.environ.get("TB_G6_SLOT_WAIT_S", "900"))
+        hi_since, counted = None, False
+        try:
+            while True:
+                hi = bool((getattr(self, "_tb_prio", None) or {"hi": True}).get("hi"))
+                if hi and not counted:
+                    _HI_WAITING[0] += 1
+                    counted, hi_since = True, time.monotonic()
+                if hi and time.monotonic() - hi_since > slot_wait:
+                    raise RuntimeError(f"no EC2 GPU slot within {slot_wait:.0f}s (pool at {cap} instances, "
+                                       f"{_HI_WAITING[0]} worker opens waiting)")
+                if not hi and _HI_WAITING[0] > 0:
+                    await asyncio.sleep(2)
                     continue
-            if may_launch:
-                inst = gpu = None
-                break
-            await asyncio.sleep(2)                 # every slot busy and at the instance cap
+                got, may_launch, stale = _POOL.take(cap, idle_retire)
+                for i in stale:
+                    _emit(g6ec2_retire=i.iid, instance_type=i.itype, reason="idle", episodes=i.episodes,
+                          alive_s=round(time.time() - i.launched, 1))
+                    await asyncio.to_thread(_terminate_ids, self._region, [i.iid])
+                if got is not None:
+                    inst, gpu = got
+                    try:   # an idle instance may have shut itself down (dead-man switch) or died
+                        await asyncio.to_thread(lambda: agent_call(inst.ip, self._agent_port, {"op": "health"},
+                                                                   timeout=10, token=inst.token))
+                        break
+                    except Exception:  # noqa: BLE001
+                        _POOL.drop(inst)
+                        _emit(g6ec2_retire=inst.iid, instance_type=inst.itype, reason="unhealthy_on_reuse",
+                              episodes=inst.episodes, alive_s=round(time.time() - inst.launched, 1))
+                        await asyncio.to_thread(_terminate_ids, self._region, [inst.iid])
+                        continue
+                if may_launch:
+                    inst = gpu = None
+                    break
+                await asyncio.sleep(2)             # every slot busy and at the instance cap
+        finally:
+            if counted:
+                _HI_WAITING[0] -= 1
         launched = inst is None
         agent_ok = not launched
         try:

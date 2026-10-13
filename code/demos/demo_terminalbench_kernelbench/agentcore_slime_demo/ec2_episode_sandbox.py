@@ -287,6 +287,7 @@ class WarmPool:
             inst.busy = False
 
 
+_HI_WAITING = [0]       # opens a pool worker is blocked on, waiting for a warm m5 (see __aenter__)
 _WARM = WarmPool()
 
 
@@ -353,22 +354,40 @@ class Ec2WarmSandbox(Ec2EpisodeSandbox):
         cap = int(os.environ.get("TB_M5_MAX_INSTANCES", "24"))
         t0, sent = time.perf_counter(), time.time()
         self._open_t0 = t0
-        while True:
-            inst, ok = _WARM._take(self._task, cap)
-            if inst is not None:
-                try:   # an idle instance may have shut itself down (dead-man switch) or died: check first
-                    await asyncio.to_thread(lambda: agent_call(inst.ip, self._agent_port, {"op": "health"},
-                                                               timeout=10, token=inst.token))
-                    break
-                except Exception:  # noqa: BLE001
-                    _WARM._drop(inst)
-                    sys.stdout.write(f"[demo] warm_retire instance={inst.iid} reason=unhealthy_on_reuse "
-                                     f"episodes={inst.episodes}\n")
-                    await asyncio.to_thread(_terminate_ids, self._region, [inst.iid])
+        # As Ec2GpuSandbox: an open a pool worker WAITS on goes first, a look-ahead pre-open yields while
+        # one waits, and a waited-on open fails after TB_M5_SLOT_WAIT_S instead of hanging at the cap.
+        slot_wait = float(os.environ.get("TB_M5_SLOT_WAIT_S", "900"))
+        hi_since, counted = None, False
+        try:
+            while True:
+                hi = bool((getattr(self, "_tb_prio", None) or {"hi": True}).get("hi"))
+                if hi and not counted:
+                    _HI_WAITING[0] += 1
+                    counted, hi_since = True, time.monotonic()
+                if hi and time.monotonic() - hi_since > slot_wait:
+                    raise RuntimeError(f"no warm m5 within {slot_wait:.0f}s (cap {cap} instances, "
+                                       f"{_HI_WAITING[0]} worker opens waiting)")
+                if not hi and _HI_WAITING[0] > 0:
+                    await asyncio.sleep(2)
                     continue
-            if ok:
-                break
-            await asyncio.sleep(2)                 # all warm instances busy and at the cap
+                inst, ok = _WARM._take(self._task, cap)
+                if inst is not None:
+                    try:   # an idle instance may have shut itself down (dead-man switch) or died: check first
+                        await asyncio.to_thread(lambda: agent_call(inst.ip, self._agent_port, {"op": "health"},
+                                                                   timeout=10, token=inst.token))
+                        break
+                    except Exception:  # noqa: BLE001
+                        _WARM._drop(inst)
+                        sys.stdout.write(f"[demo] warm_retire instance={inst.iid} reason=unhealthy_on_reuse "
+                                         f"episodes={inst.episodes}\n")
+                        await asyncio.to_thread(_terminate_ids, self._region, [inst.iid])
+                        continue
+                if ok:
+                    break
+                await asyncio.sleep(2)             # all warm instances busy and at the cap
+        finally:
+            if counted:
+                _HI_WAITING[0] -= 1
         launched = inst is None
         try:
             if launched:

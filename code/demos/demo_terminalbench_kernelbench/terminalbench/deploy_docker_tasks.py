@@ -57,6 +57,7 @@ PBS_URL = ("https://github.com/astral-sh/python-build-standalone/releases/downlo
            "cpython-3.12.14%2B20260901-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz")
 BUILD_CONC = int(os.environ.get("TB_DOCKER_BUILD_CONC", "2"))   # the builder is an m5.xlarge
 REBUILD = os.environ.get("TB_REBUILD") == "1"
+NO_CACHE = os.environ.get("TB_NO_CACHE") == "1"   # with TB_REBUILD=1: rebuild every layer (stale apt index)
 HIDDEN = {"tests", "run-tests.sh", "run_tests.sh", "solution.sh", "solution.yaml"}
 
 # Minimal, verified bit-rot fixes (task -> [(file, old, new)]); applied to the upload, tasks/ stays
@@ -223,7 +224,7 @@ def build_one(state: dict, task: str, why: str, ctx_tag: str) -> dict:
         rec = m5_host.call(state, {"op": "build_status", "task": task})
         if REBUILD or rec.get("status") != "built" or rec.get("tag") != tag:
             m5_host.put_tar(state, data, f"task:{task}")
-            m5_host.call(state, {"op": "build", "task": task, "tag": tag, "force": REBUILD})
+            m5_host.call(state, {"op": "build", "task": task, "tag": tag, "force": REBUILD, "no_cache": NO_CACHE})
             end = time.time() + 7200
             while True:
                 time.sleep(15)

@@ -490,7 +490,7 @@ class TerminalBenchPool(HarnessPool):
                 return kind
         return self._harness_set[-1][0]
 
-    async def _open_session(self, arn: str):
+    async def _open_session(self, arn: str, prio: dict | None = None):
         """Open one BRAND-NEW session (its own microVM, or its own compose project on the m5) on the
         task's route; heartbeat it (microVM only).
 
@@ -507,6 +507,7 @@ class TerminalBenchPool(HarnessPool):
             # >=33 chars for AgentCore runtimeSessionId (token_hex(16)=32 + prefix clears it).
             sb = new_sandbox(arn, region=self.region, workdir=self.workdir,
                              session_id=f"tbep-{secrets.token_hex(16)}")
+            sb._tb_prio = prio if prio is not None else {"hi": True}   # a worker's own open: high
             try:
                 await sb.__aenter__()      # the cold start: allocate + pull + boot + ping (or compose up)
                 break
@@ -595,7 +596,10 @@ class TerminalBenchPool(HarnessPool):
             while len(q) > need[arn]:     # no longer upcoming: drop the newest (least booted) one
                 asyncio.get_running_loop().create_task(self._discard(q.pop()))
             while len(q) < need[arn]:
-                q.append(asyncio.get_running_loop().create_task(self._open_session(arn)))
+                prio = {"hi": False}      # a look-ahead open: yields capped slots to claimed ones
+                t = asyncio.get_running_loop().create_task(self._open_session(arn, prio))
+                t._tb_prio = prio
+                q.append(t)
             if not q:
                 del self._ready[arn]
 
@@ -604,7 +608,17 @@ class TerminalBenchPool(HarnessPool):
         with contextlib.suppress(ValueError):
             self._demand.remove(arn)
         q = self._ready.get(arn)
-        pending = q.popleft() if q else None
+        pending = None
+        if q:
+            # An already-OPEN session first: waiting on the oldest still-pending open while a newer one
+            # for the same route sits ready deadlocked the coverage124 run (16 EC2 GPU slots all held by
+            # unclaimed pre-opens, 16 workers each waiting on a head that needed a 17th slot).
+            pending = next((t for t in q if t.done() and not t.cancelled() and t.exception() is None), None)
+            if pending is not None:
+                q.remove(pending)
+            else:
+                pending = q.popleft()
+                getattr(pending, "_tb_prio", {})["hi"] = True   # a worker now waits on it
         self._refill()                # a slot moved from "ahead" to "running": boot the next one
         return pending
 

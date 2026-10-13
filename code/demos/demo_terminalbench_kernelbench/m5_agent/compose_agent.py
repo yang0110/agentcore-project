@@ -13,7 +13,8 @@ hidden-oracle grader, reward) is the code the microVM pool already uses.
     health                          docker up, live projects, free disk, built tasks
     put_tar {dest, key, b64, more}  upload a tar.gz in chunks; dest = "ctx" (the /opt/acs build context)
                                     or "task:<name>" (the task dir, WITHOUT tests/ or the solution)
-    build {task, tag}               start building the task's images in the background
+    build {task, tag, no_cache}     start building the task's images in the background (no_cache: fresh
+                                    layers + base pull, e.g. a stale `apt-get update` layer)
     build_status {task}             {status: running|built|build_failed, ...}
     up {task, episode}              fresh project ep_<episode>: copy the task dir, rewrite the compose
                                     file (below), `up -d`, wait for the client's server -> {port, ...}
@@ -82,7 +83,7 @@ LAUNCH_CMD = "exec /opt/acs/py/bin/python3 /opt/acs/acs_m5_launch.py"
 _IDLE_STARTS = {"sleep infinity", "sh -c sleep infinity", "bash -c sleep infinity", "/bin/sh -c sleep infinity",
                 "/bin/bash -c sleep infinity", "bash", "/bin/bash", "sh", "/bin/sh", ""}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,80}$")
-AGENT_VERSION = "2026-10-13.2"      # health reports it; the trainer self_updates an older agent (baked AMI)
+AGENT_VERSION = "2026-10-13.3"      # health reports it; the trainer self_updates an older agent (baked AMI)
 MIN_FREE_GB = float(os.environ.get("ACS_MIN_FREE_GB", "8"))
 # Dead-man switch for episode instances (0 = off, the builder): no authenticated trainer call for this
 # long -> `shutdown -h now`, and the instance (launched with InstanceInitiatedShutdownBehavior=terminate)
@@ -281,7 +282,7 @@ def _rewrite(model: dict, task: str, project: str, rec: dict, ep_dir: str, slot:
 
 
 # ----------------------------------------------------------------------------- build
-def _build(task: str, tag: str) -> None:
+def _build(task: str, tag: str, no_cache: bool = False) -> None:
     tdir = os.path.join(TASKS, task)
     log_path = os.path.join(BUILT, f"{task}.log")
     rec = {"task": task, "tag": tag, "status": "running", "started": time.time()}
@@ -307,7 +308,8 @@ def _build(task: str, tag: str) -> None:
             json.dump(model, f)
         with open(log_path, "w") as lf:
             for args in (["docker", "compose", "-p", project, "-f", bf, "pull", "--ignore-buildable"],
-                         ["docker", "compose", "-p", project, "-f", bf, "build"]):
+                         ["docker", "compose", "-p", project, "-f", bf, "build"]
+                         + (["--no-cache", "--pull"] if no_cache else [])):   # a stale cached `apt-get update` layer
                 lf.write(f"$ {' '.join(args)}\n")
                 lf.flush()
                 p = subprocess.run(args, stdout=lf, stderr=subprocess.STDOUT, timeout=7200, cwd=tdir)
@@ -598,7 +600,7 @@ def handle(req: dict) -> dict:
             rec = _record(task)
             if rec.get("status") == "built" and rec.get("tag") == tag and not req.get("force"):
                 return {"ok": True, "status": "built", "cached": True}
-            th = threading.Thread(target=_build, args=(task, tag), daemon=True)
+            th = threading.Thread(target=_build, args=(task, tag, bool(req.get("no_cache"))), daemon=True)
             _builds[task] = th
             th.start()
         return {"ok": True, "status": "running"}
