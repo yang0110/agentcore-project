@@ -73,10 +73,16 @@ CLIENT_MEM = os.environ.get("ACS_CLIENT_MEM", "8g")
 CLIENT_CPUS = os.environ.get("ACS_CLIENT_CPUS", "4")
 TOKEN = open(os.environ.get("ACS_TOKEN_FILE", os.path.join(ROOT, "token"))).read().strip()
 CTX, TASKS, BUILT, EPS = (os.path.join(ROOT, d) for d in ("ctx", "tasks", "built", "ep"))
-SERVER_PORT = 8080
+SERVER_PORT = 8080                  # records built before the launcher (and the KernelBench GPU image)
 SERVER_CMD = "exec /opt/acs/py/bin/python3 /opt/acs/acs_http_server.py"
+# Records with `launcher` (built since 2026-10-13): the image's own start-up runs, as its own USER, and our
+# server moves off :8080, which nginx / pypi-server / mlflow tasks need themselves (acs_m5_launch.py).
+LAUNCH_PORT = 18080
+LAUNCH_CMD = "exec /opt/acs/py/bin/python3 /opt/acs/acs_m5_launch.py"
+_IDLE_STARTS = {"sleep infinity", "sh -c sleep infinity", "bash -c sleep infinity", "/bin/sh -c sleep infinity",
+                "/bin/bash -c sleep infinity", "bash", "/bin/bash", "sh", "/bin/sh", ""}
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,80}$")
-AGENT_VERSION = "2026-10-12.1"      # health reports it; the trainer self_updates an older agent (baked AMI)
+AGENT_VERSION = "2026-10-13.2"      # health reports it; the trainer self_updates an older agent (baked AMI)
 MIN_FREE_GB = float(os.environ.get("ACS_MIN_FREE_GB", "8"))
 # Dead-man switch for episode instances (0 = off, the builder): no authenticated trainer call for this
 # long -> `shutdown -h now`, and the instance (launched with InstanceInitiatedShutdownBehavior=terminate)
@@ -225,9 +231,34 @@ def _rewrite(model: dict, task: str, project: str, rec: dict, ep_dir: str, slot:
             s.pop("build")
             s["image"] = rec["images"][name]
             s["pull_policy"] = "never"
-        if name == client:
+        if name == client and rec.get("launcher"):
+            orig = rec.get("orig") or {}
+            cmd = s.get("command")
+            if isinstance(cmd, str):
+                cmd = ["sh", "-c", cmd]
+            # compose overrides the image only when it sets one (`compose config` emits "entrypoint": null)
+            ep = s["entrypoint"] if s.get("entrypoint") is not None else orig.get("entrypoint")
+            if isinstance(ep, str):
+                ep = ["sh", "-c", ep]
+            start = list(ep or []) + list(cmd if cmd else orig.get("cmd") or [])
+            env = s.get("environment") or {}
+            if isinstance(env, list):
+                env = dict(e.split("=", 1) if "=" in e else (e, "") for e in env)
+            env.update(ACS_SERVER_PORT=str(LAUNCH_PORT), ACS_EXEC_INTERACTIVE="1")
+            if " ".join(start) not in _IDLE_STARTS:
+                env["ACS_ORIG_START"] = json.dumps(start)
+            user = orig.get("user", "").split(":", 1)[0]
+            if user not in ("", "root", "0") and not s.get("user"):
+                env["ACS_EXEC_USER"] = user
+            s["environment"] = env
+            s["entrypoint"] = []
+            s["command"] = ["sh", "-c", LAUNCH_CMD]
+            s["init"] = True                # tini reaps what the image's start-up orphans (qemu -daemonize)
+            s["ports"] = [{"target": int(rec.get("server_port", LAUNCH_PORT)), "protocol": "tcp", "mode": "ingress"}]
+        elif name == client:
             s["ports"] = [{"target": SERVER_PORT, "protocol": "tcp", "mode": "ingress"}]
             s["command"] = _client_command(s.get("command"))
+        if name == client:
             s.setdefault("mem_limit", CLIENT_MEM)
             s.setdefault("cpus", float(CLIENT_CPUS))
             s.setdefault("pids_limit", 8192)
@@ -265,21 +296,12 @@ def _build(task: str, tag: str) -> None:
             if "build" in s:
                 images[name] = _image_tag(task, name, tag)
                 s["image"] = images[name]
-            if name == client:
-                b = s.get("build") or {}
-                ctx = b.get("context") or tdir
-                df = os.path.join(ctx, b.get("dockerfile") or "Dockerfile")
-                with open(df) as f:
-                    base = f.read()
-                with open(os.path.join(CTX, "WRAP_APPENDIX")) as f:
-                    appendix = f.read()
-                with open(os.path.join(ctx, "Dockerfile.acs"), "w") as f:
-                    f.write(base.rstrip() + "\n\n" + appendix.replace("{env_lines}", ""))
-                b["dockerfile"] = "Dockerfile.acs"
-                b["additional_contexts"] = {"acs": CTX}
-                s["build"] = b
         if client not in images:
             raise RuntimeError(f"client service {client!r} has no build section (an image-only client can't be wrapped)")
+        # The client is built AS SHIPPED first (its own Dockerfile, untouched), so its ENTRYPOINT / CMD /
+        # USER can be read back; the wrapper is then a layer FROM it (build cache: no second build).
+        orig = _image_tag(task, client + "-orig", tag)
+        model["services"][client]["image"] = orig
         bf = os.path.join(BUILT, f"{task}.build.json")
         with open(bf, "w") as f:
             json.dump(model, f)
@@ -291,12 +313,32 @@ def _build(task: str, tag: str) -> None:
                 p = subprocess.run(args, stdout=lf, stderr=subprocess.STDOUT, timeout=7200, cwd=tdir)
                 if p.returncode != 0:
                     raise RuntimeError(f"compose {args[6]} exit {p.returncode}")
+            code, out, err = _sh(["docker", "image", "inspect", "-f", "{{json .Config}}", orig], timeout=60)
+            if code != 0:
+                raise RuntimeError(f"inspect {orig}: {err[-300:]}")
+            cfg = json.loads(out)
+            with open(os.path.join(CTX, "WRAP_APPENDIX")) as f:
+                appendix = f.read().replace("{env_lines}", "")
+            wrap_dir = os.path.join(BUILT, f"{task}.wrap")
+            shutil.rmtree(wrap_dir, ignore_errors=True)
+            os.makedirs(wrap_dir)
+            with open(os.path.join(wrap_dir, "Dockerfile.acs"), "w") as f:
+                f.write(f"FROM {orig}\n\n{appendix.rstrip()}\nCOPY --from=acs acs_m5_launch.py /opt/acs/\n")
+            args = ["docker", "build", "--build-context", f"acs={CTX}", "-f", os.path.join(wrap_dir, "Dockerfile.acs"),
+                    "-t", images[client], wrap_dir]
+            lf.write(f"$ {' '.join(args)}\n")
+            lf.flush()
+            p = subprocess.run(args, stdout=lf, stderr=subprocess.STDOUT, timeout=3600, cwd=wrap_dir)
+            if p.returncode != 0:
+                raise RuntimeError(f"wrapper build exit {p.returncode}")
         size = 0
         for img in images.values():
             code, out, _ = _sh(["docker", "image", "inspect", "-f", "{{.Size}}", img], timeout=60)
             size += int(out.strip() or 0) if code == 0 else 0
         rec.update(status="built", images=images, client=client, size_mb=round(size / 2**20, 1),
-                   build_s=round(time.time() - t0, 1))
+                   build_s=round(time.time() - t0, 1), launcher=1, server_port=LAUNCH_PORT,
+                   orig={"entrypoint": cfg.get("Entrypoint") or [], "cmd": cfg.get("Cmd") or [],
+                         "user": cfg.get("User") or ""})
     except Exception as e:  # noqa: BLE001 — recorded, reported by build_status
         tail = ""
         if os.path.exists(log_path):
@@ -360,7 +402,8 @@ def _up(task: str, episode: str, slot: dict | None = None) -> dict:
                               "--no-build", "--quiet-pull"], timeout=900, cwd=ep_dir)
         if code != 0:
             raise RuntimeError(f"compose up exit {code}: {(out + err)[-600:]}")
-        code, out, err = _sh(["docker", "compose", "-p", project, "-f", cf, "port", client, str(SERVER_PORT)], timeout=60)
+        code, out, err = _sh(["docker", "compose", "-p", project, "-f", cf, "port", client,
+                              str(rec.get("server_port", SERVER_PORT))], timeout=60)
         if code != 0 or ":" not in out:
             raise RuntimeError(f"compose port: {(out + err)[-300:]}")
         port = int(out.strip().rsplit(":", 1)[1])

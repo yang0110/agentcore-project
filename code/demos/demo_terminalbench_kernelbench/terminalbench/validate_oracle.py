@@ -105,7 +105,10 @@ async def _check(task: str, arn: str, region: str, sem: asyncio.Semaphore) -> di
             sb = await _session(arn, region)
             await sb.write_file("/tmp/.acs_solution.sh", script)
             t0 = time.perf_counter()
-            code, out, err = await sb.exec("bash /tmp/.acs_solution.sh", timeout=int(agent_t))
+            # solution.yaml is a list of commands upstream TYPES into its interactive tmux shell, so its
+            # ~/.bashrc aliases apply (create-bucket: `aws` = awslocal); solution.sh is run as a script.
+            typed = not (TASKS_DIR / task / "solution.sh").is_file()
+            code, out, err = await sb.exec(f"bash {'-i ' if typed else ''}/tmp/.acs_solution.sh", timeout=int(agent_t))
             row["oracle_s"] = round(time.perf_counter() - t0, 1)
             if code == 124:
                 row["note"] += f"solution timed out at {agent_t:.0f}s "
@@ -114,8 +117,10 @@ async def _check(task: str, arn: str, region: str, sem: asyncio.Semaphore) -> di
             row["grade_s"] = round(time.perf_counter() - t0, 1)
             row["oracle"] = int(g["solved"])
             row["tests"] = f"{g['tests_passed']}/{g['tests_total']}"
-            if not g["solved"]:
-                row["note"] += "grade_tail: " + g["grade_tail"].replace("\n", " | ")[-240:]
+            if not g["solved"]:   # pytest's FAILED/ERROR summary lines if any, else the stdout tail
+                fails = re.findall(r"(?m)^(?:FAILED|ERROR) .*$", g["grade_tail"])
+                row["note"] += ("tests: " + " | ".join(fails)[:400] if fails
+                                else "grade_tail: " + g["grade_tail"].replace("\n", " | ")[-400:])
         except Exception as e:  # noqa: BLE001
             row["note"] += f"oracle:{type(e).__name__}: {e}"[:200]
         finally:

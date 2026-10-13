@@ -74,7 +74,7 @@ def _ec2():
 def _server_files() -> dict[str, bytes]:
     import deploy_docker_tasks as dock  # noqa: E402  (acs_http_server.py + sandbox_server_agent.py)
 
-    return {k: v for k, v in dock._server_files().items() if k != "WRAP_APPENDIX"}
+    return {k: v for k, v in dock._server_files().items() if k not in ("WRAP_APPENDIX", "acs_m5_launch.py")}
 
 
 def image() -> int:

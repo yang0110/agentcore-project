@@ -211,7 +211,9 @@ class _SandboxActorImpl:
                                   timeout=int(timeout), env=run_env)
             return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
         except subprocess.TimeoutExpired as e:
-            return {"exit_code": 124, "stdout": e.stdout or "", "stderr": "timeout"}
+            # TimeoutExpired.stdout is BYTES even with text=True: returned raw it broke the JSON reply (HTTP 500)
+            out = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            return {"exit_code": 124, "stdout": out, "stderr": "timeout"}
 
     def write_file(self, session_id: str, path: str, text: str) -> dict:
         dst = self._abs(session_id, path)

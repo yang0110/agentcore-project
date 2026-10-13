@@ -120,6 +120,7 @@ def _ensure_standalone_python() -> None:
 def _server_files() -> dict[str, bytes]:
     return {"acs_http_server.py": (ACS_CTX / "acs_http_server.py").read_bytes(),
             "sandbox_server_agent.py": (DEMO_DIR / "agentcore_slime_demo" / "sandbox_server_agent.py").read_bytes(),
+            "acs_m5_launch.py": (DEMO_DIR / "m5_agent" / "acs_m5_launch.py").read_bytes(),   # m5 client entry
             "WRAP_APPENDIX": WRAP_APPENDIX.encode()}
 
 
