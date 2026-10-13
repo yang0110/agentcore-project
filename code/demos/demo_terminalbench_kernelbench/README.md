@@ -93,7 +93,7 @@ the EC2 API with boto3, using the g6e's role. See [`docs/m5-per-episode-isolatio
 (L3), 20 HF models (L4). It is the old `agentcore_slime_demo.kernelbench` generator, and it reproduces the
 120 rows earlier runs used byte for byte.
 - **Held-out eval, 27 rows:** the same 20 L2 problems as before (so eval/kernelbench stays comparable),
-  plus L3 ids 10/20/30/40/50 and L4 ids 10/20. **Train:** the other 243.
+  plus L3 ids 10/20/30/40/50 and L4 ids 10/20. **Train:** the other 243 (234 after the oracle check).
 - **One image key per level**, so `image_routing.py` can route levels separately:
   `kernelbench-gpu` (L1), `kernelbench-gpu-l2`, `-l3`, `-l4`. `TB_KB_SUBSTRATE`:
 
@@ -112,6 +112,23 @@ the EC2 API with boto3, using the g6e's role. See [`docs/m5-per-episode-isolatio
 - **Oracle check:** `kernelbench/validate_kernelbench.py` submits each problem's reference as `ModelNew`
   through the real hidden grader on the EC2 pool and writes `kernelbench/oracle.csv`. `build_kernelbench.py`
   then drops the rows whose oracle failed (`fail` / `timeout`, never `infra`) and prints each with its reason.
+  Recheck a subset with `KB_ONLY=<label prefixes>` (it rewrites only those rows of `oracle.csv`).
+- **Oracle result (2026-10-12, A10G / L4-class 24 GB GPUs): 261/270 usable -> 234 train + 27 eval.**
+  Dropped: L1 Swish, Softsign, L1Norm, L2Norm and L3 VisionAttention (the reference itself needs one more
+  full-size tensor than 24 GB holds); L1 Average_Pooling_2D (its 16 GB CPU input exceeds a g5.xlarge's RAM);
+  the three L4 gpt-neo-2.7B rows (past the 600 s grade timeout).
+- **Grader memory fix (same date):** the first oracle pass failed 45 rows; ~36 were the GRADER, not the task:
+  a whole-tensor `torch.allclose` plus keeping `_out`/`_ref` alive through the speedup timing OOMed a 24 GB
+  GPU on the reference itself. The checks now compare in 16M-element chunks (`_kb_close`, same atol/rtol
+  1e-2) and free both outputs before timing. Rows built before this had the bug in training too.
+- **Train mix:** `TB_KB_SHARE=0.4` (default) keeps every KernelBench row and cycles the Terminal-Bench rows to
+  60 % of train: 351 TB rows (151 tasks) + 234 KB = 585 rows. A full epoch at RB=4 is ~146 steps.
+- **End-to-end run (2026-10-12, `logs/e2e-allkb-hybrid_20261012_155926.*`, qwen3-4B, NR=11):** Job
+  succeeded; all 4 levels trained (L1 on the AgentCore g6 Instance, L2-4 on the EC2 pool), raw reward
+  0.10-0.37 every step, eval/kernelbench 0.38, eval/terminalbench 1/62. 6015 sandbox ops: 61 benign late
+  stops, 19 shutdown-time ping AttributeErrors (a level-1 capacity retry outliving its closed client), 2
+  retried 500s, 1 level-1 session that ran out of AgentCore g5 capacity retries (us-west-2b starved).
+  Afterwards the EC2 pool was gc'd and the m5 host stopped.
 
 ## KernelBench on the g6 tier
 
@@ -248,7 +265,8 @@ Runtimes and 3 capacity providers (no instance without a session), the builder m
 | `TB_M5_MAX_INSTANCES` | 24 | warm / per_episode: live m5 instances at once (~87 % of moments need ≤ 24) |
 | `TB_PREOPEN_BATCHES_SLOW` | 5 | batches ahead for m5 VMs and g6 Instances (microVMs: `TB_PREOPEN_BATCHES`); a g6 needs ~2.5 min (boot + torch install) |
 | `TB_DOCKER_MAX_PROJECTS` | 16 | shared mode: m5 episode projects at once (trainer-side gate; the host's `M5_MAX_PROJECTS` is the backstop) |
-| `TB_KERNELBENCH` / `TB_KB_TRAIN` / `TB_KB_EVAL` | 1 / all (100) / all (20) | the KernelBench g6 Runtime (step 4) / KernelBench rows in train / eval (caps; 0 = leave out) |
+| `TB_KERNELBENCH` / `TB_KB_TRAIN` / `TB_KB_EVAL` | 1 / all (243) / all (27) | the KernelBench g6 Runtime (step 4) / KernelBench rows in train / eval (caps drawn round-robin over levels; 0 = leave out) |
+| `TB_KB_SHARE` | 0.4 | KernelBench's target share of train rows: all KB rows kept, Terminal-Bench rows cycled to fill the rest ('' = natural mix, ~62% KB) |
 | `TB_GPU_TASKS` / `TB_GPU_MAX_SESSIONS` / `TB_GPU_INSTANCE` | empty / 32 / g6.xlarge | Terminal-Bench tasks on the g6 tier / live g6 sessions at once, per pool (at 16 the gate was full 66 % of smoke 5 and 31/36 pre-opened sessions were still booting; ~4 KernelBench prompts × 8 are in the look-ahead window) / instance type |
 | `TB_KB_SUBSTRATE` / `TB_KB_EC2_LEVELS` | split / 2,3,4 | KernelBench substrate per level (table in "KernelBench: all 270 problems"): `split` = L1 on the AgentCore g6 Runtime, these levels on the EC2 GPU pool (`deploy/g6_host.json`); `agentcore` = all on AgentCore (no L4); `ec2` = all on the pool |
 | `TB_KB_LEVELS` | 1,2,3,4 | `kernelbench/build_kernelbench.py`: levels written to `kernelbench/*.jsonl` (then step 1) |

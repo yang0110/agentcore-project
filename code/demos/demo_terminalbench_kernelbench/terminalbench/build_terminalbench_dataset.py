@@ -85,6 +85,20 @@ def _write(path: Path, rows: list[dict]) -> None:
             f.write(json.dumps(r) + "\n")
 
 
+def _level_cap(rows: list[dict], cap: int | None) -> list[dict]:
+    """The first `cap` KernelBench rows taken round-robin over levels (label kb_level_<n>_...)."""
+    if cap is None or cap >= len(rows):
+        return rows
+    by: dict[str, list[dict]] = {}
+    for r in rows:
+        by.setdefault(r["label"].split("_")[2], []).append(r)
+    out, i = [], 0
+    while len(out) < cap:
+        out += [lv[i] for lv in by.values() if i < len(lv)][: cap - len(out)]
+        i += 1
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", default=str(HERE / "tasks" / "manifest.json"))
@@ -150,21 +164,29 @@ def main() -> int:
     _write(out / "terminalbench_eval_gpu.jsonl", [_row(t, max_turns) for t in eval_tasks["gpu"]])
     # KernelBench on the g6 tier (route `kernelbench-gpu`, deploy_gpu_tasks.py): mixed into train, own eval
     # set. Default = the FULL in-tree set (kernelbench/build_kernelbench.py: 243 train + 27 held-out over all 4 levels); TB_KB_TRAIN / TB_KB_EVAL
-    # cap the rows (0 = leave it out).
+    # cap the rows (0 = leave it out), drawn round-robin over the levels (the files are level-sorted: a plain
+    # head would be level_1 only).
     kb_dir = DEMO_DIR / "kernelbench"
     kb_train, kb_eval = [], []
     kb_cap = lambda var: int(os.environ[var]) if os.environ.get(var, "") != "" else None  # noqa: E731
     if "kernelbench-gpu" in pool and (kb_dir / "kernelbench_train.jsonl").exists():
-        kb_train = [json.loads(l) for l in open(kb_dir / "kernelbench_train.jsonl")][: kb_cap("TB_KB_TRAIN")]
-        kb_eval = [json.loads(l) for l in open(kb_dir / "kernelbench_eval.jsonl")][: kb_cap("TB_KB_EVAL")]
+        kb_train = _level_cap([json.loads(l) for l in open(kb_dir / "kernelbench_train.jsonl")], kb_cap("TB_KB_TRAIN"))
+        kb_eval = _level_cap([json.loads(l) for l in open(kb_dir / "kernelbench_eval.jsonl")], kb_cap("TB_KB_EVAL"))
+    # TB_KB_SHARE (default 0.4 = the share earlier runs trained on): KernelBench's target fraction of train rows.
+    # Every KernelBench row stays; the Terminal-Bench rows are cycled (task order kept) up to the length that
+    # gives that share, so a step's batch stays Terminal-Bench-dominant. '' = no balancing (natural mix).
+    share = os.environ.get("TB_KB_SHARE", "0.4")
+    if kb_train and train and share != "":
+        n_tb = max(len(train), round(len(kb_train) * (1 - float(share)) / float(share)))
+        train = [train[i % len(train)] for i in range(n_tb)]
     train += kb_train
     _write(out / "terminalbench_train.jsonl", train)
     _write(out / "kernelbench_eval.jsonl", kb_eval)
     print(f"kernelbench (g6): +{len(kb_train)} train rows, {len(kb_eval)} held-out eval rows"
           + ("" if kb_train else " (no kernelbench-gpu route: run deploy_gpu_tasks.py)"))
     n_dc = sum(1 for t in train_tasks if t.spec["substrate"] == "docker")
-    print(f"wrote {len(train)} train rows ({len(train_tasks)} tasks x{args.repeat}: {len(train_tasks) - n_dc} "
-          f"microvm + {n_dc} docker) + held-out eval {len(eval_tasks['microvm'])} microvm / "
+    print(f"wrote {len(train)} train rows ({len(train) - len(kb_train)} Terminal-Bench rows over {len(train_tasks)} tasks: "
+          f"{len(train_tasks) - n_dc} microvm + {n_dc} docker; {len(kb_train)} KernelBench) + held-out eval {len(eval_tasks['microvm'])} microvm / "
           f"{len(eval_tasks['docker'])} docker / {len(eval_tasks['gpu'])} gpu tasks, max_turns={max_turns} -> {out}")
     return 0
 
