@@ -1,0 +1,346 @@
+\input{preamble}
+% First-call deck (12 slides) for technical decision-makers. Every number comes from the deep-dive deck
+% (agentic_rl_on_agentcore.tex), which cites its logs; the "Deep dive:" line on each slide names the
+% deep-dive slide behind it.
+\renewcommand{\deckfooter}{Agentic RL sandboxes on AWS \textperiodcentered{} first call}
+\newcommand{\deep}[1]{\par\vspace{0.5mm}{\tiny\textcolor{footc}{Deep dive: #1}}}
+\newcommand{\settag}[1]{\gdef\secname{#1}}
+% one challenge slide: challenge | what we did | proof
+\newcommand{\chal}[3]{\colorbox{panel}{\parbox[t][25mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}%
+  {\normalsize\bfseries\color{#1}#2}\par\vspace{1.5mm}\small #3}}}
+
+\title{Agentic RL Sandboxes on AWS}
+\date{October 2026}
+
+\begin{document}
+
+%====================================================================
+{\bgframe{art/bg_title.jpg}
+\begin{frame}[plain]
+\vspace*{4mm}
+\begin{minipage}{0.50\textwidth}\raggedright
+{\fontsize{22}{26}\selectfont\bfseries\color{white}Agentic RL Sandboxes on AWS\par}
+\vspace{3mm}
+{\normalsize\color{white}A sandbox per episode, at RL scale, with Amazon Bedrock AgentCore and EC2\par}
+\vspace{8mm}
+{\small\color{white}\textbf{Kaige Yang}\\Senior Applied Scientist, AWS\par}
+\end{minipage}
+\end{frame}}
+
+%====================================================================
+\settag{Concepts}
+\begin{frame}{Agentic RL: the model learns by acting in a real machine}
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm, every node/.style={font=\small},
+  lbl/.style={font=\scriptsize,text=inkmuted,align=center},
+  num/.style={circle,fill=awsteal,text=bgdark,font=\scriptsize\bfseries,inner sep=0.8pt,minimum size=4.2mm}]
+\node[box,text width=26mm,font=\small] (task) at (0,10) {\textbf{Task}\\instruction +\\environment};
+\node[box,draw=cat2,text width=40mm,minimum height=20mm,font=\small] (sb) at (46,10) {\textbf{Sandbox}\\the task's own machine;\\the agent runs commands\\hidden tests score the end};
+\node[box,draw=awspurple,text width=34mm,font=\small] (inf) at (96,22) {\textbf{Policy}\\the model in training};
+\node[box,draw=awspurple,text width=34mm,font=\small] (trn) at (96,-2) {\textbf{Trainer}\\GRPO: compare tries,\\reinforce the better};
+\draw[arr] (task) -- node[lbl,above]{open} (sb);
+\draw[arr,awsteal] ($(sb.east)+(0,6)$) -- node[lbl,above,sloped]{each turn: next action} (inf.west);
+\draw[arr] ($(sb.east)+(0,-6)$) -- node[lbl,below,sloped]{tokens + reward} (trn.west);
+\draw[arr,awspurple] (trn) -- node[lbl,right]{new weights} (inf);
+\end{tikzpicture}
+\par\vspace{3mm}\raggedright
+\begin{columns}[T]
+\column{0.48\textwidth}
+\begin{itemize}\small\setlength{\itemsep}{1mm}
+\item \textbf{Every try needs its own clean machine}: the agent installs, edits and breaks things.
+\item \textbf{Thousands of tries per hour}: here 1{,}188 episodes/h, 32 at once.
+\end{itemize}
+\column{0.48\textwidth}
+\begin{itemize}\small\setlength{\itemsep}{1mm}
+\item \textbf{The score must be honest}: RL optimizes the reward, so any shortcut gets learned.
+\item \textbf{The sandbox is the RL environment}: if it's slow, wrong or leaky, training is too.
+\end{itemize}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\deep{``Agentic RL workflow''}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Amazon Bedrock AgentCore Runtime: a managed machine per session}
+\begin{columns}[T]
+\column{0.50\textwidth}
+{\normalsize\textbf{\textcolor{cat2}{microVM}} \small(the default)}
+\begin{itemize}\small\setlength{\itemsep}{1mm}
+\item One session = one isolated microVM with its own kernel; a new session id = a new machine.
+\item Fully managed: boot, isolation, idle reclaim, teardown.
+\item Opens in \hl{0.9\,s} (median), from your container image.
+\end{itemize}
+\vspace{1mm}
+{\normalsize\textbf{\textcolor{cat3}{GPU Instance}} \small(capacity provider)}
+\begin{itemize}\small\setlength{\itemsep}{1mm}
+\item Same API, a whole GPU machine per session (g5/g6e here).
+\item Opens in 143\,s: a fresh machine every time.
+\end{itemize}
+\column{0.46\textwidth}
+\tabcap{What it doesn't do, so we add plain EC2}
+\small\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\linewidth}{@{}Y P{0.34\linewidth}@{}}
+\toprule
+\textbf{Limit} & \textbf{Workaround}\\
+\midrule
+no Docker daemon, no root capabilities & EC2 \textcolor{cat1}{\textbf{m5}} pool\\
+images capped at 2\,GB & EC2 (no cap)\\
+microVMs are arm64 only & EC2 x86\\
+1 session = 1 machine, no warm reuse on GPU & EC2 \textcolor{cat1}{\textbf{GPU pool}}\\
+\bottomrule
+\end{tabularx}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\plainen{AgentCore gives every episode its own managed machine in under a second. Where a task needs Docker, root, a big image or warm GPUs, we fill the gap with plain EC2 behind the same API.}
+\deep{``AgentCore Runtime foundations'', ``What AgentCore can't do''}
+\end{frame}
+
+%====================================================================
+\settag{The problem}
+\begin{frame}{The workload: 511 real agentic tasks, two very different kinds}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\colorbox{panel}{\parbox[t][44mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
+{\large\bfseries\textcolor{awsteal}{Terminal-Bench}} {\small 241 tasks}\par\vspace{1mm}
+\small Fix or build something in a Linux machine, with shell commands.\par\vspace{2mm}
+\textbf{Example} \tb{postgres-csv-clean}: ``clean the customer data in PostgreSQL, export \tb{cleaned\_customers.csv}''.\par\vspace{2mm}
+\textbf{Machine}: an app container + a Postgres sidecar.\par\vspace{1mm}
+\textbf{Scored}: hidden tests check the CSV and that the work ran in Postgres.}}
+\column{0.48\textwidth}
+\colorbox{panel}{\parbox[t][44mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
+{\large\bfseries\textcolor{awsteal}{KernelBench}} {\small 270 tasks}\par\vspace{1mm}
+\small Rewrite a PyTorch model as a faster GPU kernel.\par\vspace{2mm}
+\textbf{Example}: ``here is \tb{Model}; write \tb{ModelNew}: same output, on the GPU, faster''.\par\vspace{2mm}
+\textbf{Machine}: a GPU with CUDA PyTorch.\par\vspace{1mm}
+\textbf{Scored}: a hidden checker compares outputs and times both: full reward only if $\ge$1.10$\times$ faster.}}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\plainen{every task is a small broken computer plus a hidden exam. Each needs its own image, some need several containers, root or a GPU.}
+\deep{``The agentic tasks in this solution'', ``One example from each dataset''}
+\end{frame}
+
+%====================================================================
+\begin{frame}{16 challenges every agentic-RL sandbox must solve, in four groups}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\chal{awsteal}{1 \quad Every task gets its environment}{one image per task (241 Dockerfiles) $\cdot$ images up to 6.7\,GB vs a 2\,GB cap $\cdot$ x86-only tasks on arm64 $\cdot$ multi-container tasks $\cdot$ root and capabilities $\cdot$ GPUs}
+\par\vspace{2mm}
+\chal{awsteal}{3 \quad Rewards you can trust}{no leaks between episodes $\cdot$ hidden tests the agent can't read or game $\cdot$ tasks whose own solution fails $\cdot$ all-or-nothing scores give GRPO no signal}
+\column{0.48\textwidth}
+\chal{awsteal}{2 \quad The trainer never waits}{cold starts of 1\,s to 2.5\,min vs a $\sim$11\,s agent loop $\cdot$ idle sessions reclaimed after 15\,min $\cdot$ concurrency and quotas $\cdot$ long or hung tool calls}
+\par\vspace{2mm}
+\chal{awsteal}{4 \quad Safe, reliable, affordable}{the agent runs untrusted code yet must reach the trainer, with no public ports $\cdot$ nothing left running after a crash $\cdot$ GPU machines dominate the bill}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\plainen{the next four slides take one group each: the challenge, what we did, and the number that shows it works.}
+\deep{``16 challenges every agentic-RL sandbox must solve''}
+\end{frame}
+
+%====================================================================
+\settag{Our solution}
+\begin{frame}{The solution: one RL loop, four sandbox substrates, chosen per task}
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm, every node/.style={font=\small},
+  lbl/.style={font=\scriptsize,text=inkmuted,align=center},
+  zone/.style={dashed,rounded corners=3pt,inner sep=2mm}]
+\node[box,draw=awspurple,text width=34mm,minimum height=26mm,font=\small] (tr) at (0,10) {\textbf{slime trainer}\\(open-source RL)\\[1mm]GRPO training\\+ SGLang inference\\[1mm]\textcolor{awsteal}{\textbf{our router}}: task $\rightarrow$\\its substrate};
+\node[box,draw=cat2,text width=40mm] (mv) at (68,26) {\textbf{\textcolor{cat2}{AgentCore microVM}}\\Terminal-Bench, 162 tasks};
+\node[box,draw=cat3,text width=40mm] (gi) at (68,15) {\textbf{\textcolor{cat3}{AgentCore GPU Instance}}\\KernelBench level 1};
+\node[box,draw=cat1,text width=40mm] (m5) at (68,2) {\textbf{\textcolor{cat1}{EC2 m5 pool}}\\Terminal-Bench, 50 tasks\\(Docker, root, x86, big images)};
+\node[box,draw=cat1,text width=40mm] (gp) at (68,-10) {\textbf{\textcolor{cat1}{EC2 GPU pool}}\\KernelBench levels 2--4};
+\begin{scope}[on background layer]
+\node[zone,draw=cat2,fit=(mv)(gi),label={[lbl,anchor=west]east:\textbf{managed by AgentCore}}] (ac) {};
+\node[zone,draw=cat1,fit=(m5)(gp),label={[lbl,anchor=west]east:\textbf{managed by our code}}] (ec) {};
+\end{scope}
+\draw[arr] ($(tr.east)+(0,6)$) -- node[lbl,above,sloped]{InvokeAgentRuntime} (ac.west);
+\draw[arr,cat1] ($(tr.east)+(0,-6)$) -- node[lbl,below,sloped]{EC2 API + HTTP} (ec.west);
+\end{tikzpicture}
+\par\vspace{2mm}\raggedright
+\begin{columns}[T]
+\column{0.32\textwidth}
+\small\textbf{One code path}: harness, grader and reward never know the substrate.
+\column{0.32\textwidth}
+\small\textbf{Routing is data}: each task goes where its own reference solution passes.
+\column{0.32\textwidth}
+\small\textbf{slime unpatched}: we plug in through its extension points.
+\end{columns}
+\par\vskip 0pt plus 1filll
+\deep{``The architecture'', ``Why four substrates''}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Challenge 1: every task gets its environment}
+\begin{columns}[T]
+\column{0.40\textwidth}
+{\normalsize\textbf{What we did}}
+\begin{itemize}\small\setlength{\itemsep}{1.2mm}
+\item \textbf{Route each task by measurement}: its build, its size, and whether its reference solution passes there.
+\item \textbf{microVM first}; Docker, root, x86 or big images go to an EC2 \textbf{m5}.
+\item \textbf{GPUs}: an AgentCore GPU Instance, or a warm EC2 GPU pool with torch baked in.
+\item \textbf{Drop only what can't pass its own check}, with the cause recorded.
+\end{itemize}
+\column{0.56\textwidth}
+\tabcap{Coverage (13 Oct)}
+\small\setlength{\tabcolsep}{4pt}\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\linewidth}{@{}Y r r@{}}
+\toprule
+& \textbf{used} & \textbf{of}\\
+\midrule
+\textbf{Terminal-Bench} & \hl{212} & 241\\
+\quad on a \smv{} / on an \sm{} & 162 / 50 &\\
+\textbf{KernelBench} & \hl{261} & 270\\
+\quad AgentCore GPU / EC2 GPU pool & 95 / 166 &\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+{\footnotesize\textbf{Dropped}: 29 Terminal-Bench (rotted upstream, live websites, too slow, never build: none is our harness) and 9 KernelBench (the reference itself needs a 48\,GB GPU or a longer grade).\par}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\plainen{a microVM covers two thirds of Terminal-Bench; adding EC2 for the rest and GPUs for KernelBench brings coverage to 88\,\% and 97\,\%.}
+\deep{``Coverage'' (TB and KB), ``What AgentCore can't do''}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Challenge 2: the trainer never waits for a sandbox}
+\begin{columns}[T]
+\column{0.40\textwidth}
+{\normalsize\textbf{What we did}}
+\begin{itemize}\small\setlength{\itemsep}{1.2mm}
+\item \textbf{Pre-open}: look ahead at the next batches and open their sandboxes while this batch runs.
+\item \textbf{Heartbeat}: keep pre-opened sessions alive past the 15\,min idle reclaim.
+\item \textbf{Warm GPU pool}: reuse GPU machines, a fresh container per episode.
+\item \textbf{Caps per substrate} so pre-open never exceeds quotas.
+\end{itemize}
+\column{0.56\textwidth}
+\tabcap{Full-epoch run: open time vs what the episode waited (median)}
+\small\setlength{\tabcolsep}{4pt}\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\linewidth}{@{}Y r r@{}}
+\toprule
+& \textbf{open} & \textbf{waited}\\
+\midrule
+\textcolor{cat2}{\textbf{AgentCore microVM}} & 0.9\,s & \hl{0\,s}\\
+\textcolor{cat1}{\textbf{EC2 m5 pool}} & 37\,s & \hl{0\,s}\\
+\textcolor{cat3}{\textbf{AgentCore GPU Instance}} & 143\,s & \hl{0\,s}\\
+\textcolor{cat1}{\textbf{EC2 GPU pool}} (warm) & 1.4\,s & \hl{0\,s}\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+{\footnotesize\hl{1{,}188 episodes/h}, 32 at once, up to 192 live sandboxes. The trainer's wait is the model generating, not the sandbox.\par}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\plainen{opening a sandbox takes from a second to over two minutes, but it happens ahead of time, so the episode starts immediately.}
+\deep{``Sandbox latency'', ``Time breakdown'', ``Concurrency''}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Challenge 3: rewards you can trust}
+\begin{columns}[T]
+\column{0.48\textwidth}
+{\normalsize\textbf{What we did}}
+\begin{itemize}\small\setlength{\itemsep}{1.2mm}
+\item \textbf{Hidden tests} are copied in only after the agent stops, under a random name, with a nonce'd result line.
+\item \textbf{Oracle check}: a task trains only where its own reference solution passes.
+\item \textbf{A fresh machine per episode} (AgentCore), or a \textbf{verified reset} before reuse (EC2).
+\item \textbf{Partial credit} in training, so near-misses give GRPO a signal.
+\end{itemize}
+\column{0.48\textwidth}
+\tabcap{The reward hack RL found, and the fix}
+\small\setlength{\tabcolsep}{4pt}\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\linewidth}{@{}Y r@{}}
+\toprule
+KernelBench, correctness only: copy \tb{Model} to the GPU & scored 1 in \hl{64\,\%}\\
+With a 1.10$\times$ speed gate & 9.5\,\% of correct kernels\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+{\footnotesize\textbf{0 dirty resets} on reused machines. A grader bug we found while validating was fixed before training.\par}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\plainen{every reward comes from a task whose own solution passes, tests the agent never sees, and a clean machine.}
+\deep{``Reward integrity'', ``Lifecycles''}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Challenge 4: safe, reliable, affordable}
+\begin{columns}[T]
+\column{0.32\textwidth}
+\colorbox{panel}{\parbox[t][42mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
+{\large\bfseries\textcolor{awsteal}{Safe}}\par\vspace{1.5mm}\normalsize
+VPC-mode Runtimes, private subnets, \textbf{no public ports}; security-group-to-group rules only.\par\vspace{1.5mm}
+One narrow IAM role per actor: a sandbox can only pull its own image.}}
+\column{0.32\textwidth}
+\colorbox{panel}{\parbox[t][42mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
+{\large\bfseries\textcolor{awsteal}{Reliable}}\par\vspace{1.5mm}\normalsize
+\hl{0.35\,\%} infra errors: 69 in 19{,}606 episodes over 21 runs.\par\vspace{1.5mm}
+Every exit path cleans up: stop sessions, terminate VMs, a 30\,min dead-man switch on each VM.}}
+\column{0.32\textwidth}
+\colorbox{panel}{\parbox[t][42mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
+{\large\bfseries\textcolor{awsteal}{Affordable}}\par\vspace{1.5mm}\normalsize
+GPU sandboxes drive the bill: an AgentCore GPU machine lives 15\,min for a 3\,min session.\par\vspace{1.5mm}
+The warm EC2 GPU pool reuses each machine for $\sim$9 episodes.}}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\plainen{the agent runs untrusted code, so nothing is public and nothing outlives the run; GPU reuse is the main cost lever.}
+\deep{``Why security matters'', ``What we do for each risk'', ``Reliability'', ``Cost''}
+\end{frame}
+
+%====================================================================
+\settag{Results}
+\begin{frame}{Results: the sandbox side is proven; learning is the next step}
+\begin{columns}[T]
+\column{0.48\textwidth}
+{\normalsize\textbf{\textcolor{awsteal}{Proven}} \small(full-epoch run, 13 Oct)}
+\begin{itemize}\small\setlength{\itemsep}{1.2mm}
+\item 4 substrates in one training batch; 212 + 261 tasks.
+\item 1{,}188 episodes/h; median sandbox wait 0\,s.
+\item 0.35\,\% infra errors; honest, gated rewards.
+\end{itemize}
+\vspace{1mm}
+{\normalsize\textbf{\textcolor{awsmagenta}{Open}}}
+\begin{itemize}\small\setlength{\itemsep}{1.2mm}
+\item \textbf{Learning signal}: 51\,\% of GRPO groups have identical rewards, so no gradient.
+\item Held-out eval is flat at 4B and 9B so far; the 9B solves 5 of 31 held-out microVM tasks.
+\end{itemize}
+\column{0.48\textwidth}
+{\normalsize\textbf{Next}}
+\begin{itemize}\small\setlength{\itemsep}{1.2mm}
+\item \textbf{Reward shape and task mix}: graded speed reward, a task filter, more tries per prompt, larger turn budgets.
+\item \textbf{Skills}: short how-tos the agent can read, to lift hard tasks from never to sometimes solved.
+\item \textbf{Large models on SageMaker HyperPod}: one node trains, one serves, over EFA; the sandboxes stay the same.
+\end{itemize}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\plainen{the sandboxes keep up, rarely fail and grade honestly. What remains is RL work, making more tries differ so GRPO can learn, and scale.}
+\deep{``Results at a glance'', ``Signal'', ``What would make it learn'', ``Next''}
+\end{frame}
+
+%====================================================================
+\settag{Getting started}
+\begin{frame}{Getting started}
+\begin{columns}[T]
+\column{0.48\textwidth}
+{\normalsize\textbf{What you need}}
+\begin{itemize}\small\setlength{\itemsep}{1.2mm}
+\item An AWS account in a Region with AgentCore Runtime (built and tested in us-west-2).
+\item A GPU host for training (here 8 GPUs), with the slime container.
+\item Quotas: AgentCore Runtimes and sessions, EC2 vCPU; and \textbf{GPU capacity}, ideally reserved.
+\item Your tasks in Terminal-Bench format: a Dockerfile, an instruction, hidden tests, a reference solution.
+\end{itemize}
+\column{0.48\textwidth}
+{\normalsize\textbf{How it runs}}
+\begin{enumerate}\small\setlength{\itemsep}{1.2mm}
+\item Build the sandbox images and push them to Amazon ECR.
+\item Register the Runtimes; every task's reference solution is checked where it will train.
+\item Build the training data from the tasks that pass.
+\item Train: a smoke run first ($\sim$20\,min), then full runs.
+\item Clean up: one script removes what the run created.
+\end{enumerate}
+\vspace{1mm}
+{\footnotesize Plan for the first image build: hours for a few hundred tasks.\par}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\plainen{bring tasks with hidden tests and a reference solution; the same pipeline routes, checks and trains them.}
+\deep{``Prerequisites'', ``Run it end to end'', ``Bring your own tasks''}
+\end{frame}
+
+\end{document}
