@@ -217,46 +217,79 @@ multi-container compose (client + sidecars) & 12\\
 \end{frame}
 
 %====================================================================
-\begin{frame}{KernelBench: 120 tasks, each a faster CUDA kernel graded on a real GPU}
+\begin{frame}{KernelBench: all 270 tasks, each a faster CUDA kernel graded on a real GPU}
 \flabel{fr:kb}
 \begin{columns}[T]
 \column{0.52\textwidth}
 \begin{itemize}\footnotesize\setlength{\itemsep}{1.2mm}
 \item \textbf{The task:} given a reference PyTorch \tb{Model}, write \tb{ModelNew} in \tb{solution.py}: same
   outputs (atol/rtol $10^{-2}$), on CUDA, ideally faster (custom kernels, fusion, better ops).
-\item \textbf{Rows:} all 100 level-1 tasks (single ops) for training, 20 of the 100 level-2 tasks (fused ops) held out.
-  They are \textbf{mixed into the same batch} as Terminal-Bench rows.
-\item \textbf{The sandbox} needs an NVIDIA GPU.
+\item \textbf{Rows:} all 4 upstream levels. An oracle check keeps \hl{261}: \textbf{234 train + 27 held-out eval},
+  \textbf{mixed into the same batch} as Terminal-Bench rows (40\,\% of train rows, \tb{TB\_KB\_SHARE}).
+\item \textbf{The sandbox} needs an NVIDIA GPU: level 1 on the AgentCore g6 Instance, levels 2--4 on the plain-EC2 GPU pool.
 \item \textbf{The checker} (hidden, random name, nonce'd \tb{PASSED} line) builds \tb{ModelNew} next to
   \tb{Model}, checks shape, values and device, and prints \tb{speedup=}.
 \item \textbf{The reward:} 1.0 if correct and $\ge$ 1.10$\times$ faster, 0.5 if correct but not faster, 0 if wrong, crashed or not on CUDA (why the gate: \sref{fr:evreward}).
 \end{itemize}
 \column{0.44\textwidth}
-\tabcap{Corpus \textcolor{awsmagenta}{(?)}}
+\tabcap{Corpus by level}
 \footnotesize\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}l r@{}}
+\begin{tabular}{@{}l r r r@{}}
 \toprule
-\textbf{Tasks} & \textbf{n}\\
+\textbf{Level} & \textbf{upstream} & \textbf{train} & \textbf{eval}\\
 \midrule
-level 1, single ops (train) & 100\\
-\quad convolution & 35\\
-\quad matmul & 18\\
-\quad activation & 15\\
-\quad reduction / scan & 12\\
-\quad normalization & 8\\
-\quad loss & 6\\
-\quad pooling & 6\\
-level 2, fused ops (held-out eval) & 20\\
+1, single ops & 100 & 95 & 0\\
+2, fused ops & 100 & 80 & 20\\
+3, architectures & 50 & 44 & 5\\
+4, HF models & 20 & 15 & 2\\
 \midrule
-\textbf{total} & \hl{120}\\
+\textbf{total} & 270 & \hl{234} & \hl{27}\\
 \bottomrule
 \end{tabular}
-\par\vspace{0.5mm}{\tiny\textcolor{inkmuted}{one image for all tasks (CUDA torch, 145\,MB); level 2 = 20 of upstream's 100}}
-\par\vspace{1mm}{\scriptsize\textcolor{awsmagenta}{\textbf{(?) Work in progress:}} we are extending the solution to include more KernelBench tasks (more of level 2, then levels 3--4).\par}
+\par\vspace{0.5mm}{\tiny\textcolor{inkmuted}{one image key per level; the EC2 image (17\,GB) bakes the 7 level-4 HF models in; 9 dropped by the oracle check (\sref{fr:kbcov})}}
 \end{columns}
-\src{\tb{kernelbench/}, \tb{data/kernelbench\_\{train,eval\}.jsonl}, solution README (KernelBench on the g6 tier); checked 4 Oct 2026.}
+\src{\tb{kernelbench/build\_kernelbench.py}, \tb{kernelbench/oracle.csv}, \tb{data/kernelbench\_eval.jsonl}; checked 13 Oct 2026.}
 \par\vskip 0pt plus 1filll
 \plainen{the agent must beat PyTorch at its own job, on a real GPU, and a hidden test measures by how much.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{KernelBench coverage: 261 of 270 tasks in the full-epoch run}
+\flabel{fr:kbcov}
+\begin{columns}[T]
+\column{0.52\textwidth}
+\tabcap{Every usable row is used}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\linewidth}{@{}l r Y@{}}
+\toprule
+& \textbf{Rows} & \textbf{In this run}\\
+\midrule
+Train & 234 & each one \textbf{once} over the 146-step epoch (rows are shuffled)\\
+Held-out eval & 27 & \textbf{every one, at every eval} (every 10 steps)\\
+Dropped & 9 & no: the reference solution itself fails on 24\,GB GPUs\\
+\midrule
+\textbf{total} & \hl{270} & \\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+{\scriptsize\textbf{So far (step 11):} 58 distinct tasks have run: 17 from level 1, 29 from level 2, 8 from level 3,
+4 from level 4. That is the 27 eval rows plus $\sim$31 train rows; the rest come up over the remaining steps.\par}
+\column{0.44\textwidth}
+\begin{itemize}\footnotesize\setlength{\itemsep}{1.2mm}
+\item \textbf{The 9 dropped rows:}
+  \begin{itemize}\scriptsize
+  \item Swish, Softsign, L1Norm, L2Norm, VisionAttention: more GPU memory than 24\,GB, even for the reference.
+  \item Average Pooling 2D: more host RAM than the instance has.
+  \item 3 GPT-Neo 2.7B tasks: past the 600\,s grading limit.
+  \end{itemize}
+\item \textbf{A grader fix first:} the first oracle pass failed 45 rows; $\sim$36 were the checker itself
+  running a 24\,GB GPU out of memory (whole-tensor compare). Chunked compare, same tolerance.
+\item \textbf{To cover the last 9:} bigger GPUs (e.g.\ 48\,GB g6e.xlarge only) or a longer grade timeout.
+\end{itemize}
+\end{columns}
+\src{\tb{kernelbench/oracle.csv} (\tb{validate\_kernelbench.py}), \tb{logs/fullepoch-allkb-hybrid\_20261013\_020139.log}; checked 13 Oct 2026.}
+\par\vskip 0pt plus 1filll
+\plainen{every KernelBench task that can be solved on a 24\,GB GPU is in training or the exam; only 9 that cannot are left out.}
 \end{frame}
 
 %====================================================================
@@ -1446,6 +1479,31 @@ Peak / total & 129 / 2{,}020 microVMs & 24 / 129 instances for 407 sessions & 12
 \par\vspace{0.5mm}
 {\tiny\textbf{Why g6 instances exceed the session cap:} an instance outlives its session by $\sim$12\,min (boot + the 600\,s idle tail, \sref{fr:evops}). \textbf{Sizing rule:} a cap must cover running + pre-opened episodes, or pre-open cannot start early (\sref{fr:preopen}).\par}
 \src{\tb{terminalbench\_pool.py} (gates), \tb{ec2\_episode\_sandbox.py} (\tb{WarmPool}); \tb{logs/train48-hybrid\_20261005\_005629.\{sessions,sandbox\_ops,instances\}.csv}; \tb{make\_figures.py}; checked 6 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Instances during the full-epoch run (live, step 11)}
+\flabel{fr:liveinst}
+\tabcap{What is running for one RL run, by substrate}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}P{0.25\textwidth}P{0.30\textwidth}Y@{}}
+\toprule
+\textbf{Substrate} & \textbf{Count} & \textbf{What runs there}\\
+\midrule
+\textcolor{cat2}{\textbf{AgentCore microVMs}} & \hl{79} live sessions (5\,min window) & Terminal-Bench tasks; no instances to manage (AgentCore-managed)\\
+\textcolor{cat1}{\textbf{m5 Docker host}} & 1 m5.xlarge & dispatcher for Docker-based Terminal-Bench tasks\\
+\textcolor{cat1}{\textbf{m5 episode instances}} & \hl{24} m5.2xlarge & per-episode Docker Terminal-Bench tasks\\
+\textcolor{cat3}{\textbf{EC2 GPU pool}} (KernelBench levels 2--4) & \hl{16}: 12 g5.xlarge, 3 g6.xlarge, 1 g5.2xlarge & mostly g5, since g6 is short across the region\\
+\textcolor{cat3}{\textbf{AgentCore g6 Runtime}} (KernelBench level 1) & \hl{29} live sessions = up to 29 GPU instances (AgentCore-managed, not in our EC2 list) & 284 capacity-retry warnings so far, because AWS keeps running out of g5/g6 GPUs\\
+\textbf{Trainer host} & 1 g6e.48xlarge & trainer and inference\\
+\bottomrule
+\end{tabularx}
+\par\vspace{2mm}
+{\scriptsize\textbf{What costs money while the run is going:} the 25 m5 and 16 GPU EC2 instances. They are all terminated
+when the run ends, then the m5 host is stopped (not deleted: its disk and image cache are kept for the next run).\par}
+\src{\tb{aws ec2 describe-instances} + \tb{[sbx-op]} sessions in \tb{logs/fullepoch-allkb-hybrid\_20261013\_020139.log}, 13 Oct 2026 02:29 UTC.}
+\par\vskip 0pt plus 1filll
+\plainen{one RL run keeps about 80 microVMs, 25 m5 machines and 45 GPU machines busy at once, and none of them outlives the run.}
 \end{frame}
 
 %====================================================================
