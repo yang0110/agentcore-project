@@ -58,6 +58,7 @@ import collections
 import contextlib
 import json
 import logging
+import re
 import os
 import secrets
 import sys
@@ -210,6 +211,32 @@ async def put_tar(sb, data: bytes, dest: str) -> None:
             raise RuntimeError(f"put_tar failed: {r['error']}")
 
 
+_SUMMARY_HDR = re.compile(r"^=+ short test summary info =+$")
+_SUMMARY_LINE = re.compile(r"^(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED) (\S+)")
+
+
+def pytest_summary(text: str) -> list[str]:
+    """Statuses from pytest's `short test summary info` block(s) only, as upstream's PytestParser.
+
+    Scanning ALL output (the old regex) counted lines the TESTS print — `ERROR 3: ...`, `FAILED (0/5)` —
+    and log records (`ERROR traitlets:...`) as test results: jupyter-notebook-server, movie-helper and
+    winning-avg-corewars failed with every real test passing. A summary line names a test file
+    (`tests/test_outputs.py::test_x`, or the bare file for a collection ERROR); the block ends at the
+    `=== N passed ... ===` line. No block (pytest without -rA, all passed) -> [] -> the exit code decides."""
+    status, inside = [], False
+    for ln in text.splitlines():
+        ln = ln.rstrip()
+        if _SUMMARY_HDR.match(ln):
+            inside = True
+        elif inside and ln.startswith("="):
+            inside = False
+        elif inside:
+            m = _SUMMARY_LINE.match(ln)
+            if m and ".py" in m.group(2):
+                status.append(m.group(1))
+    return status
+
+
 async def grade_episode(sb, task_id: str, tasks_dir: str, test_timeout_s: float = 180.0) -> dict:
     """Inject the hidden tests AFTER the agent's turns, run them, parse pytest's -rA summary.
 
@@ -222,13 +249,15 @@ async def grade_episode(sb, task_id: str, tasks_dir: str, test_timeout_s: float 
     await put_tar(sb, oracle_bundle(tasks_dir, task_id), "/tests")
     code, out, err = await sb.exec("bash /tests/run-tests.sh", timeout=int(test_timeout_s) + 60,
                                    env={"TEST_DIR": "/tests"})
-    status = re.findall(r"(?m)^(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)\s+\S", f"{out}\n{err}")
+    status = pytest_summary(f"{out}\n{err}")
     passed = status.count("PASSED") + status.count("XPASS")
     failed = status.count("FAILED") + status.count("ERROR")
     solved = (passed > 0 and failed == 0) if status else code == 0
     return {"solved": solved, "grade_exit": int(code), "tests_passed": passed,
             "tests_total": passed + failed, "grade_timeout": int(code == 124),
-            "grade_tail": (out + err)[-600:]}
+            # stdout (pytest's summary) first: tests install their deps with uv/pip, whose progress goes to
+            # stderr, so a plain (out + err) tail was all install noise and hid why the tests failed.
+            "grade_tail": out[-1500:] + (f"\n[stderr] {err[-300:]}" if err.strip() else "")}
 
 
 def _parse_harness_set(spec: str) -> list[tuple[str, float]]:

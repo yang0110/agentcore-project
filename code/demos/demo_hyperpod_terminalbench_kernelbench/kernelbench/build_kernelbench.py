@@ -16,8 +16,9 @@ Each row names an image PER LEVEL so image_routing.py can send levels to differe
 TB_KB_LEVELS=1,2,3 leaves levels out. kernelbench/oracle.csv (validate_kernelbench.py: the reference
 itself submitted as ModelNew) drops the problems whose oracle fails, each listed with its reason.
 
-The prompt, checks and test_setup are byte-identical to the rows the demo used before (verified against
-the earlier in-tree level_1 + level_2 files): the generator is the old agentcore_slime_demo.kernelbench.
+The prompt is byte-identical to the rows the demo used before (the generator is the old
+agentcore_slime_demo.kernelbench). Since 2026-10-12 the checks compare in chunks and free the outputs before
+the speedup timing (same atol/rtol): the whole-tensor version OOMed 24 GB GPUs on ~40 level_1 references.
 """
 from __future__ import annotations
 
@@ -62,6 +63,14 @@ def _kb_run(m):
 
 _ref = _kb_run(_kb_build(Model))
 
+def _kb_close(a, b, atol=1e-2, rtol=1e-2):
+    # torch.allclose in 16M-element chunks: a whole-tensor compare of the multi-GB level_1 outputs makes
+    # full-size float temporaries and OOMs a 24 GB GPU (A10G / L4) on the reference itself.
+    a, b = a.reshape(-1), b.reshape(-1)
+    step = 1 << 24
+    return all(torch.allclose(a[i:i + step].float(), b[i:i + step].float(), atol=atol, rtol=rtol)
+               for i in range(0, a.numel(), step))
+
 def _report_speedup(new_model):
     if not torch.cuda.is_available():
         return True
@@ -93,8 +102,9 @@ _KB_CHECKS = [
     "assert torch.cuda.is_available(), 'no CUDA GPU in sandbox'",
     "_out = _kb_run(_kb_build(ModelNew))",
     "assert _out.shape == _ref.shape, f'wrong output shape {_out.shape} vs {_ref.shape}'",
-    "assert torch.allclose(_out.float(), _ref.float(), atol=1e-2, rtol=1e-2), 'values differ from reference'",
+    "assert _kb_close(_out, _ref), 'values differ from reference'",
     "assert str(_out.device).startswith('cuda'), 'ModelNew did not run on the GPU'",
+    "del _out, _ref; torch.cuda.empty_cache()",   # the timing below needs the memory (multi-GB outputs)
     "_report_speedup(_kb_build(ModelNew))",
 ]
 

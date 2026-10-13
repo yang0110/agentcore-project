@@ -52,8 +52,9 @@ def _reason(out: str) -> str:
     lines = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
     for pat in ("OutOfMemoryError", "out of memory", "Error", "assert", "Timeout", "timed out"):
         hit = [ln for ln in lines if pat.lower() in ln.lower()]
-        if hit:
-            return hit[-1][:200]
+        if hit:   # a FAIL[i] line quotes the whole check first: lead with its exception instead
+            ln = hit[-1]
+            return (ln.split("  -> ", 1)[1] + " @ " + ln.split(":", 1)[0] if "  -> " in ln else ln)[:200]
     return (lines[-1] if lines else "no output")[:200]
 
 

@@ -28,6 +28,7 @@ what makes a *pool of long-lived sessions* (not per-episode instance launches) t
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import subprocess
@@ -111,23 +112,67 @@ def _do_exec(req: dict) -> dict:
     # fails with "cannot set groups: Operation not permitted". The sandbox is therefore root-only;
     # every command (including the Claude Code CLI, which tolerates root via IS_SANDBOX=1) runs as
     # root. The image makes /workspace + /home/agent world-writable so root writes succeed anyway.
-    full = inner
-    try:
-        proc = subprocess.run(
-            full, shell=True, capture_output=True, text=True, timeout=timeout, env=env,
-        )
-        return {"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
-    except subprocess.TimeoutExpired as e:
-        return {"exit_code": 124, "stdout": e.stdout or "", "stderr": "timeout"}
+    # The m5 compose client (compose_agent) sets the two knobs below; unset = the microVM behaviour.
+    #   ACS_EXEC_INTERACTIVE=1  bash -ic, as upstream's tmux shell: ~/.bashrc PATH/aliases apply
+    #   ACS_EXEC_USER=<name>    run as the image's own USER (the m5 container has the capabilities)
+    if os.environ.get("ACS_EXEC_INTERACTIVE") == "1":
+        inner = f"cd {shlex.quote(workdir)}; {exports}bash -ic {shlex.quote(cmd)}"
+    as_user = {}
+    run_as = os.environ.get("ACS_EXEC_USER", "")
+    if run_as:
+        import pwd
+
+        pw = pwd.getpwnam(run_as)
+        as_user = {"user": pw.pw_uid, "group": pw.pw_gid, "extra_groups": os.getgrouplist(run_as, pw.pw_gid)}
+        env = {**env, "HOME": pw.pw_dir, "USER": run_as, "LOGNAME": run_as}
+    # Output goes to files, not pipes: with capture_output a solution ending in `server &` keeps the
+    # pipe open, so the exec waited for its timeout (then got retried: kv-store-grpc, causal-inference-r).
+    # Its own session, so a timeout kills the whole command tree, not just the top shell.
+    import signal
+    import tempfile
+
+    with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
+        proc = subprocess.Popen(inner, shell=True, stdin=subprocess.DEVNULL, stdout=fo, stderr=fe, env=env,
+                                start_new_session=True, **as_user)
+        try:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            code = None
+        fo.seek(0)
+        fe.seek(0)
+        out = fo.read().decode(errors="replace")
+        err = fe.read().decode(errors="replace")
+    if code is None:
+        return {"exit_code": 124, "stdout": out, "stderr": "timeout"}
+    if os.environ.get("ACS_EXEC_INTERACTIVE") == "1":   # bash -i without a tty says so on every command
+        err = "".join(ln for ln in err.splitlines(keepends=True)
+                      if not ln.startswith(("bash: cannot set terminal process group", "bash: no job control")))
+    return {"exit_code": code, "stdout": out, "stderr": err}
 
 
 def _do_write(req: dict) -> dict:
     path = req["path"]
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    parent = os.path.dirname(path) or "."
+    new_dirs = []
+    d = os.path.abspath(parent)
+    while not os.path.exists(d):
+        new_dirs.append(d)
+        d = os.path.dirname(d)
+    os.makedirs(parent, exist_ok=True)
     with open(path, "w") as f:
         f.write(req.get("text", ""))
-    # No chown: the container has no CAP_CHOWN (AgentCore zero-cap root) and the sandbox is root-only,
-    # so ownership handoff is both impossible and unnecessary. `user` is accepted but ignored.
+    # microVM: no chown (AgentCore zero-cap root, root-only sandbox; `user` is accepted but ignored).
+    # m5 with ACS_EXEC_USER: execs run as that user, so what we write (and the dirs we made) is theirs.
+    run_as = os.environ.get("ACS_EXEC_USER", "")
+    if run_as:
+        import pwd
+
+        pw = pwd.getpwnam(run_as)
+        for p in [path] + new_dirs:
+            os.chown(p, pw.pw_uid, pw.pw_gid)
     return {"ok": True}
 
 
