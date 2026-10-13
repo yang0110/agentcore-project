@@ -283,23 +283,23 @@ multi-container compose (client + sidecars) & 12\\
 {\normalsize\textbf{\textcolor{awsteal}{Terminal-Bench}}: 241 $\rightarrow$ \hl{211} used (88\,\%)}\par
 {\footnotesize 162 on a \smv{} + 49 on an \sm{}; 171 train / 40 held-out eval (31 \smv{} + 9 \sm{})}\par\vspace{1mm}
 \tabcap{The 30 dropped: why, and can we fix it?}
-\scriptsize\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.05}
-\begin{tabularx}{\textwidth}{@{}r P{0.47\textwidth} Y@{}}
+\tiny\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.0}
+\begin{tabularx}{\textwidth}{@{}r P{0.50\textwidth} Y@{}}
 \toprule
-& \textbf{Why dropped (measured)} & \textbf{Why no working solution today}\\
+& \textbf{Why dropped (measured, per task)} & \textbf{Why no working solution today}\\
 \midrule
-\hl{17} & the reference solution runs on the \sm{} but its own tests fail, e.g.\ \tb{add-benchmark-lm-eval-harness} (\tb{transformers} API changed), \tb{mcmc-sampling-stan} (RStan), \tb{mteb-*} & not yet root-caused per task; the ones checked are dependency drift since release\\
-5 & \textbf{needs live third-party content}: \tb{example.com} text, YouTube, Solana devnet, a remote image & the answer depends on a third party; no stable fix\\
-4 & \textbf{too slow}: the reference times out (\tb{caffe-cifar-10} 1{,}200\,s, QEMU/MIPS tasks) & fixable with more CPU or time; $>$ 15\,min per episode\\
+\hl{11} & \textbf{rotted upstream}: pinned apt version deleted (\tb{build-pmars}, \tb{build-pov-ray}, \tb{rstan-to-pystan}, \tb{matlab-python-conversion}, \tb{causal-inference-r}); unpinned drift (\tb{add-benchmark-lm-eval-harness}, \tb{mteb-eval}: \tb{transformers}; \tb{port-compressor}: rustc); dead download (\tb{make-doom-for-mips}, \tb{png-generation}); solution bug (\tb{attention-mil}) & the task changed since release; fixable only by patching our copy (unpin, mirror), which changes the benchmark\\
+7 & \textbf{needs a live website}: \tb{example.com} text (\tb{broken-networking}, \tb{cron-broken-network}), YouTube, Solana devnet, picsum, RCSB/PubChem, a web emulator & the answer depends on a third party; no stable fix\\
+3 & \textbf{too slow}: \tb{caffe-cifar-10} ($>$ 1{,}200\,s), \tb{install-windows-xp} ($>$ 2\,h), \tb{mixed-integer-programming} (16 solver threads on 4 CPUs) & fixable with more CPU or time; $>$ 15\,min per episode\\
+6 & \textbf{not yet diagnosed}: \tb{build-cython-ext}, \tb{gcode-to-text}, \tb{make-mips-interpreter}, \tb{mcmc-sampling-stan}, \tb{mteb-leaderboard}, \tb{mteb-retrieve} & the check keeps no solution output; one re-run with output decides\\
 2 & \textbf{no image builds}: \tb{fix-git} (GitHub repo deleted), \tb{leelachess0-\ldots} (download gone) & the input itself is gone\\
 1 & \tb{hdfs-deployment}: stale apt index in our cached image & \textbf{ours, fixable}: a no-cache build\\
-1 & \tb{install-windows-xp}: not re-run after the fixes ($>$ 2\,h) & re-run pending\\
 \bottomrule
 \end{tabularx}
 \par\vspace{1mm}{\scriptsize\textbf{Recovered on 13 Oct}: 5 harness bugs fixed (grader parser, port 8080, image \tb{ENTRYPOINT}/\tb{USER}, background-server exec, \tb{bash -i}) took the m5 from 24 to \hl{49} usable tasks. The grader fix also corrects training reward.\par}
 \src{\tb{terminalbench/tasks/\{oracle.csv, images\_docker.csv\}}, \tb{data/terminalbench\_\{train,eval,eval\_docker\}.jsonl}; commit \tb{d3ecae4}; checked 13 Oct 2026.}
 \par\vskip 0pt plus 1filll
-\plainen{a task trains only if its own reference solution passes, else its reward is noise: 211 pass now; 17 of the 30 left still need a per-task look.}
+\plainen{a task trains only if its own reference solution passes, else its reward is noise: 211 pass now; of the 30 left, 21 are the task, the web or the clock, 6 need a look, 1 is ours.}
 \end{frame}
 
 %====================================================================
