@@ -37,6 +37,7 @@ HP_IMAGE_TAG=agentcore_p4-20261006-efa1.48.0 (…-20261006 with HP_EFA=0).
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shlex
@@ -217,16 +218,18 @@ def _fsx(subnet: str, sg: str) -> dict:
     return {"id": fs["FileSystemId"], "dns": fs["DNSName"], "mount": fs["LustreConfiguration"]["MountName"]}
 
 
-def _upload_lifecycle(bucket: str, fs: dict) -> str:
+def _upload_lifecycle(bucket: str) -> str:
+    """The lifecycle folder; only on_init_complete.sh (+ the upstream utils it calls) runs: HyperPod configures
+    Slurm itself in this API mode (SlurmConfig per group), so there is no provisioning_parameters.json."""
     s3 = _c("s3")
     prefix = f"lifecycle/{NAME}"
+    # Start from an empty prefix: a stale provisioning_parameters.json there fails the create in this mode.
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"{prefix}/"):
+        for o in page.get("Contents", []):
+            s3.delete_object(Bucket=bucket, Key=o["Key"])
     for p in LIFECYCLE.rglob("*"):
         if p.is_file():
             s3.upload_file(str(p), bucket, f"{prefix}/{p.relative_to(LIFECYCLE)}")
-    params = {"version": "1.0.0", "workload_manager": "slurm", "controller_group": "controller",
-              "worker_groups": [{"instance_group_name": "gpu", "partition_name": PARTITION}],
-              "fsx_dns_name": fs["dns"], "fsx_mountname": fs["mount"]}
-    s3.put_object(Bucket=bucket, Key=f"{prefix}/provisioning_parameters.json", Body=json.dumps(params, indent=2).encode())
     return f"s3://{bucket}/{prefix}/"
 
 
@@ -248,20 +251,32 @@ def up() -> int:
     fs = _fsx(subnet, sg)
     save_state(name=NAME, bucket=bucket, role=role, subnet=subnet, az=AZ, sg=sg, fsx=fs, vpc=vpc_id)
     c = _cluster()
+    if c is not None and c["ClusterStatus"] == "Failed":    # a failed create: delete it, then create again
+        d.err(f"cluster Failed ({c.get('FailureMessage', '')[:200]}); deleting it to recreate")
+        _c("sagemaker").delete_cluster(ClusterName=NAME)
+        while _cluster():
+            time.sleep(30)
+        c = None
     if c is None:
-        s3uri = _upload_lifecycle(bucket, fs)
+        s3uri = _upload_lifecycle(bucket)
         time.sleep(10)                                   # a fresh role takes a few seconds to be assumable
-        lc = {"SourceS3Uri": s3uri, "OnCreate": "on_create.sh"}
+        # HyperPod's Continuous node-provisioning mode (the API default): Slurm comes from SlurmConfig on each
+        # group, FSx is mounted by HyperPod (FsxLustreConfig), our hook is OnInitComplete.
+        lc = {"SourceS3Uri": s3uri, "OnInitComplete": "on_init_complete.sh"}
+        fsx_mount = {"FsxLustreConfig": {"DnsName": fs["dns"], "MountName": fs["mount"], "MountPath": "/fsx"}}
         groups = [
             {"InstanceGroupName": "controller", "InstanceType": CONTROLLER_TYPE, "InstanceCount": 1,
+             "SlurmConfig": {"NodeType": "Controller"},
              "LifeCycleConfig": lc, "ExecutionRole": role, "ThreadsPerCore": 1,
-             "InstanceStorageConfigs": [{"EbsVolumeConfig": {"VolumeSizeInGB": 100}}]},
+             "InstanceStorageConfigs": [{"EbsVolumeConfig": {"VolumeSizeInGB": 100}}, fsx_mount]},
             {"InstanceGroupName": "gpu", "InstanceType": GPU_TYPE, "InstanceCount": GPU_COUNT,
+             "SlurmConfig": {"NodeType": "Compute", "PartitionNames": [PARTITION]},
              "LifeCycleConfig": lc, "ExecutionRole": role, "ThreadsPerCore": 1,
-             "InstanceStorageConfigs": [{"EbsVolumeConfig": {"VolumeSizeInGB": EBS_GB}}]},
+             "InstanceStorageConfigs": [{"EbsVolumeConfig": {"VolumeSizeInGB": EBS_GB}}, fsx_mount]},
         ]
         arn = _c("sagemaker").create_cluster(
-            ClusterName=NAME, InstanceGroups=groups, NodeRecovery="Automatic",
+            ClusterName=NAME, InstanceGroups=groups, NodeRecovery="Automatic",   # no Orchestrator: the mode
+            # rejects SlurmConfigStrategy, and the groups' SlurmConfig already makes it a Slurm cluster
             VpcConfig={"SecurityGroupIds": [sg], "Subnets": [subnet]},
             Tags=[{"Key": "Name", "Value": NAME}])["ClusterArn"]
         d.err(f"creating cluster {arn} (~15-25 min)")
@@ -321,13 +336,37 @@ def run_remote(cmd: str, group: str = "controller", check: bool = True, capture:
     if not shutil.which("session-manager-plugin"):
         d.die("install the AWS session-manager-plugin on this box first (needed for SSM to HyperPod nodes): "
               "https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html")
-    wrapped = f"sudo -u ubuntu -i bash -lc {shlex.quote(cmd)}"
+    # The document runs its command WITHOUT a shell and mangles nested quotes, so the script travels base64-
+    # encoded inside one single-quoted `bash -c`. The plugin's own exit code is always 0 ("Cannot perform start
+    # session: EOF" is its normal goodbye), so the script's exit status comes back on a "@@RC n" line.
+    script = f"sudo -u ubuntu -i bash -lc {shlex.quote(cmd)}; echo \"@@RC $?\""
+    b64 = base64.b64encode(script.encode()).decode()
     argv = ["aws", "ssm", "start-session", "--region", d.REGION, "--target", _target(group),
             "--document-name", "AWS-StartNonInteractiveCommand",
-            "--parameters", json.dumps({"command": [wrapped]})]
-    r = subprocess.run(argv, check=False, text=True, capture_output=capture)
-    if check and r.returncode:
-        d.die(f"remote command failed ({r.returncode}): {cmd[:200]}")
+            "--parameters", json.dumps({"command": [f"bash -c 'echo {b64} | base64 -d | bash'"]})]
+    # The plugin ENDS the session as soon as its stdin closes, cutting the command's output: keep stdin open
+    # (a pipe we never write to) until the @@RC line arrives, streaming the output as it comes.
+    p = subprocess.Popen(argv, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    lines, rc = [], 255
+    for x in p.stdout:
+        x = x.rstrip("\n")
+        if x.startswith("@@RC "):
+            rc = int(x.split()[1])
+            break
+        if x.startswith(("Starting session with", "Cannot perform start session", "Exiting session")):
+            continue
+        lines.append(x)
+        if not capture:
+            print(x, flush=True)
+    p.stdin.close()
+    try:
+        p.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        p.kill()
+    out = "\n".join(lines).strip("\n") + "\n"
+    r = subprocess.CompletedProcess(argv, rc, out, "")
+    if check and rc:
+        d.die(f"remote command failed ({rc}): {cmd[:200]}")
     return r
 
 
@@ -342,11 +381,13 @@ def import_image() -> int:
     reg, path = img.split("/", 1)
     sqsh = st["sqsh"]
     cmd = f"""set -e
-sudo mkdir -p /fsx/enroot && sudo chown ubuntu:ubuntu /fsx/enroot && mkdir -p ~/.config/enroot
+# ECR credentials where the compute node's enroot reads them (its home is not the controller's): FSx.
+export ENROOT_CONFIG_PATH=/fsx/enroot/config
+mkdir -p $ENROOT_CONFIG_PATH && chmod 700 $ENROOT_CONFIG_PATH
 [ -s {sqsh} ] && {{ echo "{sqsh} exists"; exit 0; }}
-printf 'machine {reg} login AWS password %s\\n' "$(aws ecr get-login-password --region {d.REGION})" > ~/.config/enroot/.credentials
-chmod 600 ~/.config/enroot/.credentials
-srun -p {PARTITION} -N1 --exclusive bash -lc 'enroot import -o {sqsh}.tmp "docker://{reg}#{path}" && mv {sqsh}.tmp {sqsh}'
+printf 'machine {reg} login AWS password %s\\n' "$(aws ecr get-login-password --region {d.REGION})" > $ENROOT_CONFIG_PATH/.credentials
+chmod 600 $ENROOT_CONFIG_PATH/.credentials
+srun -p {PARTITION} -N1 --exclusive --export=ALL bash -lc 'enroot import -o {sqsh}.tmp "docker://{reg}#{path}" && mv {sqsh}.tmp {sqsh}'
 ls -la {sqsh}"""
     return run_remote(cmd, check=False).returncode
 
