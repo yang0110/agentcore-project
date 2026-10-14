@@ -31,10 +31,10 @@
 \settag{At a glance}
 \begin{frame}{At a glance: one agentic-RL stack on AWS, built for the hard cases}
 \begin{columns}[T]
-\column{0.44\textwidth}
+\column{0.49\textwidth}
 {\normalsize\textbf{\textcolor{awsteal}{Architecture}}}\par\vspace{1mm}
 \centering
-\begin{tikzpicture}[x=1mm,y=1mm, every node/.style={font=\scriptsize},
+\begin{tikzpicture}[x=1mm,y=1mm,scale=0.8,transform shape, every node/.style={font=\scriptsize},
   lbl/.style={font=\tiny,text=inkmuted,align=center},
   zone/.style={dashed,rounded corners=3pt,inner sep=1.2mm}]
 \node[box,draw=awspurple,text width=20mm,minimum height=26mm] (tr) at (0,0) {\textbf{slime}\\trainer\\[0.5mm]GRPO +\\SGLang\\[0.5mm]\textcolor{awsteal}{\textbf{router}}};
@@ -49,23 +49,25 @@
 \draw[arr] ($(tr.east)+(0,5)$) -- (ac.west);
 \draw[arr,cat1] ($(tr.east)+(0,-5)$) -- (ec.west);
 \end{tikzpicture}
-\par\vspace{1mm}\raggedright
-{\scriptsize Each task runs where its own reference solution passes; the harness and grader are the same everywhere.\par}
-\column{0.52\textwidth}
+\par\vspace{0.5mm}\raggedright
 {\normalsize\textbf{\textcolor{awsteal}{Key contributions}}}
-\begin{itemize}\footnotesize\setlength{\itemsep}{0.6mm}
-\item \textbf{A hybrid sandbox tier}: 2 AgentCore + 2 EC2 substrates behind one API, in one training batch.
-\item \textbf{Measured routing}: each task goes where it builds and its own solution passes.
-\item \textbf{Pre-open + heartbeat + warm GPU pool}: sandboxes are ready before the episode starts.
-\item \textbf{slime unpatched}: we plug in through its extension points.
+\begin{itemize}\footnotesize\setlength{\itemsep}{0.3mm}
+\item \textbf{slime $\times$ AgentCore}: RL sandboxes, slime unpatched.
+\item \textbf{Hybrid, every use case}: 2 AgentCore + 2 EC2.
+\item \textbf{Pre-open}: sandboxes ready before the episode.
+\item \textbf{Decoupled harness}: Claude Code / Codex Runtime.
+\item \textbf{Skills}: read with \tb{bash}, removed before grading.
 \end{itemize}
-\vspace{1mm}
+\column{0.47\textwidth}
 {\normalsize\textbf{\textcolor{awsteal}{Challenges solved}}}
-\begin{itemize}\footnotesize\setlength{\itemsep}{0.6mm}
-\item \textbf{Environments}: \hl{212}/241 Terminal-Bench, \hl{261}/270 KernelBench tasks.
-\item \textbf{Speed}: \hl{1{,}188} episodes/h; median sandbox wait \hl{0\,s}.
-\item \textbf{Rewards}: hidden tests, oracle-checked tasks, speed gate against hacks.
-\item \textbf{Operations}: \hl{0.35\,\%} infra errors; private network; nothing left running.
+\begin{itemize}\footnotesize\setlength{\itemsep}{0.3mm}
+\item \textbf{x86 and arm64}: microVMs are arm64 only; x86-only tasks run on the x86 m5.
+\item \textbf{Large images}: over the 2\,GB microVM cap (up to 6.7\,GB) on the m5; the 17\,GB KernelBench image on the EC2 GPU pool.
+\item \textbf{Multi-container tasks}: docker compose on the m5, 12 of 12 usable.
+\item \textbf{GPU tasks}: \hl{261}/270 KernelBench on AgentCore GPU Instances + an EC2 GPU pool.
+\item \textbf{Cold starts}: pre-open sandboxes and instances ahead; median wait \hl{0\,s}, \hl{1{,}188} episodes/h.
+\item \textbf{Sticky routing}: one session and one engine per episode, so every turn hits the same sandbox and KV cache.
+\item \textbf{Result}: \hl{212}/241 Terminal-Bench usable; \hl{0.34\,\%} infra errors.
 \end{itemize}
 \end{columns}
 \par\vskip 0pt plus 1filll
@@ -353,7 +355,7 @@ One narrow IAM role per actor: a sandbox can only pull its own image.}}
 \column{0.32\textwidth}
 \colorbox{panel}{\parbox[t][42mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
 {\large\bfseries\textcolor{awsteal}{Reliable}}\par\vspace{1.5mm}\normalsize
-\hl{0.35\,\%} infra errors: 69 in 19{,}606 episodes over 21 runs.\par\vspace{1.5mm}
+\hl{0.34\,\%} infra errors: 69 in 20{,}154 episodes over 22 runs.\par\vspace{1.5mm}
 Every exit path cleans up: stop sessions, terminate VMs, a 30\,min dead-man switch on each VM.}}
 \column{0.32\textwidth}
 \colorbox{panel}{\parbox[t][42mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
@@ -375,13 +377,13 @@ The warm EC2 GPU pool reuses each machine for $\sim$9 episodes.}}
 \begin{itemize}\small\setlength{\itemsep}{1.2mm}
 \item 4 substrates in one training batch; 212 + 261 tasks.
 \item 1{,}188 episodes/h; median sandbox wait 0\,s.
-\item 0.35\,\% infra errors; honest, gated rewards.
+\item 0.34\,\% infra errors; honest, gated rewards.
 \end{itemize}
 \vspace{1mm}
 {\normalsize\textbf{\textcolor{awsmagenta}{Open}}}
 \begin{itemize}\small\setlength{\itemsep}{1.2mm}
 \item \textbf{Learning signal}: 51\,\% of GRPO groups have identical rewards, so no gradient.
-\item Held-out eval is flat at 4B and 9B so far; the 9B solves 5 of 31 held-out microVM tasks.
+\item Held-out eval of the 9B is flat so far; it solves 5 of 31 held-out microVM tasks.
 \end{itemize}
 \column{0.48\textwidth}
 {\normalsize\textbf{Next}}
@@ -453,7 +455,7 @@ The warm EC2 GPU pool reuses each machine for $\sim$9 episodes.}}
 \end{itemize}
 \column{0.32\textwidth}
 \begin{itemize}\footnotesize
-\item \textbf{\hl{0.35\,\%} infra errors} over all runs (69 in 19{,}606), mostly grading time-outs.
+\item \textbf{\hl{0.34\,\%} infra errors} over all runs (69 in 20{,}154), mostly grading time-outs.
 \end{itemize}
 \end{columns}
 \par\vskip 0pt plus 1filll
@@ -488,5 +490,18 @@ The warm EC2 GPU pool reuses each machine for $\sim$9 episodes.}}
 \plainen{bring tasks with hidden tests and a reference solution; the same pipeline routes, checks and trains them.}
 \deep{``Prerequisites'', ``Run it end to end'', ``Bring your own tasks''}
 \end{frame}
+
+%====================================================================
+{\bgframe{art/bg_close.png}
+\begin{frame}[plain]
+\vfill
+{\fontsize{22}{26}\selectfont\bfseries\color{white}Thank you\par}
+\vspace{3mm}
+{\small\bfseries\color{white}Kaige Yang\par}
+{\small\color{inkmuted}Senior Applied Scientist, AWS\par}
+{\small\color{inkmuted}\href{mailto:kaigey@amazon.com}{kaigey@amazon.com}\par}
+\vspace{2mm}
+\vfill
+\end{frame}}
 
 \end{document}

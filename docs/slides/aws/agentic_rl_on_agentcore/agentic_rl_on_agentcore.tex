@@ -40,10 +40,10 @@
 \begin{frame}{At a glance: one agentic-RL stack on AWS, built for the hard cases}
 \flabel{fr:ataglance}
 \begin{columns}[T]
-\column{0.44\textwidth}
+\column{0.49\textwidth}
 {\normalsize\textbf{\textcolor{awsteal}{Architecture}}}\par\vspace{1mm}
 \centering
-\begin{tikzpicture}[x=1mm,y=1mm, every node/.style={font=\scriptsize},
+\begin{tikzpicture}[x=1mm,y=1mm,scale=0.8,transform shape, every node/.style={font=\scriptsize},
   lbl/.style={font=\tiny,text=inkmuted,align=center},
   zone/.style={dashed,rounded corners=3pt,inner sep=1.2mm}]
 \node[box,draw=awspurple,text width=20mm,minimum height=26mm] (tr) at (0,0) {\textbf{slime}\\trainer\\[0.5mm]GRPO +\\SGLang\\[0.5mm]\textcolor{awsteal}{\textbf{router}}};
@@ -58,23 +58,25 @@
 \draw[arr] ($(tr.east)+(0,5)$) -- (ac.west);
 \draw[arr,cat1] ($(tr.east)+(0,-5)$) -- (ec.west);
 \end{tikzpicture}
-\par\vspace{1mm}\raggedright
-{\scriptsize Each task runs where its own reference solution passes; the harness and grader are the same everywhere.\par}
-\column{0.52\textwidth}
+\par\vspace{2mm}\raggedright
 {\normalsize\textbf{\textcolor{awsteal}{Key contributions}}}
-\begin{itemize}\footnotesize\setlength{\itemsep}{0.6mm}
-\item \textbf{A hybrid sandbox tier}: 2 AgentCore + 2 EC2 substrates behind one API, in one training batch.
-\item \textbf{Measured routing}: each task goes where it builds and its own solution passes.
-\item \textbf{Pre-open + heartbeat + warm GPU pool}: sandboxes are ready before the episode starts.
-\item \textbf{slime unpatched}: we plug in through its extension points.
+\begin{itemize}\footnotesize\setlength{\itemsep}{0.3mm}
+\item \textbf{slime $\times$ AgentCore}: RL sandboxes, slime unpatched.
+\item \textbf{Hybrid, every use case}: 2 AgentCore + 2 EC2 (\sref{fr:why}).
+\item \textbf{Pre-open}: sandboxes ready before the episode (\sref{fr:preopen}).
+\item \textbf{Decoupled harness}: Claude Code / Codex Runtime (\sref{fr:hdecoupled}).
+\item \textbf{Skills}: read with \tb{bash}, removed before grading (\sref{fr:skillsflow}).
 \end{itemize}
-\vspace{1mm}
+\column{0.47\textwidth}
 {\normalsize\textbf{\textcolor{awsteal}{Challenges solved}}}
-\begin{itemize}\footnotesize\setlength{\itemsep}{0.6mm}
-\item \textbf{Environments}: \hl{212}/241 Terminal-Bench, \hl{261}/270 KernelBench tasks (\sref{fr:chal}).
-\item \textbf{Speed}: \hl{1{,}188} episodes/h; median sandbox wait \hl{0\,s} (\sref{fr:evspeed}).
-\item \textbf{Rewards}: hidden tests, oracle-checked tasks, speed gate against hacks.
-\item \textbf{Operations}: \hl{0.35\,\%} infra errors (\sref{fr:rel}); private network; nothing left running.
+\begin{itemize}\footnotesize\setlength{\itemsep}{0.8mm}
+\item \textbf{x86 and arm64}: microVMs are arm64 only; x86-only tasks run on the x86 m5 (\sref{fr:why}).
+\item \textbf{Large images}: over the 2\,GB microVM cap (up to 6.7\,GB) on the m5; the 17\,GB KernelBench image on the EC2 GPU pool.
+\item \textbf{Multi-container tasks}: docker compose on the m5, 12 of 12 usable.
+\item \textbf{GPU tasks}: \hl{261}/270 KernelBench on AgentCore GPU Instances + an EC2 GPU pool (\sref{fr:kbcov}).
+\item \textbf{Cold starts}: pre-open sandboxes and instances ahead; median wait \hl{0\,s}, \hl{1{,}188} episodes/h (\sref{fr:preopen}).
+\item \textbf{Sticky routing}: one session and one engine per episode, so every turn hits the same sandbox and KV cache (\sref{fr:sticky}).
+\item \textbf{Result}: \hl{212}/241 Terminal-Bench usable; \hl{0.34\,\%} infra errors (\sref{fr:rel}).
 \end{itemize}
 \end{columns}
 \par\vskip 0pt plus 1filll
@@ -391,7 +393,7 @@ needs a 48\,GB GPU (\tb{g6e.xlarge}): in the launch list, but starved (1 of 101 
 \grp{3}{Correct rewards: the score must mean what it says}\\
 11 & \textbf{Isolation between episodes} & the agent rewrites the OS; any reuse risks leaking state into the next score\\
 12 & \textbf{Reward integrity} & tests must stay hidden; copying \tb{Model} onto CUDA ``passed'' KernelBench\\
-13 & \textbf{Untrustworthy tasks} & deleted repos, 404 downloads, oracles that fail on a substrate: 241 $\rightarrow$ 211 usable\\
+13 & \textbf{Untrustworthy tasks} & deleted repos, 404 downloads, oracles that fail on a substrate: 241 $\rightarrow$ 212 usable\\
 14 & \textbf{Sparse reward, no gradient} & all-or-nothing scores: no GRPO gradient in 32 of 48 \tb{train48} steps\\
 \grp{3}{Operating it: safe, visible, and cheap}\\
 15 & \textbf{Network and security} & the agent loop runs in the sandbox and must reach the trainer, with no public ports\\
@@ -625,9 +627,9 @@ down(); reset_check()   # clean: reuse; dirty: terminate
 Several containers on a private network (compose) & 12 & \sm & 12\\
 Image over the 2\,GB cap (\tb{mteb-*}, \tb{png-generation}) & 4 & \sm & 0\\
 No arm64 build (x86-only binaries, dead downloads) & 7 & \sm{} (5 build) & 5\\
-Reference solution fails on the microVM (capabilities, root, x86) & 56 & retried on \sm & 32\\
+Reference solution fails on the microVM (capabilities, root, x86) & 56 & retried on \sm & 33\\
 \midrule
-\multicolumn{3}{@{}l}{\textbf{Terminal-Bench}: 162 on a \smv{} + 49 on an \sm{} (77 of 79 build there)} & \hl{211}\\
+\multicolumn{3}{@{}l}{\textbf{Terminal-Bench}: 162 on a \smv{} + 50 on an \sm{} (77 of 79 build there)} & \hl{212}\\
 \midrule
 Needs an NVIDIA GPU (KernelBench) & 270 & \sg{} (level 1), EC2 GPU pool (2--4) & \hl{261}\\
 \bottomrule
@@ -1553,7 +1555,7 @@ Throughput & \hl{1{,}188 episodes/h}, 32 at once; step 88\,s (\srefs{fr:steptime
 Does the trainer wait? & 63\,\% of a step waits for rollouts: \textbf{inference-bound}, not sandbox-bound & proven\\
 Sandbox start-up & pre-open hides it: median wait \hl{0\,s} on all four substrates (\sref{fr:evspeed}) & proven\\
 Scale & 192 live sandboxes at peak; 4 substrates in one batch (\sref{fr:instances}) & proven\\
-Reliability & \hl{0.35\,\%} infra errors, 19{,}606 episodes, 21 runs (\sref{fr:rel}) & proven\\
+Reliability & \hl{0.34\,\%} infra errors, 20{,}154 episodes, 22 runs (\sref{fr:rel}) & proven\\
 Cost & AgentCore GPU dominates; EC2 pool reuses $\sim$9$\times$ (\sref{fr:evops}) & measured\\
 \bottomrule
 \end{tabularx}
@@ -1567,7 +1569,7 @@ Cost & AgentCore GPU dominates; EC2 pool reuses $\sim$9$\times$ (\sref{fr:evops}
 Honest reward? & oracle-checked tasks only; speed gate stops the copy hack (\sref{fr:evreward}) & proven\\
 GRPO signal? & \hl{51\,\%} of groups have none (was 92\,\%) (\sref{fr:signal}) & partly\\
 What binds an episode? & half of Terminal-Bench episodes use all 8 turns & measured\\
-Does the policy improve? & \textbf{not yet}: eval flat at 4B and 9B (\sref{fr:curves}) & open\\
+Does the policy improve? & \textbf{not yet}: 9B eval flat (\sref{fr:curves}) & open\\
 Harness effect? & first mixed run only (\sref{fr:hresults}) & open\\
 \bottomrule
 \end{tabularx}
@@ -1696,7 +1698,7 @@ Peak over the run & \hl{192} live sessions; 101 GPU-pool launches\\
 \end{frame}
 
 %====================================================================
-\begin{frame}{Reliability: 69 infra errors in 19{,}606 episodes (0.35\,\%)}
+\begin{frame}{Reliability: 69 infra errors in 20{,}154 episodes (0.34\,\%)}
 \flabel{fr:rel}
 \tabcap{Episodes (train + eval) / infra errors, by run}
 \scriptsize\setlength{\tabcolsep}{4pt}
@@ -1707,26 +1709,61 @@ Peak over the run & \hl{192} live sessions; 101 GPU-pool launches\\
 9 smoke + \tb{train48} runs (4--5 Oct) & 6{,}049 & 38 & 24 grading time-outs (HTTP 500 from the sandbox); eval deadlock fixed (warm pool tracks its loop)\\
 4 smoke-10 runs, 4B and 9B (10--11 Oct) & 1{,}300 & 2 & 2 \tb{RuntimeClientError} at open (retried on a new session)\\
 \tb{epoch-9b} $\times$2, \tb{lr3e-6-9b} (11 Oct) & 7{,}856 & 26 & 19 grading, 4 open, 3 \tb{ValueError}\\
-KB pool, skills, \tb{e2e}, \tb{coverage124} (12--13 Oct) & 1{,}022 & 0 & --\\
+KB pool, skills, \tb{e2e}, \tb{coverage124}/\tb{129} (12--13 Oct) & 1{,}570 & 0 & --\\
 \tb{fullepoch-allkb} (13 Oct, 4 substrates) & 3{,}379 & \hl{3} & 3 grading\\
 \midrule
-\textbf{total} & \textbf{19{,}606} & \textbf{69} & \hl{0.35\,\%}\\
+\textbf{total} & \textbf{20{,}154} & \textbf{69} & \hl{0.34\,\%}\\
 \bottomrule
 \end{tabularx}
 \par\vspace{2mm}
 \begin{columns}[T]
 \column{0.48\textwidth}
 \begin{itemize}\footnotesize\setlength{\itemsep}{0.6mm}
-\item \textbf{Most errors are grading}, not sandboxes: the test run of a few tasks (e.g.\ \tb{solve-maze-challenge}) overruns or the sandbox answers HTTP 500; the episode scores 0 and is logged.
+\item \textbf{Most errors are grading}, not sandboxes: the test run of a few tasks (e.g.\ \tb{solve-maze-challenge}) overruns or the sandbox answers HTTP 500; the episode scores 0 and is logged. Every cause, per task: \sref{fr:relwhy}.
 \item \textbf{0 dirty resets} on reused m5 and GPU-pool machines.
 \end{itemize}
 \column{0.48\textwidth}
 \begin{itemize}\footnotesize\setlength{\itemsep}{0.6mm}
-\item \textbf{Not counted}: look-ahead episodes killed at a run's exit.
-\item \textbf{One open hang}: \tb{coverage124} stalled on AgentCore GPU sessions with no model calls for 75\,min and no time-out; root cause unknown.
+\item \textbf{Not counted}: look-ahead episodes killed at a run's exit, and 4 runs that crashed or were stopped (\tb{e2e48}, \tb{e2e3way}, \tb{train48-3way}, \tb{fullepoch} 9 Oct).
+\item \textbf{The one hang is fixed}: \tb{coverage124} stalled 75\,min in a capped-pool pre-open deadlock; fixed (\tb{86eaecd}), and \tb{coverage129} then ran 32 steps clean.
 \end{itemize}
 \end{columns}
-\src{\tb{logs/*.demo.csv} (\tb{infra\_error}; killed-at-exit episodes excluded); checked 13 Oct 2026.}
+\src{\tb{logs/*.demo.csv} (\tb{infra\_error}; killed-at-exit episodes excluded); \tb{logs/coverage129-hybrid\_20261013\_132411.*}; checked 14 Oct 2026.}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Reliability: what the 69 infra errors are, and what is behind them}
+\flabel{fr:relwhy}
+\tabcap{The 69 counted infra errors by cause, from each episode's own record and log line}
+\tiny\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\textwidth}{@{}r P{0.17\textwidth} P{0.23\textwidth} Y P{0.15\textwidth}@{}}
+\toprule
+& \textbf{Cause} & \textbf{Where, which tasks} & \textbf{What is behind it (measured)} & \textbf{Status}\\
+\midrule
+\hl{36} & \textbf{Test run outlasts its time limit} (\tb{grade}) & 30 \smv{}, 6 \sm{}: \tb{solve-maze-challenge} 14, \tb{query-optimize} 7, \tb{build-initramfs-qemu} 5, \tb{jq-data-processing} 3, 6 other tasks & grade time = the task's test timeout + 60\,s (482, 722, 1{,}322\,s): our exec gives up and the sandbox answers HTTP 500 (\tb{query-optimize}: the client's read timeout) instead of exit 124. A slow test, not a broken sandbox & scored 0 either way; counted as infra to be safe\\
+13 & \textbf{m5 calls time out} (\tb{URLError}) & \sm{}, one run (\tb{smoke7}, 5 Oct): \tb{mixed-integer-programming} 8, \tb{speech-to-text} 5 & exec / write calls to the m5 timed out (270\,s, 1{,}359\,s) while \tb{mixed-integer-programming} ran 16 solver threads on 4 vCPUs & task dropped (too slow); none in a finished run since\\
+8 & \textbf{Sandbox server error, early} (\tb{grade}) & \smv{}: \tb{recover-obfuscated-files} 7, \tb{hf-lora-adapter} 1 & HTTP 500 from the session within 14--25\,s of grading (151\,s for \tb{hf-lora-adapter}), long before any time-out & open: cause not isolated (CloudWatch)\\
+6 & \textbf{Session fails mid-episode} (\tb{RuntimeClientError}) & 5 \smv{} \tb{play-lord}, 1 \sg{} (KB \tb{Softplus}) & \tb{play-lord}: the in-session agent loop dies before its first turn (\tb{stop=runner\_died}), then the next call to the session fails & open; \tb{play-lord} still trains\\
+4 & \textbf{Our harness} (\tb{ValueError}) & 3 \sg{} (KB level 1), 1 \smv{} (\tb{write-compressor}) & an episode that recorded \textbf{no} model turn: \tb{one\_sample()} takes \tb{max()} of an empty list and crashes instead of scoring 0 & open: one-line fix\\
+2 & \textbf{m5 connection drops while grading} (\tb{grade}) & \sm{}: \tb{wasm-pipeline}, \tb{speech-to-text} & ``remote end closed connection'' / connect time-out to the m5 & rare (2 episodes)\\
+\midrule
+\textbf{69} & & 59 grading or m5 time-outs; 6 lost sessions; 4 our code & & \\
+\bottomrule
+\end{tabularx}
+\par\vspace{1mm}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.4mm}
+\item \textbf{Half are slow tests} (36 of 69), not lost sandboxes: 9 tasks whose hidden tests can run past their own limit.
+\item \textbf{Capacity errors are mostly absorbed}: thousands of \tb{Insufficient EC2 capacity} and vCPU-limit replies at open are retried (next AZ, next type, new session) before an episode starts.
+\end{itemize}
+\column{0.48\textwidth}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.4mm}
+\item \textbf{38 separate events}: the 69 fall in 38 (run, task, step) groups; the largest is 6 of a group's 8 tries.
+\item \textbf{Every error scores 0 and is logged} with its cause, so it can't fake a reward.
+\end{itemize}
+\end{columns}
+\src{\tb{logs/*.demo.csv} (\tb{infra\_error}, \tb{grade\_ms}, \tb{stop}); \tb{grade failed for} and \tb{[sbx-op]} lines in \tb{logs/<run>.log}; \tb{harness\_pool.py} (\tb{one\_sample}); \tb{terminalbench/tasks/oracle.csv}; checked 14 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -1757,7 +1794,7 @@ KB pool, skills, \tb{e2e}, \tb{coverage124} (12--13 Oct) & 1{,}022 & 0 & --\\
 \toprule
 \textbf{Check} & \textbf{Result}\\
 \midrule
-Reference solution passes where the task trains & 211 of 241 TB, 261 of 270 KB kept; every drop has a cause (\sref{fr:coverage})\\
+Reference solution passes where the task trains & 212 of 241 TB, 261 of 270 KB kept; every drop has a cause (\sref{fr:coverage})\\
 Hidden tests & copied in only after the agent stops; checker with a random name and a nonce'd \tb{PASSED} line\\
 Grader itself validated & first KB oracle pass: $\sim$36 of 45 fails were our grader (OOM); fixed before training\\
 State between episodes & 0 dirty resets on reused machines\\
@@ -1833,9 +1870,9 @@ turn budget (8 turns) & 817\\
 
 
 %====================================================================
-\begin{frame}{Learning: eval is flat at 4B and 9B}
+\begin{frame}{Learning: Qwen3.5-9B eval is flat so far}
 \flabel{fr:curves}\flabel{fr:curves9b}
-\figcap{9B runs only (\tb{epoch-9b} vs \tb{lr3e-6-9b}; their eval had 20 KernelBench tasks); all four runs in the table}
+\figcap{Qwen3.5-9B: \tb{epoch-9b} (lr 1e-6) vs \tb{lr3e-6-9b}; eval had 20 KernelBench tasks}
 \centering\includegraphics[width=0.78\linewidth]{fig_learning_9b.png}\par
 \vspace{0.5mm}\raggedright
 \begin{columns}[T]
@@ -1846,21 +1883,19 @@ turn budget (8 turns) & 817\\
 \toprule
 \textbf{Run} & \textbf{TB microVM} & \textbf{TB m5} & \textbf{KB}\\
 \midrule
-\tb{train48}, 4B (steps 9$\rightarrow$39) & 0 $\rightarrow$ 0.05 & 0 & 0.40 $\rightarrow$ 0.43\\
-\tb{epoch-9b}, 9B lr 1e-6 (9$\rightarrow$59) & 0.13 $\rightarrow$ 0.10 & 0 & 0.35 $\rightarrow$ 0.25\\
-\tb{lr3e-6-9b} (9$\rightarrow$19) & 0.13 $\rightarrow$ 0.10 & 0 & 0.35 $\rightarrow$ 0.39\\
-\tb{fullepoch-allkb}, 4B (9$\rightarrow$59) & 0.02 $\rightarrow$ 0.03 & 0 & 0.39 $\rightarrow$ 0.40\\
+\tb{epoch-9b}, lr 1e-6 (steps 9$\rightarrow$59) & 0.13 $\rightarrow$ 0.10 & 0 & 0.35 $\rightarrow$ 0.25\\
+\tb{lr3e-6-9b}, lr 3e-6 (9$\rightarrow$19) & 0.13 $\rightarrow$ 0.10 & 0 & 0.35 $\rightarrow$ 0.39\\
 \bottomrule
 \end{tabularx}
 \column{0.44\textwidth}
 \begin{itemize}\tiny\setlength{\itemsep}{0.5mm}
 \item \textbf{Within noise}: 1 TB episode = 0.016; 1 vs 3 of 62 solved have overlapping 95\,\% CIs.
-\item \textbf{9B moves TB off zero} (5 of 31 tasks) but does not improve with training; 3e-6 raises KL 4--8$\times$, no gain.
+\item \textbf{The 9B solves Terminal-Bench} (5 of 31 held-out tasks) but does not improve with training; 3e-6 raises KL 4--8$\times$, no gain.
 \item \textbf{m5 eval stays 0}: its 5 held-out tasks (9 since 13 Oct) were never solved.
 \item \textbf{Missing}: a step-0 baseline, and runs long enough to see a trend.
 \end{itemize}
 \end{columns}
-\src{\tb{logs/\{train48-hybrid\_20261005\_005629,epoch-9b-hybrid\_20261011\_070427,lr3e-6-9b-hybrid\_20261011\_140649,fullepoch-allkb-hybrid\_20261013\_020139\}.eval.csv}; \tb{make\_figures.py}; checked 13 Oct 2026.}
+\src{\tb{logs/\{epoch-9b-hybrid\_20261011\_070427,lr3e-6-9b-hybrid\_20261011\_140649\}.eval.csv}; \tb{make\_figures.py}; checked 14 Oct 2026.}
 \end{frame}
 
 %====================================================================
@@ -1912,7 +1947,7 @@ More samples per prompt (\tb{NS}) & more chances that one try differs & knob; co
 Larger turn / token budgets & 51\,\% of TB episodes hit 8 turns; 874 hit the token cap & knob; longer episodes\\
 Graded KernelBench speed reward & 1.05$\times$ should beat 1.00$\times$, not tie at 0.5 & next\\
 Skills & lift hard tasks from never to sometimes & built; the 4B read one in 2 of 54 episodes\\
-Bigger policy on more GPUs & 9B already solves 5 of 31 held-out TB tasks & HyperPod demo, waiting for capacity (\sref{fr:nexthp})\\
+Bigger policy on more GPUs & 9B already solves 5 of 31 held-out TB tasks & HyperPod demo built; never got GPU nodes, cluster deleted 14 Oct (\sref{fr:nexthp})\\
 \bottomrule
 \end{tabularx}
 \par\vskip 0pt plus 1filll
@@ -2252,7 +2287,7 @@ Strange errors after an edit & bash reads a running script as it goes & never ed
 \toprule
 & \textbf{Conclusion} & \textbf{Evidence} & \textbf{Slides}\\
 \midrule
-1 & \textbf{A hybrid tier covers the corpus} & 211 usable Terminal-Bench tasks vs 162 on microVMs alone (every drop has a measured cause), plus 261 of 270 KernelBench rows on GPU Instances and an EC2 GPU pool & \sref{fr:why}\\
+1 & \textbf{A hybrid tier covers the corpus} & 212 usable Terminal-Bench tasks vs 162 on microVMs alone (every drop has a measured cause), plus 261 of 270 KernelBench rows on GPU Instances and an EC2 GPU pool & \sref{fr:why}\\
 2 & \textbf{The RL side does not change} & one agent loop, grader, pre-open and metrics path for microVM, m5 and g6 & \srefs{fr:code}{fr:arch}\\
 3 & \textbf{Pre-open depth must match boot time} & g6 start wait p50 240\,s $\rightarrow$ 28\,s with cap 32 and 5 batches ahead & \sref{fr:preopen}\\
 4 & \textbf{The reward, not the sandbox, limits learning} & reliability, cost and learning evidence in Results & \srefs{fr:evspeed}{fr:curves}\\
@@ -2299,7 +2334,7 @@ Strange errors after an edit & bash reads a running script as it goes & never ed
 \begin{scope}[on background layer]
 \node[draw=cat2,dashed,rounded corners=3pt,fit=(mv)(gi)(hr),inner sep=1.5mm,label={[font=\tiny\bfseries,text=inkmuted]above:AgentCore (it manages these)}] (ac) {};
 \end{scope}
-\node[b,draw=cat1,text width=27mm] (m5) at (119,4) {\textbf{\textcolor{cat1}{m5 pool}}: TB, 49};
+\node[b,draw=cat1,text width=27mm] (m5) at (119,4) {\textbf{\textcolor{cat1}{m5 pool}}: TB, 50};
 \node[b,draw=cat1,text width=27mm] (gp) at (119,-3) {\textbf{\textcolor{cat1}{GPU pool}} g6/g5: KB L2--4};
 \begin{scope}[on background layer]
 \node[draw=cat1,dashed,rounded corners=3pt,fit=(m5)(gp),inner sep=1.5mm,label={[font=\tiny\bfseries,text=inkmuted]above:plain EC2 (our code manages these)}] (ec2) {};
@@ -2341,13 +2376,13 @@ Strange errors after an edit & bash reads a running script as it goes & never ed
 \item \textbf{Checkpoints on FSx}, shared by both nodes.
 \item \textbf{The adapter host follows Ray}: each node exports its own VPC IP for the sandboxes' dial-back.
 \end{itemize}
-{\footnotesize\textbf{Status, 13 Oct}}
+{\footnotesize\textbf{Status, 14 Oct}}
 \begin{itemize}\scriptsize\setlength{\itemsep}{0.8mm}
-\item Cluster and FSx up; \textbf{0 GPU nodes}: no on-demand \tb{ml.g6e.48xlarge} / \tb{g7e} capacity in any us-west-2 AZ. Nothing measured yet.
+\item \textbf{Never got a GPU node}: no on-demand \tb{ml.g6e.48xlarge} / \tb{g7e} capacity in any us-west-2 AZ. Cluster and FSx \textbf{deleted 14 Oct}; \tb{4b\_hyperpod\_up.sh} rebuilds them. Nothing measured yet.
 \item Paths: spot (needs the account-wide HyperPod spot quota), a training plan, or 4-GPU nodes.
 \end{itemize}
 \end{columns}
-\src{\tb{demo\_hyperpod\_terminalbench\_kernelbench/\{README,PROGRESS\}.md}; \tb{aws sagemaker describe-cluster}, \tb{service-quotas} (13 Oct 2026).}
+\src{\tb{demo\_hyperpod\_terminalbench\_kernelbench/\{README,PROGRESS\}.md}; \tb{aws sagemaker describe-cluster}, \tb{service-quotas} (14 Oct 2026).}
 \par\vskip 0pt plus 1filll
 \plainen{HyperPod scales the model, AgentCore and our EC2 pools scale the environments; the rollout code is the same, so only the launch of slime changes.}
 \end{frame}

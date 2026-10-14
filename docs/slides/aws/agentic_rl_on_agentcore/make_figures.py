@@ -340,7 +340,6 @@ RUN9 = [("epoch-9b-hybrid_20261011_070427", "9B, lr 1e-6 (full epoch)", C["micro
         (sorted(glob.glob(os.path.join(LOGS, "lr3e-6-9b-hybrid_*[0-9].csv")))[-1:] or [""])[0][len(LOGS) + 1:-len(".csv")],
         ]
 RUN9 = [RUN9[0]] + ([(RUN9[1], "9B, lr 3e-6 (20 steps)", C["docker"])] if RUN9[1] else [])
-REF4 = "smoke10-hybrid_20261010_150109"                     # Qwen3-4B, same pipeline, 10 steps
 if os.path.exists(os.path.join(LOGS, RUN9[0][0] + ".csv")):
     f = lambda r, k: float(r[k]) if r.get(k) not in (None, "") else 0.0  # noqa: E731
     fig, axs = plt.subplots(1, 3, figsize=(11.5, 3.3))
@@ -368,9 +367,6 @@ if os.path.exists(os.path.join(LOGS, RUN9[0][0] + ".csv")):
             "reward_first10": sum(rew[:10]) / 10, "reward_last10": sum(rew[-10:]) / 10,
             "eval": {e: {key: f(r, key) for key in ("eval/terminalbench", "eval/terminalbench_docker", "eval/kernelbench")}
                      for e, r in zip(es, ev)}}
-    r4 = list(csv.DictReader(open(os.path.join(LOGS, REF4 + ".eval.csv"))))[-1]
-    for key, mk in (("eval/terminalbench", "o"), ("eval/kernelbench", "s")):
-        axs[2].scatter([10], [f(r4, key)], marker=mk, s=40, facecolors="none", edgecolors=MUTED, zorder=5)
     axs[0].set_title("Training reward (mean of 32 episodes)", fontsize=10, color=INK, loc="left")
     axs[0].set_xlabel("training step"); axs[0].set_ylim(0, 0.6); axs[0].legend(frameon=False, fontsize=7.5)
     axs[1].set_title("GRPO groups with a gradient (of 4)", fontsize=10, color=INK, loc="left")
@@ -379,8 +375,7 @@ if os.path.exists(os.path.join(LOGS, RUN9[0][0] + ".csv")):
     axs[2].set_xlabel("training step"); axs[2].set_ylim(0, 0.6)
     from matplotlib.lines import Line2D  # noqa: E402
     axs[2].legend(handles=[Line2D([], [], color=INK, marker="s", ls="--", label="KernelBench (20 tasks x 2)"),
-                           Line2D([], [], color=INK, marker="o", ls="-", label="Terminal-Bench microVM (31 x 2)"),
-                           Line2D([], [], color=MUTED, marker="o", ls="", mfc="none", label="Qwen3-4B at step 10")],
+                           Line2D([], [], color=INK, marker="o", ls="-", label="Terminal-Bench microVM (31 x 2)")],
                   frameon=False, fontsize=7.5, loc="upper right")
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "fig_learning_9b.png"), dpi=200)
