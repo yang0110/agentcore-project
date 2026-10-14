@@ -79,6 +79,12 @@ def main(argv: list[str]) -> int:
               "bash 2_build_image.sh && bash 4_deploy_runtime.sh", file=sys.stderr)
         return 2
     mapping = apply_kb_substrate(json.load(open(pool)))
+    # The manifest's image name is ECR-safe (install-windows-3.11 -> install-windows-3-11) while the m5 build
+    # keys its route by task name: a row whose image has no route but whose task does gets an alias.
+    for t in tasks:
+        img, tid = getattr(t, "image", "") or "", getattr(t, "task_id", "") or ""
+        if img and not mapping.get(img) and mapping.get(tid):
+            mapping[img] = mapping[tid]
     missing = sorted(i or "<no image>" for i in need if not mapping.get(i))
     if missing:
         head = ", ".join(missing[:8]) + (f" … (+{len(missing) - 8})" if len(missing) > 8 else "")

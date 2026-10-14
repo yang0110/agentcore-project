@@ -1,0 +1,113 @@
+=== solution exit 1 after 282s
+--- stdout
+CONTRIBUTING
+README.md
+makefile
+paths.json
+pyproject.toml
+reduce_large_json_files.py
+results
+results.py
+scripts
+tests
+
+--- stderr
++ git clone https://github.com/embeddings-benchmark/results
+Cloning into 'results'...
+Updating files:   2% (2695/107367)Updating files:   3% (3222/107367)Updating files:   4% (4295/107367)Updating files:   5% (5369/107367)Updating files:   5% (6351/107367)Updating files:   6% (6443/107367)Updating files:   7% (7516/107367)Updating files:   7% (8394/107367)Updating files:   8% (8590/107367)Updating files:   9% (9664/107367)Updating files:  10% (10737/107367)Updating files:  11% (11811/107367)Updating files:  11% (12219/107367)Updating files:  12% (12885/107367)Updating files:  13% (13958/107367)Updating files:  13% (14778/107367)Updating files:  14% (15032/107367)Updating files:  15% (16106/107367)Updating files:  16% (17179/107367)Updating files:  16% (17828/107367)Updating files:  17% (18253/107367)Updating files:  18% (19327/107367)Updating files:  19% (20400/107367)Updating files:  20% (21474/107367)Updating files:  20% (22291/107367)Updating files:  21% (22548/107367)Updating files:  22% (23621/107367)Updating files:  23% (24695/107367)Updating files:  23% (24940/107367)Updating files:  24% (25769/107367)Updating files:  25% (26842/107367)Updating files:  25% (27329/107367)Updating files:  26% (27916/107367)Updating files:  27% (28990/107367)Updating files:  28% (30063/107367)Updating files:  28% (30440/107367)Updating files:  29% (31137/107367)Updating files:  30% (32211/107367)Updating files:  31% (33284/107367)Updating files:  31% (33837/107367)Updating files:  32% (34358/107367)Updating files:  33% (35432/107367)Updating files:  34% (36505/107367)Updating files:  34% (36518/107367)Updating files:  35% (37579/107367)Updating files:  36% (38653/107367)Updating files:  36% (39617/107367)Updating files:  37% (39726/107367)Updating files:  38% (40800/107367)Updating files:  39% (41874/107367)Updating files:  40% (42947/107367)Updating files:  40% (42969/107367)Updating files:  41% (44021/107367)Updating files:  42% (45095/107367)Updating files:  43% (46168/107367)Updating files:  44% (47242/107367)Updating files:  45% (48316/107367)Updating files:  45% (48642/107367)Updating files:  46% (49389/107367)Updating files:  47% (50463/107367)Updating files:  48% (51537/107367)Updating files:  48% (52102/107367)Updating files:  49% (52610/107367)Updating files:  50% (53684/107367)Updating files:  51% (54758/107367)Updating files:  52% (55831/107367)Updating files:  53% (56905/107367)Updating files:  53% (57494/107367)Updating files:  54% (57979/107367)Updating files:  55% (59052/107367)Updating files:  56% (60126/107367)Updating files:  56% (60852/107367)Updating files:  57% (61200/107367)Updating files:  58% (62273/107367)Updating files:  58% (63185/107367)Updating files:  59% (63347/107367)Updating files:  60% (64421/107367)Updating files:  61% (65494/107367)Updating files:  61% (66467/107367)Updating files:  62% (66568/107367)Updating files:  63% (67642/107367)Updating files:  64% (68715/107367)Updating files:  64% (69690/107367)Updating files:  65% (69789/107367)Updating files:  66% (70863/107367)Updating files:  66% (71884/107367)Updating files:  67% (71936/107367)Updating files:  68% (73010/107367)Updating files:  69% (74084/107367)Updating files:  70% (75157/107367)Updating files:  71% (76231/107367)Updating files:  71% (76686/107367)Updating files:  72% (77305/107367)Updating files:  73% (78378/107367)Updating files:  74% (79452/107367)Updating files:  74% (79725/107367)Updating files:  75% (80526/107367)Updating files:  76% (81599/107367)Updating files:  77% (82673/107367)Updating files:  78% (83747/107367)Updating files:  78% (84201/107367)Updating files:  79% (84820/107367)Updating files:  80% (85894/107367)Updating files:  81% (86968/107367)Updating files:  82% (88041/107367)Updating files:  82% (88105/107367)Updating files:  83% (89115/107367)Updating files:  84% (90189/107367)Updating files:  85% (91262/107367)Updating files:  85% (91369/107367)Updating files:  86% (92336/107367)Updating files:  87% (93410/107367)Updating files:  88% (94483/107367)Updating files:  88% (95145/107367)Updating files:  89% (95557/107367)Updating files:  90% (96631/107367)Updating files:  91% (97704/107367)Updating files:  91% (97863/107367)Updating files:  92% (98778/107367)Updating files:  93% (99852/107367)Updating files:  94% (100925/107367)Updating files:  95% (101999/107367)Updating files:  96% (103073/107367)Updating files:  96% (103910/107367)Updating files:  97% (104146/107367)Updating files:  98% (105220/107367)Updating files:  99% (106294/107367)Updating files:  99% (107003/107367)Updating files: 100% (107367/107367)Updating files: 100% (107367/107367), done.
++ cd results
++ git checkout c0fd3271442f8c0c839084a109fede85c8514dab
+Note: switching to 'c0fd3271442f8c0c839084a109fede85c8514dab'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+HEAD is now at c0fd32714 Add resuls from vie-vn models for the VN-MTEB benchmark (#257)
++ ls
++ cat
++ python leaderboard.py
+Traceback (most recent call last):
+  File "/app/results/leaderboard.py", line 2, in <module>
+    import mteb
+  File "/usr/local/lib/python3.10/site-packages/mteb/__init__.py", line 5, in <module>
+    from mteb.benchmarks.benchmarks import (
+  File "/usr/local/lib/python3.10/site-packages/mteb/benchmarks/__init__.py", line 3, in <module>
+    from mteb.benchmarks.benchmark import Benchmark
+  File "/usr/local/lib/python3.10/site-packages/mteb/benchmarks/benchmark.py", line 9, in <module>
+    from mteb.load_results.load_results import load_results
+  File "/usr/local/lib/python3.10/site-packages/mteb/load_results/__init__.py", line 3, in <module>
+    from .benchmark_results import BenchmarkResults, ModelResult
+  File "/usr/local/lib/python3.10/site-packages/mteb/load_results/benchmark_results.py", line 16, in <module>
+    from mteb.abstasks.AbsTask import AbsTask, ScoresDict
+  File "/usr/local/lib/python3.10/site-packages/mteb/abstasks/__init__.py", line 3, in <module>
+    from ..evaluation.LangMapping import *
+  File "/usr/local/lib/python3.10/site-packages/mteb/evaluation/__init__.py", line 3, in <module>
+    from .MTEB import *
+  File "/usr/local/lib/python3.10/site-packages/mteb/evaluation/MTEB.py", line 19, in <module>
+    from mteb.abstasks.AbsTask import ScoresDict
+  File "/usr/local/lib/python3.10/site-packages/mteb/abstasks/AbsTask.py", line 20, in <module>
+    from mteb.abstasks.TaskMetadata import DescriptiveStatistics, HFSubset, TaskMetadata
+  File "/usr/local/lib/python3.10/site-packages/mteb/abstasks/TaskMetadata.py", line 16, in <module>
+    from ..encoder_interface import PromptType
+  File "/usr/local/lib/python3.10/site-packages/mteb/encoder_interface.py", line 9, in <module>
+    from PIL import Image
+ModuleNotFoundError: No module named 'PIL'
+
+=== grade solved=False 0/2 exit=1
+, pytest-8.4.1, pluggy-1.6.0
+rootdir: /tests
+collected 2 items
+
+../tests/test_outputs.py FF                                              [100%]
+
+=================================== FAILURES ===================================
+______________________________ test_result_exists ______________________________
+
+    def test_result_exists():
+>       assert os.path.exists("/app/result.txt"), "result.txt file does not exist"
+E       AssertionError: result.txt file does not exist
+E       assert False
+E        +  where False = <function exists at 0x7efc5ef79fc0>('/app/result.txt')
+E        +    where <function exists at 0x7efc5ef79fc0> = <module 'posixpath' from '/usr/local/lib/python3.10/posixpath.py'>.exists
+E        +      where <module 'posixpath' from '/usr/local/lib/python3.10/posixpath.py'> = os.path
+
+/tests/test_outputs.py:7: AssertionError
+______________________________ test_data_matches _______________________________
+
+    def test_data_matches():
+        expected = "GritLM/GritLM-7B"
+>       with open("/app/result.txt", "r") as f:
+E       FileNotFoundError: [Errno 2] No such file or directory: '/app/result.txt'
+
+/tests/test_outputs.py:12: FileNotFoundError
+=========================== short test summary info ============================
+FAILED ../tests/test_outputs.py::test_result_exists - AssertionError: result....
+FAILED ../tests/test_outputs.py::test_data_matches - FileNotFoundError: [Errn...
+============================== 2 failed in 0.02s ===============================
+
+[stderr] esolved 8 packages in 109ms
+Downloading pygments (1.2MiB)
+ Downloading pygments
+Prepared 8 packages in 75ms
+Installed 8 packages in 12ms
+ + exceptiongroup==1.3.1
+ + iniconfig==2.3.1
+ + packaging==26.3
+ + pluggy==1.6.0
+ + pygments==2.21.0
+ + pytest==8.4.1
+ + tomli==2.5.0
+ + typing-extensions==4.16.0
+

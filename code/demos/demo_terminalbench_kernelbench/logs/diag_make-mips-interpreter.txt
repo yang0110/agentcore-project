@@ -1,0 +1,58 @@
+=== solution exit 0 after 57s
+--- stdout
+
+--- stderr
++ cat
++ cat
++ node make_json.js doomgeneric_mips
+
+=== grade solved=False 0/3 exit=1
+: If ``formats`` is not ``None``, a list or a tuple.
+        """
+    
+        if mode != "r":
+            msg = f"bad mode {repr(mode)}"  # type: ignore[unreachable]
+            raise ValueError(msg)
+        elif isinstance(fp, io.StringIO):
+            msg = (  # type: ignore[unreachable]
+                "StringIO cannot be used to open an image. "
+                "Binary data must be used instead."
+            )
+            raise ValueError(msg)
+    
+        if formats is None:
+            formats = ID
+        elif not isinstance(formats, (list, tuple)):
+            msg = "formats must be a list or tuple"  # type: ignore[unreachable]
+            raise TypeError(msg)
+    
+        exclusive_fp = False
+        filename: str | bytes = ""
+        if is_path(fp):
+            filename = os.fspath(fp)
+    
+        if filename:
+>           fp = builtins.open(filename, "rb")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           FileNotFoundError: [Errno 2] No such file or directory: '/tmp/frame.bmp'
+
+.tbench-testing/lib/python3.13/site-packages/PIL/Image.py:3505: FileNotFoundError
+=========================== short test summary info ============================
+FAILED ../tests/test_outputs.py::test_vm_execution - TimeoutError: Timeout wa...
+FAILED ../tests/test_outputs.py::test_frame_bmp_exists - AssertionError: File...
+FAILED ../tests/test_outputs.py::test_frame_bmp_similar_to_reference - FileNo...
+============================== 3 failed in 30.15s ==============================
+
+[stderr] gments==2.21.0
+ + pytest==8.4.1
+Using Python 3.13.1 environment at: .tbench-testing
+Resolved 2 packages in 165ms
+Downloading pillow (4.4MiB)
+Downloading numpy (15.9MiB)
+ Downloading pillow
+ Downloading numpy
+Prepared 2 packages in 305ms
+Installed 2 packages in 19ms
+ + numpy==2.3.1
+ + pillow==11.2.1
+
