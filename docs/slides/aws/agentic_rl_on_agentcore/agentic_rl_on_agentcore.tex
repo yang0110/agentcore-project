@@ -23,6 +23,7 @@
 \flabel{fr:outline}
 \vspace{4mm}
 \begin{itemize}\normalsize\setlength{\itemsep}{1.6mm}
+\item \hyperlink{fr:ataglance}{At a glance}
 \item \hyperlink{fr:loop}{Concepts}
 \item \hyperlink{fr:tasks}{The problem}
 \item \hyperlink{fr:components}{Our solution}
@@ -34,6 +35,35 @@
 \item \hyperlink{fr:concl}{Takeaways}
 \item \hyperlink{fr:m5code}{Appendix}
 \end{itemize}
+\end{frame}
+%====================================================================
+\begin{frame}{At a glance: one agentic-RL stack on AWS, built for the hard cases}
+\flabel{fr:ataglance}
+{\small\textbf{\textcolor{awsteal}{1. The solution}} \textcolor{inkmuted}{\scriptsize one training loop, slime drives it, sandboxes run on AWS}}
+\par\vspace{1mm}
+\begin{columns}[T]
+\column{0.32\textwidth}
+\idcard{\textbf{\textcolor{awspurple}{slime}} (trainer).\\Rollout manager, SGLang inference, buffer, Megatron GRPO. Our router, adapter, harness and verifier plug in.}
+\column{0.32\textwidth}
+\idcard{\textbf{AgentCore} (managed sandboxes).\\\smv{}: arm64, $\le$\,2\,GB, no root, one per session. \sg{} Instance: a GPU box per session.}
+\column{0.32\textwidth}
+\idcard{\textbf{Plain EC2} (self-managed).\\\sm{}: Docker + compose, root, multi-container. GPU pool: warm g6 for the heavier GPU tasks.}
+\end{columns}
+\par\vspace{2mm}
+{\small\textbf{\textcolor{awsteal}{2. Why hybrid}} \textcolor{inkmuted}{\scriptsize no single substrate does it; together they cover all 16 challenges (\sref{fr:chal})}}
+\par\vspace{1mm}
+\begin{columns}[T]
+\column{0.24\textwidth}
+\idcard{\textbf{Environments.}\\One machine per task: image size, CPU arch, sidecars, root, GPUs.}
+\column{0.24\textwidth}
+\idcard{\textbf{Speed at scale.}\\The trainer never waits: cold starts, idle reclaim, quotas, hung calls.}
+\column{0.24\textwidth}
+\idcard{\textbf{Correct rewards.}\\The score means it: isolation, hidden tests, broken tasks, sparse gradient.}
+\column{0.24\textwidth}
+\idcard{\textbf{Operating it.}\\Safe, visible, cheap: private network, IAM, logs, clean-up, cost.}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\plainen{we run one RL loop (slime) over four sandbox substrates --- two from AgentCore, two on plain EC2 --- and pick the right one per task. That hybrid is what lets a single stack handle every kind of task and still keep the trainer busy, the rewards honest, and the bill small.}
 \end{frame}
 %====================================================================
 \sect{Concepts}
@@ -325,7 +355,7 @@ needs a 48\,GB GPU (\tb{g6e.xlarge}): in the launch list, but starved (1 of 101 
 \end{frame}
 
 %====================================================================
-\begin{frame}{16 challenges every agentic-RL sandbox must solve}
+\begin{frame}{Four groups of challenges every agentic-RL sandbox must solve}
 \flabel{fr:chal}
 \scriptsize\setlength{\tabcolsep}{4pt}\renewcommand{\arraystretch}{1.0}
 \begin{tabularx}{\textwidth}{@{}>{\footnotesize}P{0.03\textwidth} >{\footnotesize}P{0.28\textwidth} Y@{}}
@@ -1146,6 +1176,45 @@ Decoupled: harness $\rightarrow$ sandbox & the invoke carries the sandbox ARN $+
 %====================================================================
 \sect{Skills in agentic RL}
 
+\begin{frame}{Skills: what they are, and why they matter for RL}
+\flabel{fr:skills}
+\begin{columns}[T]
+\column{0.52\textwidth}
+\tabcap{Three ways to give an agent know-how}
+\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}P{0.2\linewidth}YYY@{}}
+\toprule
+& \textbf{System prompt} & \textbf{Tool} & \textbf{Skill}\\
+\midrule
+What it is & always-on rules & an action with a schema & a folder: \tb{SKILL.md} (+ scripts) read on demand\\
+Context cost & all of it, every turn & schema, every turn & 1 line until read; then the body, once\\
+Runs code & -- & the harness & the agent, with its own \tb{bash}\\
+Scales to & a few rules & tens & hundreds (only one-liners listed)\\
+\bottomrule
+\end{tabularx}
+\par\vspace{1.5mm}
+\footnotesize The format is Anthropic Agent Skills, the same one Claude Code loads from \tb{.claude/skills/}. It needs no special model feature: a model that can call \tb{bash} can read a skill.
+\column{0.44\textwidth}
+\footnotesize\textbf{What changes in RL}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \textbf{Context:} the skill body comes back as a \emph{tool result}, so it is \textbf{loss-masked}. The policy is never trained to recite it, only on its own choices (read it? follow it?).
+\item \textbf{What is learned:} when to load a skill and how to follow it. Later, train with skills and evaluate without them: is the procedure \emph{internalized}?
+\item \textbf{What eval measures:} policy + library, not policy alone. Report both.
+\end{itemize}
+\footnotesize\textbf{Why we need it here}
+\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
+\item \textbf{The no-gradient problem:} 32 of 48 \tb{train48} steps had \tb{grad\_norm}\,=\,0, and at 9B 137 of 248 groups had no gradient (\sref{fr:signal}).
+\item GRPO learns only from groups whose tries \emph{differ}. A skill that turns ``never solved'' into ``sometimes'' creates that variance.
+\end{itemize}
+\end{columns}
+
+\src{\tb{docs/skills-in-agentic-rl.md}; Anthropic Agent Skills format; \tb{logs/train48-hybrid\_20261005\_005629.csv}; checked 12 Oct 2026.}
+\par\vskip 0pt plus 1filll
+\plainen{a skill is a short how-to the agent reads only when it needs it. For RL it is a cheap way to lift hard tasks from 0 to sometimes, which is where GRPO gets its gradient.}
+\end{frame}
+
+%====================================================================
+
 \begin{frame}[fragile]{Skills by example: what the agent can read}
 \flabel{fr:skillex}
 \begin{columns}[T]
@@ -1223,44 +1292,6 @@ nohup python3 app.py > /tmp/app.log 2>&1 &
 \end{frame}
 
 %====================================================================
-%====================================================================
-\begin{frame}{Skills: what they are, and why they matter for RL}
-\flabel{fr:skills}
-\begin{columns}[T]
-\column{0.52\textwidth}
-\tabcap{Three ways to give an agent know-how}
-\scriptsize\setlength{\tabcolsep}{3pt}
-\begin{tabularx}{\linewidth}{@{}P{0.2\linewidth}YYY@{}}
-\toprule
-& \textbf{System prompt} & \textbf{Tool} & \textbf{Skill}\\
-\midrule
-What it is & always-on rules & an action with a schema & a folder: \tb{SKILL.md} (+ scripts) read on demand\\
-Context cost & all of it, every turn & schema, every turn & 1 line until read; then the body, once\\
-Runs code & -- & the harness & the agent, with its own \tb{bash}\\
-Scales to & a few rules & tens & hundreds (only one-liners listed)\\
-\bottomrule
-\end{tabularx}
-\par\vspace{1.5mm}
-\footnotesize The format is Anthropic Agent Skills, the same one Claude Code loads from \tb{.claude/skills/}. It needs no special model feature: a model that can call \tb{bash} can read a skill.
-\column{0.44\textwidth}
-\footnotesize\textbf{What changes in RL}
-\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
-\item \textbf{Context:} the skill body comes back as a \emph{tool result}, so it is \textbf{loss-masked}. The policy is never trained to recite it, only on its own choices (read it? follow it?).
-\item \textbf{What is learned:} when to load a skill and how to follow it. Later, train with skills and evaluate without them: is the procedure \emph{internalized}?
-\item \textbf{What eval measures:} policy + library, not policy alone. Report both.
-\end{itemize}
-\footnotesize\textbf{Why we need it here}
-\begin{itemize}\scriptsize\setlength{\itemsep}{0.6mm}
-\item \textbf{The no-gradient problem:} 32 of 48 \tb{train48} steps had \tb{grad\_norm}\,=\,0, and at 9B 137 of 248 groups had no gradient (\sref{fr:signal}).
-\item GRPO learns only from groups whose tries \emph{differ}. A skill that turns ``never solved'' into ``sometimes'' creates that variance.
-\end{itemize}
-\end{columns}
-
-\src{\tb{docs/skills-in-agentic-rl.md}; Anthropic Agent Skills format; \tb{logs/train48-hybrid\_20261005\_005629.csv}; checked 12 Oct 2026.}
-\par\vskip 0pt plus 1filll
-\plainen{a skill is a short how-to the agent reads only when it needs it. For RL it is a cheap way to lift hard tasks from 0 to sometimes, which is where GRPO gets its gradient.}
-\end{frame}
-
 %====================================================================
 \begin{frame}{One episode with skills: install, list, read, remove, grade}
 \flabel{fr:skillsflow}
