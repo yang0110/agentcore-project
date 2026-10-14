@@ -352,7 +352,7 @@ multi-container compose (client + sidecars) & 12\\
 {\normalsize\textbf{\textcolor{awsteal}{KernelBench}}: 270 $\rightarrow$ \hl{261} used (97\,\%)}\par
 {\footnotesize 95 on the \sg{} Instance + 166 on the EC2 GPU pool; 234 train / 27 eval}\par\vspace{1mm}
 \tabcap{The 9 dropped: why, and can we fix it?}
-\scriptsize\setlength{\tabcolsep}{2.5pt}
+\footnotesize\setlength{\tabcolsep}{2.5pt}
 \begin{tabularx}{\linewidth}{@{}r P{0.42\linewidth} Y@{}}
 \toprule
 & \textbf{Why dropped (measured)} & \textbf{Why no fix}\\
@@ -1476,7 +1476,7 @@ C & \tb{listed} & \tb{off} & does any gain survive without them?\\
 \begin{frame}{Security: private by design, no public ports}
 \flabel{fr:sec}
 \tabcap{Where each component runs and who can reach it}
-\scriptsize\setlength{\tabcolsep}{3pt}
+\footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\textwidth}{@{}P{0.16\textwidth}P{0.27\textwidth}YP{0.20\textwidth}@{}}
 \toprule
 \textbf{Component} & \textbf{Placement} & \textbf{Inbound allowed} & \textbf{Outbound}\\
@@ -1583,7 +1583,7 @@ Harness effect? & first mixed run only (\sref{fr:hresults}) & open\\
 \begin{frame}[t]{Throughput: where a training step's time goes}
 \flabel{fr:steptime}
 \tabcap{Median per step (step 1 excluded); fully-async: rollouts for the next step run while this one trains}
-\scriptsize\setlength{\tabcolsep}{4pt}\renewcommand{\arraystretch}{1.15}
+\footnotesize\setlength{\tabcolsep}{4pt}\renewcommand{\arraystretch}{1.15}
 \begin{tabularx}{\textwidth}{@{}Y r r r@{}}
 \toprule
 & \textbf{4B, full epoch} & \textbf{4B, \tb{train48}} & \textbf{9B, \tb{epoch-9b}}\\
@@ -1636,7 +1636,7 @@ Episode: agent loop / grade, p50 & 11\,s / 8.5\,s (microVM); 14\,s / 8\,s (m5) &
 \begin{frame}{Sandbox latency: four substrates, and what pre-open hides}
 \flabel{fr:evspeed}\flabel{fr:preopen}
 \tabcap{Full-epoch run, per substrate (seconds): the open itself vs what the episode actually waited}
-\scriptsize\setlength{\tabcolsep}{4pt}\renewcommand{\arraystretch}{1.15}
+\footnotesize\setlength{\tabcolsep}{4pt}\renewcommand{\arraystretch}{1.15}
 \begin{tabularx}{\textwidth}{@{}Y r r r r r@{}}
 \toprule
 & \textbf{episodes} & \textbf{open p50 / p95} & \textbf{waited p50 / p95} & \textbf{pre-opened idle p50} & \textbf{grade p50}\\
@@ -1676,7 +1676,7 @@ Episode: agent loop / grade, p50 & 11\,s / 8.5\,s (microVM); 14\,s / 8\,s (m5) &
 {\tiny Peaks: 110 microVM, 47 m5, 32 AgentCore GPU (its cap, \tb{TB\_GPU\_MAX\_SESSIONS}), 43 GPU pool. Dips are the eval and checkpoint pauses. Running episodes are capped at W\,=\,\tb{RB}$\times$\tb{NS}\,=\,32; the rest are pre-opened.\par}
 \column{0.44\textwidth}
 \tabcap{Full-epoch run, live at step 11 (13 Oct 02:29 UTC)}
-\scriptsize\setlength{\tabcolsep}{3pt}
+\footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\linewidth}{@{}P{0.34\linewidth}Y@{}}
 \toprule
 \textcolor{cat2}{\textbf{microVMs}} & \hl{79} live sessions (Terminal-Bench)\\
@@ -1789,7 +1789,7 @@ KB pool, skills, \tb{e2e}, \tb{coverage124}/\tb{129} (12--13 Oct) & 1{,}570 & 0 
 \begin{columns}[T]
 \column{0.50\textwidth}
 \tabcap{Checks before and during training}
-\scriptsize\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
+\footnotesize\setlength{\tabcolsep}{3pt}\renewcommand{\arraystretch}{1.15}
 \begin{tabularx}{\linewidth}{@{}P{0.30\linewidth}Y@{}}
 \toprule
 \textbf{Check} & \textbf{Result}\\
@@ -1802,7 +1802,7 @@ State between episodes & 0 dirty resets on reused machines\\
 \end{tabularx}
 \column{0.46\textwidth}
 \tabcap{The hack RL found, and the gate}
-\scriptsize\setlength{\tabcolsep}{3pt}
+\footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\linewidth}{@{}Y r@{}}
 \toprule
 Correctness only (smoke 4): copy \tb{Model} onto CUDA & scored 1 in \hl{64\,\%}\\
@@ -1824,7 +1824,7 @@ Full epoch, all KB levels & \hl{6} of 1{,}044 correct\\
 \begin{columns}[T]
 \column{0.50\textwidth}
 \tabcap{Groups of 8 tries with identical rewards (zero advantage)}
-\scriptsize\setlength{\tabcolsep}{3pt}
+\footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\linewidth}{@{}Y r r@{}}
 \toprule
 \textbf{Run} & \textbf{no-signal groups} & \textbf{share}\\
@@ -1836,7 +1836,7 @@ Full epoch, all KB levels & \hl{6} of 1{,}044 correct\\
 \end{tabularx}
 \par\vspace{1.5mm}
 \tabcap{Per task, full epoch (training episodes)}
-\scriptsize\setlength{\tabcolsep}{3pt}
+\footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\linewidth}{@{}Y r r r r@{}}
 \toprule
 & \textbf{tasks} & \textbf{never $>$0} & \textbf{mixed} & \textbf{mean reward}\\
@@ -1847,7 +1847,7 @@ KernelBench & 145 & 8 & 137 & 0.40\\
 \end{tabularx}
 \column{0.46\textwidth}
 \tabcap{What ends a training episode (full epoch)}
-\scriptsize\setlength{\tabcolsep}{3pt}
+\footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\linewidth}{@{}Y r@{}}
 \toprule
 agent stopped (\tb{end\_turn}) & 1{,}188\\
@@ -1878,7 +1878,7 @@ turn budget (8 turns) & 817\\
 \begin{columns}[T]
 \column{0.52\textwidth}
 \tabcap{Held-out eval, first vs last (2 samples per task)}
-\tiny\setlength{\tabcolsep}{3pt}
+\footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\linewidth}{@{}Y r r r@{}}
 \toprule
 \textbf{Run} & \textbf{TB microVM} & \textbf{TB m5} & \textbf{KB}\\
@@ -2161,7 +2161,7 @@ End & \tb{Job '\ldots' succeeded}; checkpoint in \tb{ckpt/}; m5s swept & EC2 con
 \begin{frame}{Troubleshooting: symptom, cause, fix}
 \flabel{fr:trouble}
 \tabcap{Seen while building and running this solution}
-\scriptsize\setlength{\tabcolsep}{3pt}
+\footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\textwidth}{@{}P{0.27\textwidth}P{0.28\textwidth}Y@{}}
 \toprule
 \textbf{Symptom} & \textbf{Likely cause} & \textbf{What to do}\\
@@ -2406,7 +2406,7 @@ Strange errors after an edit & bash reads a running script as it goes & never ed
 \begin{frame}{Scaling up: inference is the first limit, not the sandbox}
 \flabel{fr:scale}
 \tabcap{Episodes per hour: what this solution did, and what each limit would allow}
-\scriptsize\setlength{\tabcolsep}{3pt}
+\footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\textwidth}{@{}P{0.27\textwidth}P{0.18\textwidth}Y@{}}
 \toprule
 \textbf{Limit} & \textbf{Episodes / hour} & \textbf{How it is derived}\\
@@ -2430,7 +2430,7 @@ Network interfaces (5{,}000 / Region) & -- & VPC sessions and m5s use ENIs; not 
 \begin{frame}{IAM: five roles, each limited to its own job}
 \flabel{fr:iam}
 \tabcap{Roles the solution uses (names with \tb{NAME\_PREFIX=acs})}
-\tiny\setlength{\tabcolsep}{3pt}
+\scriptsize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\textwidth}{@{}P{0.18\textwidth}P{0.16\textwidth}Y P{0.13\textwidth}@{}}
 \toprule
 \textbf{Role} & \textbf{Assumed by} & \textbf{Permissions} & \textbf{Created by}\\
@@ -2464,7 +2464,7 @@ Network interfaces (5{,}000 / Region) & -- & VPC sessions and m5s use ENIs; not 
 \begin{frame}{AWS quotas: usage against each limit}
 \flabel{fr:quotas}
 \tabcap{Quotas in us-west-2 (account values from \tb{aws service-quotas}, 4 Oct 2026)}
-\tiny\setlength{\tabcolsep}{3pt}
+\scriptsize\setlength{\tabcolsep}{3pt}
 \begin{tabularx}{\textwidth}{@{}P{0.36\textwidth}P{0.12\textwidth}P{0.13\textwidth}Y@{}}
 \toprule
 \textbf{Quota (code)} & \textbf{Limit} & \textbf{We use} & \textbf{Note}\\
