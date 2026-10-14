@@ -1,5 +1,5 @@
 \input{preamble}
-% First-call deck (12 slides) for technical decision-makers. Every number comes from the deep-dive deck
+% First-call deck (17 slides) for technical decision-makers. Every number comes from the deep-dive deck
 % (agentic_rl_on_agentcore.tex), which cites its logs; the "Deep dive:" line on each slide names the
 % deep-dive slide behind it.
 \renewcommand{\deckfooter}{Agentic RL sandboxes on AWS \textperiodcentered{} first call}
@@ -26,6 +26,51 @@
 {\small\color{white}\textbf{Kaige Yang}\\Senior Applied Scientist, AWS\par}
 \end{minipage}
 \end{frame}}
+
+%====================================================================
+\settag{At a glance}
+\begin{frame}{At a glance: one agentic-RL stack on AWS, built for the hard cases}
+\begin{columns}[T]
+\column{0.44\textwidth}
+{\normalsize\textbf{\textcolor{awsteal}{Architecture}}}\par\vspace{1mm}
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm, every node/.style={font=\scriptsize},
+  lbl/.style={font=\tiny,text=inkmuted,align=center},
+  zone/.style={dashed,rounded corners=3pt,inner sep=1.2mm}]
+\node[box,draw=awspurple,text width=20mm,minimum height=26mm] (tr) at (0,0) {\textbf{slime}\\trainer\\[0.5mm]GRPO +\\SGLang\\[0.5mm]\textcolor{awsteal}{\textbf{router}}};
+\node[box,draw=cat2,text width=24mm] (mv) at (36,12) {\textcolor{cat2}{\textbf{microVM}}};
+\node[box,draw=cat3,text width=24mm] (gi) at (36,4.8) {\textcolor{cat3}{\textbf{GPU Instance}}};
+\node[box,draw=cat1,text width=24mm] (m5) at (36,-4.8) {\textcolor{cat1}{\textbf{m5 pool}}};
+\node[box,draw=cat1,text width=24mm] (gp) at (36,-12) {\textcolor{cat1}{\textbf{GPU pool}}};
+\begin{scope}[on background layer]
+\node[zone,draw=cat2,fit=(mv)(gi),label={[lbl]above:AgentCore (managed)}] (ac) {};
+\node[zone,draw=cat1,fit=(m5)(gp),label={[lbl]below:plain EC2 (our code)}] (ec) {};
+\end{scope}
+\draw[arr] ($(tr.east)+(0,5)$) -- (ac.west);
+\draw[arr,cat1] ($(tr.east)+(0,-5)$) -- (ec.west);
+\end{tikzpicture}
+\par\vspace{1mm}\raggedright
+{\scriptsize Each task runs where its own reference solution passes; the harness and grader are the same everywhere.\par}
+\column{0.52\textwidth}
+{\normalsize\textbf{\textcolor{awsteal}{Key contributions}}}
+\begin{itemize}\footnotesize\setlength{\itemsep}{0.6mm}
+\item \textbf{A hybrid sandbox tier}: 2 AgentCore + 2 EC2 substrates behind one API, in one training batch.
+\item \textbf{Measured routing}: each task goes where it builds and its own solution passes.
+\item \textbf{Pre-open + heartbeat + warm GPU pool}: sandboxes are ready before the episode starts.
+\item \textbf{slime unpatched}: we plug in through its extension points.
+\end{itemize}
+\vspace{1mm}
+{\normalsize\textbf{\textcolor{awsteal}{Challenges solved}}}
+\begin{itemize}\footnotesize\setlength{\itemsep}{0.6mm}
+\item \textbf{Environments}: \hl{212}/241 Terminal-Bench, \hl{261}/270 KernelBench tasks.
+\item \textbf{Speed}: \hl{1{,}188} episodes/h; median sandbox wait \hl{0\,s}.
+\item \textbf{Rewards}: hidden tests, oracle-checked tasks, speed gate against hacks.
+\item \textbf{Operations}: \hl{0.35\,\%} infra errors; private network; nothing left running.
+\end{itemize}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\deep{``At a glance''}
+\end{frame}
 
 %====================================================================
 \settag{Concepts}
@@ -169,6 +214,43 @@ microVMs are arm64 only & EC2 x86\\
 \end{frame}
 
 %====================================================================
+\begin{frame}{Why a hybrid: each substrate covers what the others can't}
+\begin{columns}[T]
+\column{0.24\textwidth}
+\colorbox{panel}{\parbox[t][38mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1mm}\scriptsize
+{\footnotesize\bfseries\textcolor{cat2}{AgentCore microVM}}\par
+{\tiny\textcolor{inkmuted}{Terminal-Bench, 162 tasks}}\par\vspace{1mm}
+\textbf{Why}: fully managed, own kernel per session, \hl{0.9\,s} to open.\par\vspace{1mm}
+\textbf{Can't}: arm64 only; 2\,GB image cap; no Docker or root; no GPU.}}
+\column{0.24\textwidth}
+\colorbox{panel}{\parbox[t][38mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1mm}\scriptsize
+{\footnotesize\bfseries\textcolor{cat1}{EC2 m5 pool}}\par
+{\tiny\textcolor{inkmuted}{Terminal-Bench, 50 tasks}}\par\vspace{1mm}
+\textbf{Why}: a whole VM with Docker, as Terminal-Bench runs upstream: x86, any image size, root, sidecars.\par\vspace{1mm}
+\textbf{Why not AgentCore}: a CPU Instance has the same limits as a microVM.\par\vspace{1mm}
+\textbf{Price}: we own launch, reset and clean-up.}}
+\column{0.24\textwidth}
+\colorbox{panel}{\parbox[t][38mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1mm}\scriptsize
+{\footnotesize\bfseries\textcolor{cat3}{AgentCore GPU Instance}}\par
+{\tiny\textcolor{inkmuted}{KernelBench level 1, 95 tasks}}\par\vspace{1mm}
+\textbf{Why}: a small image that needs only a GPU; same API as a microVM, managed, a fresh machine per session.\par\vspace{1mm}
+\textbf{Can't}: microVMs have no GPU; \textbf{143\,s} to open, as CUDA torch can't fit the 2\,GB cap.}}
+\column{0.24\textwidth}
+\colorbox{panel}{\parbox[t][38mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1mm}\scriptsize
+{\footnotesize\bfseries\textcolor{cat1}{EC2 GPU pool}}\par
+{\tiny\textcolor{inkmuted}{KernelBench levels 2--4, 166 tasks}}\par\vspace{1mm}
+\textbf{Why}: torch baked in, warm GPUs, a fresh container per episode: \hl{1.4\,s} to open.\par\vspace{1mm}
+\textbf{Why not AgentCore}: level 4 needs a 17\,GB image; 166 tasks at 143\,s each.\par\vspace{1mm}
+\textbf{Price}: we own the lifecycle and verified reset.}}
+\end{columns}
+\par\vspace{2mm}
+{\small\textbf{Without the hybrid}: microVMs alone cover 162 of 241 Terminal-Bench tasks and none of KernelBench. With all four: \hl{212} and \hl{261} of 270, behind one API, in one training batch.\par}
+\par\vskip 0pt plus 1filll
+\plainen{use AgentCore wherever a task fits its contract; use plain EC2 when a task needs a whole machine with Docker and root, or a big image with a fast GPU open. The router decides per task, by measurement.}
+\deep{``Why four substrates'', ``What AgentCore can't do''}
+\end{frame}
+
+%====================================================================
 \begin{frame}{Challenge 1: every task gets its environment}
 \begin{columns}[T]
 \column{0.40\textwidth}
@@ -276,7 +358,7 @@ Every exit path cleans up: stop sessions, terminate VMs, a 30\,min dead-man swit
 \column{0.32\textwidth}
 \colorbox{panel}{\parbox[t][42mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
 {\large\bfseries\textcolor{awsteal}{Affordable}}\par\vspace{1.5mm}\normalsize
-GPU sandboxes drive the bill: an AgentCore GPU machine lives 15\,min for a 3\,min session.\par\vspace{1.5mm}
+GPU sandboxes drive the bill: an AgentCore GPU machine lives 16\,min for a 5.4\,min session.\par\vspace{1.5mm}
 The warm EC2 GPU pool reuses each machine for $\sim$9 episodes.}}
 \end{columns}
 \par\vskip 0pt plus 1filll
@@ -312,6 +394,70 @@ The warm EC2 GPU pool reuses each machine for $\sim$9 episodes.}}
 \par\vskip 0pt plus 1filll
 \plainen{the sandboxes keep up, rarely fail and grade honestly. What remains is RL work, making more tries differ so GRPO can learn, and scale.}
 \deep{``Results at a glance'', ``Signal'', ``What would make it learn'', ``Next''}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Key AI-infra results: the trainer waits for the model, not the sandbox}
+\figcap{Full-epoch run (4B, 13 Oct), medians: one training step, and one episode's sandbox time by substrate}
+\centering\includegraphics[width=0.97\linewidth]{fig_time.png}\par
+\vspace{1mm}\raggedright
+\begin{columns}[T]
+\column{0.32\textwidth}
+\begin{itemize}\footnotesize
+\item \textbf{Step 88\,s}: 55\,s waiting for rollouts (model generation), 31\,s training, 1.9\,s weight sync.
+\end{itemize}
+\column{0.32\textwidth}
+\begin{itemize}\footnotesize
+\item \textbf{Episode work 18--27\,s} on every substrate: the substrate doesn't slow the agent.
+\end{itemize}
+\column{0.32\textwidth}
+\begin{itemize}\footnotesize
+\item \textbf{Opens differ 100$\times$} (0.9\,s to 145\,s); pre-open hides it: wait \hl{0\,s}.
+\end{itemize}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\deep{``Time breakdown'', ``Sandbox latency''}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Key AI-infra results: 192 live sandboxes across four substrates}
+\begin{columns}[T]
+\column{0.62\textwidth}
+\figcap{Full-epoch run: live sandbox sessions per substrate}
+\centering\includegraphics[width=\linewidth]{fig_concurrency.png}\par
+\column{0.34\textwidth}
+\begin{itemize}\footnotesize\setlength{\itemsep}{1.2mm}
+\item \textbf{\hl{192} live sandboxes} at peak: 110 microVM, 47 m5, 32 AgentCore GPU, 43 GPU pool.
+\item \textbf{32 episodes run at once}; the rest are pre-opened, ready for the next batches.
+\item \textbf{Dips} are eval and checkpoint pauses.
+\item \textbf{GPU capacity is the real limit}: g6 starved in all 4 AZs, so g5 did most of the work.
+\end{itemize}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\deep{``Concurrency''}
+\end{frame}
+
+%====================================================================
+\begin{frame}{Key AI-infra results: GPU reuse sets the cost; errors are rare}
+\figcap{Full-epoch run (13 Oct): machine lifetimes and sessions served per machine}
+\centering\includegraphics[width=0.97\linewidth]{fig_ev_ops.png}\par
+\vspace{1mm}\raggedright
+\begin{columns}[T]
+\column{0.32\textwidth}
+\begin{itemize}\footnotesize
+\item \textbf{AgentCore GPU}: one machine per session; it lives \hl{16\,min} for a \hl{5.4\,min} session.
+\end{itemize}
+\column{0.32\textwidth}
+\begin{itemize}\footnotesize
+\item \textbf{EC2 pools reuse}: GPU pool \hl{908} episodes on 101 machines ($\sim$9 each); m5 2.4 each.
+\end{itemize}
+\column{0.32\textwidth}
+\begin{itemize}\footnotesize
+\item \textbf{\hl{0.35\,\%} infra errors} over all runs (69 in 19{,}606), mostly grading time-outs.
+\end{itemize}
+\end{columns}
+\par\vskip 0pt plus 1filll
+\deep{``Cost'', ``Reliability''}
 \end{frame}
 
 %====================================================================

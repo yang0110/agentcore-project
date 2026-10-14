@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the 12-slide first-call deck twice (refs), fail loudly on any overflow, export png_first_call/slide-NN.png.
+# Build the 17-slide first-call deck twice (refs), fail loudly on any overflow, export png_first_call/slide-NN.png.
 cd "$(dirname "$0")"
 N=first_call_deck
 for i in 1 2; do pdflatex -interaction=nonstopmode -halt-on-error "$N.tex" >/dev/null || { grep -n -A5 "^!" "$N.log" | head -40; exit 1; }; done

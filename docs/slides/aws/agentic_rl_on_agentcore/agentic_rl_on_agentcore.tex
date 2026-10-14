@@ -39,31 +39,45 @@
 %====================================================================
 \begin{frame}{At a glance: one agentic-RL stack on AWS, built for the hard cases}
 \flabel{fr:ataglance}
-{\small\textbf{\textcolor{awsteal}{1. The solution}} \textcolor{inkmuted}{\scriptsize one training loop, slime drives it, sandboxes run on AWS}}
-\par\vspace{1mm}
 \begin{columns}[T]
-\column{0.32\textwidth}
-\idcard{\textbf{\textcolor{awspurple}{slime}} (trainer).\\Rollout manager, SGLang inference, buffer, Megatron GRPO. Our router, adapter, harness and verifier plug in.}
-\column{0.32\textwidth}
-\idcard{\textbf{AgentCore} (managed sandboxes).\\\smv{}: arm64, $\le$\,2\,GB, no root, one per session. \sg{} Instance: a GPU box per session.}
-\column{0.32\textwidth}
-\idcard{\textbf{Plain EC2} (self-managed).\\\sm{}: Docker + compose, root, multi-container. GPU pool: warm g6 for the heavier GPU tasks.}
-\end{columns}
-\par\vspace{2mm}
-{\small\textbf{\textcolor{awsteal}{2. Why hybrid}} \textcolor{inkmuted}{\scriptsize no single substrate does it; together they cover all 16 challenges (\sref{fr:chal})}}
-\par\vspace{1mm}
-\begin{columns}[T]
-\column{0.24\textwidth}
-\idcard{\textbf{Environments.}\\One machine per task: image size, CPU arch, sidecars, root, GPUs.}
-\column{0.24\textwidth}
-\idcard{\textbf{Speed at scale.}\\The trainer never waits: cold starts, idle reclaim, quotas, hung calls.}
-\column{0.24\textwidth}
-\idcard{\textbf{Correct rewards.}\\The score means it: isolation, hidden tests, broken tasks, sparse gradient.}
-\column{0.24\textwidth}
-\idcard{\textbf{Operating it.}\\Safe, visible, cheap: private network, IAM, logs, clean-up, cost.}
+\column{0.44\textwidth}
+{\normalsize\textbf{\textcolor{awsteal}{Architecture}}}\par\vspace{1mm}
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm, every node/.style={font=\scriptsize},
+  lbl/.style={font=\tiny,text=inkmuted,align=center},
+  zone/.style={dashed,rounded corners=3pt,inner sep=1.2mm}]
+\node[box,draw=awspurple,text width=20mm,minimum height=26mm] (tr) at (0,0) {\textbf{slime}\\trainer\\[0.5mm]GRPO +\\SGLang\\[0.5mm]\textcolor{awsteal}{\textbf{router}}};
+\node[box,draw=cat2,text width=24mm] (mv) at (36,12) {\textcolor{cat2}{\textbf{microVM}}};
+\node[box,draw=cat3,text width=24mm] (gi) at (36,4.8) {\textcolor{cat3}{\textbf{GPU Instance}}};
+\node[box,draw=cat1,text width=24mm] (m5) at (36,-4.8) {\textcolor{cat1}{\textbf{m5 pool}}};
+\node[box,draw=cat1,text width=24mm] (gp) at (36,-12) {\textcolor{cat1}{\textbf{GPU pool}}};
+\begin{scope}[on background layer]
+\node[zone,draw=cat2,fit=(mv)(gi),label={[lbl]above:AgentCore (managed)}] (ac) {};
+\node[zone,draw=cat1,fit=(m5)(gp),label={[lbl]below:plain EC2 (our code)}] (ec) {};
+\end{scope}
+\draw[arr] ($(tr.east)+(0,5)$) -- (ac.west);
+\draw[arr,cat1] ($(tr.east)+(0,-5)$) -- (ec.west);
+\end{tikzpicture}
+\par\vspace{1mm}\raggedright
+{\scriptsize Each task runs where its own reference solution passes; the harness and grader are the same everywhere.\par}
+\column{0.52\textwidth}
+{\normalsize\textbf{\textcolor{awsteal}{Key contributions}}}
+\begin{itemize}\footnotesize\setlength{\itemsep}{0.6mm}
+\item \textbf{A hybrid sandbox tier}: 2 AgentCore + 2 EC2 substrates behind one API, in one training batch.
+\item \textbf{Measured routing}: each task goes where it builds and its own solution passes.
+\item \textbf{Pre-open + heartbeat + warm GPU pool}: sandboxes are ready before the episode starts.
+\item \textbf{slime unpatched}: we plug in through its extension points.
+\end{itemize}
+\vspace{1mm}
+{\normalsize\textbf{\textcolor{awsteal}{Challenges solved}}}
+\begin{itemize}\footnotesize\setlength{\itemsep}{0.6mm}
+\item \textbf{Environments}: \hl{212}/241 Terminal-Bench, \hl{261}/270 KernelBench tasks (\sref{fr:chal}).
+\item \textbf{Speed}: \hl{1{,}188} episodes/h; median sandbox wait \hl{0\,s} (\sref{fr:evspeed}).
+\item \textbf{Rewards}: hidden tests, oracle-checked tasks, speed gate against hacks.
+\item \textbf{Operations}: \hl{0.35\,\%} infra errors (\sref{fr:rel}); private network; nothing left running.
+\end{itemize}
 \end{columns}
 \par\vskip 0pt plus 1filll
-\plainen{we run one RL loop (slime) over four sandbox substrates --- two from AgentCore, two on plain EC2 --- and pick the right one per task. That hybrid is what lets a single stack handle every kind of task and still keep the trainer busy, the rewards honest, and the bill small.}
 \end{frame}
 %====================================================================
 \sect{Concepts}
@@ -1718,18 +1732,18 @@ KB pool, skills, \tb{e2e}, \tb{coverage124} (12--13 Oct) & 1{,}022 & 0 & --\\
 %====================================================================
 \begin{frame}{Cost: GPU sandboxes dominate, and reuse is the fix}
 \flabel{fr:evops}
-\figcap{\tb{train48}: instance lifetimes (CloudTrail), and infra errors by cause}
+\figcap{Full-epoch run (13 Oct): machine lifetimes (CloudTrail) and sessions served per machine}
 \centering\includegraphics[width=\linewidth]{fig_ev_ops.png}\par
 \vspace{1mm}\raggedright
 \begin{columns}[T]
 \column{0.32\textwidth}
-\tiny\textbf{AgentCore GPU}: a machine lives \hl{15.2\,min} for a \hl{3.2\,min} session (boot, episode, 600\,s idle tail): 149 instance-hours for 33 session-hours in \tb{train48}.
+\tiny\textbf{AgentCore GPU}: 613 machines for 649 sessions; a machine lives \hl{16\,min} (p50) for a \hl{5.4\,min} session (boot, episode, idle tail).
 \column{0.32\textwidth}
-\tiny\textbf{EC2 pools reuse}: \tb{train48} m5: 129 instances for 407 sessions; full epoch GPU pool: \hl{101 instances for 908 episodes} ($\sim$9 each).
+\tiny\textbf{EC2 pools reuse}: GPU pool \hl{101 machines for 908 episodes} ($\sim$9 each); m5 139 machines for 335 sessions (2.4 each).
 \column{0.32\textwidth}
 \tiny\textbf{The run}: $\approx$\,\$294 for \tb{train48} ($\approx$\,\$6/step); the trainer bills while it waits. Breakdown and controls: \sref{fr:usd}.
 \end{columns}
-\src{\tb{logs/train48-hybrid\_20261005\_005629.\{instances,sessions\}.csv}, \tb{logs/fullepoch-allkb-hybrid\_20261013\_020139.log} (\tb{g6ec2\_launch}); pricing pages (us-west-2); checked 13 Oct 2026.}
+\src{\tb{fig\_ops.py}: \tb{logs/fullepoch-allkb-hybrid\_20261013\_020139.\{instances,sessions,sandbox\_ops\}.csv} (\tb{instances.csv} from CloudTrail via \tb{instance\_timeline.py}); \tb{train48} cost from \tb{logs/train48-hybrid\_20261005\_005629.*}; pricing pages (us-west-2); checked 14 Oct 2026.}
 \end{frame}
 
 %====================================================================

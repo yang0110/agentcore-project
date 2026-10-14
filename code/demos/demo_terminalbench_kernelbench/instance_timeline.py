@@ -18,7 +18,7 @@ import sys
 
 import boto3
 
-KEEP = {"m5.xlarge", "g6.xlarge"}
+KEEP = ("m5.", "g5.", "g6.", "g6e.")  # instance families; m5 hosts, AgentCore GPU Instances, EC2 GPU pool
 
 
 def main(log: str, region: str = os.environ.get("AWS_REGION", "us-west-2")) -> None:
@@ -38,7 +38,7 @@ def main(log: str, region: str = os.environ.get("AWS_REGION", "us-west-2")) -> N
                 ev, ts = json.loads(e["CloudTrailEvent"]), e["EventTime"].timestamp()
                 for it in ((ev.get("responseElements") or {}).get("instancesSet") or {}).get("items", []):
                     if name == "RunInstances":
-                        if it.get("instanceType") in KEEP:
+                        if (it.get("instanceType") or "").startswith(KEEP):
                             launch[it["instanceId"]] = (ts, it["instanceType"], ev["userIdentity"].get("arn", ""))
                     else:
                         term[it["instanceId"]] = min(ts, term.get(it["instanceId"], ts))
@@ -48,7 +48,7 @@ def main(log: str, region: str = os.environ.get("AWS_REGION", "us-west-2")) -> N
         w.writerow(["instance_id", "type", "launch_ts", "terminate_ts", "launched_by"])
         for iid, (ts, ty, who) in sorted(launch.items(), key=lambda kv: kv[1][0]):
             w.writerow([iid, ty, f"{ts:.0f}", f"{term[iid]:.0f}" if iid in term else "", who.split("/")[-2] if "/" in who else who])
-    n = {ty: sum(v[1] == ty for v in launch.values()) for ty in KEEP}
+    n = {ty: sum(v[1] == ty for v in launch.values()) for ty in sorted({v[1] for v in launch.values()})}
     print(f"{out}: {n}, {sum(i not in term for i in launch)} without a terminate in the window")
 
 
