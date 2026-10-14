@@ -67,7 +67,7 @@ start kills the first job.
 code/demos/demo_terminalbench_kernelbench/   the demo (self-contained: vendored lib, deploy/, steps 1-6)
 code/p4_slime_train/                         slime_trainer container start script + base checkpoint
 docs/report/                                 the project report (md + tex + pdf)
-docs/slides/aws/agentic_rl_on_agentcore/     the deck: agentic_rl_on_agentcore.tex (build: ./build.sh)
+docs/slides/aws/agentic_rl_on_agentcore/     the decks: deepdive-agentic-rl-with-agentcore.tex (build: ./build.sh), first-call-agentic-rl-with-agentcore.tex (./build_first_call.sh)
 docs/*.md                                    design notes; most describe removed demos and are marked historical
 ```
 

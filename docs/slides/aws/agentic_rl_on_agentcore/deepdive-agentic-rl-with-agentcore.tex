@@ -395,9 +395,9 @@ needs a 48\,GB GPU (\tb{g6e.xlarge}): in the launch list, but starved (1 of 101 
 12 & \textbf{Reward integrity} & tests must stay hidden; copying \tb{Model} onto CUDA ``passed'' KernelBench\\
 13 & \textbf{Untrustworthy tasks} & deleted repos, 404 downloads, oracles that fail on a substrate: 241 $\rightarrow$ 212 usable\\
 14 & \textbf{Sparse reward, no gradient} & all-or-nothing scores: no GRPO gradient in 32 of 48 \tb{train48} steps\\
-\grp{3}{Operating it: safe, visible, and cheap}\\
+\grp{3}{Operating it: safe and visible}\\
 15 & \textbf{Network and security} & the agent loop runs in the sandbox and must reach the trainer, with no public ports\\
-16 & \textbf{Clean-up, cost and visibility} & leftover instances after a crash; g6 instances do not show in your EC2 console\\
+16 & \textbf{Clean-up and visibility} & leftover instances after a crash; g6 instances do not show in your EC2 console\\
 \bottomrule
 \end{tabularx}
 
@@ -606,9 +606,9 @@ down(); reset_check()   # clean: reuse; dirty: terminate
 12 & \textbf{Reward integrity} & tests injected after the agent stops; hidden checker, nonce'd PASSED; KB needs 1.10$\times$\\
 13 & \textbf{Untrustworthy tasks} & routing is data: train only tasks whose oracle passes; drop broken upstream tasks\\
 14 & \textbf{Sparse reward, no gradient} & partial credit in training (eval stays 0/1); KernelBench 0 / 0.5 / 1\\
-\grp{3}{Operating it: safe, visible, and cheap}\\
+\grp{3}{Operating it: safe and visible}\\
 15 & \textbf{Network and security} & private by design: VPC Runtimes, SG-to-SG rules, m5 behind a secret, no public ports\\
-16 & \textbf{Clean-up, cost and visibility} & close on every path: stop sessions, terminate m5s, dead-man switch, \tb{6\_cleanup.sh}\\
+16 & \textbf{Clean-up and visibility} & close on every path: stop sessions, terminate m5s, dead-man switch, \tb{6\_cleanup.sh}\\
 \bottomrule
 \end{tabularx}
 \end{frame}

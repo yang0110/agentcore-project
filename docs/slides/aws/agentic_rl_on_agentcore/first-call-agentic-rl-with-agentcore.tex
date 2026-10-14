@@ -1,6 +1,6 @@
 \input{preamble}
 % First-call deck (17 slides) for technical decision-makers. Every number comes from the deep-dive deck
-% (agentic_rl_on_agentcore.tex), which cites its logs; the "Deep dive:" line on each slide names the
+% (deepdive-agentic-rl-with-agentcore.tex), which cites its logs; the "Deep dive:" line on each slide names the
 % deep-dive slide behind it.
 \renewcommand{\deckfooter}{Agentic RL sandboxes on AWS \textperiodcentered{} first call}
 \newcommand{\deep}[1]{\par\vspace{0.5mm}{\tiny\textcolor{footc}{Deep dive: #1}}}
@@ -176,7 +176,7 @@ microVMs are arm64 only & EC2 x86\\
 \column{0.48\textwidth}
 \chal{awsteal}{2 \quad The trainer never waits}{cold starts of 1\,s to 2.5\,min vs a $\sim$11\,s agent loop $\cdot$ idle sessions reclaimed after 15\,min $\cdot$ concurrency and quotas $\cdot$ long or hung tool calls}
 \par\vspace{2mm}
-\chal{awsteal}{4 \quad Safe, reliable, affordable}{the agent runs untrusted code yet must reach the trainer, with no public ports $\cdot$ nothing left running after a crash $\cdot$ GPU machines dominate the bill}
+\chal{awsteal}{4 \quad Safe and reliable}{the agent runs untrusted code yet must reach the trainer, with no public ports $\cdot$ nothing left running after a crash}
 \end{columns}
 \par\vskip 0pt plus 1filll
 \plainen{the next four slides take one group each: the challenge, what we did, and the number that shows it works.}
@@ -345,27 +345,22 @@ With a 1.10$\times$ speed gate & 9.5\,\% of correct kernels\\
 \end{frame}
 
 %====================================================================
-\begin{frame}{Challenge 4: safe, reliable, affordable}
+\begin{frame}{Challenge 4: safe and reliable}
 \begin{columns}[T]
-\column{0.32\textwidth}
-\colorbox{panel}{\parbox[t][42mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
+\column{0.48\textwidth}
+\colorbox{panel}{\parbox[t][32mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
 {\large\bfseries\textcolor{awsteal}{Safe}}\par\vspace{1.5mm}\normalsize
 VPC-mode Runtimes, private subnets, \textbf{no public ports}; security-group-to-group rules only.\par\vspace{1.5mm}
 One narrow IAM role per actor: a sandbox can only pull its own image.}}
-\column{0.32\textwidth}
-\colorbox{panel}{\parbox[t][42mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
+\column{0.48\textwidth}
+\colorbox{panel}{\parbox[t][32mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
 {\large\bfseries\textcolor{awsteal}{Reliable}}\par\vspace{1.5mm}\normalsize
 \hl{0.34\,\%} infra errors: 69 in 20{,}154 episodes over 22 runs.\par\vspace{1.5mm}
 Every exit path cleans up: stop sessions, terminate VMs, a 30\,min dead-man switch on each VM.}}
-\column{0.32\textwidth}
-\colorbox{panel}{\parbox[t][42mm]{\dimexpr\linewidth-2\fboxsep}{\raggedright\vspace{1.5mm}
-{\large\bfseries\textcolor{awsteal}{Affordable}}\par\vspace{1.5mm}\normalsize
-GPU sandboxes drive the bill: an AgentCore GPU machine lives 16\,min for a 5.4\,min session.\par\vspace{1.5mm}
-The warm EC2 GPU pool reuses each machine for $\sim$9 episodes.}}
 \end{columns}
 \par\vskip 0pt plus 1filll
-\plainen{the agent runs untrusted code, so nothing is public and nothing outlives the run; GPU reuse is the main cost lever.}
-\deep{``Why security matters'', ``What we do for each risk'', ``Reliability'', ``Cost''}
+\plainen{the agent runs untrusted code, so nothing is public and nothing outlives the run.}
+\deep{``Why security matters'', ``What we do for each risk'', ``Reliability''}
 \end{frame}
 
 %====================================================================
