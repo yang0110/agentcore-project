@@ -1,0 +1,40 @@
+# gitleaks config: default rules + AWS account/infra identifiers.
+# Run locally:  gitleaks git -v .      (or via pre-commit, see .pre-commit-config.yaml)
+title = "agentcore-project gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "aws-account-id-in-arn"
+description = "AWS account ID inside an ARN / ECR registry / SageMaker bucket name"
+regex = '''(?:arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:|sagemaker-[a-z0-9-]*-)(\d{12})|(\d{12})\.dkr\.ecr\.'''
+keywords = ["arn:aws", "dkr.ecr", "sagemaker-"]
+  [[rules.allowlists]]
+  # public AWS-owned accounts (EKS / AWS-managed ECR images)
+  regexTarget = "match"
+  regexes = ['''602401143452''']
+
+[[rules]]
+id = "aws-ec2-vpc-resource-id"
+description = "Concrete EC2/VPC resource ID (instance, SG, VPC, subnet, AMI, volume, ENI, snapshot)"
+regex = '''\b(?:i|sg|vpc|subnet|ami|vol|eni|snap)-0[0-9a-f]{7,16}\b'''
+keywords = ["i-0", "sg-0", "vpc-0", "subnet-0", "ami-0", "vol-0", "eni-0", "snap-0"]
+
+[[rules]]
+id = "aws-private-vpc-ip"
+description = "Concrete host IP in the default-VPC range"
+regex = '''\b172\.31\.\d{1,3}\.\d{1,3}\b'''
+keywords = ["172.31."]
+  [[rules.allowlists]]
+  regexTarget = "match"
+  regexes = ['''172\.31\.0\.0''']
+
+[[allowlists]]
+description = "AgentCore runtime names/session ids whose task names contain 'token'/'secret' (not credentials)"
+regexTarget = "match"
+regexes = [
+  '''acs_[a-z0-9_]+-[A-Za-z0-9]{10}\s+session=sbx-[0-9a-f]{32}''',      # sandbox op logs
+  ''',tbep-[0-9a-f]{8,}''',                                            # episode ids in sandbox_ops.csv
+  '''^tokens trainable, prompt\+observation\s*$''',                     # prose in code/README.md history
+]

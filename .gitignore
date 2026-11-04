@@ -62,7 +62,7 @@ code/demos/demo_gpu_farm/snapshots/
 # per-demo step-script outputs (account-specific ARNs / image URIs)
 code/demos/*/deploy/runtime*.env
 code/demos/*/deploy/images*.env
-code/demos/demo_terminalbench_kernelbench/deploy/harness_cli.json
+code/demos/*/deploy/harness_cli.json
 code/demos/demo_terminalbench_kernelbench/data/smoke_*.jsonl
 code/demos/demo_terminalbench_kernelbench/data/empty.jsonl
 # ad-hoc microVM dataset subsets + run artifacts from multi-harness smokes (regenerated on demand)
